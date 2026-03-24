@@ -114,11 +114,12 @@ SELECT count(*) FROM ducklake_list_files('ducklake', 'example');
 statement ok
 CALL ducklake.merge_adjacent_files();
 
-# We altered the schema twice, hence we can have 3 files, as there are only 3 different schemas.
+# Files with compatible schemas (only ADD COLUMN between them) are merged together.
+# DROP COLUMN creates a boundary, resulting in 2 files (one per schema epoch).
 query I
 SELECT count(*) FROM ducklake_list_files('ducklake', 'example');
 ----
-3
+2
 
 query II
 FROM example ORDER BY ALL

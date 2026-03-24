@@ -68,7 +68,8 @@ bool DuckLakeInlinedDataReader::TryInitializeScan(ClientContext &context, Global
 					continue;
 				}
 			}
-			string projected_column = KeywordHelper::WriteOptionallyQuoted(columns[index].name);
+			string projected_column = KeywordHelper::WriteOptionallyQuoted(
+			    metadata_manager.TruncateIdentifier(columns[index].name));
 			auto &metadata_type = ducklake_catalog.MetadataType();
 			bool needs_cast = !metadata_type.empty() && metadata_type != "duckdb";
 			if (needs_cast) {

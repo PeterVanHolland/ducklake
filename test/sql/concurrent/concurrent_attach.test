@@ -1,0 +1,45 @@
+# name: test/sql/concurrent/concurrent_attach.test
+# description: concurrent ATTACH IF NOT EXISTS should not crash or corrupt
+# group: [concurrent]
+
+require ducklake
+
+require parquet
+
+statement ok
+ATTACH 'ducklake:__TEST_DIR__/attach_concurrent.db' AS a_ducklake (DATA_PATH '__TEST_DIR__/attach_concurrent/')
+
+statement ok
+CREATE TABLE a_ducklake.t (id INT);
+
+statement ok
+INSERT INTO a_ducklake.t VALUES (1), (2), (3);
+
+# concurrent ATTACH IF NOT EXISTS when already attached - should all succeed
+concurrentloop i 0 8
+
+statement ok
+ATTACH IF NOT EXISTS 'ducklake:__TEST_DIR__/attach_concurrent.db' AS a_ducklake
+
+endloop
+
+# data should be intact after concurrent attaches
+query I
+SELECT count(*) FROM a_ducklake.t
+----
+3
+
+# detach and re-attach sequentially should work
+statement ok
+DETACH a_ducklake
+
+statement ok
+ATTACH IF NOT EXISTS 'ducklake:__TEST_DIR__/attach_concurrent.db' AS a_ducklake
+
+statement ok
+ATTACH IF NOT EXISTS 'ducklake:__TEST_DIR__/attach_concurrent.db' AS a_ducklake
+
+query I
+SELECT count(*) FROM a_ducklake.t
+----
+3

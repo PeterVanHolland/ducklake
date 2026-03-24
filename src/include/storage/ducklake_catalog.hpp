@@ -188,10 +188,15 @@ private:
 	                                               DuckLakeCatalogSet &schema);
 	void LoadNameMaps(DuckLakeTransaction &transaction);
 
+	//! Maximum number of schema versions to keep cached
+	static constexpr idx_t MAX_CACHED_SCHEMAS = 64;
+
 private:
 	mutex schemas_lock;
-	//! Map of schema index -> schema
+	//! Map of schema version -> schema
 	unordered_map<idx_t, unique_ptr<DuckLakeCatalogSet>> schemas;
+	//! LRU order of cached schema versions (front = most recently used)
+	vector<idx_t> schemas_lru;
 	//! Map of data file index -> table stats
 	unordered_map<idx_t, unique_ptr<DuckLakeStats>> stats;
 	//! Map of mapping index -> name map

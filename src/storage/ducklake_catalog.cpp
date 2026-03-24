@@ -196,13 +196,25 @@ DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &t
 	lock_guard<mutex> guard(schemas_lock);
 	auto entry = schemas.find(snapshot.schema_version);
 	if (entry != schemas.end()) {
-		// this schema version is already cached
+		// this schema version is already cached - move to front of LRU
+		auto it = std::find(schemas_lru.begin(), schemas_lru.end(), snapshot.schema_version);
+		if (it != schemas_lru.end()) {
+			schemas_lru.erase(it);
+		}
+		schemas_lru.insert(schemas_lru.begin(), snapshot.schema_version);
 		return *entry->second;
 	}
 	// load the schema version from the metadata manager
 	auto schema = LoadSchemaForSnapshot(transaction, snapshot);
 	auto &result = *schema;
+	// evict least-recently-used entries if the cache is full
+	while (schemas.size() >= MAX_CACHED_SCHEMAS && !schemas_lru.empty()) {
+		auto evict_version = schemas_lru.back();
+		schemas_lru.pop_back();
+		schemas.erase(evict_version);
+	}
 	schemas.insert(make_pair(snapshot.schema_version, std::move(schema)));
+	schemas_lru.insert(schemas_lru.begin(), snapshot.schema_version);
 	return result;
 }
 

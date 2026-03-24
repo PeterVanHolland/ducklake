@@ -801,6 +801,11 @@ void TransformGlobalStatsRow(const ROW &row, vector<DuckLakeGlobalStatsInfo> &gl
 
 	auto &stats_entry = global_stats.back();
 
+	// column_id can be NULL if a table_stats row has no matching column_stats (e.g., view_id in table_stats)
+	if (row.IsNull(1 + from_column)) {
+		return;
+	}
+
 	DuckLakeGlobalColumnStatsInfo column_stats;
 	column_stats.column_id = FieldIndex(row.template GetValue<uint64_t>(1 + from_column));
 

@@ -419,6 +419,22 @@ WHERE table_id = {TABLE_ID} AND schema_version = {SCHEMA_VERSION})";
 	return GetBeginSnapshotForTable(table_id);
 }
 
+vector<idx_t> DuckLakeMetadataManager::GetColumnDropSnapshots(TableIndex table_id, DuckLakeSnapshot snapshot) {
+	auto query = StringUtil::Format(R"(
+SELECT DISTINCT end_snapshot
+FROM {METADATA_CATALOG}.ducklake_column
+WHERE table_id = %d AND end_snapshot IS NOT NULL
+ORDER BY end_snapshot
+	)",
+	                                table_id.index);
+	auto result = transaction.Query(snapshot, query);
+	vector<idx_t> drop_snapshots;
+	for (auto &row : *result) {
+		drop_snapshots.push_back(row.GetValue<idx_t>(0));
+	}
+	return drop_snapshots;
+}
+
 idx_t DuckLakeMetadataManager::GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot) {
 	// Compute sum(record_count) - sum(delete_count) - inlined_deletions in a single query
 	// Delete files are only counted if their corresponding data file is still visible

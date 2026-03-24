@@ -1,0 +1,77 @@
+# name: test/sql/compaction/merge_schema_versions.test
+# description: merge_adjacent_files should compact files with different schema versions
+# group: [compaction]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION __TEST_DIR__/{UUID}.db
+
+test-env DATA_PATH __TEST_DIR__
+
+statement ok
+ATTACH 'ducklake:${DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '${DATA_PATH}/merge_schema/')
+
+statement ok
+CREATE TABLE ducklake.test_table (id INTEGER);
+
+statement ok
+INSERT INTO ducklake.test_table VALUES (1);
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake');
+
+statement ok
+ALTER TABLE ducklake.test_table ADD COLUMN v1 INTEGER DEFAULT 0;
+
+statement ok
+INSERT INTO ducklake.test_table VALUES (2, 10);
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake');
+
+statement ok
+ALTER TABLE ducklake.test_table ADD COLUMN v2 INTEGER DEFAULT 0;
+
+statement ok
+INSERT INTO ducklake.test_table VALUES (3, 20, 30);
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake');
+
+statement ok
+ALTER TABLE ducklake.test_table ADD COLUMN v3 INTEGER DEFAULT 0;
+
+statement ok
+INSERT INTO ducklake.test_table VALUES (4, 40, 50, 60);
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake');
+
+# 4 files, each with different schema version
+query I
+SELECT count(*) FROM ducklake_list_files('ducklake', 'test_table');
+----
+4
+
+# merge should now process all 4 files
+query I
+SELECT count(*) > 0 FROM ducklake_merge_adjacent_files('ducklake');
+----
+true
+
+# files should be compacted into fewer files
+query I
+SELECT count(*) < 4 FROM ducklake_list_files('ducklake', 'test_table');
+----
+true
+
+# data should be intact with correct schema evolution
+query IIII
+SELECT * FROM ducklake.test_table ORDER BY id
+----
+1	0	0	0
+2	10	0	0
+3	20	30	0
+4	40	50	60

@@ -180,7 +180,7 @@ struct DuckLakeCompactionCandidates {
 };
 
 struct DuckLakeCompactionGroup {
-	idx_t schema_version;
+	idx_t schema_epoch;
 	optional_idx partition_id;
 	vector<string> partition_values;
 };
@@ -188,7 +188,7 @@ struct DuckLakeCompactionGroup {
 struct DuckLakeCompactionGroupHash {
 	uint64_t operator()(const DuckLakeCompactionGroup &group) const {
 		uint64_t hash = 0;
-		hash ^= std::hash<idx_t>()(group.schema_version);
+		hash ^= std::hash<idx_t>()(group.schema_epoch);
 		if (group.partition_id.IsValid()) {
 			hash ^= std::hash<idx_t>()(group.partition_id.GetIndex());
 		}
@@ -201,7 +201,7 @@ struct DuckLakeCompactionGroupHash {
 
 struct DuckLakeCompactionGroupEquality {
 	bool operator()(const DuckLakeCompactionGroup &a, const DuckLakeCompactionGroup &b) const {
-		return a.schema_version == b.schema_version && a.partition_id == b.partition_id &&
+		return a.schema_epoch == b.schema_epoch && a.partition_id == b.partition_id &&
 		       a.partition_values == b.partition_values;
 	}
 };
@@ -229,6 +229,12 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 	// (sorted by the min/max metadata)
 	auto files = metadata_manager.GetFilesForCompaction(table, type, delete_threshold, snapshot, filter_options);
 
+	// compute schema epochs: files are in the same epoch if no columns were dropped between their schema versions
+	// get schema versions where columns were dropped (end_snapshot set) or type-changed for this table
+	auto drop_snapshots = metadata_manager.GetColumnDropSnapshots(table.GetTableId(), snapshot);
+	// sort drop snapshots to build epoch boundaries
+	std::sort(drop_snapshots.begin(), drop_snapshots.end());
+
 	// iterate over the files and split into separate compaction groups
 	compaction_map_t<DuckLakeCompactionCandidates> candidates;
 	for (idx_t file_idx = 0; file_idx < files.size(); file_idx++) {
@@ -243,9 +249,16 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 			// Merge Adjacent Tables doesn't perform the merge if delete files are present
 			continue;
 		}
+		// compute the schema epoch for this file: count how many drop boundaries precede this file's begin_snapshot
+		idx_t epoch = 0;
+		for (auto &drop_snap : drop_snapshots) {
+			if (drop_snap <= candidate.file.begin_snapshot) {
+				epoch++;
+			}
+		}
 		// construct the compaction group for this file - i.e. the set of candidate files we can compact it with
 		DuckLakeCompactionGroup group;
-		group.schema_version = candidate.schema_version;
+		group.schema_epoch = epoch;
 		group.partition_id = candidate.file.partition_id;
 		group.partition_values = candidate.file.partition_values;
 
@@ -389,9 +402,16 @@ unique_ptr<LogicalOperator> DuckLakeCompactor::InsertSort(Binder &binder, unique
 
 unique_ptr<LogicalOperator>
 DuckLakeCompactor::GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry> source_files) {
-	// get the table entry at the specified snapshot
-	auto snapshot_id = source_files[0].file.begin_snapshot;
-	DuckLakeSnapshot snapshot(snapshot_id, source_files[0].schema_version, 0, 0);
+	// get the table entry at the latest schema version among source files
+	idx_t snapshot_id = source_files[0].file.begin_snapshot;
+	idx_t max_schema_version = source_files[0].schema_version;
+	for (auto &source : source_files) {
+		if (source.schema_version > max_schema_version) {
+			max_schema_version = source.schema_version;
+			snapshot_id = source.file.begin_snapshot;
+		}
+	}
+	DuckLakeSnapshot snapshot(snapshot_id, max_schema_version, 0, 0);
 
 	auto entry = catalog.GetEntryById(transaction, snapshot, table_id);
 	if (!entry) {

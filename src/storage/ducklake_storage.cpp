@@ -101,11 +101,10 @@ static unique_ptr<Catalog> DuckLakeAttach(optional_ptr<StorageExtensionInfo> sto
 		options.create_if_not_exists = false;
 	}
 	if (options.metadata_database.empty()) {
-		// for external metadata backends (postgres, sqlite, etc.), derive the database name from
-		// the connection path so that multiple DuckLake catalogs on the same backend share one entry
-		auto colon_pos = options.metadata_path.find(':');
-		if (colon_pos != string::npos && colon_pos > 0 && !StringUtil::StartsWith(options.metadata_path, "/") &&
-		    !StringUtil::StartsWith(options.metadata_path, "duckdb:")) {
+		// for server-based metadata backends (postgres), derive the database name from
+		// the connection path so that multiple DuckLake catalogs on the same server share one entry
+		if (StringUtil::StartsWith(options.metadata_path, "postgres:") ||
+		    StringUtil::StartsWith(options.metadata_path, "postgres_scanner:")) {
 			auto path_hash = Hash(options.metadata_path.c_str(), options.metadata_path.size());
 			options.metadata_database = "__ducklake_metadata_" + to_string(path_hash);
 		} else {

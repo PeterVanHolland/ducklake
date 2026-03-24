@@ -226,6 +226,8 @@ public:
 	                                                             const vector<LogicalType> &expected_types);
 
 	virtual void DeleteInlinedData(const DuckLakeInlinedTableInfo &inlined_table);
+	//! Delete inlined data that existed at or before the given snapshot (prevents race with concurrent INSERTs)
+	virtual void DeleteInlinedData(const DuckLakeInlinedTableInfo &inlined_table, DuckLakeSnapshot flush_snapshot);
 	virtual string InsertNewSchema(const DuckLakeSnapshot &snapshot, const set<TableIndex> &table_ids);
 
 	virtual vector<DuckLakeSnapshotInfo> GetAllSnapshots(const string &filter = string());

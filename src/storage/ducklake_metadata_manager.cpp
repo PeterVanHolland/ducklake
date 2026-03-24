@@ -4353,10 +4353,25 @@ WHERE end_snapshot IS NOT NULL AND NOT EXISTS(
 }
 
 void DuckLakeMetadataManager::DeleteInlinedData(const DuckLakeInlinedTableInfo &inlined_table) {
-	auto result = transaction.Query(StringUtil::Format(R"(
+	DeleteInlinedData(inlined_table, DuckLakeSnapshot());
+}
+
+void DuckLakeMetadataManager::DeleteInlinedData(const DuckLakeInlinedTableInfo &inlined_table,
+                                                 DuckLakeSnapshot flush_snapshot) {
+	string query;
+	if (flush_snapshot.snapshot_id > 0) {
+		// only delete rows that existed at the flush snapshot to avoid deleting concurrently inserted data
+		query = StringUtil::Format(R"(
+		DELETE FROM {METADATA_CATALOG}.%s WHERE begin_snapshot <= %d
+)",
+		                           SQLIdentifier(inlined_table.table_name), flush_snapshot.snapshot_id);
+	} else {
+		query = StringUtil::Format(R"(
 		DELETE FROM {METADATA_CATALOG}.%s
 )",
-	                                                   SQLIdentifier(inlined_table.table_name)));
+		                           SQLIdentifier(inlined_table.table_name));
+	}
+	auto result = transaction.Query(query);
 	if (result->HasError()) {
 		result->GetErrorObject().Throw("Failed to delete inlined data in DuckLake from table " +
 		                               inlined_table.table_name + ": ");

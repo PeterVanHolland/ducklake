@@ -1,5 +1,5 @@
 # name: test/sql/attach/shared_metadata_database.test
-# description: metadata database name derived from catalog name for DuckDB backends
+# description: ATTACH IF NOT EXISTS for metadata database prevents conflicts on postgres
 # group: [attach]
 
 require ducklake
@@ -25,7 +25,7 @@ SELECT * FROM lake.t1
 ----
 1	hello
 
-# for DuckDB backends, metadata database uses catalog-name-based naming
+# metadata database uses catalog-name-based naming
 query I
 SELECT count(*) FROM duckdb_databases() WHERE database_name = '__ducklake_metadata_lake'
 ----

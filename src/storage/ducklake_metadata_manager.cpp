@@ -32,6 +32,15 @@ DuckLakeMetadataManager::DuckLakeMetadataManager(DuckLakeTransaction &transactio
 
 DuckLakeMetadataManager::~DuckLakeMetadataManager() {
 }
+
+string DuckLakeMetadataManager::TruncateIdentifier(const string &name) const {
+	auto max_len = MaxIdentifierLength();
+	if (max_len == 0 || name.size() <= max_len) {
+		return name;
+	}
+	return name.substr(0, max_len);
+}
+
 optional_ptr<AttachedDatabase> GetDatabase(ClientContext &context, const string &name);
 
 unordered_map<string /* name */, DuckLakeMetadataManager::create_t> DuckLakeMetadataManager::metadata_managers = {
@@ -2080,7 +2089,7 @@ string DuckLakeMetadataManager::GetInlinedTableQuery(const DuckLakeTableInfo &ta
 		if (!columns.empty()) {
 			columns += ", ";
 		}
-		columns += StringUtil::Format("%s %s", SQLIdentifier(col.name), GetColumnType(col));
+		columns += StringUtil::Format("%s %s", SQLIdentifier(TruncateIdentifier(col.name)), GetColumnType(col));
 	}
 	return StringUtil::Format("CREATE TABLE IF NOT EXISTS {METADATA_CATALOG}.%s(row_id BIGINT, begin_snapshot BIGINT, "
 	                          "end_snapshot BIGINT, %s);",

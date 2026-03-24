@@ -118,6 +118,12 @@ public:
 
 	virtual string GetColumnTypeInternal(const LogicalType &column_type);
 	virtual string CastColumnToTarget(const string &column, const LogicalType &type);
+	//! Returns the maximum identifier length for the metadata backend (0 = unlimited)
+	virtual idx_t MaxIdentifierLength() const {
+		return 0;
+	}
+	//! Truncate an identifier to the max length supported by the metadata backend
+	string TruncateIdentifier(const string &name) const;
 
 	DuckLakeMetadataManager &Get(DuckLakeTransaction &transaction);
 

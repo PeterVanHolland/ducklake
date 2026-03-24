@@ -426,6 +426,10 @@ vector<MultiFileColumnDefinition> MapColumns(ClientContext &context, MultiFileRe
 			// field-id not found - this means the column is not present in the file
 			// replace the identifier with a stub name to ensure it is omitted
 			result_col.identifier = Value("__ducklake_unknown_identifier");
+			// set default expression so the column returns its default value instead of being uninitialized
+			if (!result_col.default_expression) {
+				result_col.default_expression = make_uniq<ConstantExpression>(Value(result_col.type));
+			}
 			continue;
 		}
 		// field-id found - add the name-based mapping at this level

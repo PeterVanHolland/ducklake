@@ -1,0 +1,60 @@
+# name: test/sql/add_files/add_files_update.test
+# description: UPDATE on table with added files should not nullify non-updated columns
+# group: [add_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION __TEST_DIR__/{UUID}.db
+
+test-env DATA_PATH __TEST_DIR__
+
+statement ok
+ATTACH 'ducklake:${DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '${DATA_PATH}/add_files_update/')
+
+statement ok
+CREATE TABLE ducklake.test(col1 INTEGER, col2 BOOLEAN, col3 VARCHAR);
+
+# insert a dummy row and flush so the directory is created
+statement ok
+INSERT INTO ducklake.test VALUES (0, false, 'dummy');
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake')
+
+statement ok
+DELETE FROM ducklake.test;
+
+# write a parquet file outside of DuckLake and register it
+statement ok
+COPY (SELECT unnest([1,2]) as col1, false as col2, unnest(['alice', 'bob']) as col3) TO '${DATA_PATH}/add_files_update/main/test/import.parquet';
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'test', '${DATA_PATH}/add_files_update/main/test/import.parquet');
+
+query III
+FROM ducklake.test ORDER BY col1
+----
+1	false	alice
+2	false	bob
+
+# update a single column - other columns should retain their values
+statement ok
+UPDATE ducklake.test SET col2 = TRUE;
+
+query III
+FROM ducklake.test ORDER BY col1
+----
+1	true	alice
+2	true	bob
+
+# update with a WHERE clause
+statement ok
+UPDATE ducklake.test SET col3 = 'charlie' WHERE col1 = 1;
+
+query III
+FROM ducklake.test ORDER BY col1
+----
+1	true	charlie
+2	true	bob

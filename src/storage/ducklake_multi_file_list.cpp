@@ -257,6 +257,7 @@ vector<DuckLakeFileListExtendedEntry> DuckLakeMultiFileList::GetFilesExtended() 
 		file_entry.file = GetFileData(file);
 		file_entry.delete_file = GetDeleteData(file);
 		file_entry.row_id_start = transaction_row_start;
+		file_entry.mapping_id = file.mapping_id;
 		transaction_row_start += file.row_count;
 		result.push_back(std::move(file_entry));
 	}
@@ -297,6 +298,7 @@ vector<DuckLakeFileListExtendedEntry> DuckLakeMultiFileList::GetFilesExtended() 
 			file_entry.row_id_start = file.row_id_start;
 			file_entry.delete_file = file.delete_file;
 			file_entry.file_id = file.file_id;
+			file_entry.mapping_id = file.mapping_id;
 			file_entry.data_type = file.data_type;
 			// Apply committed inlined file deletions from metadata
 			if (file.file_id.IsValid()) {

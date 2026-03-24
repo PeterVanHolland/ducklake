@@ -1,0 +1,50 @@
+# name: test/sql/stats/filter_pushdown_with_stats.test
+# description: filter pushdown using file column stats should work with indexes
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION __TEST_DIR__/{UUID}.db
+
+test-env DATA_PATH __TEST_DIR__
+
+statement ok
+ATTACH 'ducklake:${DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '${DATA_PATH}/stats_filter/', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE ducklake.t (id BIGINT, category VARCHAR, value INTEGER);
+
+# create multiple files with different value ranges to test stats-based pruning
+statement ok
+INSERT INTO ducklake.t SELECT i, 'cat_a', i FROM range(100) tbl(i);
+
+statement ok
+INSERT INTO ducklake.t SELECT i + 100, 'cat_b', i + 100 FROM range(100) tbl(i);
+
+statement ok
+INSERT INTO ducklake.t SELECT i + 200, 'cat_c', i + 200 FROM range(100) tbl(i);
+
+# verify all data is present
+query I
+SELECT count(*) FROM ducklake.t
+----
+300
+
+# filter pushdown should use file column stats to prune files
+query I
+SELECT count(*) FROM ducklake.t WHERE category = 'cat_b'
+----
+100
+
+query I
+SELECT count(*) FROM ducklake.t WHERE value > 250
+----
+49
+
+# verify combined filters
+query I
+SELECT count(*) FROM ducklake.t WHERE category = 'cat_a' AND value < 50
+----
+50

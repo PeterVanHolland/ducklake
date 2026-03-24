@@ -158,6 +158,10 @@ CREATE TABLE {METADATA_CATALOG}.ducklake_macro_impl(macro_id BIGINT, impl_id BIG
 CREATE TABLE {METADATA_CATALOG}.ducklake_macro_parameters(macro_id BIGINT, impl_id BIGINT,column_id BIGINT, parameter_name VARCHAR, parameter_type VARCHAR, default_value VARCHAR, default_value_type VARCHAR);
 CREATE TABLE {METADATA_CATALOG}.ducklake_sort_info(sort_id BIGINT, table_id BIGINT, begin_snapshot BIGINT, end_snapshot BIGINT);
 CREATE TABLE {METADATA_CATALOG}.ducklake_sort_expression(sort_id BIGINT, table_id BIGINT, sort_key_index BIGINT, expression VARCHAR, dialect VARCHAR, sort_direction VARCHAR, null_order VARCHAR);
+CREATE INDEX idx_file_column_stats_lookup ON {METADATA_CATALOG}.ducklake_file_column_stats(table_id, column_id, data_file_id);
+CREATE INDEX idx_data_file_table ON {METADATA_CATALOG}.ducklake_data_file(table_id);
+CREATE INDEX idx_column_table ON {METADATA_CATALOG}.ducklake_column(table_id);
+CREATE INDEX idx_delete_file_table ON {METADATA_CATALOG}.ducklake_delete_file(table_id);
 INSERT INTO {METADATA_CATALOG}.ducklake_snapshot VALUES (0, NOW(), 0, 1, 0);
 INSERT INTO {METADATA_CATALOG}.ducklake_snapshot_changes VALUES (0, 'created_schema:"main"',  NULL, NULL, NULL);
 INSERT INTO {METADATA_CATALOG}.ducklake_metadata (key, value) VALUES ('version', '0.4'), ('created_by', 'DuckDB %s'), ('data_path', %s), ('encrypted', '%s');
@@ -249,6 +253,10 @@ SET partial_max = m.partial_max
 FROM __ducklake_partial_max_migration m
 WHERE df.data_file_id = m.data_file_id;
 DROP TABLE IF EXISTS __ducklake_partial_max_migration;
+CREATE INDEX {IF_NOT_EXISTS} idx_file_column_stats_lookup ON {METADATA_CATALOG}.ducklake_file_column_stats(table_id, column_id, data_file_id);
+CREATE INDEX {IF_NOT_EXISTS} idx_data_file_table ON {METADATA_CATALOG}.ducklake_data_file(table_id);
+CREATE INDEX {IF_NOT_EXISTS} idx_column_table ON {METADATA_CATALOG}.ducklake_column(table_id);
+CREATE INDEX {IF_NOT_EXISTS} idx_delete_file_table ON {METADATA_CATALOG}.ducklake_delete_file(table_id);
 UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '0.4' WHERE key = 'version';
 	)";
 	ExecuteMigration(migrate_query, allow_failures);

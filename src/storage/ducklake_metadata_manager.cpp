@@ -3874,6 +3874,24 @@ FROM new_values
 WHERE table_id=tid AND column_id=cid;
 )",
 		                                  column_stats_values);
+		// Insert stats for any new columns that don't have stats yet (e.g., after ALTER TABLE ADD COLUMN)
+		for (auto &col_stats : stats.column_stats) {
+			batch_query += StringUtil::Format(R"(
+INSERT INTO {METADATA_CATALOG}.ducklake_table_column_stats (table_id, column_id, contains_null, contains_nan, min_value, max_value, extra_stats)
+SELECT %d, %d, %s, %s, %s, %s, %s
+WHERE NOT EXISTS (
+    SELECT 1 FROM {METADATA_CATALOG}.ducklake_table_column_stats
+    WHERE table_id = %d AND column_id = %d
+);
+)",
+			                                  stats.table_id.index, col_stats.column_id.index,
+			                                  col_stats.has_contains_null ? (col_stats.contains_null ? "true" : "false") : "NULL",
+			                                  col_stats.has_contains_nan ? (col_stats.contains_nan ? "true" : "false") : "NULL",
+			                                  col_stats.has_min ? DuckLakeUtil::StatsToString(col_stats.min_val) : "NULL",
+			                                  col_stats.has_max ? DuckLakeUtil::StatsToString(col_stats.max_val) : "NULL",
+			                                  col_stats.has_extra_stats ? col_stats.extra_stats : "NULL",
+			                                  stats.table_id.index, col_stats.column_id.index);
+		}
 	}
 	return batch_query;
 }

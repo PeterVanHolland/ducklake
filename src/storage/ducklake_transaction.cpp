@@ -1604,10 +1604,14 @@ void DuckLakeTransaction::GetNewTableInfo(DuckLakeCommitState &commit_state, Duc
 		}
 		case LocalChangeType::ADD_COLUMN: {
 			// insert the new column
-			DuckLakeNewColumn new_col;
-			new_col.table_id = commit_state.GetTableId(table);
-			new_col.column_info = table.GetAddColumnInfo();
-			result.new_columns.push_back(std::move(new_col));
+			auto add_col_info = table.GetAddColumnInfo();
+			// skip if a later operation (e.g. RENAME_COLUMN) in the same transaction handles this column
+			if (columns_handled_by_later_ops.find(add_col_info.id) == columns_handled_by_later_ops.end()) {
+				DuckLakeNewColumn new_col;
+				new_col.table_id = commit_state.GetTableId(table);
+				new_col.column_info = std::move(add_col_info);
+				result.new_columns.push_back(std::move(new_col));
+			}
 
 			transaction_changes.altered_tables.insert(table.GetTableId());
 			transaction_changes.altered_tables_with_schema_version_changes.insert(table_id);

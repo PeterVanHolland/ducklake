@@ -1,0 +1,57 @@
+# name: test/sql/alter/add_rename_column_inlining.test
+# description: ADD COLUMN then RENAME COLUMN in same transaction with data inlining
+# group: [alter]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION __TEST_DIR__/{UUID}.db
+
+test-env DATA_PATH __TEST_DIR__
+
+statement ok
+ATTACH 'ducklake:${DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '${DATA_PATH}/add_rename/', DATA_INLINING_ROW_LIMIT 100)
+
+statement ok
+CREATE TABLE lake.t (id INT, val VARCHAR);
+
+statement ok
+INSERT INTO lake.t VALUES (1, 'a'), (2, 'b');
+
+# add column and rename it in the same transaction
+statement ok
+BEGIN;
+
+statement ok
+ALTER TABLE lake.t ADD COLUMN new_col INT;
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN new_col TO renamed_col;
+
+statement ok
+COMMIT;
+
+query III
+SELECT * FROM lake.t ORDER BY id
+----
+1	a	NULL
+2	b	NULL
+
+# verify the column is actually called renamed_col
+query I
+SELECT renamed_col FROM lake.t ORDER BY id
+----
+NULL
+NULL
+
+# insert with the renamed column
+statement ok
+INSERT INTO lake.t VALUES (3, 'c', 42);
+
+query III
+SELECT * FROM lake.t ORDER BY id
+----
+1	a	NULL
+2	b	NULL
+3	c	42

@@ -58,7 +58,7 @@ void DuckLakeInitializer::Initialize() {
 	auto &transaction = DuckLakeTransaction::Get(context, catalog);
 	// attach the metadata database
 	auto result =
-	    transaction.Query("ATTACH {METADATA_PATH} AS {METADATA_CATALOG_NAME_IDENTIFIER}" + GetAttachOptions());
+	    transaction.Query("ATTACH IF NOT EXISTS {METADATA_PATH} AS {METADATA_CATALOG_NAME_IDENTIFIER}" + GetAttachOptions());
 	if (result->HasError()) {
 		auto &error_obj = result->GetErrorObject();
 		error_obj.Throw("Failed to attach DuckLake MetaData \"" + catalog.MetadataDatabaseName() + "\" at path + \"" +

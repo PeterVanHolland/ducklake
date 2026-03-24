@@ -595,6 +595,10 @@ unique_ptr<DuckLakeStats> DuckLakeCatalog::ConstructStatsMap(vector<DuckLakeGlob
 			// since the global stats are not versioned this is not an error - just skip
 			continue;
 		}
+		if (table_entry->type != CatalogType::TABLE_ENTRY) {
+			// the entry is a view, not a table - skip stats for views
+			continue;
+		}
 		auto table_stats = make_uniq<DuckLakeTableStats>();
 		table_stats->record_count = stats.record_count;
 		table_stats->next_row_id = stats.next_row_id;

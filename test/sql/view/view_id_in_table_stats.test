@@ -1,0 +1,38 @@
+# name: test/sql/view/view_id_in_table_stats.test
+# description: Test that a view_id in ducklake_table_stats does not crash when loading stats
+# group: [view]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION __TEST_DIR__/{UUID}.db
+
+test-env DATA_PATH __TEST_DIR__
+
+statement ok
+ATTACH 'ducklake:${DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '${DATA_PATH}/view_stats_crash', METADATA_CATALOG 'ducklake_meta')
+
+statement ok
+CREATE TABLE ducklake.t (id INT)
+
+statement ok
+INSERT INTO ducklake.t VALUES (1), (2), (3)
+
+statement ok
+CREATE VIEW ducklake.v AS SELECT * FROM ducklake.t
+
+# Simulate the bug: insert a view_id into table_stats
+# This can happen if a previous ducklake version accidentally wrote stats for a view
+statement ok
+INSERT INTO ducklake_meta.ducklake_table_stats
+SELECT view_id, 0, 0, 0
+FROM ducklake_meta.ducklake_view
+WHERE view_name = 'v'
+
+# Querying the table forces stats loading which includes the corrupt view entry
+# This should NOT crash (previously: INTERNAL Error: Calling GetValueInternal on a value that is NULL)
+query I
+SELECT count(*) FROM ducklake.t
+----
+3

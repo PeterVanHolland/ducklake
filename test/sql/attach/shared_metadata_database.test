@@ -1,0 +1,32 @@
+# name: test/sql/attach/shared_metadata_database.test
+# description: ATTACH IF NOT EXISTS for metadata database prevents conflicts on postgres
+# group: [attach]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION __TEST_DIR__/{UUID}.db
+
+test-env DATA_PATH __TEST_DIR__
+
+# attach and verify basic operations
+statement ok
+ATTACH 'ducklake:${DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '${DATA_PATH}/shared_meta/')
+
+statement ok
+CREATE TABLE lake.t1 (id INT, val VARCHAR);
+
+statement ok
+INSERT INTO lake.t1 VALUES (1, 'hello');
+
+query II
+SELECT * FROM lake.t1
+----
+1	hello
+
+# metadata database uses catalog-name-based naming
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = '__ducklake_metadata_lake'
+----
+1

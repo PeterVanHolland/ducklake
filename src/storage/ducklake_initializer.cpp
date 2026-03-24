@@ -57,8 +57,15 @@ string DuckLakeInitializer::GetAttachOptions() {
 void DuckLakeInitializer::Initialize() {
 	auto &transaction = DuckLakeTransaction::Get(context, catalog);
 	// attach the metadata database
+	// use IF NOT EXISTS for server-based backends (postgres) where multiple DuckLake catalogs
+	// may share the same metadata database; for file-based backends (duckdb, sqlite) use plain ATTACH
+	string attach_prefix = "ATTACH";
+	auto &meta_path = catalog.MetadataPath();
+	if (StringUtil::StartsWith(meta_path, "postgres:") || StringUtil::StartsWith(meta_path, "postgres_scanner:")) {
+		attach_prefix = "ATTACH IF NOT EXISTS";
+	}
 	auto result =
-	    transaction.Query("ATTACH {METADATA_PATH} AS {METADATA_CATALOG_NAME_IDENTIFIER}" + GetAttachOptions());
+	    transaction.Query(attach_prefix + " {METADATA_PATH} AS {METADATA_CATALOG_NAME_IDENTIFIER}" + GetAttachOptions());
 	if (result->HasError()) {
 		auto &error_obj = result->GetErrorObject();
 		error_obj.Throw("Failed to attach DuckLake MetaData \"" + catalog.MetadataDatabaseName() + "\" at path + \"" +

@@ -1,0 +1,53 @@
+# name: test/sql/alter/alter_add_column_stats.test
+# description: Test that ALTER TABLE ADD COLUMN creates stats entries after INSERT
+# group: [alter]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION __TEST_DIR__/{UUID}.db
+
+test-env DATA_PATH __TEST_DIR__
+
+statement ok
+ATTACH 'ducklake:${DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '${DATA_PATH}/alter_column_stats', METADATA_CATALOG 'ducklake_meta')
+
+statement ok
+CREATE TABLE ducklake.t (col_one INTEGER)
+
+statement ok
+INSERT INTO ducklake.t VALUES (1), (2), (3)
+
+# Only col_one should have stats
+query I
+SELECT column_id FROM ducklake_meta.ducklake_table_column_stats ORDER BY column_id
+----
+1
+
+statement ok
+ALTER TABLE ducklake.t ADD COLUMN col_two INTEGER
+
+statement ok
+INSERT INTO ducklake.t VALUES (4, 10), (5, 20), (6, 30)
+
+# Both columns should now have stats
+query I
+SELECT column_id FROM ducklake_meta.ducklake_table_column_stats ORDER BY column_id
+----
+1
+2
+
+statement ok
+ALTER TABLE ducklake.t ADD COLUMN col_three VARCHAR
+
+statement ok
+INSERT INTO ducklake.t VALUES (7, 40, 'hello')
+
+# All three columns should have stats
+query I
+SELECT column_id FROM ducklake_meta.ducklake_table_column_stats ORDER BY column_id
+----
+1
+2
+3

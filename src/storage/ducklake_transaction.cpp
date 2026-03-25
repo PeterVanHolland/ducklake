@@ -2425,9 +2425,9 @@ void DuckLakeTransaction::FlushChanges() {
 		// read-only transactions don't need to do anything
 		return;
 	}
-	idx_t max_retry_count = 10;
-	idx_t retry_wait_ms = 100;
-	double retry_backoff = 1.5;
+	idx_t max_retry_count = 50;
+	idx_t retry_wait_ms = 50;
+	double retry_backoff = 1.2;
 	Value setting_val;
 	auto context_ref = context.lock();
 	if (context_ref->TryGetCurrentSetting("ducklake_max_retry_count", setting_val)) {

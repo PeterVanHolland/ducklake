@@ -21,7 +21,7 @@ USE ducklake
 query I
 SELECT current_setting('ducklake_max_retry_count')
 ----
-10
+50
 
 # Test 2: Set to custom value and verify
 statement ok
@@ -70,7 +70,7 @@ RESET ducklake_max_retry_count;
 query I
 SELECT current_setting('ducklake_max_retry_count')
 ----
-10
+50
 
 # Verify all data was inserted correctly
 query II

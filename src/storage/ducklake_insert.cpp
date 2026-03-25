@@ -111,6 +111,11 @@ void DuckLakeInsert::AddWrittenFiles(DuckLakeInsertGlobalState &global_state, Da
 		data_file.file_size_bytes = chunk.GetValue(2, r).GetValue<idx_t>();
 		data_file.footer_size = chunk.GetValue(3, r).GetValue<idx_t>();
 		data_file.encryption_key = encryption_key;
+		// reject zero-byte files (can happen when disk is full during write)
+		if (data_file.file_size_bytes == 0) {
+			throw IOException("Failed to write data file \"%s\": file is 0 bytes (possible disk full condition)",
+			                  data_file.file_name);
+		}
 		if (partition_id.IsValid()) {
 			data_file.partition_id = partition_id.GetIndex();
 		}

@@ -1,0 +1,43 @@
+# name: test/sql/insert/reject_zero_byte_file.test
+# description: zero-byte files should be rejected during insert (prevents catalog corruption from disk-full)
+# group: [insert]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION __TEST_DIR__/{UUID}.db
+
+test-env DATA_PATH __TEST_DIR__
+
+statement ok
+ATTACH 'ducklake:${DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '${DATA_PATH}/zero_byte/')
+
+statement ok
+CREATE TABLE ducklake.t (id INT, val VARCHAR);
+
+# normal insert works
+statement ok
+INSERT INTO ducklake.t VALUES (1, 'hello'), (2, 'world');
+
+query I
+SELECT count(*) FROM ducklake.t
+----
+2
+
+# flush to create parquet files
+statement ok
+CALL ducklake_flush_inlined_data('ducklake');
+
+# verify files were created with non-zero size
+query I
+SELECT count(*) FROM ducklake_list_files('ducklake', 't') WHERE data_file_size_bytes > 0
+----
+1
+
+# data intact
+query II
+SELECT * FROM ducklake.t ORDER BY id
+----
+1	hello
+2	world

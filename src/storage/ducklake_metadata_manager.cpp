@@ -283,11 +283,19 @@ DuckLakeMetadata DuckLakeMetadataManager::LoadDuckLake() {
 SELECT key, value, scope, scope_id FROM {METADATA_CATALOG}.ducklake_metadata
 )");
 	if (result->HasError()) {
+		// preserve the original error in case the fallback also fails (e.g. postgres transaction aborted)
+		auto original_error = result->GetError();
 		// we might be loading from a v0.1 database - if so we don't have scope yet
 		result = transaction.Query(R"(
 SELECT key, value FROM {METADATA_CATALOG}.ducklake_metadata
 )");
 		if (result->HasError()) {
+			auto fallback_error = result->GetError();
+			// if the fallback error is about an aborted transaction, show the original error instead
+			if (StringUtil::Contains(fallback_error, "transaction is aborted") ||
+			    StringUtil::Contains(fallback_error, "Current transaction")) {
+				throw IOException("Failed to load existing DuckLake: %s", original_error);
+			}
 			auto &error_obj = result->GetErrorObject();
 			error_obj.Throw("Failed to load existing DuckLake: ");
 		}

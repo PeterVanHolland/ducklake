@@ -15,6 +15,8 @@
 #include "duckdb/planner/tableref/bound_at_clause.hpp"
 #include "duckdb/planner/operator/logical_empty_result.hpp"
 #include "storage/ducklake_flush_data.hpp"
+#include "storage/ducklake_partition_data.hpp"
+#include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
@@ -144,16 +146,37 @@ SinkFinalizeType DuckLakeFlushData::Finalize(Pipeline &pipeline, Event &event, C
 	auto snapshot = transaction.GetSnapshot();
 
 	if (!global_state.written_files.empty()) {
+		// Build the ROW_NUMBER window clause — for partitioned tables, partition by the
+		// partition columns so positions are relative to each output file, not global
+		string partition_clause;
+		auto partition_data = table.GetPartitionData();
+		if (partition_data && !partition_data->fields.empty()) {
+			string partition_cols;
+			for (auto &field : partition_data->fields) {
+				auto field_id_ptr = table.GetFieldId(field.field_id);
+				if (field_id_ptr) {
+					if (!partition_cols.empty()) {
+						partition_cols += ", ";
+					}
+					partition_cols += KeywordHelper::WriteOptionallyQuoted(field_id_ptr->Name());
+				}
+			}
+			if (!partition_cols.empty()) {
+				partition_clause = "PARTITION BY " + partition_cols + " ";
+			}
+		}
+
 		// Query deleted rows with their output file position
 		auto deleted_rows_result = transaction.Query(snapshot, StringUtil::Format(R"(
 			WITH all_rows AS (
-				SELECT row_id, end_snapshot, ROW_NUMBER() OVER (ORDER BY row_id) - 1 AS output_position
+				SELECT row_id, end_snapshot, ROW_NUMBER() OVER (%sORDER BY row_id) - 1 AS output_position
 				FROM {METADATA_CATALOG}.%s
 				WHERE {SNAPSHOT_ID} >= begin_snapshot
 			)
 			SELECT end_snapshot, output_position
 			FROM all_rows
 			WHERE end_snapshot IS NOT NULL;)",
+		                                                                          partition_clause,
 		                                                                          inlined_table.table_name));
 
 		// Let's figure out where each file ends, so we know where to place ze deletes

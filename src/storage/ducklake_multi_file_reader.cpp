@@ -169,6 +169,15 @@ shared_ptr<MultiFileList> DuckLakeMultiFileReader::CreateFileList(ClientContext 
 	auto &transaction = DuckLakeTransaction::Get(context, read_info.table.ParentCatalog());
 	auto transaction_local_files = transaction.GetTransactionLocalFiles(read_info.table_id);
 	transaction_local_data = transaction.GetTransactionLocalInlinedData(read_info.table_id);
+
+	// for time travel queries (AT VERSION => N), exclude uncommitted transaction-local data
+	// the query should only see committed data at the requested snapshot
+	bool is_time_travel = read_info.is_time_travel;
+	if (is_time_travel) {
+		transaction_local_files.clear();
+		transaction_local_data = nullptr;
+	}
+
 	auto result =
 	    make_shared_ptr<DuckLakeMultiFileList>(read_info, std::move(transaction_local_files), transaction_local_data);
 	return std::move(result);

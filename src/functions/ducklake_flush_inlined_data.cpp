@@ -276,12 +276,11 @@ DuckLakeDataFlusher::DuckLakeDataFlusher(ClientContext &context, DuckLakeCatalog
 }
 
 unique_ptr<LogicalOperator> DuckLakeDataFlusher::GenerateFlushCommand() {
-	// get the table entry at the specified snapshot
-	DuckLakeSnapshot snapshot(
-	    catalog.GetBeginSnapshotForSchemaVersion(table_id, inlined_table.schema_version, transaction),
-	    inlined_table.schema_version, 0, 0);
+	// use the current table entry (latest schema) for the flush output
+	// so that type promotions (e.g., INTEGER -> BIGINT) are reflected in the written parquet file
+	auto current_snapshot = transaction.GetSnapshot();
 
-	auto entry = catalog.GetEntryById(transaction, snapshot, table_id);
+	auto entry = catalog.GetEntryById(transaction, current_snapshot, table_id);
 	if (!entry) {
 		throw InternalException("DuckLakeCompactor: failed to find table entry for given snapshot id");
 	}

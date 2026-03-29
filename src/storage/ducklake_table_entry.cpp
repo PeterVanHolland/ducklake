@@ -259,8 +259,10 @@ TableFunction DuckLakeTableEntry::GetScanFunction(ClientContext &context, unique
                                                   const EntryLookupInfo &lookup_info) {
 	auto function = DuckLakeFunctions::GetDuckLakeScanFunction(*context.db);
 	auto &transaction = DuckLakeTransaction::Get(context, ParentCatalog());
+	auto at_clause = lookup_info.GetAtClause();
 	auto function_info =
-	    DuckLakeFunctionInfo::Create(*this, transaction, transaction.GetSnapshot(lookup_info.GetAtClause()));
+	    DuckLakeFunctionInfo::Create(*this, transaction, transaction.GetSnapshot(at_clause));
+	function_info->is_time_travel = at_clause != nullptr;
 	auto table_id = function_info->table_id;
 	function.function_info = std::move(function_info);
 	auto &dropped_tables = transaction.GetDroppedTables();

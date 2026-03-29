@@ -51,6 +51,8 @@ struct DuckLakeFunctionInfo : public TableFunctionInfo {
 	DuckLakeSnapshot snapshot;
 	TableIndex table_id;
 	DuckLakeScanType scan_type = DuckLakeScanType::SCAN_TABLE;
+	//! Whether this is a time travel query (AT VERSION => N) — should exclude transaction-local data
+	bool is_time_travel = false;
 	//! Start snapshot - only set for DuckLakeScanType::SCAN_INSERTIONS and DuckLakeScanType::SCAN_DELETIONS
 	unique_ptr<DuckLakeSnapshot> start_snapshot;
 

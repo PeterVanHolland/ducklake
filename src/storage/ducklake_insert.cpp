@@ -180,10 +180,16 @@ void DuckLakeInsert::AddWrittenFiles(DuckLakeInsertGlobalState &global_state, Da
 
 			data_file.column_stats.insert(make_pair(field_id.GetFieldIndex(), std::move(column_stats)));
 		}
-		// finalize variant stats
+		// finalize variant stats and verify NOT NULL constraints
 		for (auto &entry : variant_stats) {
-			// FIXME: verify NOT NULL constraints for variants
-			data_file.column_stats.insert(make_pair(entry.first, entry.second.Finalize()));
+			auto finalized = entry.second.Finalize();
+			if (finalized.has_null_count && finalized.null_count > 0) {
+				auto field_id = table.GetFieldId(entry.first);
+				if (field_id && global_state.not_null_fields.count(field_id->Name())) {
+					throw ConstraintException("NOT NULL constraint failed: %s.%s", table.name, field_id->Name());
+				}
+			}
+			data_file.column_stats.insert(make_pair(entry.first, std::move(finalized)));
 		}
 		// extract the partition info
 		auto partition_info = chunk.GetValue(5, r);

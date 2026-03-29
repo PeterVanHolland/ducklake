@@ -545,6 +545,14 @@ DuckLakeColumnStats PartialVariantStats::Finalize() {
 			shredded_field_stats.erase(entry);
 		}
 	}
+	// propagate null count from shredded stats to the top-level result
+	// so that NOT NULL constraint checks can detect NULL variant values
+	for (auto &shredded : variant_stats.shredded_field_stats) {
+		if (shredded.second.field_stats.has_null_count && shredded.second.field_stats.null_count > 0) {
+			result.has_null_count = true;
+			result.null_count += shredded.second.field_stats.null_count;
+		}
+	}
 	return std::move(result);
 }
 

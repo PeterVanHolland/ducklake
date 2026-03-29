@@ -72,9 +72,15 @@ DuckLakeColumnStats &DuckLakeColumnStats::operator=(const DuckLakeColumnStats &o
 }
 
 void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
-	if (type != new_stats.type) {
-		// handle type promotion - adopt the new type
+	bool type_changed = type != new_stats.type;
+	if (type_changed) {
+		// handle type promotion - adopt the new type and drop min/max
+		// since comparing values across incompatible types (e.g., INTEGER vs BOOL in VARIANT columns) can fail
 		type = new_stats.type;
+		has_min = false;
+		has_max = false;
+		min.clear();
+		max.clear();
 	}
 	if (!new_stats.has_null_count) {
 		has_null_count = false;

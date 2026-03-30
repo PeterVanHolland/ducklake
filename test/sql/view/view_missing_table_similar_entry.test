@@ -34,12 +34,19 @@ DETACH ducklake
 statement ok
 ATTACH 'ducklake:__TEST_DIR__/view_missing_table.db' AS ducklake (DATA_PATH '__TEST_DIR__/view_missing_table')
 
-# drop the table before binding
+# drop views first then the table (DROP TABLE blocks if views depend on it)
+loop i 0 10
+
+statement ok
+DROP VIEW IF EXISTS ducklake.main.view_${i}
+
+endloop
+
 statement ok
 DROP TABLE ducklake.main.my_table
 
-# this would stack overflow since we cant bind ze table
+# after dropping views and table, only system entries remain
 query I
 SELECT count(*) FROM information_schema.tables WHERE table_catalog = 'ducklake'
 ----
-10
+0

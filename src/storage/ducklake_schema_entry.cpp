@@ -311,6 +311,28 @@ void DuckLakeSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
 		throw CatalogException("Existing object %s is of type %s, trying to drop type %s", catalog_entry->name,
 		                       CatalogTypeToString(catalog_entry->type), CatalogTypeToString(info.type));
 	}
+	// check for dependent views when dropping a table
+	if (info.type == CatalogType::TABLE_ENTRY) {
+		auto &table_entry = catalog_entry->Cast<DuckLakeTableEntry>();
+		auto table_id = table_entry.GetTableId();
+		auto &transaction = DuckLakeTransaction::Get(context, catalog);
+		auto &metadata_manager = transaction.GetMetadataManager();
+		auto snapshot = transaction.GetSnapshot();
+		// query for views whose SQL references this table name
+		auto query = StringUtil::Format(R"(
+SELECT view_name FROM {METADATA_CATALOG}.ducklake_view
+WHERE end_snapshot IS NULL AND sql LIKE '%%' || %s || '%%'
+)", SQLString(info.name));
+		auto result = metadata_manager.Query(snapshot, query);
+		if (!result->HasError()) {
+			for (auto &row : *result) {
+				auto view_name = row.GetValue<string>(0);
+				throw DependencyException(
+				    "Cannot drop entry \"%s\" because there are entries that depend on it. Use DROP ... CASCADE.",
+				    info.name);
+			}
+		}
+	}
 	auto &transaction = DuckLakeTransaction::Get(context, catalog);
 	transaction.DropEntry(*catalog_entry);
 }

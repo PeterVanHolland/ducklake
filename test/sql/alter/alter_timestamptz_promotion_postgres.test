@@ -1,0 +1,50 @@
+# name: test/sql/alter/alter_timestamptz_promotion_postgres.test
+# description: Test TIMESTAMP to TIMESTAMPTZ promotion on Postgres backend preserves UTC semantics
+# group: [alter]
+
+require ducklake
+
+require parquet
+
+require icu
+
+require-env DUCKLAKE_POSTGRES_TEST
+
+test-env DUCKLAKE_CONNECTION postgres:${DUCKLAKE_POSTGRES_TEST}
+
+test-env DATA_PATH __TEST_DIR__
+
+statement ok
+SET timezone='UTC'
+
+statement ok
+ATTACH 'ducklake:${DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '${DATA_PATH}/alter_timestamptz_pg')
+
+statement ok
+CREATE TABLE ducklake.test(col1 TIMESTAMP)
+
+statement ok
+INSERT INTO ducklake.test VALUES ('2025-01-15 12:30:45'::TIMESTAMP)
+
+statement ok
+ALTER TABLE ducklake.test ALTER COLUMN col1 TYPE TIMESTAMPTZ
+
+statement ok
+INSERT INTO ducklake.test VALUES ('2025-01-15 12:30:45'::TIMESTAMPTZ)
+
+# Both rows should have the same UTC value
+query II
+SELECT col1, epoch(col1) FROM ducklake.test ORDER BY col1
+----
+2025-01-15 12:30:45+00	1736944245.0
+2025-01-15 12:30:45+00	1736944245.0
+
+# Verify after flush
+statement ok
+CALL ducklake_flush_inlined_data('ducklake')
+
+query II
+SELECT col1, epoch(col1) FROM ducklake.test ORDER BY col1
+----
+2025-01-15 12:30:45+00	1736944245.0
+2025-01-15 12:30:45+00	1736944245.0

@@ -245,6 +245,20 @@ void UpdateStats(vector<DuckLakeBaseColumnStats> &stats, idx_t c, Vector &data, 
 	auto &column_stats = stats[c];
 	auto &type = data.GetType();
 	if (type.IsNested() && type.id() != LogicalTypeId::VARIANT) {
+		// count null values at the top level (needed for NOT NULL constraint checking on nested types)
+		UnifiedVectorFormat format;
+		data.ToUnifiedFormat(row_count, format);
+		idx_t null_count = 0;
+		for (idx_t i = 0; i < row_count; i++) {
+			auto idx = format.sel->get_index(i);
+			if (!format.validity.RowIsValid(idx)) {
+				null_count++;
+			}
+		}
+		column_stats.stats.null_count += null_count;
+		column_stats.stats.has_null_count = true;
+		column_stats.has_stats = true;
+
 		// nested - recurse into children
 		switch (data.GetType().id()) {
 		case LogicalTypeId::STRUCT: {

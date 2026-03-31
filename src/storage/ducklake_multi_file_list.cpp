@@ -18,6 +18,10 @@
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/null_filter.hpp"
 #include "duckdb/planner/filter/optional_filter.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/filter/in_filter.hpp"
 #include "storage/ducklake_table_entry.hpp"
 
@@ -48,15 +52,103 @@ DuckLakeMultiFileList::DuckLakeMultiFileList(DuckLakeFunctionInfo &read_info,
 }
 
 unique_ptr<MultiFileList>
+DuckLakeMultiFileList::ComplexFilterPushdown(ClientContext &context, const MultiFileOptions &options,
+                                             MultiFilePushdownInfo &info,
+                                             vector<unique_ptr<Expression>> &filters) const {
+	if (read_info.scan_type != DuckLakeScanType::SCAN_TABLE || filters.empty()) {
+		return nullptr;
+	}
+	// Look for patterns like CAST(col AS wider_type) >= constant
+	// and convert them to col >= CAST(constant AS col_type) for file pruning
+	auto pushdown_info = make_uniq<FilterPushdownInfo>();
+	for (auto &filter_expr : filters) {
+		if (filter_expr->type != ExpressionType::COMPARE_LESSTHAN &&
+		    filter_expr->type != ExpressionType::COMPARE_LESSTHANOREQUALTO &&
+		    filter_expr->type != ExpressionType::COMPARE_GREATERTHAN &&
+		    filter_expr->type != ExpressionType::COMPARE_GREATERTHANOREQUALTO &&
+		    filter_expr->type != ExpressionType::COMPARE_EQUAL &&
+		    filter_expr->type != ExpressionType::COMPARE_NOTEQUAL) {
+			continue;
+		}
+		auto &comparison = filter_expr->Cast<BoundComparisonExpression>();
+		BoundCastExpression *cast_expr = nullptr;
+		BoundConstantExpression *const_expr = nullptr;
+		bool constant_on_right = false;
+		if (comparison.left->GetExpressionClass() == ExpressionClass::BOUND_CAST &&
+		    comparison.right->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+			cast_expr = &comparison.left->Cast<BoundCastExpression>();
+			const_expr = &comparison.right->Cast<BoundConstantExpression>();
+			constant_on_right = true;
+		} else if (comparison.right->GetExpressionClass() == ExpressionClass::BOUND_CAST &&
+		           comparison.left->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+			cast_expr = &comparison.right->Cast<BoundCastExpression>();
+			const_expr = &comparison.left->Cast<BoundConstantExpression>();
+			constant_on_right = false;
+		} else {
+			continue;
+		}
+		if (cast_expr->child->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+			continue;
+		}
+		auto &col_ref = cast_expr->child->Cast<BoundColumnRefExpression>();
+		auto &col_type = col_ref.return_type;
+		auto &const_val = const_expr->value;
+		Value casted_val;
+		if (!const_val.DefaultTryCastAs(col_type, casted_val, nullptr)) {
+			continue;
+		}
+		auto column_id = info.column_ids[col_ref.binding.column_index];
+		if (IsVirtualColumn(column_id)) {
+			continue;
+		}
+		auto column_index = PhysicalIndex(column_id);
+		auto &root_id = read_info.table.GetFieldId(column_index);
+		auto field_index = root_id.GetFieldIndex().index;
+		auto cmp_type = filter_expr->type;
+		if (!constant_on_right) {
+			switch (cmp_type) {
+			case ExpressionType::COMPARE_LESSTHAN:
+				cmp_type = ExpressionType::COMPARE_GREATERTHAN;
+				break;
+			case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+				cmp_type = ExpressionType::COMPARE_GREATERTHANOREQUALTO;
+				break;
+			case ExpressionType::COMPARE_GREATERTHAN:
+				cmp_type = ExpressionType::COMPARE_LESSTHAN;
+				break;
+			case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+				cmp_type = ExpressionType::COMPARE_LESSTHANOREQUALTO;
+				break;
+			default:
+				break;
+			}
+		}
+		auto constant_filter = make_uniq<ConstantFilter>(cmp_type, casted_val);
+		ColumnFilterInfo fi(field_index, col_type, std::move(constant_filter));
+		pushdown_info->column_filters.emplace(field_index, std::move(fi));
+	}
+	if (pushdown_info->column_filters.empty()) {
+		return nullptr;
+	}
+	return make_uniq<DuckLakeMultiFileList>(read_info, transaction_local_files, transaction_local_data,
+	                                        std::move(pushdown_info));
+}
+
+unique_ptr<MultiFileList>
 DuckLakeMultiFileList::DynamicFilterPushdown(ClientContext &context, const MultiFileOptions &options,
                                              const vector<string> &names, const vector<LogicalType> &types,
                                              const vector<column_t> &column_ids, TableFilterSet &filters) const {
-	if (read_info.scan_type != DuckLakeScanType::SCAN_TABLE || filters.filters.empty()) {
+	if (read_info.scan_type != DuckLakeScanType::SCAN_TABLE || (filters.filters.empty() && !filter_info)) {
 		// filter pushdown is only supported when scanning full tables
 		return nullptr;
 	}
-
+	// Start with existing filter info from ComplexFilterPushdown (if any)
 	auto pushdown_info = make_uniq<FilterPushdownInfo>();
+	if (filter_info) {
+		for (auto &entry : filter_info->column_filters) {
+			pushdown_info->column_filters.emplace(entry.first, entry.second);
+		}
+	}
 
 	for (auto &entry : filters.filters) {
 		auto column_index_val = entry.first;

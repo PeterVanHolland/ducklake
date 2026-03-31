@@ -77,8 +77,15 @@ static string ToStringBaseType(const LogicalType &type) {
 }
 
 bool DuckLakeTypes::RequiresCast(const LogicalType &type) {
-	// There are no types that requires casts as of DuckDB v1.5
-	return false;
+	switch (type.id()) {
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::UHUGEINT:
+		// HUGEINT/UHUGEINT are written as DOUBLE by Parquet writer, losing precision
+		// Cast to DECIMAL(38,0) to preserve integer values
+		return true;
+	default:
+		return false;
+	}
 }
 
 bool DuckLakeTypes::RequiresCast(const vector<LogicalType> &types) {
@@ -91,8 +98,13 @@ bool DuckLakeTypes::RequiresCast(const vector<LogicalType> &types) {
 }
 
 LogicalType DuckLakeTypes::GetCastedType(const LogicalType &type) {
-	// There are no types that requires casts as of DuckDB v1.5
-	return type;
+	switch (type.id()) {
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::UHUGEINT:
+		return LogicalType::DECIMAL(38, 0);
+	default:
+		return type;
+	}
 }
 
 LogicalType DuckLakeTypes::FromString(const string &type) {

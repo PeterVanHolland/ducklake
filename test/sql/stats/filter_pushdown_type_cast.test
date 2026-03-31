@@ -1,0 +1,53 @@
+# name: test/sql/stats/filter_pushdown_type_cast.test
+# description: Test file pruning with cross-type constant expressions (e.g., CURRENT_DATE - INTERVAL)
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+statement ok
+ATTACH 'ducklake:__TEST_DIR__/filter_cast.db' AS lake (DATA_PATH '__TEST_DIR__/filter_cast_data', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t(id INTEGER, event_date DATE)
+
+# Create 3 files with distinct date ranges
+statement ok
+INSERT INTO lake.t SELECT i, DATE '2025-01-01' FROM range(100) tbl(i)
+
+statement ok
+INSERT INTO lake.t SELECT i, DATE '2025-06-01' FROM range(100) tbl(i)
+
+statement ok
+INSERT INTO lake.t SELECT i, DATE '2025-12-01' FROM range(100) tbl(i)
+
+# Literal filter prunes correctly (baseline)
+query I
+SELECT count(*) FROM lake.t WHERE event_date >= DATE '2025-11-01'
+----
+100
+
+# CAST to TIMESTAMP should also prune (was reading all 3 files before fix)
+query I
+SELECT count(*) FROM lake.t WHERE event_date >= CAST('2025-11-01' AS TIMESTAMP)
+----
+100
+
+# Expression with date arithmetic should also prune
+query I
+SELECT count(*) FROM lake.t WHERE event_date >= DATE '2030-01-01' - INTERVAL '365 days'
+----
+0
+
+# Verify correct results with less-than
+query I
+SELECT count(*) FROM lake.t WHERE event_date < CAST('2025-02-01' AS TIMESTAMP)
+----
+100
+
+# Verify correct results with equality
+query I
+SELECT count(*) FROM lake.t WHERE event_date = CAST('2025-06-01' AS TIMESTAMP)
+----
+100

@@ -77,6 +77,16 @@ string PostgresMetadataManager::GetColumnTypeInternal(const LogicalType &column_
 	}
 }
 
+string PostgresMetadataManager::CastColumnToTarget(const string &column, const LogicalType &type) {
+	if (type.id() == LogicalTypeId::TIMESTAMP_TZ) {
+		// Postgres interprets VARCHAR->TIMESTAMPTZ using the server's local timezone.
+		// Inlined data stores timestamps as VARCHAR without timezone info, so we must
+		// explicitly declare the value as UTC: cast to TIMESTAMP first, then AT TIME ZONE 'UTC'.
+		return "(" + column + "::TIMESTAMP) AT TIME ZONE 'UTC'";
+	}
+	return DuckLakeMetadataManager::CastColumnToTarget(column, type);
+}
+
 unique_ptr<QueryResult> PostgresMetadataManager::ExecuteQuery(DuckLakeSnapshot snapshot, string &query,
                                                               string command) {
 	auto &commit_info = transaction.GetCommitInfo();

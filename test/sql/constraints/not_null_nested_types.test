@@ -1,0 +1,72 @@
+# name: test/sql/constraints/not_null_nested_types.test
+# description: Test NOT NULL constraint enforcement for STRUCT, LIST, and MAP types
+# group: [constraints]
+
+require ducklake
+
+require parquet
+
+statement ok
+ATTACH 'ducklake:__TEST_DIR__/not_null_nested.db' AS ducklake (DATA_PATH '__TEST_DIR__/not_null_nested_data', DATA_INLINING_ROW_LIMIT 50)
+
+statement ok
+USE ducklake
+
+# STRUCT NOT NULL: valid values should work
+statement ok
+CREATE TABLE t_struct(id INTEGER, s STRUCT(a INTEGER, b VARCHAR) NOT NULL)
+
+statement ok
+INSERT INTO t_struct VALUES (1, {'a': 1, 'b': 'hello'})
+
+# NULL children in non-NULL STRUCT should be fine
+statement ok
+INSERT INTO t_struct VALUES (2, {'a': NULL, 'b': NULL})
+
+# NULL STRUCT should fail
+statement error
+INSERT INTO t_struct VALUES (3, NULL)
+----
+NOT NULL constraint failed: t_struct.s
+
+query II
+SELECT * FROM t_struct ORDER BY id
+----
+1	{'a': 1, 'b': hello}
+2	{'a': NULL, 'b': NULL}
+
+# LIST NOT NULL
+statement ok
+CREATE TABLE t_list(id INTEGER, l INTEGER[] NOT NULL)
+
+statement ok
+INSERT INTO t_list VALUES (1, [1, 2, 3])
+
+# Empty list is not NULL
+statement ok
+INSERT INTO t_list VALUES (2, [])
+
+# NULL list should fail
+statement error
+INSERT INTO t_list VALUES (3, NULL)
+----
+NOT NULL constraint failed: t_list.l
+
+query II
+SELECT * FROM t_list ORDER BY id
+----
+1	[1, 2, 3]
+2	[]
+
+# MAP NOT NULL
+statement ok
+CREATE TABLE t_map(id INTEGER, m MAP(VARCHAR, INTEGER) NOT NULL)
+
+statement ok
+INSERT INTO t_map VALUES (1, MAP {'a': 1})
+
+# NULL MAP should fail
+statement error
+INSERT INTO t_map VALUES (2, NULL)
+----
+NOT NULL constraint failed: t_map.m

@@ -1,0 +1,65 @@
+# name: test/sql/types/hugeint_parquet_precision.test
+# description: Test that HUGEINT values are preserved through Parquet flush without precision loss
+# group: [types]
+
+require ducklake
+
+require parquet
+
+statement ok
+ATTACH 'ducklake:__TEST_DIR__/hugeint_precision.db' AS ducklake (DATA_PATH '__TEST_DIR__/hugeint_precision_data', DATA_INLINING_ROW_LIMIT 50)
+
+statement ok
+USE ducklake
+
+# Test HUGEINT and UHUGEINT columns
+statement ok
+CREATE TABLE hugeint_test(id INTEGER, h HUGEINT, u UHUGEINT)
+
+statement ok
+INSERT INTO hugeint_test VALUES
+  (1, 99999999999999999999999999999999999999, 99999999999999999999999999999999999999),
+  (2, -99999999999999999999999999999999999999, 0),
+  (3, 9007199254740993, 9007199254740993),
+  (4, 12345678901234567890, 12345678901234567890),
+  (5, NULL, NULL)
+
+# Verify before flush
+query III
+SELECT * FROM hugeint_test ORDER BY id
+----
+1	99999999999999999999999999999999999999	99999999999999999999999999999999999999
+2	-99999999999999999999999999999999999999	0
+3	9007199254740993	9007199254740993
+4	12345678901234567890	12345678901234567890
+5	NULL	NULL
+
+# Flush to Parquet
+statement ok
+CALL ducklake_flush_inlined_data('ducklake')
+
+# Verify after flush - values must be preserved exactly
+query III
+SELECT * FROM hugeint_test ORDER BY id
+----
+1	99999999999999999999999999999999999999	99999999999999999999999999999999999999
+2	-99999999999999999999999999999999999999	0
+3	9007199254740993	9007199254740993
+4	12345678901234567890	12345678901234567890
+5	NULL	NULL
+
+# Test with no inlining (direct Parquet write)
+statement ok
+CREATE TABLE hugeint_direct(id INTEGER, h HUGEINT)
+
+statement ok
+SET ducklake_default_data_inlining_row_limit=0
+
+statement ok
+INSERT INTO hugeint_direct VALUES (1, 99999999999999999999999999999999999999), (2, -99999999999999999999999999999999999999)
+
+query II
+SELECT * FROM hugeint_direct ORDER BY id
+----
+1	99999999999999999999999999999999999999
+2	-99999999999999999999999999999999999999

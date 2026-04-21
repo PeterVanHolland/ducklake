@@ -5,6 +5,7 @@
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "common/ducklake_util.hpp"
 
 namespace duckdb {
 
@@ -68,7 +69,8 @@ string DuckLakeViewEntry::ToSQL() const {
 		result += ")";
 	}
 	result += " AS ";
-	result += query_sql;
+	// switcharoo of generic {DUCKLAKE_CATALOG}. with actual catalog name
+	result += DuckLakeUtil::ReplaceSkippingQuotes(query_sql, "{DUCKLAKE_CATALOG}.", catalog.GetName() + ".");
 	result += ";";
 	return result;
 }
@@ -83,7 +85,9 @@ unique_ptr<CatalogEntry> DuckLakeViewEntry::Copy(ClientContext &context) const {
 
 unique_ptr<SelectStatement> DuckLakeViewEntry::ParseSelectStatement() const {
 	Parser parser;
-	parser.ParseQuery(query_sql);
+	// switcharoo of generic {DUCKLAKE_CATALOG}. with actual catalog name
+	auto resolved_sql = DuckLakeUtil::ReplaceSkippingQuotes(query_sql, "{DUCKLAKE_CATALOG}.", catalog.GetName() + ".");
+	parser.ParseQuery(resolved_sql);
 	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
 		throw InvalidInputException("Invalid input for view - view must have a single SELECT statement: \"%s\"",
 		                            query_sql);

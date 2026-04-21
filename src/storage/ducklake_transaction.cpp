@@ -2574,10 +2574,23 @@ void DuckLakeTransaction::FlushChanges() {
 			ErrorData error(ex);
 			// rollback if there is an active transaction
 			auto has_active_transaction = connection->context->transaction.HasActiveTransaction();
+			bool rollback_failed = false;
 			if (has_active_transaction) {
-				connection->Rollback();
+				try {
+					connection->Rollback();
+				} catch (std::exception &rollback_ex) {
+					// The rollback itself failed (e.g. the metadata catalog connection was
+					// dropped mid-transaction). Preserve the original commit error so that
+					// the rollback failure does not mask the real reason the commit failed.
+					// The connection is in an unknown state - do not attempt to retry.
+					ErrorData rollback_error(rollback_ex);
+					DUCKDB_LOG_WARNING(
+					    db, "DuckLakeTransaction::FlushChanges()\t\trollback after failed commit failed: " +
+					            rollback_error.Message());
+					rollback_failed = true;
+				}
 			}
-			bool retry_on_error = RetryOnError(error.Message());
+			bool retry_on_error = !rollback_failed && RetryOnError(error.Message());
 			bool finished_retrying = i + 1 >= max_retry_count;
 			if (!can_retry || !retry_on_error || finished_retrying) {
 				// we abort after the max retry count

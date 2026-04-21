@@ -20,6 +20,8 @@
 #include "storage/ducklake_transaction_manager.hpp"
 #include "storage/ducklake_view_entry.hpp"
 #include "duckdb/common/printer.hpp"
+#include "duckdb/logging/logger.hpp"
+#include "storage/ducklake_log_type.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/main/client_config.hpp"
 
@@ -468,6 +470,17 @@ bool LocalTableChanges::HasAnyLocalChanges(TableIndex table_id) const {
 	return false;
 }
 
+bool LocalTableChanges::HasLocalDeleteForFile(TableIndex table_id, const string &path) const {
+	lock_guard<mutex> guard(lock);
+	auto entry = changes.find(table_id);
+	if (entry == changes.end()) {
+		return false;
+	}
+	auto &table_changes = entry->second;
+	auto file_entry = table_changes.new_delete_files.find(path);
+	return file_entry != table_changes.new_delete_files.end() && !file_entry->second.empty();
+}
+
 void LocalTableChanges::GetLocalDeleteForFile(TableIndex table_id, const string &path, DuckLakeFileData &result) const {
 	lock_guard<mutex> guard(lock);
 	auto entry = changes.find(table_id);
@@ -484,6 +497,7 @@ void LocalTableChanges::GetLocalDeleteForFile(TableIndex table_id, const string 
 	result.file_size_bytes = delete_file.file_size_bytes;
 	result.footer_size = delete_file.footer_size;
 	result.encryption_key = delete_file.encryption_key;
+	result.format = delete_file.format;
 }
 
 bool LocalTableChanges::HasLocalInlinedFileDeletes(TableIndex table_id) const {
@@ -556,6 +570,14 @@ void LocalTableChanges::CleanupFiles(ClientContext &context, TableIndex table_id
 		auto &fs = FileSystem::GetFileSystem(context);
 		for (auto &file : table_changes.new_data_files) {
 			fs.RemoveFile(file.file_name);
+			for (auto &del_file : file.delete_files) {
+				fs.TryRemoveFile(del_file.file_name);
+			}
+		}
+		for (auto &file : table_changes.new_delete_files) {
+			for (auto &delete_files : file.second) {
+				fs.TryRemoveFile(delete_files.file_name);
+			}
 		}
 		changes.erase(table_entry);
 	}
@@ -753,7 +775,7 @@ void GetTransactionTableChanges(reference<CatalogEntry> table_entry, Transaction
 			// this table was altered in a way that modifies the ducklake_schema_versions
 			auto table_id = table.GetTableId();
 			// don't report transaction-local tables yet - these will get added later on
-			if (!table_id.IsTransactionLocal()) {
+			if (!IsTransactionLocal(table_id)) {
 				changes.altered_tables.insert(table_id);
 				changes.altered_tables_with_schema_version_changes.insert(table_id);
 			}
@@ -766,7 +788,7 @@ void GetTransactionTableChanges(reference<CatalogEntry> table_entry, Transaction
 			// ducklake_schema_versions)
 			auto table_id = table.GetTableId();
 			// don't report transaction-local tables yet - these will get added later on
-			if (!table_id.IsTransactionLocal()) {
+			if (!IsTransactionLocal(table_id)) {
 				changes.altered_tables.insert(table_id);
 			}
 			break;
@@ -797,7 +819,7 @@ void GetTransactionViewChanges(reference<CatalogEntry> view_entry, TransactionCh
 			// this table was altered
 			auto view_id = view.GetViewId();
 			// don't report transaction-local views yet - these will get added later on
-			if (!view_id.IsTransactionLocal()) {
+			if (!IsTransactionLocal(view_id)) {
 				changes.altered_views.insert(view_id);
 			}
 			break;
@@ -881,7 +903,7 @@ TransactionChangeInformation DuckLakeTransaction::GetTransactionChanges() const 
 	changes.tables_deleted_from = tables_deleted_from;
 	for (auto &entry : local_changes.Changes()) {
 		auto table_id = entry.GetTableIndex();
-		if (table_id.IsTransactionLocal()) {
+		if (IsTransactionLocal(table_id.index)) {
 			// don't report transaction-local tables yet - these will get added later on
 			continue;
 		}
@@ -1233,16 +1255,24 @@ void DuckLakeTransaction::CheckForConflicts(const TransactionChangeInformation &
 	for (auto &table_id : changes.tables_inserted_into) {
 		ConflictCheck(table_id, other_changes.dropped_tables, "insert into table", "dropped it");
 		ConflictCheck(table_id, other_changes.altered_tables, "insert into table", "altered it");
+		ConflictCheck(table_id, other_changes.tables_deleted_from, "insert into table", "deleted from it");
+		ConflictCheck(table_id, other_changes.tables_deleted_inlined, "insert into table",
+		              "deleted inlined data from it");
 	}
 	for (auto &table_id : changes.tables_inserted_inlined) {
 		ConflictCheck(table_id, other_changes.dropped_tables, "insert into table", "dropped it");
 		ConflictCheck(table_id, other_changes.altered_tables, "insert into table", "altered it");
+		ConflictCheck(table_id, other_changes.tables_deleted_from, "insert into table", "deleted from it");
+		ConflictCheck(table_id, other_changes.tables_deleted_inlined, "insert into table",
+		              "deleted inlined data from it");
 	}
 	for (auto &table_id : changes.tables_deleted_from) {
 		ConflictCheck(table_id, other_changes.dropped_tables, "delete from table", "dropped it");
 		ConflictCheck(table_id, other_changes.altered_tables, "delete from table", "altered it");
 		ConflictCheck(table_id, other_changes.tables_merge_adjacent, "delete from table", "compacted it");
 		ConflictCheck(table_id, other_changes.tables_rewrite_delete, "delete from table", "compacted it");
+		ConflictCheck(table_id, other_changes.inserted_tables, "delete from table", "inserted into it");
+		ConflictCheck(table_id, other_changes.tables_inserted_inlined, "delete from table", "inserted into it");
 	}
 	if (!changes.tables_deleted_from.empty()) {
 		bool check_for_matches = false;
@@ -1274,6 +1304,8 @@ void DuckLakeTransaction::CheckForConflicts(const TransactionChangeInformation &
 		ConflictCheck(table_id, other_changes.altered_tables, "delete from table", "altered it");
 		ConflictCheck(table_id, other_changes.tables_deleted_inlined, "delete from table", "deleted from it");
 		ConflictCheck(table_id, other_changes.tables_flushed_inlined, "delete from table", "flushed the inlined data");
+		ConflictCheck(table_id, other_changes.inserted_tables, "delete from table", "inserted into it");
+		ConflictCheck(table_id, other_changes.tables_inserted_inlined, "delete from table", "inserted into it");
 	}
 	for (auto &table_id : changes.tables_flushed_inlined) {
 		ConflictCheck(table_id, other_changes.dropped_tables, "flush inline data", "dropped it");
@@ -1339,7 +1371,7 @@ DuckLakePartitionInfo DuckLakeTransaction::GetNewPartitionKey(DuckLakeCommitStat
                                                               DuckLakeTableEntry &table) {
 	DuckLakePartitionInfo partition_key;
 	partition_key.table_id = commit_state.GetTableId(table);
-	if (partition_key.table_id.IsTransactionLocal()) {
+	if (IsTransactionLocal(partition_key.table_id.index)) {
 		throw InternalException("Trying to write partition with transaction local table-id");
 	}
 	// insert the new partition data
@@ -1372,6 +1404,9 @@ DuckLakePartitionInfo DuckLakeTransaction::GetNewPartitionKey(DuckLakeCommitStat
 		case DuckLakeTransformType::HOUR:
 			partition_field.transform = "hour";
 			break;
+		case DuckLakeTransformType::BUCKET:
+			partition_field.transform = StringUtil::Format("bucket(%d)", field.transform.bucket_count);
+			break;
 		default:
 			throw NotImplementedException("Unimplemented transform type for partition");
 		}
@@ -1384,7 +1419,7 @@ DuckLakePartitionInfo DuckLakeTransaction::GetNewPartitionKey(DuckLakeCommitStat
 DuckLakeSortInfo DuckLakeTransaction::GetNewSortKey(DuckLakeCommitState &commit_state, DuckLakeTableEntry &table) {
 	DuckLakeSortInfo sort_key;
 	sort_key.table_id = commit_state.GetTableId(table);
-	if (sort_key.table_id.IsTransactionLocal()) {
+	if (IsTransactionLocal(sort_key.table_id.index)) {
 		throw InternalException("Trying to write sort with transaction local table-id");
 	}
 
@@ -1441,7 +1476,7 @@ DuckLakeTableInfo DuckLakeTransaction::GetNewTable(DuckLakeCommitState &commit_s
 	auto table_entry = table.GetTableInfo();
 	auto original_id = table_entry.id;
 	bool is_new_table;
-	if (original_id.IsTransactionLocal()) {
+	if (IsTransactionLocal(original_id.index)) {
 		table_entry.id = TableIndex(commit_state.commit_snapshot.next_catalog_id++);
 		is_new_table = true;
 	} else {
@@ -1511,6 +1546,11 @@ void DuckLakeTransaction::GetNewTableInfo(DuckLakeCommitState &commit_state, Duc
 	}
 
 	set<FieldIndex> columns_handled_by_later_ops;
+	// Maps from field index to the number of alter operations for that field.
+	map<FieldIndex, idx_t> field_alter_count;
+	idx_t comment_count = 0;
+	// Maps from field index to the number of column comment operations for that field.
+	map<FieldIndex, idx_t> column_comment_count;
 	for (idx_t table_idx = 0; table_idx < tables.size(); table_idx++) {
 		auto &table = tables[table_idx].get();
 		auto local_change = table.GetLocalChange();
@@ -1520,11 +1560,24 @@ void DuckLakeTransaction::GetNewTableInfo(DuckLakeCommitState &commit_state, Duc
 		case LocalChangeType::RENAME_COLUMN:
 		case LocalChangeType::SET_DEFAULT:
 			columns_handled_by_later_ops.insert(local_change.field_index);
+			field_alter_count[local_change.field_index]++;
+			break;
+		case LocalChangeType::SET_COMMENT:
+			comment_count++;
+			break;
+		case LocalChangeType::SET_COLUMN_COMMENT:
+			column_comment_count[local_change.field_index]++;
 			break;
 		default:
 			break;
 		}
 	}
+
+	// Maps from field index to the number of alter operations remaining for that field.
+	map<FieldIndex, idx_t> field_alter_remaining(std::move(field_alter_count));
+	idx_t comment_remaining = comment_count;
+	// Maps from field index to the number of column comment operations remaining for that field.
+	map<FieldIndex, idx_t> column_comment_remaining(std::move(column_comment_count));
 
 	// traverse in reverse order
 	bool column_schema_change = false;
@@ -1549,6 +1602,10 @@ void DuckLakeTransaction::GetNewTableInfo(DuckLakeCommitState &commit_state, Duc
 			break;
 		}
 		case LocalChangeType::SET_COMMENT: {
+			comment_remaining--;
+			if (comment_remaining > 0) {
+				break;
+			}
 			DuckLakeTagInfo comment_info;
 			comment_info.id = commit_state.GetTableId(table).index;
 			comment_info.key = "comment";
@@ -1559,6 +1616,11 @@ void DuckLakeTransaction::GetNewTableInfo(DuckLakeCommitState &commit_state, Duc
 			break;
 		}
 		case LocalChangeType::SET_COLUMN_COMMENT: {
+			auto &col_comment_rem = column_comment_remaining[local_change.field_index];
+			col_comment_rem--;
+			if (col_comment_rem > 0) {
+				break;
+			}
 			DuckLakeColumnTagInfo comment_info;
 			comment_info.table_id = commit_state.GetTableId(table);
 			comment_info.field_index = local_change.field_index;
@@ -1573,6 +1635,13 @@ void DuckLakeTransaction::GetNewTableInfo(DuckLakeCommitState &commit_state, Duc
 		case LocalChangeType::DROP_NULL:
 		case LocalChangeType::RENAME_COLUMN:
 		case LocalChangeType::SET_DEFAULT: {
+			auto &remaining = field_alter_remaining[local_change.field_index];
+			remaining--;
+			// This is an older thus superseded entry for a field that is altered for multiple times in this
+			// transaction, so we skip it; the newest entry will emit the definitive value.
+			if (remaining > 0) {
+				break;
+			}
 			// drop the previous column
 			DuckLakeDroppedColumn dropped_col;
 			dropped_col.table_id = commit_state.GetTableId(table);
@@ -1589,6 +1658,11 @@ void DuckLakeTransaction::GetNewTableInfo(DuckLakeCommitState &commit_state, Duc
 			transaction_changes.altered_tables_with_schema_version_changes.insert(table_id);
 			if (local_change.type == LocalChangeType::RENAME_COLUMN) {
 				column_schema_change = true;
+				// persist updated sort expressions (column name was updated in the table entry)
+				if (table.GetSortData()) {
+					auto sort_key = GetNewSortKey(commit_state, table);
+					result.new_sort_keys.push_back(std::move(sort_key));
+				}
 			}
 			break;
 		}
@@ -1668,7 +1742,7 @@ DuckLakeViewInfo DuckLakeTransaction::GetNewView(DuckLakeCommitState &commit_sta
 	auto &schema = view.ParentSchema().Cast<DuckLakeSchemaEntry>();
 	DuckLakeViewInfo view_entry;
 	auto original_id = view.GetViewId();
-	if (original_id.IsTransactionLocal()) {
+	if (IsTransactionLocal(original_id.index)) {
 		view_entry.id = TableIndex(commit_state.commit_snapshot.next_catalog_id++);
 	} else {
 		// this view already has an id - keep it
@@ -1755,11 +1829,23 @@ void DuckLakeTransaction::GetNewViewInfo(DuckLakeCommitState &commit_state, Duck
 		}
 		view_entry = view_entry.get().Child();
 	}
+	// count comment operations for deduplication
+	idx_t view_comment_count = 0;
+	for (idx_t view_idx = 0; view_idx < views.size(); view_idx++) {
+		if (views[view_idx].get().GetLocalChange().type == LocalChangeType::SET_COMMENT) {
+			view_comment_count++;
+		}
+	}
+	idx_t view_comment_remaining = view_comment_count;
 	// traverse in reverse order
 	for (idx_t view_idx = views.size(); view_idx > 0; view_idx--) {
 		auto &view = views[view_idx - 1].get();
 		switch (view.GetLocalChange().type) {
 		case LocalChangeType::SET_COMMENT: {
+			view_comment_remaining--;
+			if (view_comment_remaining > 0) {
+				break;
+			}
 			DuckLakeTagInfo comment_info;
 			comment_info.id = commit_state.GetViewId(view).index;
 			comment_info.key = "comment";
@@ -1950,7 +2036,7 @@ NewDataInfo DuckLakeTransaction::GetNewDataFiles(string &batch_query, DuckLakeCo
 	}
 	for (auto &entry : local_changes.Changes()) {
 		auto table_id = commit_state.GetTableId(entry.GetTableIndex());
-		if (table_id.IsTransactionLocal()) {
+		if (IsTransactionLocal(table_id.index)) {
 			throw InternalException("Cannot commit transaction local files - these should have been cleaned up before");
 		}
 		auto &table_changes = entry.GetTableChanges();
@@ -2054,6 +2140,7 @@ DuckLakeDeleteFileInfo DuckLakeTransaction::GetNewDeleteFile(TableIndex table_id
 	delete_file.table_id = table_id;
 	delete_file.data_file_id = file.data_file_id;
 	delete_file.path = file.file_name;
+	delete_file.format = file.format;
 	delete_file.delete_count = file.delete_count;
 	delete_file.file_size_bytes = file.file_size_bytes;
 	delete_file.footer_size = file.footer_size;
@@ -2133,7 +2220,7 @@ NewNameMapInfo DuckLakeTransaction::GetNewNameMaps(DuckLakeCommitState &commit_s
 		map_info.table_id = commit_state.GetTableId(mapping.table_id);
 		map_info.mapping_id = new_map_id;
 		map_info.map_type = "map_by_name";
-		if (map_info.table_id.IsTransactionLocal()) {
+		if (IsTransactionLocal(map_info.table_id.index)) {
 			throw InternalException("table_id should be rewritten to non-transaction local before");
 		}
 
@@ -2258,6 +2345,11 @@ string DuckLakeTransaction::CommitChanges(DuckLakeCommitState &commit_state,
 		                                                       new_tables_result, new_inlined_data_tables_result);
 	}
 
+	// in case of a retry, we generate the deletion of inlined data from the tables
+	if (!flushed_inlined_tables.empty()) {
+		batch_queries += metadata_manager->GenerateDeleteFlushedInlinedData(flushed_inlined_tables);
+	}
+
 	// drop data files
 	if (!dropped_files.empty()) {
 		set<DataFileIndex> dropped_indexes;
@@ -2300,14 +2392,14 @@ string DuckLakeTransaction::CommitChanges(DuckLakeCommitState &commit_state,
 	// Tracking for tables that had schema changes
 	set<TableIndex> tables_with_schema_changes;
 	for (auto &table_id : transaction_changes.altered_tables) {
-		if (!table_id.IsTransactionLocal() &&
+		if (!IsTransactionLocal(table_id.index) &&
 		    transaction_changes.altered_tables_with_schema_version_changes.find(table_id) !=
 		        transaction_changes.altered_tables_with_schema_version_changes.end()) {
 			tables_with_schema_changes.insert(table_id);
 		}
 	}
 	for (auto &new_table : new_tables_result) {
-		if (!new_table.id.IsTransactionLocal()) {
+		if (!IsTransactionLocal(new_table.id.index)) {
 			tables_with_schema_changes.insert(new_table.id);
 		}
 	}
@@ -2543,6 +2635,16 @@ void DuckLakeTransaction::DeleteInlinedData(const DuckLakeInlinedTableInfo &inli
 	metadata_manager.DeleteInlinedData(inlined_table);
 }
 
+void DuckLakeTransaction::DeleteFlushedInlinedData(const DuckLakeInlinedTableInfo &inlined_table,
+                                                   idx_t flush_snapshot_id) {
+	auto &metadata_manager = GetMetadataManager();
+	metadata_manager.DeleteFlushedInlinedData(inlined_table, flush_snapshot_id);
+}
+
+void DuckLakeTransaction::MarkInlinedDataForDeletion(DuckLakeInlinedTableInfo inlined_table, idx_t flush_snapshot_id) {
+	flushed_inlined_tables.push_back({std::move(inlined_table), flush_snapshot_id});
+}
+
 unique_ptr<QueryResult> DuckLakeTransaction::Query(string query) {
 	auto &connection = GetConnection();
 	auto catalog_identifier = DuckLakeUtil::SQLIdentifierToString(ducklake_catalog.MetadataDatabaseName());
@@ -2560,7 +2662,18 @@ unique_ptr<QueryResult> DuckLakeTransaction::Query(string query) {
 	query = StringUtil::Replace(query, "{METADATA_SCHEMA_ESCAPED}", schema_identifier_escaped);
 	query = StringUtil::Replace(query, "{METADATA_PATH}", metadata_path);
 	query = StringUtil::Replace(query, "{DATA_PATH}", data_path);
-	return connection.Query(query);
+	auto start = std::chrono::steady_clock::now();
+	auto result = connection.Query(query);
+	auto end = std::chrono::steady_clock::now();
+	auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+	DUCKDB_LOG(db, DuckLakeMetadataLogType, ducklake_catalog.GetName(), query, elapsed_ms);
+
+	auto &cb = ducklake_catalog.GetQueryCallback();
+	if (cb) {
+		cb(query, end - start);
+	}
+	return result;
 }
 
 unique_ptr<QueryResult> DuckLakeTransaction::Query(DuckLakeSnapshot snapshot, string query) {
@@ -2724,6 +2837,10 @@ bool DuckLakeTransaction::HasLocalDeletes(TableIndex table_id) const {
 	return local_changes.HasLocalDeletes(table_id);
 }
 
+bool DuckLakeTransaction::HasLocalDeleteForFile(TableIndex table_id, const string &path) const {
+	return local_changes.HasLocalDeleteForFile(table_id, path);
+}
+
 bool DuckLakeTransaction::HasAnyLocalChanges(TableIndex table_id) const {
 	if (local_changes.HasAnyLocalChanges(table_id)) {
 		return true;
@@ -2791,7 +2908,9 @@ void DuckLakeTransaction::DropTable(DuckLakeTableEntry &table) {
 		// if we have written any files for this table - clean them up
 		auto context_ref = context.lock();
 		local_changes.CleanupFiles(*context_ref, table_id);
-		new_tables.erase(schema_entry);
+		if (schema_entry->second->GetEntries().empty()) {
+			new_tables.erase(schema_entry);
+		}
 	} else {
 		auto table_id = table.GetTableId();
 		dropped_tables.insert(table_id);
@@ -2806,7 +2925,9 @@ void DuckLakeTransaction::DropView(DuckLakeViewEntry &view) {
 			throw InternalException("Dropping a transaction local view that does not exist?");
 		}
 		schema_entry->second->DropEntry(view.name);
-		new_tables.erase(schema_entry);
+		if (schema_entry->second->GetEntries().empty()) {
+			new_tables.erase(schema_entry);
+		}
 	} else {
 		auto view_id = view.GetViewId();
 		dropped_views.insert(view_id);

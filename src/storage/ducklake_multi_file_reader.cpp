@@ -16,6 +16,7 @@
 #include "duckdb/optimizer/filter_combiner.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
@@ -27,6 +28,7 @@
 #include "storage/ducklake_inlined_data_reader.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
 #include "duckdb/planner/filter/dynamic_filter.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/filter/optional_filter.hpp"
 
 namespace duckdb {
@@ -60,7 +62,11 @@ static bool TryFindColumnByFieldId(const vector<MultiFileColumnDefinition> &loca
 static void AddSnapshotFilter(BaseFileReader &reader, const ColumnIndex &col_idx, const LogicalType &col_type,
                               idx_t snapshot_value, ExpressionType comparison_type) {
 	auto constant = Value::UBIGINT(snapshot_value).DefaultCastAs(col_type);
-	auto filter = make_uniq<ConstantFilter>(comparison_type, std::move(constant));
+	auto col_ref = make_uniq<BoundReferenceExpression>(col_type, storage_t(0));
+	auto bound_constant = make_uniq<BoundConstantExpression>(std::move(constant));
+	auto comparison =
+	    make_uniq<BoundComparisonExpression>(comparison_type, std::move(col_ref), std::move(bound_constant));
+	auto filter = make_uniq<ExpressionFilter>(std::move(comparison));
 	reader.filters->PushFilter(ProjectionIndex(col_idx.GetPrimaryIndex()), std::move(filter));
 }
 
@@ -96,8 +102,8 @@ static bool CanSkipFileByTopNDynamicFilter(const DuckLakeFileListEntry &file_ent
 			if (!filter->filter_data->initialized) {
 				return false;
 			}
-			comparison_type = filter->filter_data->filter->comparison_type;
-			constant = filter->filter_data->filter->constant;
+			comparison_type = filter->filter_data->comparison_type;
+			constant = filter->filter_data->constant;
 		}
 
 		auto mm_it = file_entry.column_min_max.find(col_filter.column_field_index);

@@ -109,6 +109,7 @@ struct DuckLakeMacroImplementation {
 	string dialect;
 	string sql;
 	string type;
+	uint64_t impl_id = 0;
 	vector<DuckLakeMacroParameters> parameters;
 };
 

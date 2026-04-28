@@ -1,7 +1,11 @@
 #include "storage/ducklake_delete_filter.hpp"
 #include "storage/ducklake_deletion_vector.hpp"
 #include "common/parquet_file_scanner.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/common/multi_file/multi_file_list.hpp"
 #include "duckdb/common/multi_file/multi_file_reader.hpp"
@@ -177,18 +181,27 @@ DeleteFileScanResult DuckLakeDeleteFilter::ScanDeleteFile(ClientContext &context
 	if (has_snapshot_id && (snapshot_filter_min.IsValid() || snapshot_filter_max.IsValid())) {
 		auto filters = make_uniq<TableFilterSet>();
 		ProjectionIndex snapshot_col_idx(2); // snapshot_id is column 2
+		auto snapshot_col_type = LogicalType::BIGINT;
+
+		auto make_comparison_filter = [&](ExpressionType comparison_type, Value constant) {
+			auto col_ref = make_uniq<BoundReferenceExpression>(snapshot_col_type, storage_t(0));
+			auto bound_constant = make_uniq<BoundConstantExpression>(std::move(constant));
+			auto comparison = make_uniq<BoundComparisonExpression>(comparison_type, std::move(col_ref),
+			                                                      std::move(bound_constant));
+			return make_uniq<ExpressionFilter>(std::move(comparison));
+		};
 
 		if (snapshot_filter_min.IsValid()) {
 			auto min_constant = Value::BIGINT(NumericCast<int64_t>(snapshot_filter_min.GetIndex()));
-			auto min_filter =
-			    make_uniq<ConstantFilter>(ExpressionType::COMPARE_GREATERTHANOREQUALTO, std::move(min_constant));
-			filters->PushFilter(snapshot_col_idx, std::move(min_filter));
+			filters->PushFilter(snapshot_col_idx,
+			                    make_comparison_filter(ExpressionType::COMPARE_GREATERTHANOREQUALTO,
+			                                           std::move(min_constant)));
 		}
 		if (snapshot_filter_max.IsValid()) {
 			auto max_constant = Value::BIGINT(NumericCast<int64_t>(snapshot_filter_max.GetIndex()));
-			auto max_filter =
-			    make_uniq<ConstantFilter>(ExpressionType::COMPARE_LESSTHANOREQUALTO, std::move(max_constant));
-			filters->PushFilter(snapshot_col_idx, std::move(max_filter));
+			filters->PushFilter(snapshot_col_idx,
+			                    make_comparison_filter(ExpressionType::COMPARE_LESSTHANOREQUALTO,
+			                                           std::move(max_constant)));
 		}
 		scanner.SetFilters(std::move(filters));
 	}

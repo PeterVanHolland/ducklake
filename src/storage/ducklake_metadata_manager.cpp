@@ -21,7 +21,12 @@
 #include "duckdb/planner/filter/optional_filter.hpp"
 #include "duckdb/planner/filter/dynamic_filter.hpp"
 #include "duckdb/planner/filter/in_filter.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 
@@ -226,7 +231,8 @@ void DuckLakeMetadataManager::ExecuteMigration(string migrate_query, bool allow_
 
 void DuckLakeMetadataManager::MigrateV02(bool allow_failures) {
 	string migrate_query = R"(
-ALTER TABLE {METADATA_CATALOG}.ducklake_name_mapping ADD COLUMN {IF_NOT_EXISTS} is_partition BOOLEAN DEFAULT false;
+ALTER TABLE {METADATA_CATALOG}.ducklake_name_mapping ADD COLUMN {IF_NOT_EXISTS} is_partition BOOLEAN;
+UPDATE {METADATA_CATALOG}.ducklake_name_mapping SET is_partition = false WHERE is_partition IS NULL;
 ALTER TABLE {METADATA_CATALOG}.ducklake_snapshot_changes ADD COLUMN {IF_NOT_EXISTS} author VARCHAR DEFAULT NULL;
 ALTER TABLE {METADATA_CATALOG}.ducklake_snapshot_changes ADD COLUMN {IF_NOT_EXISTS} commit_message VARCHAR DEFAULT NULL;
 ALTER TABLE {METADATA_CATALOG}.ducklake_snapshot_changes ADD COLUMN {IF_NOT_EXISTS} commit_extra_info VARCHAR DEFAULT NULL;
@@ -245,7 +251,7 @@ void DuckLakeMetadataManager::MigrateV03(bool allow_failures) {
 CREATE TABLE {IF_NOT_EXISTS} {METADATA_CATALOG}.ducklake_macro(schema_id BIGINT, macro_id BIGINT, macro_name VARCHAR, begin_snapshot BIGINT, end_snapshot BIGINT);
 CREATE TABLE {IF_NOT_EXISTS} {METADATA_CATALOG}.ducklake_macro_impl(macro_id BIGINT, impl_id BIGINT, dialect VARCHAR, sql VARCHAR, type VARCHAR);
 CREATE TABLE {IF_NOT_EXISTS} {METADATA_CATALOG}.ducklake_macro_parameters(macro_id BIGINT, impl_id BIGINT,column_id BIGINT, parameter_name VARCHAR, parameter_type VARCHAR, default_value VARCHAR, default_value_type VARCHAR);
-ALTER TABLE {METADATA_CATALOG}.ducklake_column ADD COLUMN {IF_NOT_EXISTS} default_value_type VARCHAR DEFAULT 'literal';
+ALTER TABLE {METADATA_CATALOG}.ducklake_column ADD COLUMN {IF_NOT_EXISTS} default_value_type VARCHAR;
 UPDATE {METADATA_CATALOG}.ducklake_column SET default_value_type = 'literal' WHERE default_value_type IS NULL;
 ALTER TABLE {METADATA_CATALOG}.ducklake_column ADD COLUMN {IF_NOT_EXISTS} default_value_dialect VARCHAR DEFAULT NULL;
 CREATE TABLE {IF_NOT_EXISTS} {METADATA_CATALOG}.ducklake_sort_info(sort_id BIGINT, table_id BIGINT, begin_snapshot BIGINT, end_snapshot BIGINT);
@@ -408,19 +414,7 @@ vector<DuckLakeMacroImplementation> DuckLakeMetadataManager::LoadMacroImplementa
 		impl_info.dialect = StringValue::Get(struct_children[0]);
 		impl_info.sql = StringValue::Get(struct_children[1]);
 		impl_info.type = StringValue::Get(struct_children[2]);
-		auto param_list = struct_children[3].GetValue<Value>();
-		if (!param_list.IsNull()) {
-			for (auto &param_value : ListValue::GetChildren(param_list)) {
-				auto &param_struct_children = StructValue::GetChildren(param_value);
-				DuckLakeMacroParameters param;
-				param.parameter_name = StringValue::Get(param_struct_children[0]);
-				param.parameter_type = StringValue::Get(param_struct_children[1]);
-				param.default_value = StringValue::Get(param_struct_children[2]);
-				param.default_value_type = StringValue::Get(param_struct_children[3]);
-				impl_info.parameters.push_back(std::move(param));
-			}
-		}
-
+		impl_info.impl_id = struct_children[3].GetValue<uint64_t>();
 		result.push_back(std::move(impl_info));
 	}
 	return result;
@@ -706,23 +700,16 @@ WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < view.end_snapshot OR 
 		views.push_back(std::move(view_info));
 	}
 
+	// Load macro information across two queries (one for impls, one for params) and stitch them together
+	// in C++ rather than nesting subqueries inside struct/list literals — the PEG parser builds a
+	// large recursive AST for those, which can overflow the stack on debug+ASan builds.
 	static const vector<pair<string, string>> MACRO_PARAM_FIELDS = {{"parameter_name", "parameter_name"},
 	                                                                {"parameter_type", "parameter_type"},
 	                                                                {"default_value", "default_value"},
 	                                                                {"default_value_type", "default_value_type"}};
-	auto macro_param_query = StringUtil::Format(R"(
-		(
-		SELECT %s
-		FROM {METADATA_CATALOG}.ducklake_macro_parameters
-		WHERE ducklake_macro_impl.macro_id = ducklake_macro_parameters.macro_id
-		AND ducklake_macro_impl.impl_id = ducklake_macro_parameters.impl_id
-		)
-	)",
-	                                            ListAggregation(MACRO_PARAM_FIELDS));
 	const vector<pair<string, string>> MACRO_IMPL_FIELDS = {
-	    {"dialect", "dialect"}, {"sql", "sql"}, {"type", "type"}, {"params", macro_param_query}};
+	    {"dialect", "dialect"}, {"sql", "sql"}, {"type", "type"}, {"impl_id", "impl_id"}};
 
-	// load macro information
 	result = transaction.Query(snapshot, StringUtil::Format(R"(
 SELECT schema_id, ducklake_macro.macro_id, macro_name, (
 		SELECT %s
@@ -736,6 +723,41 @@ WHERE  {SNAPSHOT_ID} >= ducklake_macro.begin_snapshot AND ({SNAPSHOT_ID} < duckl
 	if (result->HasError()) {
 		result->GetErrorObject().Throw("Failed to get macro information from DuckLake: ");
 	}
+
+	struct ParamKey {
+		uint64_t macro_id;
+		uint64_t impl_id;
+		bool operator==(const ParamKey &other) const {
+			return macro_id == other.macro_id && impl_id == other.impl_id;
+		}
+	};
+	struct ParamKeyHash {
+		size_t operator()(const ParamKey &k) const {
+			return std::hash<uint64_t>()(k.macro_id) ^ (std::hash<uint64_t>()(k.impl_id) << 1);
+		}
+	};
+	std::unordered_map<ParamKey, vector<DuckLakeMacroParameters>, ParamKeyHash> params_by_impl;
+
+	auto params_result = transaction.Query(snapshot, R"(
+SELECT mp.macro_id, mp.impl_id, mp.parameter_name, mp.parameter_type, mp.default_value, mp.default_value_type
+FROM {METADATA_CATALOG}.ducklake_macro_parameters mp
+JOIN {METADATA_CATALOG}.ducklake_macro m ON m.macro_id = mp.macro_id
+WHERE {SNAPSHOT_ID} >= m.begin_snapshot AND ({SNAPSHOT_ID} < m.end_snapshot OR m.end_snapshot IS NULL)
+ORDER BY mp.macro_id, mp.impl_id, mp.column_id
+)");
+	if (params_result->HasError()) {
+		params_result->GetErrorObject().Throw("Failed to get macro parameter information from DuckLake: ");
+	}
+	for (auto &row : *params_result) {
+		ParamKey key {row.GetValue<uint64_t>(0), row.GetValue<uint64_t>(1)};
+		DuckLakeMacroParameters param;
+		param.parameter_name = row.GetValue<string>(2);
+		param.parameter_type = row.GetValue<string>(3);
+		param.default_value = row.GetValue<string>(4);
+		param.default_value_type = row.GetValue<string>(5);
+		params_by_impl[key].push_back(std::move(param));
+	}
+
 	auto &macros = catalog.macros;
 	for (auto &row : *result) {
 		DuckLakeMacroInfo macro_info;
@@ -744,6 +766,13 @@ WHERE  {SNAPSHOT_ID} >= ducklake_macro.begin_snapshot AND ({SNAPSHOT_ID} < duckl
 		macro_info.macro_name = row.GetValue<string>(2);
 		auto macro_implementations = row.GetValue<Value>(3);
 		macro_info.implementations = LoadMacroImplementations(macro_implementations);
+		for (auto &impl : macro_info.implementations) {
+			ParamKey key {macro_info.macro_id.index, impl.impl_id};
+			auto it = params_by_impl.find(key);
+			if (it != params_by_impl.end()) {
+				impl.parameters = std::move(it->second);
+			}
+		}
 		macros.push_back(std::move(macro_info));
 	}
 
@@ -1190,6 +1219,71 @@ string DuckLakeMetadataManager::GenerateFilterPushdown(const TableFilter &filter
 			return GenerateConstantFilter(constant_filter, type, referenced_stats);
 		}
 	}
+	case TableFilterType::EXPRESSION_FILTER: {
+		// Recognize the simple shapes that the optimizer's FilterCombiner emits — comparison against a
+		// constant and `column IN (constants...)`. Anything more complex isn't useful for stats-based
+		// file pruning.
+		auto &expression_filter = filter.Cast<ExpressionFilter>();
+		if (!expression_filter.expr) {
+			return string();
+		}
+		auto expr_class = expression_filter.expr->GetExpressionClass();
+		if (expr_class == ExpressionClass::BOUND_COMPARISON) {
+			auto &comparison = expression_filter.expr->Cast<BoundComparisonExpression>();
+			auto &left = *comparison.left;
+			auto &right = *comparison.right;
+			ExpressionType comparison_type = comparison.GetExpressionType();
+			const BoundConstantExpression *constant_expr = nullptr;
+			if (left.GetExpressionClass() == ExpressionClass::BOUND_REF &&
+			    right.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+				constant_expr = &right.Cast<BoundConstantExpression>();
+			} else if (right.GetExpressionClass() == ExpressionClass::BOUND_REF &&
+			           left.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+				constant_expr = &left.Cast<BoundConstantExpression>();
+				comparison_type = FlipComparisonExpression(comparison_type);
+			} else {
+				return string();
+			}
+			ConstantFilter constant_filter(comparison_type, constant_expr->value);
+			auto &type = constant_filter.constant.type();
+			switch (type.id()) {
+			case LogicalTypeId::BLOB:
+				return string();
+			case LogicalTypeId::FLOAT:
+			case LogicalTypeId::DOUBLE:
+				return GenerateConstantFilterDouble(constant_filter, type, referenced_stats);
+			default:
+				return GenerateConstantFilter(constant_filter, type, referenced_stats);
+			}
+		}
+		if (expr_class == ExpressionClass::BOUND_OPERATOR &&
+		    expression_filter.expr->GetExpressionType() == ExpressionType::COMPARE_IN) {
+			auto &op_expr = expression_filter.expr->Cast<BoundOperatorExpression>();
+			if (op_expr.children.size() < 2 ||
+			    op_expr.children[0]->GetExpressionClass() != ExpressionClass::BOUND_REF) {
+				return string();
+			}
+			string result;
+			for (idx_t i = 1; i < op_expr.children.size(); i++) {
+				auto &child = *op_expr.children[i];
+				if (child.GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+					return string();
+				}
+				auto &constant_expr = child.Cast<BoundConstantExpression>();
+				auto temporary_constant_filter = ConstantFilter(ExpressionType::COMPARE_EQUAL, constant_expr.value);
+				auto next_filter = GenerateFilterPushdown(temporary_constant_filter, referenced_stats);
+				if (next_filter.empty()) {
+					return string();
+				}
+				if (!result.empty()) {
+					result += " OR ";
+				}
+				result += "(" + next_filter + ")";
+			}
+			return result;
+		}
+		return string();
+	}
 	case TableFilterType::IS_NULL:
 		// IS NULL can only be true if the file has any NULL values
 		referenced_stats.insert("null_count");
@@ -1361,7 +1455,7 @@ vector<DuckLakeFileListEntry> DuckLakeMetadataManager::GetFilesForTable(DuckLake
 				ExpressionType comparison_type;
 				{
 					lock_guard<mutex> l(dynamic->filter_data->lock);
-					comparison_type = dynamic->filter_data->filter->comparison_type;
+					comparison_type = dynamic->filter_data->comparison_type;
 				}
 				dynamic_filter_columns.push_back(
 				    {col_filter.column_field_index, comparison_type, col_filter.column_type});
@@ -3580,8 +3674,8 @@ FROM {METADATA_CATALOG}.ducklake_snapshot
 WHERE snapshot_id = (
 	SELECT snapshot_id
 	FROM {METADATA_CATALOG}.ducklake_snapshot
-	WHERE snapshot_time %s= %s
-	ORDER BY snapshot_time %s
+	WHERE snapshot_time::TIMESTAMPTZ %s= %s
+	ORDER BY snapshot_time::TIMESTAMPTZ %s
 	LIMIT 1);)",
 		    timestamp_condition, val.DefaultCastAs(LogicalType::VARCHAR).ToSQLString(), timestamp_order));
 	} else {

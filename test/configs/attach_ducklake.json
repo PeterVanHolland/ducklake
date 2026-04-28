@@ -652,6 +652,32 @@
         "test/sql/storage/types/variant/variant_shredding_omit_untyped.test",
         "test/parquet/variant/variant_json_copy.test"
       ]
+    },
+    {
+      "reason": "Test attaches its own ducklake AS dl, conflicts with on_init pre-attach.",
+      "paths": [
+        "test/sql/alter/test_insert_select_alter_column_persistence.test",
+        "test/sql/view/view_portable_alias.test",
+        "test/sql/view/view_string_literal_catalog_replace.test"
+      ]
+    },
+    {
+      "reason": "DuckLake metadata log entries differ when an extra dl catalog is pre-attached via on_init.",
+      "paths": [
+        "test/sql/general/ducklake_metadata_logging.test"
+      ]
+    },
+    {
+      "reason": "Parquet is statically loaded in this config, so the missing-parquet failure path does not trigger.",
+      "paths": [
+        "test/sql/general/missing_parquet.test"
+      ]
+    },
+    {
+      "reason": "GLOB sees an additional .db file from the on_init pre-attached dl catalog.",
+      "paths": [
+        "test/sql/remove_orphans/metadata_in_data_path.test"
+      ]
     }
   ]
 }

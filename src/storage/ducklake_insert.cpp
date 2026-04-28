@@ -14,6 +14,7 @@
 #include "duckdb/catalog/catalog_entry/copy_function_catalog_entry.hpp"
 #include "duckdb/execution/operator/order/physical_order.hpp"
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
+#include "duckdb/execution/operator/scan/physical_dummy_scan.hpp"
 #include "duckdb/execution/operator/scan/physical_table_scan.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -231,7 +232,7 @@ SourceResultType DuckLakeInsert::GetDataInternal(ExecutionContext &context, Data
 	auto &global_state = sink_state->Cast<DuckLakeInsertGlobalState>();
 	auto value = Value::BIGINT(NumericCast<int64_t>(global_state.total_insert_count));
 	chunk.SetCardinality(1);
-	chunk.SetValue(0, 0, value);
+	chunk.data[0].SetValue(0, value);
 	return SourceResultType::FINISHED;
 }
 //===--------------------------------------------------------------------===//
@@ -703,6 +704,12 @@ PhysicalOperator &DuckLakeInsert::PlanCopyForInsert(ClientContext &context, Phys
 	    copy_input.catalog.UseHiveFilePattern(!is_encrypted, copy_input.schema_id, copy_input.table_id);
 	if (plan) {
 		physical_copy.children.push_back(*plan);
+	} else {
+		// No upstream plan: callers (e.g. DuckLakeMergeUpdate, DuckLakeMergeInsert) feed chunks directly into the
+		// copy operator. The PartitionedCopy sort strategy still reads input types/cardinality from children[0],
+		// so attach a dummy source so partitioned writes can build their sort strategy without an actual pipeline.
+		auto &dummy_child = planner.Make<PhysicalDummyScan>(physical_copy.expected_types, idx_t(0));
+		physical_copy.children.push_back(dummy_child);
 	}
 
 	return physical_copy;

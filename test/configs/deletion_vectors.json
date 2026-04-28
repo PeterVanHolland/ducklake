@@ -26,6 +26,12 @@
         "test/sql/rewrite_data_files/test_rewrite_concurrency.test",
         "test/sql/rewrite_data_files/test_rewrite_db.test"
       ]
+    },
+    {
+      "reason": "Deletion vectors use puffin files, not -del.parquet — encryption test for delete files is inapplicable.",
+      "paths": [
+        "test/sql/encryption/encryption.test"
+      ]
     }
   ]
 }

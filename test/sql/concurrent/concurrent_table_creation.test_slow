@@ -19,6 +19,11 @@ concurrentloop threadid 0 3
 
 loop i 0 10
 
+# Each per-thread connection needs its own retry budget; 30 schema-changing transactions across
+# 3 threads contend on the snapshot PK, and the default 10 retries can be exhausted in slow builds.
+statement ok
+SET ducklake_max_retry_count = 100;
+
 statement ok
 CREATE TABLE ducklake.tbl_{threadid}_{i}(i INTEGER);
 

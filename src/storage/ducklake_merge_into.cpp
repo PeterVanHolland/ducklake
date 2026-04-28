@@ -12,6 +12,7 @@
 #include "duckdb/planner/operator/logical_insert.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/parallel/thread_context.hpp"
+#include "duckdb/parallel/base_pipeline_event.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
 
@@ -164,15 +165,40 @@ static void FinalizeCopyToInsert(Pipeline &pipeline, Event &event, ClientContext
 	}
 }
 
+// Event that runs FinalizeCopyToInsert after the partitioned copy finalize events complete.
+// PhysicalCopyToFile::Finalize for partitioned writes is async — it inserts a PartitionedCopyFinalizeEvent
+// via Event::InsertEvent. Calling FinalizeCopyToInsert directly inside our Finalize would read from
+// gstate.written_files before those tasks have written anything. We work around this by inserting THIS event
+// into the chain *before* invoking copy.Finalize, so that the partitioned finalize event slots in between
+// (event → partitioned_copy_finalize_event → DuckLakeFinalizeCopyToInsertEvent → original parents).
+class DuckLakeFinalizeCopyToInsertEvent : public BasePipelineEvent {
+public:
+	DuckLakeFinalizeCopyToInsertEvent(Pipeline &pipeline_p, PhysicalOperator &copy_p, PhysicalOperator &insert_p,
+	                                  InterruptState interrupt_state_p)
+	    : BasePipelineEvent(pipeline_p), copy(copy_p), insert(insert_p), interrupt_state(std::move(interrupt_state_p)) {
+	}
+
+	void Schedule() override {
+		FinalizeCopyToInsert(*pipeline, *this, GetClientContext(), copy, insert, interrupt_state);
+	}
+
+private:
+	PhysicalOperator &copy;
+	PhysicalOperator &insert;
+	InterruptState interrupt_state;
+};
+
 SinkFinalizeType DuckLakeMergeInsert::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                                OperatorSinkFinalizeInput &input) const {
+	auto finalize_event =
+	    make_shared_ptr<DuckLakeFinalizeCopyToInsertEvent>(pipeline, copy, insert, input.interrupt_state);
+	event.InsertEvent(finalize_event);
+
 	OperatorSinkFinalizeInput copy_finalize {*copy.sink_state, input.interrupt_state};
 	auto finalize_result = copy.Finalize(pipeline, event, context, copy_finalize);
 	if (finalize_result == SinkFinalizeType::BLOCKED) {
 		return SinkFinalizeType::BLOCKED;
 	}
-
-	FinalizeCopyToInsert(pipeline, event, context, copy, insert, input.interrupt_state);
 	return SinkFinalizeType::READY;
 }
 
@@ -379,10 +405,13 @@ SinkFinalizeType DuckLakeMergeUpdate::Finalize(Pipeline &pipeline, Event &event,
 		inline_data_op->OperatorFinalize(pipeline, event, context, inline_finalize);
 	}
 
+	auto finalize_event =
+	    make_shared_ptr<DuckLakeFinalizeCopyToInsertEvent>(pipeline, copy_op, insert_op, input.interrupt_state);
+	event.InsertEvent(finalize_event);
+
 	OperatorSinkFinalizeInput copy_finalize {*copy_op.sink_state, input.interrupt_state};
 	copy_op.Finalize(pipeline, event, context, copy_finalize);
 
-	FinalizeCopyToInsert(pipeline, event, context, copy_op, insert_op, input.interrupt_state);
 	return SinkFinalizeType::READY;
 }
 

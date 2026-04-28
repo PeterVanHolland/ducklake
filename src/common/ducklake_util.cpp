@@ -155,7 +155,7 @@ string ToSQLString(DuckLakeMetadataManager &metadata_manager, const Value &value
 	case LogicalTypeId::ENUM:
 		return EscapeVarcharForSQL(value.ToString());
 	case LogicalTypeId::VARIANT: {
-		Vector tmp(value);
+		Vector tmp(value, count_t(1));
 		RecursiveUnifiedVectorFormat format;
 		Vector::RecursiveToUnifiedFormat(tmp, 1, format);
 		UnifiedVariantVectorData vector_data(format);
@@ -330,9 +330,13 @@ DynamicFilter *DuckLakeUtil::GetOptionalDynamicFilter(const TableFilter &filter)
 		return nullptr;
 	}
 	auto &dynamic = optional.child_filter->Cast<DynamicFilter>();
-	if (!dynamic.filter_data || !dynamic.filter_data->filter) {
+	if (!dynamic.filter_data) {
 		return nullptr;
 	}
+	// Return the filter regardless of whether it is initialized — callers that need to make a
+	// pruning decision check `filter_data->initialized` themselves under the lock. We need to
+	// return non-null here even when uninitialized so that GetFilesForTable can attach the
+	// stats join + ORDER BY before TopN starts populating the filter.
 	return &dynamic;
 }
 

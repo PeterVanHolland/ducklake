@@ -1,0 +1,82 @@
+# name: benchmark/micro/compaction/rewrite_data_files_retry.benchmark
+# description: Commit 10 rewrites and 10 inlined deletions that each retry after a concurrent change to the other file
+# group: [compaction]
+
+name Rewrite Data Files Retry
+group micro
+subgroup compaction
+
+require ducklake
+
+require parquet
+
+argument work rewrite_retry_work
+
+include benchmark/micro/fixtures/inlined_file_deletes.benchmark.in
+
+include benchmark/micro/fixtures/restore_cleanup.benchmark.in
+
+# Retries do not sleep, so the timing has no random backoff
+init
+SET ducklake_retry_wait_ms = 0;
+
+# lake2 shares the metadata catalog of lake and its commit lands first, so every commit of lake retries
+run
+@attach ${work} AS lake2 (METADATA_CATALOG '__ducklake_metadata_lake')
+BEGIN; CALL ducklake_rewrite_data_files('lake', 't0', delete_threshold => 0);
+DELETE FROM lake2.t0 WHERE id = 2048; COMMIT;
+BEGIN; CALL ducklake_rewrite_data_files('lake', 't1', delete_threshold => 0);
+DELETE FROM lake2.t1 WHERE id = 2048; COMMIT;
+BEGIN; CALL ducklake_rewrite_data_files('lake', 't2', delete_threshold => 0);
+DELETE FROM lake2.t2 WHERE id = 2048; COMMIT;
+BEGIN; CALL ducklake_rewrite_data_files('lake', 't3', delete_threshold => 0);
+DELETE FROM lake2.t3 WHERE id = 2048; COMMIT;
+BEGIN; CALL ducklake_rewrite_data_files('lake', 't4', delete_threshold => 0);
+DELETE FROM lake2.t4 WHERE id = 2048; COMMIT;
+BEGIN; CALL ducklake_rewrite_data_files('lake', 't5', delete_threshold => 0);
+DELETE FROM lake2.t5 WHERE id = 2048; COMMIT;
+BEGIN; CALL ducklake_rewrite_data_files('lake', 't6', delete_threshold => 0);
+DELETE FROM lake2.t6 WHERE id = 2048; COMMIT;
+BEGIN; CALL ducklake_rewrite_data_files('lake', 't7', delete_threshold => 0);
+DELETE FROM lake2.t7 WHERE id = 2048; COMMIT;
+BEGIN; CALL ducklake_rewrite_data_files('lake', 't8', delete_threshold => 0);
+DELETE FROM lake2.t8 WHERE id = 2048; COMMIT;
+BEGIN; CALL ducklake_rewrite_data_files('lake', 't9', delete_threshold => 0);
+DELETE FROM lake2.t9 WHERE id = 2048; COMMIT;
+BEGIN; DELETE FROM lake.t10 WHERE id = 2048;
+CALL ducklake_rewrite_data_files('lake2', 't10', delete_threshold => 0); COMMIT;
+BEGIN; DELETE FROM lake.t11 WHERE id = 2048;
+CALL ducklake_rewrite_data_files('lake2', 't11', delete_threshold => 0); COMMIT;
+BEGIN; DELETE FROM lake.t12 WHERE id = 2048;
+CALL ducklake_rewrite_data_files('lake2', 't12', delete_threshold => 0); COMMIT;
+BEGIN; DELETE FROM lake.t13 WHERE id = 2048;
+CALL ducklake_rewrite_data_files('lake2', 't13', delete_threshold => 0); COMMIT;
+BEGIN; DELETE FROM lake.t14 WHERE id = 2048;
+CALL ducklake_rewrite_data_files('lake2', 't14', delete_threshold => 0); COMMIT;
+BEGIN; DELETE FROM lake.t15 WHERE id = 2048;
+CALL ducklake_rewrite_data_files('lake2', 't15', delete_threshold => 0); COMMIT;
+BEGIN; DELETE FROM lake.t16 WHERE id = 2048;
+CALL ducklake_rewrite_data_files('lake2', 't16', delete_threshold => 0); COMMIT;
+BEGIN; DELETE FROM lake.t17 WHERE id = 2048;
+CALL ducklake_rewrite_data_files('lake2', 't17', delete_threshold => 0); COMMIT;
+BEGIN; DELETE FROM lake.t18 WHERE id = 2048;
+CALL ducklake_rewrite_data_files('lake2', 't18', delete_threshold => 0); COMMIT;
+BEGIN; DELETE FROM lake.t19 WHERE id = 2048;
+CALL ducklake_rewrite_data_files('lake2', 't19', delete_threshold => 0); COMMIT;
+DETACH lake2;
+
+# Each commit of lake lands right after the commit of lake2 on the same table, so every commit retried
+result_query IIIIIII
+SET VARIABLE retry_targets = (SELECT list('lake.t' || k) FROM range(20) t(k));
+SET VARIABLE inlined_delete_tables = (SELECT list('__ducklake_metadata_lake.ducklake_inlined_delete_' || table_id)
+FROM __ducklake_metadata_lake.ducklake_table);
+SELECT (SELECT count(*) FROM lake.snapshots()), count(*), sum(id),
+(SELECT count(*) FROM query_table(getvariable('inlined_delete_tables'))),
+(SELECT count(*) FROM __ducklake_metadata_lake.ducklake_data_file WHERE end_snapshot IS NULL AND record_count = 2047),
+(SELECT count(*) FROM lake.snapshots() s JOIN lake.snapshots() p ON p.snapshot_id = s.snapshot_id - 1
+WHERE s.changes['rewrite_delete'] = p.changes['inlined_delete']),
+(SELECT count(*) FROM lake.snapshots() s JOIN lake.snapshots() p ON p.snapshot_id = s.snapshot_id - 1
+WHERE s.changes['inlined_delete'] = p.changes['rewrite_delete'])
+FROM query_table(getvariable('retry_targets'))
+----
+43	81880	167690240	40	20	10	10

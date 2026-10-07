@@ -753,6 +753,14 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
 	ctx.get_snapshot = [this]() {
 		return transaction_snapshot;
 	};
+	ctx.inlined_deletion_table_exists = [this](const string &table_name) {
+		auto sql = SubstitutePlaceholders(
+		    StringUtil::Format("SELECT 1 FROM duckdb_tables() WHERE database_name = current_database() AND "
+		                       "schema_name = {METADATA_SCHEMA_NAME_LITERAL} AND table_name = %s",
+		                       DuckLakeUtil::SQLLiteralToString(table_name)),
+		    transaction_snapshot);
+		return RunQuery(sql, "probe for an inlined deletion table")->Fetch() != nullptr;
+	};
 	ctx.execute_commit_batch = [this](DuckLakeSnapshot snapshot, string &query) -> unique_ptr<QueryResult> {
 		query = SubstitutePlaceholders(query, snapshot);
 		return fresh_conn.Query(query);

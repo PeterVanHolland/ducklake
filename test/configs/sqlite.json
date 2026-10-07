@@ -38,6 +38,12 @@
       ]
     },
     {
+      "reason": "SQLite allows one writer, so the second of two concurrent deletes fails with \"database is locked\" before it can conflict",
+      "paths": [
+        "test/sql/transaction/concurrent_inlined_and_file_delete_conflict.test"
+      ]
+    },
+    {
       "reason": "High retry counts can stall under SQLite metadata contention",
       "paths": [
         "test/sql/issues/issue_1248_concurrent_commit_schema_id.test",

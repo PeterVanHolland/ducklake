@@ -1,0 +1,102 @@
+# name: test/sql/transaction/concurrent_inlined_and_file_delete_conflict.test
+# description: an inlined delete and a delete file that delete rows of the same data file concurrently conflict
+# group: [transaction]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/concurrent_inlined_and_file_delete_conflict', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.t AS FROM range(20) s(i)
+
+# the inlined delete commits first
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+DELETE FROM dl.t WHERE i < 10
+
+statement ok con2
+DELETE FROM dl.t WHERE i >= 0 AND i < 15
+
+statement ok con1
+COMMIT
+
+statement error con2
+COMMIT
+----
+conflict
+
+query II
+SELECT count(*), count(DISTINCT i) FROM dl.t
+----
+10	10
+
+# the delete file commits first
+statement ok
+CREATE TABLE dl.u AS FROM range(100) s(i)
+
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+DELETE FROM dl.u WHERE i = 50
+
+statement ok con2
+DELETE FROM dl.u WHERE i >= 50 AND i < 80
+
+statement ok con2
+COMMIT
+
+statement error con1
+COMMIT
+----
+conflict
+
+query II
+SELECT count(*), count(DISTINCT i) FROM dl.u
+----
+70	70
+
+# deletes of different data files still commit
+statement ok
+CREATE TABLE dl.v AS FROM range(100) s(i)
+
+statement ok
+INSERT INTO dl.v FROM range(100, 200)
+
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+DELETE FROM dl.v WHERE i = 150
+
+statement ok con2
+DELETE FROM dl.v WHERE i < 30
+
+statement ok con1
+COMMIT
+
+statement ok con2
+COMMIT
+
+query II
+SELECT count(*), count(DISTINCT i) FROM dl.v
+----
+169	169

@@ -1456,6 +1456,9 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	context.get_snapshot = [&]() {
 		return GetSnapshot();
 	};
+	context.inlined_deletion_table_exists = [&](const string &table_name) {
+		return metadata_manager->InlinedDeletionTableExists(table_name);
+	};
 	context.execute_commit_batch = [&](DuckLakeSnapshot snapshot, string &query) {
 		auto result = metadata_manager->Execute(snapshot, query);
 		for (auto &insert : inlined_inserts) {

@@ -184,10 +184,10 @@ void ConflictCheck(const case_insensitive_map_t<reference_set_t<CatalogEntry>> &
 
 } // namespace
 
-void DuckLakeTransactionState::CheckForConflicts(const TransactionChangeInformation &changes,
-                                                 const SnapshotChangeInformation &other_changes,
-                                                 DuckLakeSnapshot transaction_snapshot,
-                                                 const std::function<unique_ptr<QueryResult>(string)> &executor) const {
+void DuckLakeTransactionState::CheckForConflicts(
+    const TransactionChangeInformation &changes, const SnapshotChangeInformation &other_changes,
+    DuckLakeSnapshot transaction_snapshot, const std::function<unique_ptr<QueryResult>(string)> &executor,
+    const std::function<bool(const string &)> &inlined_deletion_table_exists) const {
 	// check if we are dropping the same table as another transaction
 	for (auto &dropped_idx : changes.dropped_tables) {
 		ConflictCheck(dropped_idx, other_changes.dropped_tables, "drop table", "dropped it already");
@@ -290,29 +290,70 @@ void DuckLakeTransactionState::CheckForConflicts(const TransactionChangeInformat
 		ConflictCheck(table_id, other_changes.inserted_tables, "delete from table", "inserted into it");
 		ConflictCheck(table_id, other_changes.tables_inserted_inlined, "delete from table", "inserted into it");
 	}
-	if (!changes.tables_deleted_from.empty()) {
-		bool check_for_matches = false;
-		for (auto &table_id : changes.tables_deleted_from) {
-			if (other_changes.tables_deleted_from.find(table_id) != other_changes.tables_deleted_from.end()) {
-				check_for_matches = true;
-				break;
+	auto deletes_meet = [](const set<TableIndex> &tables, const set<TableIndex> &other_tables) {
+		for (auto &table_id : tables) {
+			if (other_tables.find(table_id) != other_tables.end()) {
+				return true;
 			}
 		}
-		if (check_for_matches) {
-			// If we have deletes on the tables, check for files being deleted
-			const auto deleted_files = GetFilesDeletedOrDroppedAfterSnapshot(executor);
-			for (auto &entry : local_changes.Changes()) {
-				auto &table_changes = entry.GetTableChanges();
-				for (auto &file_entry : table_changes.new_delete_files) {
-					for (auto &file : file_entry.second) {
-						ConflictCheck(file.data_file_id, deleted_files.deleted_from_files, "delete from file",
-						              "deleted from it");
-					}
+		return false;
+	};
+	// a delete file or an inlined delete of a file that another transaction deleted from with a delete file
+	bool deleted_from_files = deletes_meet(changes.tables_deleted_from, other_changes.tables_deleted_from);
+	bool deleted_inlined_from_files = deletes_meet(changes.tables_deleted_inlined, other_changes.tables_deleted_from);
+	if (deleted_from_files || deleted_inlined_from_files) {
+		const auto deleted_files = GetFilesDeletedOrDroppedAfterSnapshot(executor);
+		for (auto &entry : local_changes.Changes()) {
+			auto &table_changes = entry.GetTableChanges();
+			for (auto &file_entry : table_changes.new_delete_files) {
+				for (auto &file : file_entry.second) {
+					ConflictCheck(file.data_file_id, deleted_files.deleted_from_files, "delete from file",
+					              "deleted from it");
 				}
 			}
-			for (auto &file : dropped_files) {
-				ConflictCheck(file.second, deleted_files.deleted_from_files, "delete from file", "deleted from it");
+			if (table_changes.new_inlined_file_deletes) {
+				for (auto &file_entry : table_changes.new_inlined_file_deletes->file_deletes) {
+					ConflictCheck(DataFileIndex(file_entry.first), deleted_files.deleted_from_files, "delete from file",
+					              "deleted from it");
+				}
 			}
+		}
+		for (auto &file : dropped_files) {
+			ConflictCheck(file.second, deleted_files.deleted_from_files, "delete from file", "deleted from it");
+		}
+	}
+	// a delete file of a file that another transaction deleted from with an inlined delete
+	for (auto &table_id : changes.tables_deleted_from) {
+		if (other_changes.tables_deleted_inlined.find(table_id) == other_changes.tables_deleted_inlined.end()) {
+			continue;
+		}
+		auto inlined_deletion_table = DuckLakeMetadataManager::InlinedFileDeletionTableName(table_id);
+		if (!inlined_deletion_table_exists(inlined_deletion_table)) {
+			continue;
+		}
+		auto result = executor(StringUtil::Format(
+		    "SELECT DISTINCT file_id FROM {METADATA_CATALOG}.%s WHERE begin_snapshot > {SNAPSHOT_ID}",
+		    SQLIdentifier(inlined_deletion_table)));
+		if (result->HasError()) {
+			result->GetErrorObject().Throw(
+			    "Failed to commit DuckLake transaction - failed to get inlined deletions for conflict resolution:");
+		}
+		set<DataFileIndex> inlined_deleted_files;
+		for (auto &row : *result) {
+			inlined_deleted_files.insert(DataFileIndex(row.GetValue<idx_t>(0)));
+		}
+		for (auto &entry : local_changes.Changes()) {
+			if (entry.GetTableIndex() != table_id) {
+				continue;
+			}
+			for (auto &file_entry : entry.GetTableChanges().new_delete_files) {
+				for (auto &file : file_entry.second) {
+					ConflictCheck(file.data_file_id, inlined_deleted_files, "delete from file", "deleted from it");
+				}
+			}
+		}
+		for (auto &file : dropped_files) {
+			ConflictCheck(file.second, inlined_deleted_files, "delete from file", "deleted from it");
 		}
 	}
 	for (auto &table_id : changes.tables_deleted_inlined) {
@@ -2064,7 +2105,8 @@ WHERE idt.schema_version < (
 
 SnapshotAndStats DuckLakeTransactionState::CheckForConflicts(
     DuckLakeSnapshot transaction_snapshot, const TransactionChangeInformation &changes,
-    const std::function<unique_ptr<QueryResult>(string)> &executor, bool supports_v1_1_metadata) {
+    const std::function<unique_ptr<QueryResult>(string)> &executor, bool supports_v1_1_metadata,
+    const std::function<bool(const string &)> &inlined_deletion_table_exists) {
 	SnapshotAndStats snapshot_and_stats;
 	// get all changes made to the system after the current snapshot was started
 	auto changes_made =
@@ -2073,7 +2115,7 @@ SnapshotAndStats DuckLakeTransactionState::CheckForConflicts(
 	auto other_changes = SnapshotChangeInformation::ParseChangesMade(changes_made.changes_made);
 
 	// now check for conflicts
-	CheckForConflicts(changes, other_changes, transaction_snapshot, executor);
+	CheckForConflicts(changes, other_changes, transaction_snapshot, executor, inlined_deletion_table_exists);
 
 	return snapshot_and_stats;
 }
@@ -2097,7 +2139,7 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 				// retry - but first check for conflicts
 				commit_stats_snapshot =
 				    CheckForConflicts(transaction_snapshot, attempt_changes, context.conflict_query_executor,
-				                      context.supports_v1_1_metadata);
+				                      context.supports_v1_1_metadata, context.inlined_deletion_table_exists);
 				stats = &commit_stats_snapshot.stats;
 			} else {
 				commit_stats_snapshot.snapshot = context.get_snapshot();

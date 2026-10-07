@@ -95,6 +95,10 @@ struct DuckLakeCommitContext {
 	};
 	//! Builds a DuckLakeStats map from a vector of per-snapshot global stats (retry path).
 	std::function<unique_ptr<DuckLakeStats>(vector<DuckLakeGlobalStatsInfo> &)> build_stats_map;
+	//! Whether the inlined file deletion table of a table exists in the metadata DB.
+	std::function<bool(const string &)> inlined_deletion_table_exists = [](const string &) {
+		return false;
+	};
 	//! Invalidates the cached schema in the catalog for a given schema version.
 	std::function<void(idx_t)> invalidate_schema_cache = [](idx_t) {
 	};
@@ -139,10 +143,12 @@ public:
 	SnapshotAndStats CheckForConflicts(DuckLakeSnapshot transaction_snapshot,
 	                                   const TransactionChangeInformation &changes,
 	                                   const std::function<unique_ptr<QueryResult>(string)> &executor,
-	                                   bool supports_v1_1_metadata);
+	                                   bool supports_v1_1_metadata,
+	                                   const std::function<bool(const string &)> &inlined_deletion_table_exists);
 	void CheckForConflicts(const TransactionChangeInformation &changes, const SnapshotChangeInformation &other_changes,
 	                       DuckLakeSnapshot transaction_snapshot,
-	                       const std::function<unique_ptr<QueryResult>(string)> &executor) const;
+	                       const std::function<unique_ptr<QueryResult>(string)> &executor,
+	                       const std::function<bool(const string &)> &inlined_deletion_table_exists) const;
 
 	static SnapshotDeletedFromFiles
 	GetFilesDeletedOrDroppedAfterSnapshot(const std::function<unique_ptr<QueryResult>(string)> &executor);

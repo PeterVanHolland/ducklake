@@ -102,6 +102,8 @@ public:
 	bool HasChanges() const;
 	LocalTableChangeIterationHelper Changes() const;
 	void CleanupFiles(DatabaseInstance &db);
+	//! Sync the local files the transaction wrote and their directories to stable storage
+	void SyncFiles(DatabaseInstance &db, const string &data_path) const;
 	void CleanupFiles(ClientContext &context, TableIndex table_id);
 	bool HasTransactionLocalInserts(TableIndex table_id) const;
 	bool HasTransactionInlinedData(TableIndex table_id) const;

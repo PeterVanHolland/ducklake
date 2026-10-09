@@ -68,32 +68,64 @@ bool LocalTableChanges::HasChanges() const {
 	return !changes.empty();
 }
 
+//! Calls the callback for every file the transaction wrote, telling whether it is a data file
+static void ForEachWrittenFile(const LocalTableDataChanges &table_changes,
+                               const std::function<void(const string &path, bool data_file)> &callback) {
+	for (auto &file : table_changes.new_data_files) {
+		if (file.created_by_ducklake) {
+			callback(file.file_name, true);
+		}
+		for (auto &del_file : file.delete_files) {
+			callback(del_file.file_name, false);
+		}
+	}
+	for (auto &file : table_changes.new_delete_files) {
+		for (auto &delete_files : file.second) {
+			callback(delete_files.file_name, false);
+		}
+	}
+	for (auto &compaction : table_changes.compactions) {
+		for (auto &file : compaction.written_files) {
+			callback(file.file_name, false);
+		}
+	}
+}
+
 void LocalTableChanges::CleanupFiles(DatabaseInstance &db) {
 	auto &fs = FileSystem::GetFileSystem(db);
 	lock_guard<mutex> guard(lock);
 	for (auto &entry : changes) {
 		auto &table_changes = entry.second;
-		for (auto &file : table_changes.new_data_files) {
-			if (file.created_by_ducklake) {
-				fs.TryRemoveFile(file.file_name);
-			}
-			for (auto &del_file : file.delete_files) {
-				fs.TryRemoveFile(del_file.file_name);
-			}
-		}
-		for (auto &file : table_changes.new_delete_files) {
-			for (auto &delete_files : file.second) {
-				fs.TryRemoveFile(delete_files.file_name);
-			}
-		}
-		for (auto &compaction : table_changes.compactions) {
-			for (auto &file : compaction.written_files) {
-				fs.TryRemoveFile(file.file_name);
-			}
-		}
+		ForEachWrittenFile(table_changes, [&](const string &path, bool data_file) { fs.TryRemoveFile(path); });
 		table_changes.new_data_files.clear();
 		table_changes.new_delete_files.clear();
 		table_changes.compactions.clear();
+	}
+}
+
+void LocalTableChanges::SyncFiles(DatabaseInstance &db, const string &data_path) const {
+	auto &fs = FileSystem::GetFileSystem(db);
+	auto data_root = data_path;
+	StringUtil::RTrim(data_root, "/\\");
+	set<string> directories;
+	lock_guard<mutex> guard(lock);
+	for (auto &entry : changes) {
+		ForEachWrittenFile(entry.second, [&](const string &path, bool data_file) {
+			if (FileSystem::IsRemoteFile(path)) {
+				return;
+			}
+			fs.OpenFile(path, FileFlags::FILE_FLAGS_READ)->Sync();
+			// a new file name, and the directories created for it, are durable once their parents are synced
+			auto directory = StringUtil::GetFilePath(path);
+			directories.insert(directory);
+			while (directory.size() > data_root.size() && StringUtil::StartsWith(directory, data_root)) {
+				directory = StringUtil::GetFilePath(directory);
+				directories.insert(directory);
+			}
+		});
+	}
+	for (auto &directory : directories) {
+		fs.OpenFile(directory, FileFlags::FILE_FLAGS_READ)->Sync();
 	}
 }
 
@@ -551,26 +583,14 @@ void LocalTableChanges::CleanupFiles(ClientContext &context, TableIndex table_id
 	lock_guard<mutex> guard(lock);
 	auto table_entry = changes.find(table_id);
 	if (table_entry != changes.end()) {
-		auto &table_changes = table_entry->second;
 		auto &fs = FileSystem::GetFileSystem(context);
-		for (auto &file : table_changes.new_data_files) {
-			if (file.created_by_ducklake) {
-				fs.RemoveFile(file.file_name);
+		ForEachWrittenFile(table_entry->second, [&](const string &path, bool data_file) {
+			if (data_file) {
+				fs.RemoveFile(path);
+			} else {
+				fs.TryRemoveFile(path);
 			}
-			for (auto &del_file : file.delete_files) {
-				fs.TryRemoveFile(del_file.file_name);
-			}
-		}
-		for (auto &file : table_changes.new_delete_files) {
-			for (auto &delete_files : file.second) {
-				fs.TryRemoveFile(delete_files.file_name);
-			}
-		}
-		for (auto &compaction : table_changes.compactions) {
-			for (auto &file : compaction.written_files) {
-				fs.TryRemoveFile(file.file_name);
-			}
-		}
+		});
 		changes.erase(table_entry);
 	}
 }
@@ -711,6 +731,8 @@ void DuckLakeTransaction::Commit() {
 	}
 	try {
 		if (ChangesMade()) {
+			// the written files must survive a crash once the commit references them
+			state->local_changes.SyncFiles(db, ducklake_catalog.DataPath());
 			FlushChanges();
 		} else if (connection) {
 			connection->Commit();

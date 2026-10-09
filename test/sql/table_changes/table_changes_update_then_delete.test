@@ -107,3 +107,25 @@ SELECT snapshot_id - 7, rowid, change_type, id, v FROM ducklake_table_changes('l
 1	2	update_postimage	2	1
 1	2	update_preimage	2	0
 2	1	delete	1	1
+
+# a row inserted and deleted in one transaction never existed
+statement ok
+CREATE TABLE lake.w (id INTEGER, v INTEGER)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO lake.w SELECT i, 0 FROM range(3) r(i)
+
+statement ok
+DELETE FROM lake.w WHERE id = 0
+
+statement ok
+COMMIT
+
+query IIII
+SELECT rowid, change_type, id, v FROM ducklake_table_changes('lake', 'main', 'w', 11, 11) ORDER BY ALL
+----
+1	insert	1	0
+2	insert	2	0

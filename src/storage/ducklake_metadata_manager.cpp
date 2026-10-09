@@ -2189,21 +2189,28 @@ vector<DuckLakeFileListEntry> DuckLakeMetadataManager::GetTableInsertions(DuckLa
                                                                           DuckLakeSnapshot start_snapshot,
                                                                           DuckLakeSnapshot end_snapshot) {
 	auto table_id = table.GetTableId();
-	string select_list =
-	    GetDataFileSelectList("data") + ", data.row_id_start, data.begin_snapshot, data.partial_max, data.mapping_id";
+	string select_list = GetDataFileSelectList("data") +
+	                     ", data.row_id_start, data.begin_snapshot, data.partial_max, data.mapping_id, " +
+	                     GetDeleteFileSelectList("del");
 	// Files either match the exact snapshot range
 	// Or they have partial_max set, which means they are a file with many snapshot ids, and might contain
 	// the snapshot we need
-	auto query =
-	    StringUtil::Format(R"(
+	// Rows deleted in the snapshot that inserted them were never visible
+	auto query = StringUtil::Format(R"(
 SELECT %s
 FROM {METADATA_CATALOG}.ducklake_data_file data
+LEFT JOIN (
+	SELECT *
+	FROM {METADATA_CATALOG}.ducklake_delete_file
+	WHERE table_id=%d
+) del ON del.data_file_id = data.data_file_id AND del.begin_snapshot = data.begin_snapshot AND data.partial_max IS NULL
 WHERE data.table_id=%d AND data.begin_snapshot <= {SNAPSHOT_ID} AND (
 	(data.begin_snapshot >= %d) OR
 	(data.partial_max IS NOT NULL AND data.partial_max >= %d)
 );
 		)",
-	                       select_list, table_id.index, start_snapshot.snapshot_id, start_snapshot.snapshot_id);
+	                                select_list, table_id.index, table_id.index, start_snapshot.snapshot_id,
+	                                start_snapshot.snapshot_id);
 
 	auto result = Query(end_snapshot, query);
 	result->ThrowIfError("Failed to get table insertion file list from DuckLake: ");
@@ -2229,6 +2236,8 @@ WHERE data.table_id=%d AND data.begin_snapshot <= {SNAPSHOT_ID} AND (
 		if (!row.IsNull(col_idx)) {
 			file_entry.mapping_id = MappingIndex(row.GetValue<idx_t>(col_idx));
 		}
+		col_idx++;
+		file_entry.delete_file = ReadDeleteFile(table, row, col_idx, IsEncrypted());
 		files.push_back(std::move(file_entry));
 	}
 	return files;
@@ -2238,8 +2247,9 @@ vector<DuckLakeDeleteScanEntry> DuckLakeMetadataManager::GetTableDeletions(DuckL
                                                                            DuckLakeSnapshot start_snapshot,
                                                                            DuckLakeSnapshot end_snapshot) {
 	auto table_id = table.GetTableId();
+	string insert_snapshot = "CASE WHEN data.partial_max IS NULL THEN data.begin_snapshot END";
 	string select_list = "data.data_file_id, " + GetDataFileSelectList("data") +
-	                     ", data.row_id_start, data.record_count, data.mapping_id, " +
+	                     ", data.row_id_start, data.record_count, data.mapping_id, " + insert_snapshot + ", " +
 	                     GetDeleteFileSelectList("current_delete") + ", " + GetDeleteFileSelectList("previous_delete");
 
 	// Check if we have an inlined deletion table for this table (usually cached, no DB hit)
@@ -2342,7 +2352,7 @@ USING (data_file_id), (
 		query += StringUtil::Format(R"(
 UNION ALL
 
-SELECT data.data_file_id, %s, data.row_id_start, data.record_count, data.mapping_id,
+SELECT data.data_file_id, %s, data.row_id_start, data.record_count, data.mapping_id, %s,
        %s,
        %s,
        inlined_dels.min_snapshot, false
@@ -2355,8 +2365,8 @@ WHERE data.table_id = %d
   )
   AND (data.end_snapshot IS NULL OR data.end_snapshot < %d OR data.end_snapshot > {SNAPSHOT_ID})
 )",
-		                            GetDataFileSelectList("data"), null_file_cols, null_file_cols, table_id.index,
-		                            table_id.index, start_snapshot.snapshot_id);
+		                            GetDataFileSelectList("data"), insert_snapshot, null_file_cols, null_file_cols,
+		                            table_id.index, table_id.index, start_snapshot.snapshot_id);
 	}
 
 	// Close the main_results CTE and do the final SELECT with LEFT JOIN on inlined_dels
@@ -2392,6 +2402,7 @@ FROM main_results
 			entry.mapping_id = MappingIndex(row.GetValue<idx_t>(col_idx));
 		}
 		col_idx++;
+		entry.insert_snapshot = OptIdx(row, col_idx++);
 		entry.delete_file = ReadDeleteFile(table, row, col_idx, IsEncrypted());
 		entry.previous_delete_file = ReadDeleteFile(table, row, col_idx, IsEncrypted());
 		entry.snapshot_id = row.GetValue<idx_t>(col_idx++);

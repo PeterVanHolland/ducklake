@@ -524,9 +524,15 @@ static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo 
 		} else {
 			if (col.default_value_type == "literal") {
 				// literals are stored as text, read them back with the type of the column
-				auto typed_default = col.default_value.DefaultTryCastAs(col_type);
-				col_data.default_value =
-				    ConstantExpression::FromValue(typed_default ? *typed_default : col.default_value);
+				// time zone types are cast when the default is used, in the time zone of the session
+				auto default_value = col.default_value;
+				if (col_type.id() != LogicalTypeId::TIMESTAMP_TZ && col_type.id() != LogicalTypeId::TIME_TZ) {
+					auto typed_default = col.default_value.DefaultTryCastAs(col_type);
+					if (typed_default) {
+						default_value = std::move(*typed_default);
+					}
+				}
+				col_data.default_value = ConstantExpression::FromValue(default_value);
 			} else if (col.default_value_type == "expression") {
 				col_data.default_value =
 				    Parser::GetBuiltinParser().ParseSingleExpression(col.default_value.GetValue<string>());

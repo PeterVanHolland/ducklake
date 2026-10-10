@@ -6,6 +6,8 @@ require ducklake
 
 require parquet
 
+require icu
+
 test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
 
 test-env DATA_PATH {TEST_DIR}
@@ -44,3 +46,22 @@ query IIIIIIII
 SELECT a, typeof(a), b, c, d, h, s, i FROM dl.t
 ----
 1	UTINYINT	-1	false	2020-01-01	1.0	x	2
+
+# time zone defaults are cast when used, in the time zone of the session
+statement ok
+SET TimeZone = 'America/New_York'
+
+statement ok
+CREATE TABLE dl.z (tz TIMESTAMPTZ DEFAULT '2020-01-01 00:00:00', tt TIMETZ DEFAULT '01:00:00', k INTEGER)
+
+# inlined, as parquet keeps a TIMETZ value without its offset
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'z')
+
+statement ok
+INSERT INTO dl.z (k) VALUES (1)
+
+query II
+SELECT tz = TIMESTAMPTZ '2020-01-01 05:00:00+00', tt = '01:00:00'::TIMETZ FROM dl.z
+----
+true	true

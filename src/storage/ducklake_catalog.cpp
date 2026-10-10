@@ -523,7 +523,10 @@ static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo 
 			col_data.default_value = ConstantExpression::Null();
 		} else {
 			if (col.default_value_type == "literal") {
-				col_data.default_value = ConstantExpression::FromValue(col.default_value);
+				// literals are stored as text, read them back with the type of the column
+				auto typed_default = col.default_value.DefaultTryCastAs(col_type);
+				col_data.default_value =
+				    ConstantExpression::FromValue(typed_default ? *typed_default : col.default_value);
 			} else if (col.default_value_type == "expression") {
 				col_data.default_value =
 				    Parser::GetBuiltinParser().ParseSingleExpression(col.default_value.GetValue<string>());

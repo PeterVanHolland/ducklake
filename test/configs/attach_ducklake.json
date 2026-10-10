@@ -982,7 +982,7 @@
       ]
     },
     {
-      "reason": "FIXME: literal column defaults are reloaded as VARCHAR constants, so information_schema shows '1' instead of CAST(1 AS UTINYINT)",
+      "reason": "A literal column default is stored as its value, so CAST(1 AS INTEGER) on an INTEGER column reads back as 1",
       "paths": [
         "test/sql/types/test_quotes.test"
       ]

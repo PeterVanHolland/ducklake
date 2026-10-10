@@ -1,0 +1,46 @@
+# name: test/sql/default/literal_default_rendering.test
+# description: literal column defaults read back with the type of their column
+# group: [default]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/literal_default_rendering')
+
+statement ok
+CREATE TABLE dl.t (a UTINYINT DEFAULT CAST(1 AS UTINYINT), b INTEGER DEFAULT -1, c BOOLEAN DEFAULT false,
+    d DATE DEFAULT DATE '2020-01-01', h DOUBLE DEFAULT CAST(1.0 AS DOUBLE), s VARCHAR DEFAULT 'x',
+    i INTEGER DEFAULT 1 + 1)
+
+query II
+SELECT column_name, column_default FROM information_schema.columns
+WHERE table_catalog = 'dl' AND table_name = 't' ORDER BY ordinal_position
+----
+a	CAST(1 AS UTINYINT)
+b	-1
+c	false
+d	CAST('2020-01-01' AS DATE)
+h	CAST(1.0 AS DOUBLE)
+s	'x'
+i	(1 + 1)
+
+query III
+SELECT contains(sql, 'a UTINYINT DEFAULT(CAST(1 AS UTINYINT))'), contains(sql, 'b INTEGER DEFAULT(-1)'),
+    contains(sql, 's VARCHAR DEFAULT(''x'')')
+FROM duckdb_tables() WHERE database_name = 'dl' AND table_name = 't'
+----
+true	true	true
+
+statement ok
+INSERT INTO dl.t DEFAULT VALUES
+
+query IIIIIIII
+SELECT a, typeof(a), b, c, d, h, s, i FROM dl.t
+----
+1	UTINYINT	-1	false	2020-01-01	1.0	x	2

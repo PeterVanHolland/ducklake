@@ -105,7 +105,7 @@ CREATE TABLE ducklake.r AS SELECT 42 AS i
 statement ok
 CREATE VIEW ducklake.w AS SELECT 42 AS j
 
-# rename a table while another transaction renames it: conflict
+# two concurrent renames of a table conflict
 statement ok con1
 BEGIN
 
@@ -136,7 +136,7 @@ SELECT * FROM ducklake.r_a
 ----
 does not exist
 
-# rename a view while another transaction renames it: conflict
+# two concurrent renames of a view conflict
 statement ok con1
 BEGIN
 

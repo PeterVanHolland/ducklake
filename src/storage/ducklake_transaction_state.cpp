@@ -210,7 +210,6 @@ void ConflictCheck(const case_insensitive_map_t<reference_set_t<CatalogEntry>> &
 
 } // namespace
 
-//! The given tables or views that another transaction renamed after the snapshot
 static set<TableIndex> GetRenamedAfterSnapshot(const string &metadata_table_name, const string &id_name,
                                                const set<TableIndex> &ids, const DuckLakeCommitContext &context) {
 	set<TableIndex> result;

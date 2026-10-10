@@ -454,7 +454,7 @@ unique_ptr<LogicalOperator> DuckLakeCompactor::PlanRewriteScan(
     unique_ptr<LogicalCopyToFile> &copy) {
 	auto table_idx = binder.GenerateTableIndex();
 	unique_ptr<FunctionData> bind_data;
-	EntryLookupInfo info(CatalogType::TABLE_ENTRY, table.name);
+	EntryLookupInfo info(CatalogType::TABLE_ENTRY, QualifiedName(table.name));
 	auto scan_function = table.GetScanFunction(context, bind_data, info);
 	auto &multi_file_bind_data = bind_data->Cast<MultiFileBindData>();
 	auto &read_info = scan_function.function_info->Cast<DuckLakeFunctionInfo>();

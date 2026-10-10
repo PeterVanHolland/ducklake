@@ -1,6 +1,7 @@
 #include "storage/ducklake_metadata_manager.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/path.hpp"
+#include "duckdb/common/exception/conversion_exception.hpp"
 #include "functions/ducklake_table_functions.hpp"
 #include "storage/ducklake_transaction.hpp"
 #include "storage/ducklake_variant_stats.hpp"
@@ -122,7 +123,14 @@ bool DuckLakeMetadataManager::CanInlineColumn(const string &name, const LogicalT
 	return !TypeVisitor::Contains(type, [&](const LogicalType &t) { return !SupportsInlining(t); });
 }
 
+bool DuckLakeMetadataManager::InlinedTableFits(idx_t column_count) const {
+	return column_count + DuckLakeInlinedColNames::COLUMN_COUNT <= MaxColumnCount();
+}
+
 bool DuckLakeMetadataManager::CanInlineColumns(const ColumnList &columns) {
+	if (!InlinedTableFits(columns.LogicalColumnCount())) {
+		return false;
+	}
 	for (auto &col : columns.Logical()) {
 		if (!CanInlineColumn(col.Name().GetIdentifierName(), col.Type())) {
 			return false;
@@ -132,6 +140,9 @@ bool DuckLakeMetadataManager::CanInlineColumns(const ColumnList &columns) {
 }
 
 bool DuckLakeMetadataManager::CanInlineColumns(const vector<DuckLakeColumnInfo> &columns) {
+	if (!InlinedTableFits(columns.size())) {
+		return false;
+	}
 	for (auto &col : columns) {
 		if (!CanInlineColumn(col.name, DuckLakeTypes::FromColumnInfo(col))) {
 			return false;
@@ -426,32 +437,62 @@ UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '1.0' WHERE key = 'versi
 	result->ThrowIfError("Failed to migrate DuckLake from v0.4 to v1.0: ");
 }
 
-static constexpr const char *V1_1_DEV1_MIGRATION_QUERY = R"(
-ALTER TABLE {METADATA_CATALOG}.ducklake_data_file ADD COLUMN {IF_NOT_EXISTS} row_group_count BIGINT;
-ALTER TABLE {METADATA_CATALOG}.ducklake_delete_file ADD COLUMN {IF_NOT_EXISTS} row_group_count BIGINT;
-ALTER TABLE {METADATA_CATALOG}.ducklake_file_column_stats ADD COLUMN {IF_NOT_EXISTS} min_is_exact BOOLEAN DEFAULT NULL;
-ALTER TABLE {METADATA_CATALOG}.ducklake_file_column_stats ADD COLUMN {IF_NOT_EXISTS} max_is_exact BOOLEAN DEFAULT NULL;
-ALTER TABLE {METADATA_CATALOG}.ducklake_table_column_stats ADD COLUMN {IF_NOT_EXISTS} min_is_exact BOOLEAN DEFAULT NULL;
-ALTER TABLE {METADATA_CATALOG}.ducklake_table_column_stats ADD COLUMN {IF_NOT_EXISTS} max_is_exact BOOLEAN DEFAULT NULL;
-CREATE TABLE {IF_NOT_EXISTS} {METADATA_CATALOG}.ducklake_view_column_tag(
+struct DuckLakeAddedColumn {
+	const char *table;
+	const char *column;
+	const char *type;
+};
+
+static constexpr const DuckLakeAddedColumn V1_1_DEV1_ADDED_COLUMNS[] = {
+    {"ducklake_data_file", "row_group_count", "BIGINT"},
+    {"ducklake_delete_file", "row_group_count", "BIGINT"},
+    {"ducklake_file_column_stats", "min_is_exact", "BOOLEAN DEFAULT NULL"},
+    {"ducklake_file_column_stats", "max_is_exact", "BOOLEAN DEFAULT NULL"},
+    {"ducklake_table_column_stats", "min_is_exact", "BOOLEAN DEFAULT NULL"},
+    {"ducklake_table_column_stats", "max_is_exact", "BOOLEAN DEFAULT NULL"},
+    {"ducklake_schema", "parent_schema_id", "BIGINT"}};
+
+static string V1_1Dev1MigrationQuery() {
+	string query;
+	for (auto &added : V1_1_DEV1_ADDED_COLUMNS) {
+		query += StringUtil::Format("ALTER TABLE {METADATA_CATALOG}.%s ADD COLUMN {IF_NOT_EXISTS} %s %s;\n",
+		                            added.table, added.column, added.type);
+	}
+	query += R"(CREATE TABLE {IF_NOT_EXISTS} {METADATA_CATALOG}.ducklake_view_column_tag(
 	view_id BIGINT, column_name VARCHAR, begin_snapshot BIGINT, end_snapshot BIGINT, key VARCHAR, value VARCHAR
 );
-ALTER TABLE {METADATA_CATALOG}.ducklake_schema ADD COLUMN {IF_NOT_EXISTS} parent_schema_id BIGINT;
 UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '1.1-dev1' WHERE key = 'version';
-	)";
+)";
+	return query;
+}
+
+bool DuckLakeMetadataManager::HasV1_1Dev1Additions() {
+	string probe = "SELECT 1 FROM (SELECT * FROM {METADATA_CATALOG}.ducklake_view_column_tag LIMIT 0)";
+	idx_t alias_index = 0;
+	for (auto &added : V1_1_DEV1_ADDED_COLUMNS) {
+		// a qualified column cannot resolve to the same column of an earlier subquery
+		auto alias = "added_" + to_string(alias_index++);
+		probe += StringUtil::Format(", (SELECT %s.%s FROM {METADATA_CATALOG}.%s %s LIMIT 0)", alias, added.column,
+		                            added.table, alias);
+	}
+	return !Query(probe)->HasError();
+}
 
 void DuckLakeMetadataManager::MigrateV10(bool allow_failures) {
 	// rename first so a conflict aborts while the catalog is still at v1.0
 	MigrateInlinedColumnNames(allow_failures);
 	MigrateInlinedDataTypes();
-	ExecuteMigration(V1_1_DEV1_MIGRATION_QUERY, allow_failures, "1.0", "1.1-dev1");
+	ExecuteMigration(V1_1Dev1MigrationQuery(), allow_failures, "1.0", "1.1-dev1");
 }
 
 void DuckLakeMetadataManager::MigrateV10Dev() {
 	auto &db = transaction.GetCatalog().GetDatabase();
 	// Try the schema and column migrations independently
 	try {
-		ExecuteMigration(V1_1_DEV1_MIGRATION_QUERY, true, "1.0", "1.1-dev1");
+		// DDL locks the metadata tables exclusively on Postgres, a catalog with every addition runs none
+		if (!HasV1_1Dev1Additions()) {
+			ExecuteMigration(V1_1Dev1MigrationQuery(), true, "1.0", "1.1-dev1");
+		}
 	} catch (std::exception &ex) {
 		ErrorData error(ex);
 		DUCKDB_LOG_WARNING(db, StringUtil::Format("DuckLake could not apply the v1.1-dev1 schema additions on "
@@ -1569,7 +1610,13 @@ string DuckLakeMetadataManager::BoundOrInfinity(const string &bound, const strin
 string DuckLakeMetadataManager::GenerateConstantFilter(ExpressionType comparison_type, const Value &constant,
                                                        const LogicalType &type, unordered_set<string> &referenced_stats,
                                                        const string &stats_alias) {
-	auto constant_str = CastValueToTarget(constant, type);
+	string constant_str;
+	try {
+		constant_str = CastValueToTarget(constant, type);
+	} catch (ConversionException &) {
+		// a timestamp outside the range its type can print
+		return string();
+	}
 	auto min_value = CastStatsToTarget(StatsColumn(stats_alias, "min_value"), type, StatsCastType::MIN);
 	auto max_value = CastStatsToTarget(StatsColumn(stats_alias, "max_value"), type, StatsCastType::MAX);
 	if (constant_str.empty() || min_value.empty() || max_value.empty() || constant_str.find('\0') != string::npos) {
@@ -4877,6 +4924,20 @@ string DuckLakeMetadataManager::UpdateGlobalTableStatsSql(const DuckLakeGlobalSt
 			    sql.contains_null, sql.contains_nan, sql.min_val, sql.max_val, sql.extra_stats, exactness_set,
 			    stats.table_id.index, col_stats.column_id.index);
 		}
+	}
+	return batch_query;
+}
+
+string DuckLakeMetadataManager::RefreshTableSizesSql(const set<TableIndex> &table_ids) {
+	string batch_query;
+	for (auto &table_id : table_ids) {
+		batch_query += StringUtil::Format(R"(
+UPDATE {METADATA_CATALOG}.ducklake_table_stats SET file_size_bytes = (
+	SELECT COALESCE(SUM(data.file_size_bytes), 0)
+	FROM {METADATA_CATALOG}.ducklake_data_file data
+	WHERE data.table_id = %d AND data.end_snapshot IS NULL
+) WHERE table_id = %d;)",
+		                                  table_id.index, table_id.index);
 	}
 	return batch_query;
 }

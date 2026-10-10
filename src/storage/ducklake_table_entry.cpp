@@ -438,19 +438,6 @@ void DuckLakeTableEntry::SetSortData(unique_ptr<DuckLakeSort> sort_data_p) {
 	sort_data = std::move(sort_data_p);
 }
 
-vector<string> DuckLakeTableEntry::GetPartitionSQLExpressions() const {
-	vector<string> result;
-	if (!partition_data) {
-		return result;
-	}
-	for (auto &field : partition_data->fields) {
-		auto &col = GetColumnByFieldId(field.field_id);
-		auto col_name = SQLIdentifier::ToString(col.GetName().GetIdentifierName());
-		result.push_back(DuckLakePartitionUtils::GetPartitionSQLExpression(field.transform, col_name, col.GetType()));
-	}
-	return result;
-}
-
 const string &DuckLakeTableEntry::DataPath() const {
 	return data_path;
 }
@@ -834,6 +821,12 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 
 	if (transaction.HasTransactionInlinedData(GetTableId())) {
 		auto &new_table = new_entry->Cast<DuckLakeTableEntry>();
+		if (!transaction.GetMetadataManager().InlinedTableFits(new_table.columns.LogicalColumnCount())) {
+			throw NotImplementedException(
+			    "Cannot add column \"%s\" to a table with rows inlined in this transaction, the "
+			    "inlined data table would exceed the column limit of the metadata catalog",
+			    info.new_column.Name().GetIdentifierName());
+		}
 		LogicalIndex new_col_idx(new_table.columns.LogicalColumnCount() - 1);
 		auto &new_col = new_table.GetColumn(new_col_idx);
 		auto &field_id = new_table.GetFieldData().GetByRootIndex(new_col.Physical());

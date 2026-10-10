@@ -33,7 +33,7 @@ SELECT count(*), sum(i) FROM ducklake.t
 ----
 2090	2193930
 
-# transaction-local inlined rows and a transaction-local data file
+# inlined rows and a data file of the current transaction
 statement ok
 BEGIN
 

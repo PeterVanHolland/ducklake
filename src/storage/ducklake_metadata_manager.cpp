@@ -4277,6 +4277,13 @@ string DuckLakeMetadataManager::GetExistingDataFilesSql(const set<DataFileIndex>
 	    GenerateIDList(files));
 }
 
+string DuckLakeMetadataManager::GetRenamedAfterSnapshotSql(const string &metadata_table_name, const string &id_name,
+                                                           const set<TableIndex> &ids) {
+	return StringUtil::Format(
+	    "SELECT %s FROM {METADATA_CATALOG}.%s WHERE begin_snapshot > {SNAPSHOT_ID} AND %s IN (%s)", id_name,
+	    metadata_table_name, id_name, GenerateIDList(ids));
+}
+
 string DuckLakeMetadataManager::DropDataFiles(const set<DataFileIndex> &dropped_files) {
 	return FlushDrop("ducklake_data_file", "data_file_id", dropped_files);
 }

@@ -210,6 +210,23 @@ void ConflictCheck(const case_insensitive_map_t<reference_set_t<CatalogEntry>> &
 
 } // namespace
 
+//! The given tables or views that another transaction renamed after the snapshot
+static set<TableIndex> GetRenamedAfterSnapshot(const string &metadata_table_name, const string &id_name,
+                                               const set<TableIndex> &ids, const DuckLakeCommitContext &context) {
+	set<TableIndex> result;
+	if (ids.empty()) {
+		return result;
+	}
+	auto query_result = context.conflict_query_executor(
+	    DuckLakeMetadataManager::GetRenamedAfterSnapshotSql(metadata_table_name, id_name, ids));
+	query_result->ThrowIfError("Failed to commit DuckLake transaction - failed to get renamed tables and views for "
+	                           "conflict resolution:");
+	for (auto &row : *query_result) {
+		result.insert(TableIndex(row.GetValue<idx_t>(0)));
+	}
+	return result;
+}
+
 void DuckLakeTransactionState::CheckForConflicts(const TransactionChangeInformation &changes,
                                                  const SnapshotChangeInformation &other_changes,
                                                  DuckLakeSnapshot transaction_snapshot,
@@ -324,13 +341,18 @@ void DuckLakeTransactionState::CheckForConflicts(const TransactionChangeInformat
 		ConflictCheck(view_id, other_changes.dropped_views, "alter view", "dropped it");
 		ConflictCheck(view_id, other_changes.altered_views, "alter view", "altered it");
 	}
+	// the snapshot changes record a rename only by its new name
+	auto tables_renamed_by_others = GetRenamedAfterSnapshot("ducklake_table", "table_id", renamed_tables, context);
 	for (auto &table_id : renamed_tables) {
 		ConflictCheck(table_id, other_changes.dropped_tables, "rename table", "dropped it");
 		ConflictCheck(table_id, other_changes.altered_tables, "rename table", "altered it");
+		ConflictCheck(table_id, tables_renamed_by_others, "rename table", "renamed it");
 	}
+	auto views_renamed_by_others = GetRenamedAfterSnapshot("ducklake_view", "view_id", renamed_views, context);
 	for (auto &view_id : renamed_views) {
 		ConflictCheck(view_id, other_changes.dropped_views, "rename view", "dropped it");
 		ConflictCheck(view_id, other_changes.altered_views, "rename view", "altered it");
+		ConflictCheck(view_id, views_renamed_by_others, "rename view", "renamed it");
 	}
 }
 

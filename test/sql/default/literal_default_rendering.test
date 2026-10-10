@@ -85,3 +85,28 @@ SELECT tz = TIMESTAMPTZ '2019-12-31 15:00:00+00',
     ns = TIMESTAMPTZ_NS '2019-12-31 15:00:00.123456789+00', tt = '01:00:00'::TIMETZ FROM dl.z WHERE k = 2
 ----
 true	true	true
+
+# a literal that does not fit its column keeps its text through a type change
+statement ok
+SET TimeZone = 'UTC'
+
+statement ok
+CREATE TABLE dl.w (i INTEGER DEFAULT 1.5, k INTEGER)
+
+query I
+SELECT column_default FROM information_schema.columns
+WHERE table_catalog = 'dl' AND table_name = 'w' AND column_name = 'i'
+----
+'1.5'
+
+statement ok
+ALTER TABLE dl.w ALTER i TYPE DOUBLE
+
+statement ok
+INSERT INTO dl.w (k) VALUES (1)
+
+query II
+SELECT i, (SELECT column_default FROM information_schema.columns WHERE table_catalog = 'dl' AND table_name = 'w'
+    AND column_name = 'i') FROM dl.w
+----
+1.5	CAST(1.5 AS DOUBLE)

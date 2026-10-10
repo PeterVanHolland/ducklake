@@ -514,17 +514,13 @@ DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &t
 }
 
 static unique_ptr<ParsedExpression> ParseLiteralDefault(const Value &value, const LogicalType &type) {
-	switch (type.id()) {
-	case LogicalTypeId::TIMESTAMP_TZ:
-	case LogicalTypeId::TIMESTAMP_TZ_NS:
-	case LogicalTypeId::TIME_TZ:
-		// cast time zone defaults when used, in the time zone of the session
-		return ConstantExpression::FromValue(value);
-	default: {
-		auto typed_value = value.DefaultTryCastAs(type);
-		return ConstantExpression::FromValue(typed_value ? *typed_value : value);
+	// the literal is stored as text, it gets the column type only when that prints the same text
+	// so a rounded value or a time zone string is still cast when the default is used
+	auto typed_value = value.DefaultTryCastAs(type);
+	if (typed_value && typed_value->ToString() == value.ToString()) {
+		return ConstantExpression::FromValue(*typed_value);
 	}
-	}
+	return ConstantExpression::FromValue(value);
 }
 
 static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo &col) {

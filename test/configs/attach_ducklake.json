@@ -477,8 +477,7 @@
       "reason": "FIXME: Immediate transaction mode not respected",
       "paths": [
         "test/sql/update/test_update_many_updaters_nulls.test",
-        "test/sql/update/test_update_many_updaters.test",
-        "test/sql/delete/test_using_delete_duplicates.test"
+        "test/sql/update/test_update_many_updaters.test"
       ]
     },
     {

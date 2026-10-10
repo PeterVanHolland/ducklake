@@ -513,6 +513,20 @@ DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &t
 	return catalog_set;
 }
 
+static unique_ptr<ParsedExpression> ParseLiteralDefault(const Value &value, const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_TZ_NS:
+	case LogicalTypeId::TIME_TZ:
+		// cast time zone defaults when used, in the time zone of the session
+		return ConstantExpression::FromValue(value);
+	default: {
+		auto typed_value = value.DefaultTryCastAs(type);
+		return ConstantExpression::FromValue(typed_value ? *typed_value : value);
+	}
+	}
+}
+
 static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo &col) {
 	DuckLakeColumnData col_data;
 	col_data.id = col.id;
@@ -523,16 +537,7 @@ static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo 
 			col_data.default_value = ConstantExpression::Null();
 		} else {
 			if (col.default_value_type == "literal") {
-				// literals are stored as text, read them back with the type of the column
-				// time zone types are cast when the default is used, in the time zone of the session
-				auto default_value = col.default_value;
-				if (col_type.id() != LogicalTypeId::TIMESTAMP_TZ && col_type.id() != LogicalTypeId::TIME_TZ) {
-					auto typed_default = col.default_value.DefaultTryCastAs(col_type);
-					if (typed_default) {
-						default_value = std::move(*typed_default);
-					}
-				}
-				col_data.default_value = ConstantExpression::FromValue(default_value);
+				col_data.default_value = ParseLiteralDefault(col.default_value, col_type);
 			} else if (col.default_value_type == "expression") {
 				col_data.default_value =
 				    Parser::GetBuiltinParser().ParseSingleExpression(col.default_value.GetValue<string>());

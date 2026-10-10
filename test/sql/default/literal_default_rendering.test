@@ -8,7 +8,7 @@ require parquet
 
 require icu
 
-test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/literal_default_rendering.db
 
 test-env DATA_PATH {TEST_DIR}
 
@@ -52,16 +52,36 @@ statement ok
 SET TimeZone = 'America/New_York'
 
 statement ok
-CREATE TABLE dl.z (tz TIMESTAMPTZ DEFAULT '2020-01-01 00:00:00', tt TIMETZ DEFAULT '01:00:00', k INTEGER)
+CREATE TABLE dl.z (tz TIMESTAMPTZ DEFAULT '2020-01-01 00:00:00',
+    ns TIMESTAMPTZ_NS DEFAULT '2020-01-01 00:00:00.123456789', tt TIMETZ DEFAULT '01:00:00', k INTEGER)
 
 # inlined, as parquet keeps a TIMETZ value without its offset
 statement ok
 CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'z')
 
 statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/literal_default_rendering')
+
+statement ok
 INSERT INTO dl.z (k) VALUES (1)
 
-query II
-SELECT tz = TIMESTAMPTZ '2020-01-01 05:00:00+00', tt = '01:00:00'::TIMETZ FROM dl.z
+query III
+SELECT tz = TIMESTAMPTZ '2020-01-01 05:00:00+00',
+    ns = TIMESTAMPTZ_NS '2020-01-01 05:00:00.123456789+00', tt = '01:00:00'::TIMETZ FROM dl.z
 ----
-true	true
+true	true	true
+
+statement ok
+SET TimeZone = 'Asia/Tokyo'
+
+statement ok
+INSERT INTO dl.z (k) VALUES (2)
+
+query III
+SELECT tz = TIMESTAMPTZ '2019-12-31 15:00:00+00',
+    ns = TIMESTAMPTZ_NS '2019-12-31 15:00:00.123456789+00', tt = '01:00:00'::TIMETZ FROM dl.z WHERE k = 2
+----
+true	true	true

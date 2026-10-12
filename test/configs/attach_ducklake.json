@@ -750,12 +750,6 @@
       ]
     },
     {
-      "reason": "FIXME: inlined data flush renders shredded-variant struct values with empty keys as positional arguments in generated SQL.",
-      "paths": [
-        "test/sql/storage/types/variant/variant_shredding_empty_keys.test"
-      ]
-    },
-    {
       "reason": "Native geometry statistics propagation differs through parquet storage.",
       "paths": [
         "test/sql/types/geo/geometry_from_wkb_stats.test",

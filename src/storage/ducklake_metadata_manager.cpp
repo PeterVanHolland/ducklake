@@ -3407,10 +3407,13 @@ string DuckLakeMetadataManager::WriteNewInlinedData(DuckLakeSnapshot &commit_sna
 		}
 
 		bool needs_encoding = false;
+		bool has_variant = false;
 		for (auto &type : entry.data->data->Types()) {
 			needs_encoding |= DuckLakeUtil::GetInlinedStorageType(*this, type) != type;
+			has_variant |= TypeVisitor::Contains(type, LogicalTypeId::VARIANT);
 		}
-		if (needs_encoding) {
+		// a local metadata database takes VARIANT values from the data, a SQL literal cannot hold an empty object key
+		if (needs_encoding || (has_variant && SupportsAppender())) {
 			inlined_inserts.push_back(InlinedDataInsert(transaction, commit_snapshot, entry, inlined_table_name));
 			continue;
 		}

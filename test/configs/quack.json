@@ -66,6 +66,12 @@
       ]
     },
     {
+      "reason": "Inlined VARIANT objects with an empty key cannot be committed on quack: both commit paths carry inlined rows as SQL literals, which cannot hold an empty object key",
+      "paths": [
+        "test/sql/types/variant_empty_key_inlined.test"
+      ]
+    },
+    {
       "reason": "Test issues UPDATE against the metadata catalog directly",
       "paths": [
         "test/sql/delete/delete_legacy_missing_mapping_after_rename_add_files.test",

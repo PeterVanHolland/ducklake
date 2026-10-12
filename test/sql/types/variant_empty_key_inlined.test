@@ -1,0 +1,37 @@
+# name: test/sql/types/variant_empty_key_inlined.test
+# description: Inlined VARIANT objects with an empty key are stored and survive a flush to Parquet
+# group: [types]
+
+require ducklake
+
+require parquet
+
+require json
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/variant_empty_key_inlined')
+
+statement ok
+CREATE OR REPLACE TABLE dl.t (v VARIANT) WITH (data_inlining_row_limit = 10)
+
+statement ok
+INSERT INTO dl.t VALUES ('{"": 1, "x": 2}'::JSON::VARIANT), ('{"x": {"": "t"}}'::JSON::VARIANT)
+
+query I
+SELECT v::JSON FROM dl.t ORDER BY ALL
+----
+{"":1,"x":2}
+{"x":{"":"t"}}
+
+statement ok
+CALL ducklake_flush_inlined_data('dl')
+
+query I
+SELECT v::JSON FROM dl.t ORDER BY ALL
+----
+{"":1,"x":2}
+{"x":{"":"t"}}

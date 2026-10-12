@@ -1069,6 +1069,70 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFiel
 	return make_uniq<DuckLakeFieldId>(std::move(column_data), source_id.Name(), target);
 }
 
+//! Whether a value of the source type can be out of the range of the target type
+static bool PromotionCanOverflow(ClientContext &context, const LogicalType &source, const LogicalType &target) {
+	if (!source.IsNumeric() && !source.IsTemporal()) {
+		return false;
+	}
+	return !Value::MinimumValue(source).TryCastAs(context, target) ||
+	       !Value::MaximumValue(source).TryCastAs(context, target);
+}
+
+void DuckLakeTableEntry::CheckPromotedValuesFit(DuckLakeTransaction &transaction, const DuckLakeFieldId &new_field_id) {
+	for (auto &child : new_field_id.Children()) {
+		CheckPromotedValuesFit(transaction, *child);
+	}
+	auto source_id = field_data->GetByFieldIndex(new_field_id.GetFieldIndex());
+	if (!source_id || !source_id->Children().empty() || source_id->Type() == new_field_id.Type()) {
+		return;
+	}
+	auto &source = source_id->Type();
+	auto &target = new_field_id.Type();
+	auto context = transaction.context.lock();
+	if (!PromotionCanOverflow(*context, source, target)) {
+		return;
+	}
+	auto stored_stats = transaction.GetTransactionLocalStats(GetTableId());
+	if (!IsTransactionLocal()) {
+		auto table_stats = catalog.Cast<DuckLakeCatalog>().GetTableStats(transaction, GetTableId());
+		if (table_stats && (table_stats->record_count > 0 || table_stats->record_count_unknown)) {
+			stored_stats.push_back(table_stats->column_stats);
+		}
+	}
+	auto unknown_range = [&]() {
+		return CatalogException("Cannot change type of column %s from %s to %s - the statistics of the column do not "
+		                        "show that its values fit in the new type",
+		                        source_id->Name(), source, target);
+	};
+	for (auto &column_stats : stored_stats) {
+		auto entry = column_stats.find(new_field_id.GetFieldIndex());
+		if (entry == column_stats.end()) {
+			throw unknown_range();
+		}
+		auto &stats = entry->second;
+		if (stats.bounds_unknown) {
+			throw unknown_range();
+		}
+		if (!stats.AnyValid()) {
+			continue;
+		}
+		if (!stats.has_min || !stats.has_max) {
+			throw unknown_range();
+		}
+		for (auto &bound : {stats.min, stats.max}) {
+			auto value = TryCastStatsBound(bound, stats.type);
+			if (!value) {
+				throw unknown_range();
+			}
+			if (!value->TryCastAs(*context, target)) {
+				throw CatalogException("Cannot change type of column %s from %s to %s - the column holds the value %s, "
+				                       "which is out of range for %s",
+				                       source_id->Name(), source, target, bound, target);
+			}
+		}
+	}
+}
+
 unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &transaction, ChangeColumnTypeInfo &info) {
 	if (info.column_path.size() > 1) {
 		throw NotImplementedException("Changing the type of a nested field is not yet supported");
@@ -1086,6 +1150,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	}
 	auto new_field_id = TypePromotion(field_id, info.target_type, *change_info, optional_idx());
 	ValidateAddedFieldsCanSkipStats(field_id, *new_field_id);
+	CheckPromotedValuesFit(transaction, *new_field_id);
 	col.SetType(info.target_type);
 	auto new_default = new_field_id->GetDefault();
 	if (new_default) {

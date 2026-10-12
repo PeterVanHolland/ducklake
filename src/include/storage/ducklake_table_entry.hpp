@@ -218,6 +218,8 @@ private:
 	                                               ColumnChangeInfo &result, optional_idx parent_idx);
 	unique_ptr<DuckLakeFieldId> TypePromotion(const DuckLakeFieldId &source_id, const LogicalType &target,
 	                                          ColumnChangeInfo &result, optional_idx parent_idx);
+	//! Throws unless the statistics show that the stored values of the promoted fields fit in their new types
+	void CheckPromotedValuesFit(DuckLakeTransaction &transaction, const DuckLakeFieldId &new_field_id);
 
 	void CheckSupportedTypes();
 

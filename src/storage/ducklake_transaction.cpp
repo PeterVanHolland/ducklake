@@ -158,6 +158,22 @@ vector<DuckLakeDataFile> LocalTableChanges::GetTransactionLocalFiles(TableIndex 
 	return table_changes->new_data_files;
 }
 
+vector<map<FieldIndex, DuckLakeColumnStats>> LocalTableChanges::GetTransactionLocalStats(TableIndex table_id) const {
+	lock_guard<mutex> guard(lock);
+	vector<map<FieldIndex, DuckLakeColumnStats>> result;
+	auto table_changes = Find(table_id);
+	if (!table_changes) {
+		return result;
+	}
+	for (auto &file : table_changes->new_data_files) {
+		result.push_back(file.column_stats);
+	}
+	if (table_changes->new_inlined_data) {
+		result.push_back(table_changes->new_inlined_data->column_stats);
+	}
+	return result;
+}
+
 shared_ptr<DuckLakeInlinedData> LocalTableChanges::GetTransactionLocalInlinedData(ClientContext &context,
                                                                                   TableIndex table_id) const {
 	lock_guard<mutex> guard(lock);
@@ -1747,6 +1763,10 @@ vector<DuckLakeDataFile> DuckLakeTransaction::GetTransactionLocalFiles(TableInde
 shared_ptr<DuckLakeInlinedData> DuckLakeTransaction::GetTransactionLocalInlinedData(TableIndex table_id) const {
 	auto context_ref = context.lock();
 	return state->local_changes.GetTransactionLocalInlinedData(*context_ref, table_id);
+}
+
+vector<map<FieldIndex, DuckLakeColumnStats>> DuckLakeTransaction::GetTransactionLocalStats(TableIndex table_id) const {
+	return state->local_changes.GetTransactionLocalStats(table_id);
 }
 
 bool DuckLakeTransaction::TryDropTransactionLocalFile(TableIndex table_id, const string &path) {

@@ -111,6 +111,8 @@ public:
 	bool HasTransactionInlinedData(TableIndex table_id) const;
 	vector<DuckLakeDataFile> GetTransactionLocalFiles(TableIndex table_id) const;
 	shared_ptr<DuckLakeInlinedData> GetTransactionLocalInlinedData(ClientContext &context, TableIndex table_id) const;
+	//! The column stats of each transaction-local data file and of the inlined data
+	vector<map<FieldIndex, DuckLakeColumnStats>> GetTransactionLocalStats(TableIndex table_id) const;
 	//! Returns false for a file whose rows keep their history
 	bool TryDropTransactionLocalFile(ClientContext &context, TableIndex table_id, const string &path);
 	void AppendFiles(TableIndex table_id, vector<DuckLakeDataFile> files);
@@ -237,6 +239,7 @@ public:
 	void GetWrittenFiles(vector<string> &result) const;
 	vector<DuckLakeDataFile> GetTransactionLocalFiles(TableIndex table_id) const;
 	shared_ptr<DuckLakeInlinedData> GetTransactionLocalInlinedData(TableIndex table_id) const;
+	vector<map<FieldIndex, DuckLakeColumnStats>> GetTransactionLocalStats(TableIndex table_id) const;
 	bool TryDropTransactionLocalFile(TableIndex table_id, const string &path);
 	bool HasTransactionLocalInserts(TableIndex table_id) const;
 	bool HasTransactionInlinedData(TableIndex table_id) const;

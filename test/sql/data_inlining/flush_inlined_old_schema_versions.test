@@ -1,0 +1,139 @@
+# name: test/sql/data_inlining/flush_inlined_old_schema_versions.test
+# description: Flushing inlined data of old schema versions loads the whole catalog of a version only when it is shared
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/flush_inlined_old_schema_versions.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/flush_inlined_old_schema_versions', DATA_INLINING_ROW_LIMIT 10)
+
+# t1, t2 and t3 each get their own schema version
+statement ok
+CREATE TABLE lake.t1(a INT, b VARCHAR)
+
+statement ok
+CREATE TABLE lake.t2(a INT, b VARCHAR)
+
+statement ok
+ALTER TABLE lake.t2 SET PARTITIONED BY (a)
+
+statement ok
+CREATE TABLE lake.t3(a INT, b VARCHAR)
+
+statement ok
+ALTER TABLE lake.t3 SET SORTED BY (a DESC)
+
+# s1 and s2 share one schema version
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE lake.s1(a INT)
+
+statement ok
+CREATE TABLE lake.s2(a INT)
+
+statement ok
+COMMIT
+
+statement ok
+INSERT INTO lake.t1 VALUES (1, 'x'), (2, 'y')
+
+statement ok
+INSERT INTO lake.t2 VALUES (1, 'x'), (2, 'y')
+
+statement ok
+INSERT INTO lake.t3 VALUES (1, 'x'), (3, 'z'), (2, 'y')
+
+statement ok
+INSERT INTO lake.s1 VALUES (10)
+
+statement ok
+INSERT INTO lake.s2 VALUES (20)
+
+# t1 changes after its first rows were inlined, so its rows sit in two old schema versions
+statement ok
+ALTER TABLE lake.t1 ADD COLUMN c INT
+
+statement ok
+INSERT INTO lake.t1 VALUES (3, 'z', 30)
+
+statement ok
+CREATE TABLE lake.last(a INT)
+
+# attach again so that no catalog of an old schema version is cached
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/flush_inlined_old_schema_versions')
+
+statement ok
+CALL enable_logging('DuckLakeMetadata')
+
+query TI
+SELECT table_name, rows_flushed FROM ducklake_flush_inlined_data('lake') ORDER BY ALL
+----
+s1	1
+s2	1
+t1	3
+t2	2
+t3	3
+
+statement ok
+CALL disable_logging()
+
+# the whole catalog is loaded for the current schema version and for the one s1 and s2 share, the other old
+# schema versions load only their table
+query II
+SELECT count(*) FILTER (WHERE query NOT LIKE '%tbl.table_id =%'), count(*) FILTER (WHERE query LIKE '%tbl.table_id =%')
+FROM duckdb_logs_parsed('DuckLakeMetadata')
+WHERE query LIKE '%ducklake_table tbl%'
+----
+2	5
+
+query III
+SELECT * FROM lake.t1 ORDER BY a
+----
+1	x	NULL
+2	y	NULL
+3	z	30
+
+query II
+SELECT * FROM lake.t2 ORDER BY a
+----
+1	x
+2	y
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 't2')
+----
+2
+
+query I
+SELECT * FROM lake.s1 UNION ALL SELECT * FROM lake.s2 ORDER BY ALL
+----
+10
+20
+
+statement ok
+SET VARIABLE t3_file = (SELECT data_file FROM ducklake_list_files('lake', 't3'))
+
+# the flushed file of t3 keeps the sort order of its schema version
+query II
+SELECT a, b FROM read_parquet(getvariable('t3_file'))
+----
+3	z
+2	y
+1	x
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 't1')
+----
+2

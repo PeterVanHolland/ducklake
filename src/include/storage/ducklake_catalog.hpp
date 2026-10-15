@@ -123,12 +123,14 @@ struct DuckLakeAttachedCatalogs : public ObjectCacheEntry {
 //! Holds pins on DuckLake schema cache entries, keeping them alive while they are still referenced.
 class DuckLakeSchemaPinState {
 public:
-	shared_ptr<DuckLakeSchemaCacheEntry> Get(const string &key);
-	//! Pins the entry unless one is pinned under the key already, and returns the pinned one
-	shared_ptr<DuckLakeSchemaCacheEntry> Pin(const string &key, shared_ptr<DuckLakeSchemaCacheEntry> entry);
+	//! The entry pinned under the key, unless the schema cache was invalidated since
+	shared_ptr<DuckLakeSchemaCacheEntry> Get(const string &key, idx_t generation);
+	//! Pins the entry under the key and returns the entry pinned there, a replaced entry stays alive
+	shared_ptr<DuckLakeSchemaCacheEntry> Pin(const string &key, idx_t generation,
+	                                         shared_ptr<DuckLakeSchemaCacheEntry> entry);
 	//! The entry holding only the given table of a schema version
-	shared_ptr<DuckLakeSchemaCacheEntry> GetTable(const string &key, TableIndex table_id);
-	shared_ptr<DuckLakeSchemaCacheEntry> PinTable(const string &key, TableIndex table_id,
+	shared_ptr<DuckLakeSchemaCacheEntry> GetTable(const string &key, TableIndex table_id, idx_t generation);
+	shared_ptr<DuckLakeSchemaCacheEntry> PinTable(const string &key, TableIndex table_id, idx_t generation,
 	                                              shared_ptr<DuckLakeSchemaCacheEntry> entry);
 	//! Whether a table of the schema version is pinned on its own
 	bool HasTables(const string &key);
@@ -136,10 +138,18 @@ public:
 	void Clear();
 
 private:
+	struct PinnedEntry {
+		shared_ptr<DuckLakeSchemaCacheEntry> entry;
+		idx_t generation;
+	};
+	shared_ptr<DuckLakeSchemaCacheEntry> Pin(PinnedEntry &pin, idx_t generation,
+	                                         shared_ptr<DuckLakeSchemaCacheEntry> entry);
+
 	mutex lock;
 	//! Maps from the cache key of a schema version to its entry
-	unordered_map<string, shared_ptr<DuckLakeSchemaCacheEntry>> pins;
-	unordered_map<string, unordered_map<TableIndex, shared_ptr<DuckLakeSchemaCacheEntry>>> table_pins;
+	unordered_map<string, PinnedEntry> pins;
+	unordered_map<string, unordered_map<TableIndex, PinnedEntry>> table_pins;
+	vector<shared_ptr<DuckLakeSchemaCacheEntry>> replaced;
 };
 
 enum class InlinedDeletionCacheResult { EXISTS, DOES_NOT_EXIST, UNKNOWN };
@@ -414,11 +424,16 @@ private:
 	                                                     TableIndex only_table = TableIndex());
 	//! Look up (or load) the ObjectCache entry for a given snapshot.
 	shared_ptr<DuckLakeSchemaCacheEntry> GetSchemaCacheEntry(DuckLakeTransaction &transaction,
-	                                                         DuckLakeSnapshot snapshot);
+	                                                         DuckLakeSnapshot snapshot,
+	                                                         TableIndex only_table = TableIndex());
+	//! The entry of the snapshot pinned by the transaction, pinning it when it is not
+	shared_ptr<DuckLakeSchemaCacheEntry> GetPinnedSchemaCacheEntry(DuckLakeTransaction &transaction,
+	                                                               DuckLakeSnapshot snapshot);
 	void LoadNameMaps(DuckLakeTransaction &transaction);
 	string StatsCacheKey(idx_t next_file_id, TableIndex table_id) const;
 	string RecordCountCacheKey(idx_t snapshot_id) const;
 	string SchemaCacheKey(idx_t schema_version) const;
+	string TableSchemaCacheKey(idx_t schema_version, TableIndex table_id) const;
 	ObjectCache &GetObjectCacheInstance();
 	//! Fails when the name or the metadata catalog of this DuckLake belongs to another DuckLake
 	void RegisterCatalog();
@@ -444,6 +459,8 @@ private:
 	string separator = "/";
 	//! A unique tracker for catalog changes in uncommitted transactions.
 	atomic<idx_t> last_uncommitted_catalog_version;
+	//! Counts the schema cache invalidations, a pin of an earlier count no longer serves lookups
+	atomic<idx_t> schema_cache_generation {0};
 	//! The metadata server type
 	string metadata_type;
 	//! The resolved DuckLake spec version of the attached catalog

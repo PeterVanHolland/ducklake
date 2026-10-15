@@ -211,9 +211,7 @@ public:
 	//! Releases the metadata transaction until the next metadata access
 	void ReleaseMetadataTransaction();
 
-	//! Keeps schema cache entries alive for as long as this transaction lives. Transaction-local catalog entries hold
-	//! bare references into the cached catalog set, and those references are read again at commit time, so the entry
-	//! must not be evicted from the ObjectCache in between.
+	//! Keeps the schema cache entries this transaction references alive until it ends
 	DuckLakeSchemaPinState &GetSchemaPins();
 
 	DuckLakeSnapshot GetSnapshot();

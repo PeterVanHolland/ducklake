@@ -336,7 +336,6 @@ public:
 	//! Whether the result contains a column with the given name
 	static bool ResultHasColumn(QueryResult &result, const string &name);
 
-	//! Get the catalog information for a specific snapshot
 	//! The catalog of the snapshot, or only its schemas and the given table
 	virtual DuckLakeCatalogInfo GetCatalogForSnapshot(DuckLakeSnapshot snapshot, TableIndex only_table = TableIndex());
 	//! Transaction-free build of the catalog snapshot. Caller supplies a snapshot-aware query

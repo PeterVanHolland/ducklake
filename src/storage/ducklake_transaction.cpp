@@ -749,11 +749,8 @@ DuckLakeTransaction::DuckLakeTransaction(DuckLakeCatalog &ducklake_catalog, Tran
 DuckLakeTransaction::~DuckLakeTransaction() {
 }
 
-void DuckLakeTransaction::PinSchemaCacheEntry(shared_ptr<DuckLakeSchemaCacheEntry> entry) {
-	if (!entry) {
-		return;
-	}
-	schema_pins->Pin(std::move(entry));
+DuckLakeSchemaPinState &DuckLakeTransaction::GetSchemaPins() {
+	return *schema_pins;
 }
 
 void DuckLakeTransaction::ClearSchemaCachePins() {

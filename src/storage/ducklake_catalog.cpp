@@ -294,13 +294,42 @@ optional_idx DuckLakeSchemaCacheEntry::GetEstimatedCacheMemory() const {
 void DuckLakeSchemaPinState::Clear() {
 	lock_guard<mutex> guard(lock);
 	pins.clear();
+	table_pins.clear();
 }
 
-void DuckLakeSchemaPinState::Pin(shared_ptr<DuckLakeSchemaCacheEntry> entry) {
+shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeSchemaPinState::Get(const string &key) {
+	lock_guard<mutex> guard(lock);
+	auto entry = pins.find(key);
+	return entry == pins.end() ? nullptr : entry->second;
+}
+
+shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeSchemaPinState::Pin(const string &key,
+                                                                 shared_ptr<DuckLakeSchemaCacheEntry> entry) {
 	D_ASSERT(entry);
 	lock_guard<mutex> guard(lock);
-	auto *raw = entry.get();
-	pins.emplace(raw, std::move(entry));
+	return pins.emplace(key, std::move(entry)).first->second;
+}
+
+shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeSchemaPinState::GetTable(const string &key, TableIndex table_id) {
+	lock_guard<mutex> guard(lock);
+	auto tables = table_pins.find(key);
+	if (tables == table_pins.end()) {
+		return nullptr;
+	}
+	auto entry = tables->second.find(table_id);
+	return entry == tables->second.end() ? nullptr : entry->second;
+}
+
+shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeSchemaPinState::PinTable(const string &key, TableIndex table_id,
+                                                                      shared_ptr<DuckLakeSchemaCacheEntry> entry) {
+	D_ASSERT(entry);
+	lock_guard<mutex> guard(lock);
+	return table_pins[key].emplace(table_id, std::move(entry)).first->second;
+}
+
+bool DuckLakeSchemaPinState::HasTables(const string &key) {
+	lock_guard<mutex> guard(lock);
+	return table_pins.find(key) != table_pins.end();
 }
 
 void DuckLakeCatalog::EnsureCommitInfoProvided(const DuckLakeSnapshotCommit &commit_info) const {
@@ -489,7 +518,27 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
                                                                           TableIndex table_id, idx_t schema_version) {
 	DuckLakeSnapshot snapshot(GetBeginSnapshotForSchemaVersion(table_id, schema_version, transaction), schema_version,
 	                          0, 0);
-	auto entry = GetEntryById(transaction, snapshot, table_id);
+	auto &pins = transaction.GetSchemaPins();
+	auto key = SchemaCacheKey(schema_version);
+	auto schema_entry = pins.GetTable(key, table_id);
+	if (!schema_entry) {
+		schema_entry = pins.Get(key);
+	}
+	if (!schema_entry) {
+		auto cached = GetObjectCacheInstance().Get<DuckLakeSchemaCacheEntry>(key);
+		if (cached) {
+			schema_entry = pins.Pin(key, std::move(cached));
+		} else if (pins.HasTables(key)) {
+			// a second table of this schema version loads all of it
+			schema_entry = pins.Pin(key, GetSchemaCacheEntry(transaction, snapshot));
+		} else {
+			// a whole catalog for each schema version grows with the square of the table count
+			auto table_set =
+			    make_shared_ptr<DuckLakeSchemaCacheEntry>(LoadSchemaForSnapshot(transaction, snapshot, table_id));
+			schema_entry = pins.PinTable(key, table_id, std::move(table_set));
+		}
+	}
+	auto entry = schema_entry->catalog_set.GetEntryById(table_id);
 	if (!entry) {
 		return nullptr;
 	}
@@ -508,10 +557,14 @@ shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeCatalog::GetSchemaCacheEntry(DuckLa
 }
 
 DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
-	auto entry = GetSchemaCacheEntry(transaction, snapshot);
-	auto &catalog_set = entry->catalog_set;
-	transaction.PinSchemaCacheEntry(std::move(entry));
-	return catalog_set;
+	auto &pins = transaction.GetSchemaPins();
+	auto key = SchemaCacheKey(snapshot.schema_version);
+	auto entry = pins.Get(key);
+	if (!entry) {
+		// the pinned entry stays in use when the cache evicts it, so it is not loaded a second time
+		entry = pins.Pin(key, GetSchemaCacheEntry(transaction, snapshot));
+	}
+	return entry->catalog_set;
 }
 
 static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo &col) {
@@ -675,9 +728,10 @@ void DuckLakeCatalog::SetEntryOids(const ducklake_entry_oids_t &oids) {
 }
 
 unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTransaction &transaction,
-                                                                      DuckLakeSnapshot snapshot) {
+                                                                      DuckLakeSnapshot snapshot,
+                                                                      TableIndex only_table) {
 	auto &metadata_manager = transaction.GetMetadataManager();
-	auto catalog = metadata_manager.GetCatalogForSnapshot(snapshot);
+	auto catalog = metadata_manager.GetCatalogForSnapshot(snapshot, only_table);
 	// schemas with invisible parents count as dropped
 	auto skipped_schemas = FindUnreachableSchemas(catalog.schemas);
 	set<TableIndex> skipped_tables;

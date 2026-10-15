@@ -123,14 +123,23 @@ struct DuckLakeAttachedCatalogs : public ObjectCacheEntry {
 //! Holds pins on DuckLake schema cache entries, keeping them alive while they are still referenced.
 class DuckLakeSchemaPinState {
 public:
-	void Pin(shared_ptr<DuckLakeSchemaCacheEntry> entry);
+	shared_ptr<DuckLakeSchemaCacheEntry> Get(const string &key);
+	//! Pins the entry unless one is pinned under the key already, and returns the pinned one
+	shared_ptr<DuckLakeSchemaCacheEntry> Pin(const string &key, shared_ptr<DuckLakeSchemaCacheEntry> entry);
+	//! The entry holding only the given table of a schema version
+	shared_ptr<DuckLakeSchemaCacheEntry> GetTable(const string &key, TableIndex table_id);
+	shared_ptr<DuckLakeSchemaCacheEntry> PinTable(const string &key, TableIndex table_id,
+	                                              shared_ptr<DuckLakeSchemaCacheEntry> entry);
+	//! Whether a table of the schema version is pinned on its own
+	bool HasTables(const string &key);
 	//! Clear all pinned schema cache entries for this pin state.
 	void Clear();
 
 private:
 	mutex lock;
-	// Maps from address of the schema cache entry to the schema cache entry.
-	unordered_map<DuckLakeSchemaCacheEntry *, shared_ptr<DuckLakeSchemaCacheEntry>> pins;
+	//! Maps from the cache key of a schema version to its entry
+	unordered_map<string, shared_ptr<DuckLakeSchemaCacheEntry>> pins;
+	unordered_map<string, unordered_map<TableIndex, shared_ptr<DuckLakeSchemaCacheEntry>>> table_pins;
 };
 
 enum class InlinedDeletionCacheResult { EXISTS, DOES_NOT_EXIST, UNKNOWN };
@@ -400,7 +409,9 @@ public:
 
 private:
 	void DropSchema(ClientContext &context, DropInfo &info) override;
-	unique_ptr<DuckLakeCatalogSet> LoadSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
+	//! Loads the catalog of the snapshot, or only its schemas and the given table
+	unique_ptr<DuckLakeCatalogSet> LoadSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
+	                                                     TableIndex only_table = TableIndex());
 	//! Look up (or load) the ObjectCache entry for a given snapshot.
 	shared_ptr<DuckLakeSchemaCacheEntry> GetSchemaCacheEntry(DuckLakeTransaction &transaction,
 	                                                         DuckLakeSnapshot snapshot);

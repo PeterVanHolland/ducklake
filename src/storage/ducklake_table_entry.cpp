@@ -347,6 +347,10 @@ case_insensitive_set_t DuckLakeTableEntry::GetNotNullFields() const {
 }
 
 unique_ptr<BaseStatistics> DuckLakeTableEntry::GetStatistics(ClientContext &context, column_t column_id) {
+	if (IsVirtualColumn(column_id)) {
+		// virtual columns (rowid, filename, file_row_number, ...) carry no column statistics
+		return nullptr;
+	}
 	auto table_stats = GetTableStats(context);
 	if (!table_stats) {
 		return nullptr;

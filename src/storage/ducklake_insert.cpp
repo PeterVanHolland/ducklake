@@ -727,7 +727,8 @@ DuckLakeInsertPipeline DuckLakeInsert::PlanInsertPipeline(ClientContext &context
 		}
 	}
 	if (data_inlining_row_limit > 0) {
-		auto &inline_data = planner.Make<DuckLakeInlineData>(result.root.get(), data_inlining_row_limit);
+		auto &inline_data =
+		    planner.Make<DuckLakeInlineData>(result.root.get(), schema.ParentCatalog(), data_inlining_row_limit);
 		result.inline_data = inline_data.Cast<DuckLakeInlineData>();
 		result.root = inline_data;
 		// with sort_on_insert off only the Parquet bound overflow rows are sorted, after inlining

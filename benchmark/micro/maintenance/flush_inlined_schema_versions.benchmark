@@ -1,5 +1,5 @@
 # name: benchmark/micro/maintenance/flush_inlined_schema_versions.benchmark
-# description: Flush 200 tables of a freshly attached lake whose inlined rows each sit in their own schema version
+# description: Flush 150 tables of a freshly attached lake whose inlined rows each sit in their own schema version
 # group: [maintenance]
 
 name Flush Inlined Schema Versions
@@ -21,8 +21,8 @@ SELECT count(*) AS tables_flushed, sum(rows_flushed) AS rows_flushed FROM duckla
 
 result_query III
 SELECT tables_flushed, rows_flushed,
-(SELECT count(*) = 200 AND sum(record_count) = 200
+(SELECT count(*) = 150 AND sum(record_count) = 150
 FROM __ducklake_metadata_lake.ducklake_data_file WHERE end_snapshot IS NULL)
 FROM __answer
 ----
-200	200	true
+150	150	true

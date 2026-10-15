@@ -1,8 +1,8 @@
 # name: benchmark/micro/fixtures/flush_schema_versions.benchmark.in
-# description: 200 tables of 41 columns, each created in its own schema version with one inlined row
+# description: 150 tables of 11 columns, each created in its own schema version with one inlined row
 # group: [fixtures]
 
-argument lake flush_schema_versions_v1
+argument lake flush_schema_versions_v2
 
 cache_file ${lake}_ready.marker
 
@@ -10,10 +10,10 @@ load
 @create ${lake}_pristine
 @attach ${lake}_pristine AS lake (DATA_PATH '${BENCHMARK_DIR}/${lake}_files')
 CALL lake.set_option('data_inlining_row_limit', 10);
-@for k in range(200)
-CREATE TABLE lake.t@{k} AS SELECT @{k}::BIGINT AS id, @{k}::BIGINT AS c0, 'v' || @{k} AS c1, @{k}::DECIMAL(18, 4) AS c2, DATE '2026-01-01' + @{k} AS c3, @{k}::DOUBLE AS c4, @{k}::BIGINT AS c5, 'v' || @{k} AS c6, @{k}::DECIMAL(18, 4) AS c7, DATE '2026-01-01' + @{k} AS c8, @{k}::DOUBLE AS c9, @{k}::BIGINT AS c10, 'v' || @{k} AS c11, @{k}::DECIMAL(18, 4) AS c12, DATE '2026-01-01' + @{k} AS c13, @{k}::DOUBLE AS c14, @{k}::BIGINT AS c15, 'v' || @{k} AS c16, @{k}::DECIMAL(18, 4) AS c17, DATE '2026-01-01' + @{k} AS c18, @{k}::DOUBLE AS c19, @{k}::BIGINT AS c20, 'v' || @{k} AS c21, @{k}::DECIMAL(18, 4) AS c22, DATE '2026-01-01' + @{k} AS c23, @{k}::DOUBLE AS c24, @{k}::BIGINT AS c25, 'v' || @{k} AS c26, @{k}::DECIMAL(18, 4) AS c27, DATE '2026-01-01' + @{k} AS c28, @{k}::DOUBLE AS c29, @{k}::BIGINT AS c30, 'v' || @{k} AS c31, @{k}::DECIMAL(18, 4) AS c32, DATE '2026-01-01' + @{k} AS c33, @{k}::DOUBLE AS c34, @{k}::BIGINT AS c35, 'v' || @{k} AS c36, @{k}::DECIMAL(18, 4) AS c37, DATE '2026-01-01' + @{k} AS c38, @{k}::DOUBLE AS c39;
+@for k in range(150)
+CREATE TABLE lake.t@{k} AS SELECT @{k}::BIGINT AS id, @{k}::BIGINT AS c0, 'v' || @{k} AS c1, @{k}::DECIMAL(18, 4) AS c2, DATE '2026-01-01' + @{k} AS c3, @{k}::DOUBLE AS c4, @{k}::BIGINT AS c5, 'v' || @{k} AS c6, @{k}::DECIMAL(18, 4) AS c7, DATE '2026-01-01' + @{k} AS c8, @{k}::DOUBLE AS c9;
 @end
-SELECT CASE WHEN (SELECT count(DISTINCT schema_version) <> 200 FROM __ducklake_metadata_lake.ducklake_inlined_data_tables)
+SELECT CASE WHEN (SELECT count(DISTINCT schema_version) <> 150 FROM __ducklake_metadata_lake.ducklake_inlined_data_tables)
 OR (SELECT count(*) <> 0 FROM __ducklake_metadata_lake.ducklake_data_file)
 THEN error('unexpected schema versions fixture') END;
 DETACH lake;

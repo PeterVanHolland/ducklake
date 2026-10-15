@@ -132,8 +132,8 @@ public:
 	shared_ptr<DuckLakeSchemaCacheEntry> GetTable(const string &key, TableIndex table_id, idx_t generation);
 	shared_ptr<DuckLakeSchemaCacheEntry> PinTable(const string &key, TableIndex table_id, idx_t generation,
 	                                              shared_ptr<DuckLakeSchemaCacheEntry> entry);
-	//! Whether a table of the schema version is pinned on its own
-	bool HasTables(const string &key);
+	//! Whether a table other than the given one is pinned on its own for the schema version
+	bool HasOtherTables(const string &key, TableIndex table_id, idx_t generation);
 	//! Clear all pinned schema cache entries for this pin state.
 	void Clear();
 
@@ -426,14 +426,14 @@ private:
 	shared_ptr<DuckLakeSchemaCacheEntry> GetSchemaCacheEntry(DuckLakeTransaction &transaction,
 	                                                         DuckLakeSnapshot snapshot,
 	                                                         TableIndex only_table = TableIndex());
-	//! The entry of the snapshot pinned by the transaction, pinning it when it is not
 	shared_ptr<DuckLakeSchemaCacheEntry> GetPinnedSchemaCacheEntry(DuckLakeTransaction &transaction,
 	                                                               DuckLakeSnapshot snapshot);
 	void LoadNameMaps(DuckLakeTransaction &transaction);
 	string StatsCacheKey(idx_t next_file_id, TableIndex table_id) const;
 	string RecordCountCacheKey(idx_t snapshot_id) const;
 	string SchemaCacheKey(idx_t schema_version) const;
-	string TableSchemaCacheKey(idx_t schema_version, TableIndex table_id) const;
+	string TableSchemaCacheKey(idx_t schema_version, TableIndex table_id);
+	idx_t SchemaCacheGeneration(idx_t schema_version);
 	ObjectCache &GetObjectCacheInstance();
 	//! Fails when the name or the metadata catalog of this DuckLake belongs to another DuckLake
 	void RegisterCatalog();
@@ -459,8 +459,9 @@ private:
 	string separator = "/";
 	//! A unique tracker for catalog changes in uncommitted transactions.
 	atomic<idx_t> last_uncommitted_catalog_version;
-	//! Counts the schema cache invalidations, a pin of an earlier count no longer serves lookups
-	atomic<idx_t> schema_cache_generation {0};
+	mutex schema_cache_generations_lock;
+	//! Counts the invalidations of each schema version, a pin of an earlier count no longer serves lookups
+	unordered_map<idx_t, idx_t> schema_cache_generations;
 	//! The metadata server type
 	string metadata_type;
 	//! The resolved DuckLake spec version of the attached catalog

@@ -34,10 +34,22 @@ SELECT count(*) FROM ducklake_flush_inlined_data('lake', table_name => 'u')
 statement ok con2
 ALTER TABLE lake.u ADD COLUMN b INT
 
+statement ok con1
+CALL enable_logging('DuckLakeMetadata')
+
 query I con1
 SELECT sum(a) FROM lake.u
 ----
 3
+
+statement ok con1
+CALL disable_logging()
+
+# the invalidated catalog is loaded again
+query I con1
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table tbl%'
+----
+1
 
 statement ok con1
 COMMIT
@@ -47,3 +59,29 @@ SELECT a, b FROM lake.u ORDER BY a
 ----
 1	NULL
 2	NULL
+
+# a transaction alters u while another connection commits a schema change, which invalidates the catalog the
+# altered entry was made from
+statement ok con1
+BEGIN
+
+statement ok con1
+ALTER TABLE lake.u ADD COLUMN c INT
+
+statement ok con2
+CREATE TABLE lake.x(i INT)
+
+query III con1
+SELECT a, b, c FROM lake.u ORDER BY a
+----
+1	NULL	NULL
+2	NULL	NULL
+
+statement ok con1
+COMMIT
+
+query III
+SELECT a, b, c FROM lake.u ORDER BY a
+----
+1	NULL	NULL
+2	NULL	NULL

@@ -26,6 +26,25 @@ ALTER TABLE lake.t ADD COLUMN b INT
 statement ok
 INSERT INTO lake.t VALUES (3, 30)
 
+# p and q share one schema version
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE lake.p(a INT)
+
+statement ok
+CREATE TABLE lake.q(a INT)
+
+statement ok
+COMMIT
+
+statement ok
+INSERT INTO lake.p VALUES (4)
+
+statement ok
+INSERT INTO lake.q VALUES (5)
+
 statement ok
 CREATE TABLE lake.other(i INT)
 
@@ -73,22 +92,23 @@ statement ok
 SET VARIABLE whole_loads = (SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata')
 WHERE query LIKE '%ducklake_table tbl%' AND query NOT LIKE '%tbl.table_id =%')
 
-# expiring the old snapshots invalidates the old schema versions, which load alone again
+# expiring the old snapshots invalidates the old schema versions, and the stale catalog of p does not make q load all
+# of the version they share
 statement ok
 BEGIN
 
 query I
-SELECT sum(a) FROM lake.t
+SELECT sum(a) FROM lake.p
 ----
-6
+4
 
 statement ok
 CALL ducklake_expire_snapshots('lake', older_than => now())
 
 query I
-SELECT sum(a) FROM lake.t
+SELECT sum(a) FROM lake.q
 ----
-6
+5
 
 statement ok
 COMMIT

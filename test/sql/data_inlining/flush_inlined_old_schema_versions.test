@@ -18,16 +18,28 @@ statement ok
 CREATE TABLE lake.t1(a INT, b VARCHAR)
 
 statement ok
+BEGIN
+
+statement ok
 CREATE TABLE lake.t2(a INT, b VARCHAR)
 
 statement ok
 ALTER TABLE lake.t2 SET PARTITIONED BY (a)
 
 statement ok
+COMMIT
+
+statement ok
+BEGIN
+
+statement ok
 CREATE TABLE lake.t3(a INT, b VARCHAR)
 
 statement ok
 ALTER TABLE lake.t3 SET SORTED BY (a DESC)
+
+statement ok
+COMMIT
 
 # s1 and s2 share one schema version
 statement ok

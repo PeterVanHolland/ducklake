@@ -357,6 +357,11 @@ void DuckLakeCatalog::FinalizeLoad(optional_ptr<ClientContext> context) {
 }
 
 static bool CanGeneratePathFromName(const string &name) {
+	// file systems allow at most 255 bytes in a file name
+	static constexpr idx_t MAX_FILE_NAME_LENGTH = 255;
+	if (name.size() > MAX_FILE_NAME_LENGTH) {
+		return false;
+	}
 	for (auto c : name) {
 		if (StringUtil::CharacterIsAlphaNumeric(c)) {
 			continue;
@@ -370,7 +375,7 @@ static bool CanGeneratePathFromName(const string &name) {
 }
 
 string DuckLakeCatalog::GeneratePathFromName(const string &uuid, const string &name) {
-	// if the name has special characters we fallback to uuid
+	// if the name has special characters or is too long we fall back to the uuid
 	if (CanGeneratePathFromName(name)) {
 		return name + separator;
 	}
@@ -537,25 +542,14 @@ static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo 
 	return make_uniq<DuckLakeFieldId>(std::move(col_data), col.name, std::move(type), std::move(child_fields));
 }
 
-//! Binds a macro dialect type without catalog lookups, since those would reenter the catalog that is loading
-static LogicalType BindMacroDialectType(const string &type) {
-	return TypeVisitor::VisitReplace(UnboundType::TryParseAndDefaultBind(type), [](const LogicalType &child) {
-		if (child.id() != LogicalTypeId::UNBOUND) {
-			return child;
-		}
-		// the types that are not built in, such as JSON, are DuckLake types
-		auto &type_expr = UnboundType::GetTypeExpression(child)->Cast<TypeExpression>();
-		return DuckLakeTypes::FromString(type_expr.GetTypeName().GetIdentifierName());
-	});
-}
-
 static LogicalType ParseMacroParameterType(const string &type) {
 	LogicalType result;
 	try {
 		result = DuckLakeTypes::FromString(type);
 	} catch (InvalidInputException &) {
 		// nested types are stored as types of the macro dialect
-		return BindMacroDialectType(type);
+		// catalog lookups would reenter the catalog that is loading
+		return DuckLakeTypes::FromDuckDBString(type);
 	}
 	// older versions stored nested types without their child types, so these parameters are loaded untyped
 	return DuckLakeTypes::IsNested(result) ? LogicalType::UNKNOWN : result;

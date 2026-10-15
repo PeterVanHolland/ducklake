@@ -49,13 +49,8 @@ INSERT INTO ducklake.s1.child.grandchild.t VALUES (1), (2), (3);
 statement ok
 INSERT INTO ducklake."x.y".t VALUES (1), (2), (3), (4);
 
-# FIXME: DuckDB fails to bind catalog-qualified nested schema references in views
-mode skip
-
 statement ok
 CREATE VIEW ducklake.s1.child.v AS SELECT i * 10 AS x FROM ducklake.s1.child.t;
-
-mode unskip
 
 statement ok
 SET SESSION debug_verify_serializer = true;
@@ -80,15 +75,10 @@ SELECT count(*) FROM ducklake."x.y".t
 ----
 4
 
-# FIXME: DuckDB fails to bind catalog-qualified nested schema references in views
-mode skip
-
 query I
 SELECT sum(x) FROM ducklake.s1.child.v
 ----
 30
-
-mode unskip
 
 query I
 SELECT count(*) FROM ducklake.s1.child.grandchild.t AT (VERSION => 11)

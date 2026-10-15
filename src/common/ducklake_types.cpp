@@ -4,6 +4,7 @@
 #include "duckdb/common/array.hpp"
 #include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/type_visitor.hpp"
+#include "duckdb/parser/expression/type_expression.hpp"
 #include "storage/ducklake_metadata_info.hpp"
 
 namespace duckdb {
@@ -85,6 +86,24 @@ bool DuckLakeTypes::IsStringType(const LogicalType &type) {
 
 bool DuckLakeTypes::IsNested(const LogicalType &type) {
 	return type.IsNested() && type.id() != LogicalTypeId::VARIANT;
+}
+
+static LogicalType BindDuckLakeTypes(const LogicalType &type) {
+	return TypeVisitor::VisitReplace(type, [](const LogicalType &child) {
+		if (child.id() != LogicalTypeId::UNBOUND) {
+			return child;
+		}
+		auto &type_expr = UnboundType::GetTypeExpression(child)->Cast<TypeExpression>();
+		return DuckLakeTypes::FromString(type_expr.GetTypeName().GetIdentifierName());
+	});
+}
+
+LogicalType DuckLakeTypes::FromDuckDBString(const string &type) {
+	return BindDuckLakeTypes(UnboundType::TryParseAndDefaultBind(type));
+}
+
+LogicalType DuckLakeTypes::FromDuckDBString(const string &type, ClientContext &context) {
+	return BindDuckLakeTypes(TransformStringToLogicalType(type, context));
 }
 
 LogicalType DuckLakeTypes::FromString(const string &type) {

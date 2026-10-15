@@ -15,9 +15,10 @@
 
 namespace duckdb {
 
-DuckLakeInlineData::DuckLakeInlineData(PhysicalPlan &physical_plan, PhysicalOperator &child, idx_t inline_row_limit)
+DuckLakeInlineData::DuckLakeInlineData(PhysicalPlan &physical_plan, PhysicalOperator &child, Catalog &catalog,
+                                       idx_t inline_row_limit)
     : PhysicalOperator(physical_plan, PhysicalOperatorType::EXTENSION, child.types, child.estimated_cardinality),
-      inline_row_limit(inline_row_limit) {
+      catalog(catalog), inline_row_limit(inline_row_limit) {
 	children.push_back(child);
 }
 
@@ -38,11 +39,13 @@ public:
 	explicit InlineDataGlobalState(const DuckLakeInlineData &op) : op(op), total_inlined_rows(0) {
 	}
 
-	InlinePhase AddRows(InlineDataState &state, idx_t new_rows) {
+	InlinePhase AddRows(InlineDataState &state, idx_t new_rows, bool can_inline) {
 		lock_guard<mutex> guard(lock);
 		total_inlined_rows += new_rows;
-		if (total_inlined_rows > op.inline_row_limit) {
-			// we have exceeded the total amount of rows - bail
+		if (!can_inline) {
+			inlining_stopped = true;
+		}
+		if (InliningStopped()) {
 			if (global_inlined_data) {
 				// if we have any global inlined data - add it to the local inlined data so we can emit it
 				AddToCollection(std::move(global_inlined_data), state.inlined_data);
@@ -51,6 +54,10 @@ public:
 		}
 		// we are still inlining rows
 		return InlinePhase::INLINING_ROWS;
+	}
+
+	bool InliningStopped() const {
+		return inlining_stopped || total_inlined_rows > op.inline_row_limit;
 	}
 
 	static void AddToCollection(unique_ptr<ColumnDataCollection> source, unique_ptr<ColumnDataCollection> &target) {
@@ -64,6 +71,7 @@ public:
 	const DuckLakeInlineData &op;
 	mutex lock;
 	idx_t total_inlined_rows = 0;
+	bool inlining_stopped = false;
 	unique_ptr<ColumnDataCollection> global_inlined_data;
 };
 
@@ -96,9 +104,11 @@ OperatorResultType DuckLakeInlineData::Execute(ExecutionContext &context, DataCh
 	}
 	// we have a new batch of rows
 	// add the count to the global count and check if we are still inlining rows
-	auto new_phase = gstate.AddRows(state, input.size());
+	auto &metadata_manager = DuckLakeTransaction::Get(context.client, catalog).GetMetadataManager();
+	// a chunk over the limit is not inlined, so its values need no check
+	bool can_inline = input.size() > inline_row_limit || metadata_manager.CanInlineValues(input);
+	auto new_phase = gstate.AddRows(state, input.size(), can_inline);
 	if (new_phase != InlinePhase::INLINING_ROWS) {
-		// we have exceeded the limit - start emitting rows from the `inlined_data` if we have it
 		if (state.inlined_data) {
 			// start a scan
 			state.inlined_data->InitializeScan(state.emit_scan);
@@ -138,7 +148,7 @@ OperatorFinalizeResultType DuckLakeInlineData::FinalExecute(ExecutionContext &co
 	}
 	// push the inlined data into the global inlined data
 	lock_guard<mutex> guard(gstate.lock);
-	if (gstate.total_inlined_rows > inline_row_limit) {
+	if (gstate.InliningStopped()) {
 		// we have changed our mind on inlining - we need to emit the rows again
 		state.inlined_data->InitializeScan(state.emit_scan);
 		state.phase = InlinePhase::EMITTING_PREVIOUSLY_INLINED_ROWS;
@@ -239,6 +249,23 @@ static bool VectorContainsNaN(Vector &input_vec, idx_t row_count) {
 	return false;
 }
 
+//! Inlined rows are flushed to Parquet files, which cannot hold negative intervals
+static void ThrowIfNegativeInterval(Vector &input_vec, idx_t row_count) {
+	UnifiedVectorFormat fmt;
+	input_vec.ToUnifiedFormat(fmt);
+	auto data = UnifiedVectorFormat::GetData<interval_t>(fmt);
+	for (idx_t i = 0; i < row_count; i++) {
+		auto idx = fmt.sel->get_index(i);
+		if (!fmt.validity.RowIsValid(idx)) {
+			continue;
+		}
+		auto &interval = data[idx];
+		if (interval.months < 0 || interval.days < 0 || interval.micros < 0) {
+			throw InvalidInputException("Parquet files do not support negative intervals");
+		}
+	}
+}
+
 DuckLakeColumnStats GetVectorStats(Vector &input_vec, idx_t row_count) {
 	auto &type = input_vec.GetType();
 	Vector str_vector(LogicalType::VARCHAR, row_count);
@@ -299,6 +326,9 @@ void UpdateStats(vector<DuckLakeBaseColumnStats> &stats, idx_t c, Vector &data, 
 			throw InternalException("FIXME: unsupported nested type");
 		}
 		return;
+	}
+	if (type.id() == LogicalTypeId::INTERVAL) {
+		ThrowIfNegativeInterval(data, row_count);
 	}
 	auto new_stats = GetVectorStats(data, row_count);
 	if (skipped_fields.count(field_id.GetFieldIndex().index)) {

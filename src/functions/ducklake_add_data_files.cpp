@@ -207,6 +207,8 @@ private:
 	HivePartitioningType hive_partitioning;
 	unordered_set<string> processed_files;
 	unordered_set<idx_t> skipped_fields;
+	//! The types bound from the DuckDB type strings of the files
+	unordered_map<string, LogicalType> bound_types;
 	//! The root columns of the table that do not allow NULL values, by field index
 	unordered_map<idx_t, string> not_null_columns;
 	vector<string> partition_key_names;
@@ -338,7 +340,12 @@ FROM parquet_full_metadata(%s)
 			column->repeated = GetStringOrEmpty(schema_entry.GetChildValue<5>()) == "REPEATED";
 			auto duckdb_type = GetStringOrEmpty(schema_entry.GetChildValue<6>());
 			if (!duckdb_type.empty()) {
-				column->duckdb_type = DuckLakeTypes::FromDuckDBString(duckdb_type, context);
+				auto entry = bound_types.find(duckdb_type);
+				if (entry == bound_types.end()) {
+					auto bound_type = DuckLakeTypes::FromDuckDBString(duckdb_type, context);
+					entry = bound_types.emplace(duckdb_type, std::move(bound_type)).first;
+				}
+				column->duckdb_type = entry->second;
 			}
 			column->is_variant = column_stack.empty() && column->duckdb_type.id() == LogicalTypeId::VARIANT;
 

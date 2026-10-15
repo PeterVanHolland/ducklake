@@ -67,3 +67,4 @@ benchmark/micro/read/scan_after_alters.benchmark
 benchmark/micro/write/insert_inlined_rows.benchmark
 benchmark/micro/compaction/merge_adjacent_inlined_deletions.benchmark
 benchmark/micro/write/insert_inlined_variant.benchmark
+benchmark/micro/write/create_tables_quoted_columns.benchmark

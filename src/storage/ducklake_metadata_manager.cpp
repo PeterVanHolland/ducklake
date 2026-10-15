@@ -111,6 +111,10 @@ bool DuckLakeMetadataManager::SupportsInlining(const LogicalType &type) {
 	return true;
 }
 
+bool DuckLakeMetadataManager::CanInlineValues(DataChunk &chunk) {
+	return true;
+}
+
 bool DuckLakeInlinedColNames::ConflictsWith(const string &name) const {
 	return StringUtil::CIEquals(name, row_id) || StringUtil::CIEquals(name, begin_snapshot) ||
 	       StringUtil::CIEquals(name, end_snapshot) || StringUtil::CIEquals(name, "_ducklake_internal_snapshot_id") ||
@@ -504,10 +508,31 @@ AND NOT EXISTS (
 	result->ThrowIfError("Failed to add the schema versions of inlined-data tables while migrating to v1.1-dev1: ");
 }
 
+void DuckLakeMetadataManager::MigrateRenamedFieldDefaults() {
+	// the defaults of a struct field cannot change, so a later row of the field without them lost them in a rename
+	auto result = Execute(R"(
+UPDATE {METADATA_CATALOG}.ducklake_column AS renamed
+SET initial_default = original.initial_default, default_value = original.default_value,
+	default_value_type = original.default_value_type, default_value_dialect = original.default_value_dialect
+FROM {METADATA_CATALOG}.ducklake_column AS original
+WHERE renamed.parent_column IS NOT NULL AND renamed.initial_default IS NULL
+AND original.table_id = renamed.table_id AND original.column_id = renamed.column_id
+AND original.initial_default IS NOT NULL AND original.begin_snapshot < renamed.begin_snapshot
+AND NOT EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column later
+	WHERE later.table_id = original.table_id AND later.column_id = original.column_id
+	AND later.initial_default IS NOT NULL AND later.begin_snapshot > original.begin_snapshot
+	AND later.begin_snapshot < renamed.begin_snapshot
+);
+)");
+	result->ThrowIfError("Failed to restore the defaults of renamed struct fields while migrating to v1.1-dev1: ");
+}
+
 void DuckLakeMetadataManager::MigrateV10(bool allow_failures) {
 	// rename first so a conflict aborts while the catalog is still at v1.0
 	MigrateInlinedColumnNames(allow_failures);
 	MigrateInlinedSchemaVersions();
+	MigrateRenamedFieldDefaults();
 	MigrateInlinedDataTypes();
 	ExecuteMigration(V1_1Dev1MigrationQuery(), allow_failures, "1.0", "1.1-dev1");
 }
@@ -2107,7 +2132,8 @@ string DuckLakeMetadataManager::BuildBucketPartitionPruningClause(DuckLakeTableE
 	return StringUtil::Format("(data.partition_id IS DISTINCT FROM %d OR (%s))", partition_data->partition_id, result);
 }
 
-string DuckLakeMetadataManager::GenerateFileListQuery(DuckLakeTableEntry &table, const FilterPushdownInfo *filter_info,
+string DuckLakeMetadataManager::GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot,
+                                                      const FilterPushdownInfo *filter_info,
                                                       const vector<DuckLakeFileListDynamicFilter> &dynamic_filters,
                                                       const vector<idx_t> &runtime_filter_stats_columns,
                                                       FileListType file_list_type,
@@ -2241,7 +2267,8 @@ vector<DuckLakeFileListEntry> DuckLakeMetadataManager::GetFilesForTable(DuckLake
 		}
 	}
 
-	auto query = GenerateFileListQuery(table, filter_info, dynamic_filter_columns, runtime_filter_stats_columns);
+	auto query =
+	    GenerateFileListQuery(table, snapshot, filter_info, dynamic_filter_columns, runtime_filter_stats_columns);
 	auto result = Query(snapshot, query);
 	result->ThrowIfError("Failed to get data file list from DuckLake: ");
 
@@ -2567,7 +2594,7 @@ WHERE begin_snapshot < %d AND file_id IN (%s)
 vector<DuckLakeFileListExtendedEntry>
 DuckLakeMetadataManager::GetExtendedFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
                                                   const FilterPushdownInfo *filter_info) {
-	auto query = GenerateFileListQuery(table, filter_info, {}, {}, FileListType::EXTENDED);
+	auto query = GenerateFileListQuery(table, snapshot, filter_info, {}, {}, FileListType::EXTENDED);
 	auto result = Query(snapshot, query);
 	result->ThrowIfError("Failed to get extended data file list from DuckLake: ");
 	vector<DuckLakeFileListExtendedEntry> files;
@@ -2857,34 +2884,36 @@ void DuckLakeMetadataManager::SubstituteCatalogPlaceholders(string &query, const
 	auto &ducklake_catalog = transaction.GetCatalog();
 	auto catalog_identifier = SQLQuotedIdentifier::ToString(ducklake_catalog.MetadataDatabaseName());
 	auto catalog_literal = SQLString::ToString(ducklake_catalog.MetadataDatabaseName());
-	auto schema_identifier = SQLQuotedIdentifier::ToString(ducklake_catalog.MetadataSchemaName());
-	auto schema_identifier_escaped = StringUtil::Replace(schema_identifier, "'", "''");
 	auto schema_literal = SQLString::ToString(ducklake_catalog.MetadataSchemaName().GetIdentifierName());
 	auto metadata_path = SQLString::ToString(ducklake_catalog.MetadataPath());
 	auto data_path = SQLString::ToString(ducklake_catalog.DataPath());
 
-	query = StringUtil::Replace(query, "{METADATA_CATALOG_NAME_LITERAL}", catalog_literal);
-	query = StringUtil::Replace(query, "{METADATA_CATALOG_NAME_IDENTIFIER}", catalog_identifier);
-	query = StringUtil::Replace(query, "{METADATA_SCHEMA_NAME_LITERAL}", schema_literal);
-	query = StringUtil::Replace(query, "{METADATA_CATALOG}", metadata_catalog);
-	query = StringUtil::Replace(query, "{METADATA_SCHEMA_ESCAPED}", schema_identifier_escaped);
-	query = StringUtil::Replace(query, "{METADATA_PATH}", metadata_path);
-	query = StringUtil::Replace(query, "{DATA_PATH}", data_path);
+	query = DuckLakeUtil::ReplacePlaceholders(query, {{"{METADATA_CATALOG_NAME_LITERAL}", catalog_literal},
+	                                                  {"{METADATA_CATALOG_NAME_IDENTIFIER}", catalog_identifier},
+	                                                  {"{METADATA_SCHEMA_NAME_LITERAL}", schema_literal},
+	                                                  {"{METADATA_CATALOG}", metadata_catalog},
+	                                                  {"{METADATA_PATH}", metadata_path},
+	                                                  {"{DATA_PATH}", data_path}});
+}
+
+static vector<pair<string, string>> SnapshotReplacements(const DuckLakeSnapshot &snapshot) {
+	return {{"{SNAPSHOT_ID}", to_string(snapshot.snapshot_id)},
+	        {"{SCHEMA_VERSION}", to_string(snapshot.schema_version)},
+	        {"{NEXT_CATALOG_ID}", to_string(snapshot.next_catalog_id)},
+	        {"{NEXT_FILE_ID}", to_string(snapshot.next_file_id)}};
 }
 
 void DuckLakeMetadataManager::SubstituteSnapshotPlaceholders(const DuckLakeSnapshot &snapshot, string &query) {
-	query = StringUtil::Replace(query, "{SNAPSHOT_ID}", to_string(snapshot.snapshot_id));
-	query = StringUtil::Replace(query, "{SCHEMA_VERSION}", to_string(snapshot.schema_version));
-	query = StringUtil::Replace(query, "{NEXT_CATALOG_ID}", to_string(snapshot.next_catalog_id));
-	query = StringUtil::Replace(query, "{NEXT_FILE_ID}", to_string(snapshot.next_file_id));
+	query = DuckLakeUtil::ReplacePlaceholders(query, SnapshotReplacements(snapshot));
 }
 
 void DuckLakeMetadataManager::SubstituteTransactionPlaceholders(DuckLakeSnapshot snapshot, string &query) const {
 	auto &commit_info = transaction.GetCommitInfo();
-	SubstituteSnapshotPlaceholders(snapshot, query);
-	query = StringUtil::Replace(query, "{AUTHOR}", commit_info.author.ToSQLString());
-	query = StringUtil::Replace(query, "{COMMIT_MESSAGE}", commit_info.commit_message.ToSQLString());
-	query = StringUtil::Replace(query, "{COMMIT_EXTRA_INFO}", commit_info.commit_extra_info.ToSQLString());
+	auto replacements = SnapshotReplacements(snapshot);
+	replacements.emplace_back("{AUTHOR}", commit_info.author.ToSQLString());
+	replacements.emplace_back("{COMMIT_MESSAGE}", commit_info.commit_message.ToSQLString());
+	replacements.emplace_back("{COMMIT_EXTRA_INFO}", commit_info.commit_extra_info.ToSQLString());
+	query = DuckLakeUtil::ReplacePlaceholders(query, replacements);
 }
 
 unique_ptr<QueryResult> DuckLakeMetadataManager::Execute(DuckLakeSnapshot snapshot, string &query) {

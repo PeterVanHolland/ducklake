@@ -424,7 +424,7 @@ private:
 	                                                     TableIndex only_table = TableIndex());
 	//! Look up (or load) the ObjectCache entry for a given snapshot.
 	shared_ptr<DuckLakeSchemaCacheEntry> GetSchemaCacheEntry(DuckLakeTransaction &transaction,
-	                                                         DuckLakeSnapshot snapshot,
+	                                                         DuckLakeSnapshot snapshot, idx_t generation,
 	                                                         TableIndex only_table = TableIndex());
 	shared_ptr<DuckLakeSchemaCacheEntry> GetPinnedSchemaCacheEntry(DuckLakeTransaction &transaction,
 	                                                               DuckLakeSnapshot snapshot);
@@ -432,8 +432,9 @@ private:
 	string StatsCacheKey(idx_t next_file_id, TableIndex table_id) const;
 	string RecordCountCacheKey(idx_t snapshot_id) const;
 	string SchemaCacheKey(idx_t schema_version) const;
-	string TableSchemaCacheKey(idx_t schema_version, TableIndex table_id);
-	idx_t SchemaCacheGeneration(idx_t schema_version);
+	//! The object cache key of a schema version, or of one of its tables, at an invalidation count
+	string SchemaCacheEntryKey(idx_t schema_version, idx_t generation, TableIndex only_table = TableIndex()) const;
+	idx_t SchemaCacheGeneration(idx_t schema_version) const;
 	ObjectCache &GetObjectCacheInstance();
 	//! Fails when the name or the metadata catalog of this DuckLake belongs to another DuckLake
 	void RegisterCatalog();
@@ -459,9 +460,9 @@ private:
 	string separator = "/";
 	//! A unique tracker for catalog changes in uncommitted transactions.
 	atomic<idx_t> last_uncommitted_catalog_version;
-	mutex schema_cache_generations_lock;
-	//! Counts the invalidations of each schema version, a pin of an earlier count no longer serves lookups
-	unordered_map<idx_t, idx_t> schema_cache_generations;
+	static constexpr idx_t SCHEMA_CACHE_GENERATION_SLOTS = 256;
+	//! Counts the invalidations of the schema versions of each slot, an entry of an earlier count is not used again
+	atomic<idx_t> schema_cache_generations[SCHEMA_CACHE_GENERATION_SLOTS] {};
 	//! The metadata server type
 	string metadata_type;
 	//! The resolved DuckLake spec version of the attached catalog

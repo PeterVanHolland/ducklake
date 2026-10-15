@@ -557,16 +557,17 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
 		schema_entry = pins.Get(key, generation);
 	}
 	if (!schema_entry) {
-		auto cached = GetObjectCacheInstance().Get<DuckLakeSchemaCacheEntry>(key);
+		auto cached =
+		    GetObjectCacheInstance().Get<DuckLakeSchemaCacheEntry>(SchemaCacheEntryKey(schema_version, generation));
 		if (cached) {
 			schema_entry = pins.Pin(key, generation, std::move(cached));
 		} else if (pins.HasOtherTables(key, table_id, generation)) {
 			// a second table of this schema version loads all of it
-			schema_entry = pins.Pin(key, generation, GetSchemaCacheEntry(transaction, snapshot));
+			schema_entry = pins.Pin(key, generation, GetSchemaCacheEntry(transaction, snapshot, generation));
 		} else {
 			// a whole catalog for each schema version grows with the square of the table count
-			schema_entry =
-			    pins.PinTable(key, table_id, generation, GetSchemaCacheEntry(transaction, snapshot, table_id));
+			auto table_entry = GetSchemaCacheEntry(transaction, snapshot, generation, table_id);
+			schema_entry = pins.PinTable(key, table_id, generation, std::move(table_entry));
 		}
 	}
 	auto entry = schema_entry->catalog_set.GetEntryById(table_id);
@@ -577,11 +578,10 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
 }
 
 shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeCatalog::GetSchemaCacheEntry(DuckLakeTransaction &transaction,
-                                                                          DuckLakeSnapshot snapshot,
+                                                                          DuckLakeSnapshot snapshot, idx_t generation,
                                                                           TableIndex only_table) {
 	auto &cache = GetObjectCacheInstance();
-	auto key = only_table.IsValid() ? TableSchemaCacheKey(snapshot.schema_version, only_table)
-	                                : SchemaCacheKey(snapshot.schema_version);
+	auto key = SchemaCacheEntryKey(snapshot.schema_version, generation, only_table);
 	auto cached = cache.Get<DuckLakeSchemaCacheEntry>(key);
 	if (cached) {
 		return cached;
@@ -599,7 +599,7 @@ shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeCatalog::GetPinnedSchemaCacheEntry(
 	if (entry) {
 		return entry;
 	}
-	return pins.Pin(key, generation, GetSchemaCacheEntry(transaction, snapshot));
+	return pins.Pin(key, generation, GetSchemaCacheEntry(transaction, snapshot, generation));
 }
 
 DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
@@ -1508,16 +1508,16 @@ string DuckLakeCatalog::SchemaCacheKey(idx_t schema_version) const {
 	return StringUtil::Format("ducklake:%s:%s:%s:schema:%llu", GetName(), MetadataPath(), instance_id, schema_version);
 }
 
-string DuckLakeCatalog::TableSchemaCacheKey(idx_t schema_version, TableIndex table_id) {
-	// an invalidation cannot delete the tables of a version, so their key changes with it
-	return StringUtil::Format("%s:table:%llu:%llu", SchemaCacheKey(schema_version), table_id.index,
-	                          SchemaCacheGeneration(schema_version));
+string DuckLakeCatalog::SchemaCacheEntryKey(idx_t schema_version, idx_t generation, TableIndex only_table) const {
+	auto key = StringUtil::Format("%s:%llu", SchemaCacheKey(schema_version), generation);
+	if (only_table.IsValid()) {
+		key += StringUtil::Format(":table:%llu", only_table.index);
+	}
+	return key;
 }
 
-idx_t DuckLakeCatalog::SchemaCacheGeneration(idx_t schema_version) {
-	lock_guard<mutex> guard(schema_cache_generations_lock);
-	auto entry = schema_cache_generations.find(schema_version);
-	return entry == schema_cache_generations.end() ? 0 : entry->second;
+idx_t DuckLakeCatalog::SchemaCacheGeneration(idx_t schema_version) const {
+	return schema_cache_generations[schema_version % SCHEMA_CACHE_GENERATION_SLOTS].load();
 }
 
 void DuckLakeCatalog::InvalidateTableStatsCache(idx_t next_file_id, TableIndex table_id) {
@@ -1525,10 +1525,10 @@ void DuckLakeCatalog::InvalidateTableStatsCache(idx_t next_file_id, TableIndex t
 }
 
 void DuckLakeCatalog::InvalidateSchemaCache(idx_t schema_version) {
-	GetObjectCacheInstance().Delete(SchemaCacheKey(schema_version));
-	// counted after the delete, so a lookup of the new count cannot pin the deleted entry
-	lock_guard<mutex> guard(schema_cache_generations_lock);
-	schema_cache_generations[schema_version]++;
+	auto &generation = schema_cache_generations[schema_version % SCHEMA_CACHE_GENERATION_SLOTS];
+	GetObjectCacheInstance().Delete(SchemaCacheEntryKey(schema_version, generation.load()));
+	// a load that started earlier publishes under the old count, which no lookup uses again
+	++generation;
 }
 
 void DuckLakeCatalog::InvalidateNameMapCache(MappingIndex mapping_id) {

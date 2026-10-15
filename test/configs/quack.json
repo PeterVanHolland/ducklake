@@ -55,7 +55,8 @@
         "test/sql/benchmark/postgres_catalog.test",
         "test/sql/issues/issue_843_postgres_legacy_inlined_types.test",
         "test/sql/data_inlining/inlined_superseded_drop_failure_postgres.test",
-        "test/sql/compaction/compaction_idle_metadata_transaction.test"
+        "test/sql/compaction/compaction_idle_metadata_transaction.test",
+        "test/sql/compaction/postgres_expire_snapshots_time_zone.test"
       ]
     },
     {
@@ -77,6 +78,7 @@
       "paths": [
         "test/sql/delete/delete_legacy_missing_mapping_after_rename_add_files.test",
         "test/sql/rewrite_data_files/test_rewrite_many_non_candidate_files.test",
+        "test/sql/stats/nan_column_stats_missing_max.test",
         "test/sql/stats/nan_column_stats_missing_min.test",
         "test/sql/stats/numeric_stats_one_bound.test"
       ]

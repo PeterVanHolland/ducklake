@@ -101,13 +101,16 @@ public:
 		}
 	}
 
-	InlinePhase AddRows(InlineDataState &state, DataChunk &input, bool can_inline) {
+	InlinePhase AddRows(InlineDataState &state, DataChunk &input, DuckLakeMetadataManager &metadata_manager) {
 		idx_t new_bytes = 0;
 		// a chunk with more rows than the limit is not inlined whatever its size
 		for (idx_t c = 0;
 		     c < input.ColumnCount() && input.size() <= op.inline_row_limit && new_bytes <= max_inlined_bytes; c++) {
 			new_bytes += VariableDataSize(input.data[c], false, max_inlined_bytes);
 		}
+		// a chunk over either limit is not inlined, so its values need no check
+		bool can_inline = input.size() > op.inline_row_limit || new_bytes > max_inlined_bytes ||
+		                  metadata_manager.CanInlineValues(input);
 		lock_guard<mutex> guard(lock);
 		total_inlined_rows += input.size();
 		total_inlined_bytes += new_bytes;
@@ -176,9 +179,7 @@ OperatorResultType DuckLakeInlineData::Execute(ExecutionContext &context, DataCh
 	// we have a new batch of rows
 	// add the count to the global count and check if we are still inlining rows
 	auto &metadata_manager = DuckLakeTransaction::Get(context.client, catalog).GetMetadataManager();
-	// a chunk over the limit is not inlined, so its values need no check
-	bool can_inline = input.size() > inline_row_limit || metadata_manager.CanInlineValues(input);
-	auto new_phase = gstate.AddRows(state, input, can_inline);
+	auto new_phase = gstate.AddRows(state, input, metadata_manager);
 	if (new_phase != InlinePhase::INLINING_ROWS) {
 		if (state.inlined_data) {
 			// start a scan

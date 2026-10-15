@@ -1,5 +1,5 @@
 # name: test/sql/data_inlining/inlined_old_schema_version_catalogs.test
-# description: Catalogs of old schema versions are reused across reads and reloaded after another commit invalidates them
+# description: Catalogs of old schema versions are reused across reads and reloaded after an invalidation
 # group: [data_inlining]
 
 require ducklake
@@ -19,12 +19,15 @@ CREATE TABLE lake.t(a INT)
 statement ok
 INSERT INTO lake.t VALUES (1), (2)
 
-# the rows of t stay inlined at the schema version before this one
+# the rows of t stay inlined at two old schema versions
 statement ok
 ALTER TABLE lake.t ADD COLUMN b INT
 
 statement ok
 INSERT INTO lake.t VALUES (3, 30)
+
+statement ok
+CREATE TABLE lake.other(i INT)
 
 statement ok
 DETACH lake
@@ -45,46 +48,57 @@ SELECT sum(a) FROM lake.t
 endloop
 
 statement ok
-CALL disable_logging()
+COMMENT ON TABLE lake.other IS 'x'
 
-# the catalogs of the current and the old schema version are each loaded once for the three reads
 query I
-SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table tbl%'
+SELECT sum(a) FROM lake.t
+----
+6
+
+statement ok
+COMMENT ON TABLE lake.other IS 'y'
+
+query I
+SELECT sum(a) FROM lake.t
+----
+6
+
+# each old schema version of t is loaded once and alone, also after changes to another table
+query I
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table tbl%' AND query LIKE '%tbl.table_id =%'
 ----
 2
 
 statement ok
-CREATE TABLE lake.u(a INT)
+SET VARIABLE whole_loads = (SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata')
+WHERE query LIKE '%ducklake_table tbl%' AND query NOT LIKE '%tbl.table_id =%')
 
+# expiring the old snapshots invalidates the old schema versions, which load alone again
 statement ok
-INSERT INTO lake.u VALUES (1), (2)
-
-# a transaction reads u, then another connection flushes its rows and alters it, which drops the inlined table it
-# emptied and invalidates the cached catalogs
-statement ok con1
 BEGIN
 
-query I con1
-SELECT sum(a) FROM lake.u
+query I
+SELECT sum(a) FROM lake.t
 ----
-3
+6
 
-statement ok con2
-SELECT count(*) FROM ducklake_flush_inlined_data('lake', table_name => 'u')
+statement ok
+CALL ducklake_expire_snapshots('lake', older_than => now())
 
-statement ok con2
-ALTER TABLE lake.u ADD COLUMN b INT
-
-query I con1
-SELECT sum(a) FROM lake.u
+query I
+SELECT sum(a) FROM lake.t
 ----
-3
+6
 
-statement ok con1
+statement ok
 COMMIT
 
+statement ok
+CALL disable_logging()
+
 query II
-SELECT a, b FROM lake.u ORDER BY a
+SELECT count(*) FILTER (WHERE query LIKE '%tbl.table_id =%'),
+	count(*) FILTER (WHERE query NOT LIKE '%tbl.table_id =%') - getvariable('whole_loads')
+FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table tbl%'
 ----
-1	NULL
-2	NULL
+4	0

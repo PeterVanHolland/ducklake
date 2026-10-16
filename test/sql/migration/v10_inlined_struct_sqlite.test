@@ -9,7 +9,8 @@ require parquet
 require sqlite_scanner
 
 # written by DuckDB 1.5.6 with fields of many types in t, row 2 has only NULL fields and row 3 a NULL struct, 1001
-# dates in many, and a string with a NUL character in nul
+# dates in many, a struct of evolve that gains a field and renames one between its three rows, and a string with a
+# NUL character in nul
 unzip data/old_ducklake/inlined_struct_text.sqlite.gz {TEST_DIR}/v10_inlined_struct.sqlite
 
 # a newer writer adds rows to the v1.0 catalog in the text format of v1.1
@@ -27,7 +28,7 @@ ATTACH 'ducklake:sqlite:{TEST_DIR}/v10_inlined_struct.sqlite' AS lake (DATA_PATH
 
 # the text DuckDB 1.5.6 wrote for a NUL character is not a plain literal and is kept
 query I
-SELECT s FROM __ducklake_metadata_lake.ducklake_inlined_data_4_4
+SELECT s FROM __ducklake_metadata_lake.ducklake_inlined_data_5_7
 ----
 {'v': CONCAT('a', chr(0), 'b')}
 
@@ -67,6 +68,13 @@ SELECT s.x, s.v = ['plain', 'a\b, c''', 'a\b, c', 'CAST(a\b)'][id] FROM lake.pla
 3	true
 4	true
 
+query III
+SELECT id, s.c, s.b = ['', 'it''s', 'x''y'][id] FROM lake.evolve ORDER BY id
+----
+1	2020-01-01	NULL
+2	2020-01-02	true
+3	2020-01-03	true
+
 # more texts than one rewrite statement holds
 query II
 SELECT count(*), count(*) FILTER (WHERE s.d = DATE '2000-01-01' + id) FROM lake.many
@@ -81,6 +89,9 @@ CALL ducklake_flush_inlined_data('lake', table_name => 'plain')
 
 statement ok
 CALL ducklake_flush_inlined_data('lake', table_name => 'many')
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'evolve')
 
 endloop
 

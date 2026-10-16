@@ -286,10 +286,14 @@ string PostgresMetadataManager::GetColumnTypeInternal(const LogicalType &column_
 	}
 }
 
-bool PostgresMetadataManager::IsRetryableCommitError(const string &message) const {
-	// the server error follows the failed query, which can contain any text
+//! The server error follows the failed query, which can contain any text
+static string GetServerError(const string &message) {
 	auto server_error_start = message.rfind("\": ");
-	auto server_error = server_error_start == string::npos ? message : message.substr(server_error_start);
+	return server_error_start == string::npos ? message : message.substr(server_error_start);
+}
+
+bool PostgresMetadataManager::IsRetryableCommitError(const string &message) const {
+	auto server_error = GetServerError(message);
 	// constraint names are not translated, so a conflict on a metadata primary key is found in any language
 	for (auto end = server_error.find("_pkey"); end != string::npos; end = server_error.find("_pkey", end + 1)) {
 		auto start = end;
@@ -300,6 +304,46 @@ bool PostgresMetadataManager::IsRetryableCommitError(const string &message) cons
 		if (StringUtil::StartsWith(server_error.substr(start, end - start), "ducklake_")) {
 			return true;
 		}
+	}
+	return false;
+}
+
+//! Whether the message names the identifier and not a longer one that contains it
+static bool MentionsIdentifier(const string &message, const string &identifier) {
+	auto is_identifier_char = [](char c) {
+		return StringUtil::CharacterIsAlphaNumeric(c) || c == '_' || c == '$';
+	};
+	for (auto pos = message.find(identifier); pos != string::npos; pos = message.find(identifier, pos + 1)) {
+		auto end = pos + identifier.size();
+		if ((pos == 0 || !is_identifier_char(message[pos - 1])) &&
+		    (end == message.size() || !is_identifier_char(message[end]))) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool PostgresMetadataManager::IsDroppedInlinedTableError(const string &message,
+                                                         const map<TableIndex, vector<string>> &inlined_tables) {
+	// the failed transaction still sees the registrations of its own snapshot
+	if (transaction.GetConnection().context->transaction.HasActiveTransaction()) {
+		return false;
+	}
+	auto server_error = GetServerError(message);
+	try {
+		for (auto &entry : inlined_tables) {
+			for (auto &table_name : entry.second) {
+				if (!MentionsIdentifier(server_error, table_name)) {
+					continue;
+				}
+				auto registered = GetInlinedTableNames(entry.first);
+				if (registered.find(table_name) == registered.end()) {
+					return true;
+				}
+			}
+		}
+	} catch (std::exception &) { // NOLINT
+		                         // the commit reports its own error
 	}
 	return false;
 }

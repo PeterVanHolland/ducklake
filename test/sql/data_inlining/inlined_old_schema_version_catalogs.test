@@ -108,8 +108,18 @@ SELECT sum(a) FROM lake.q
 ----
 5
 
+query I
+SELECT sum(a) FROM lake.p
+----
+4
+
 statement ok
 COMMIT
+
+query I
+SELECT sum(a) FROM lake.p
+----
+4
 
 statement ok
 CALL disable_logging()

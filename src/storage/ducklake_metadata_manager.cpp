@@ -1000,11 +1000,7 @@ static string TableFilter(const string &table_alias, const vector<TableIndex> &o
 	if (only_tables.empty()) {
 		return string();
 	}
-	vector<string> table_ids;
-	for (auto &table_id : only_tables) {
-		table_ids.push_back(to_string(table_id.index));
-	}
-	return StringUtil::Format("\n  AND %s.table_id IN (%s)", table_alias, StringUtil::Join(table_ids, ", "));
+	return StringUtil::Format("\n  AND %s.table_id IN (%s)", table_alias, GenerateIDList(only_tables));
 }
 
 DuckLakeCatalogInfo DuckLakeMetadataManager::GetCatalogForSnapshot(DuckLakeSnapshot snapshot,

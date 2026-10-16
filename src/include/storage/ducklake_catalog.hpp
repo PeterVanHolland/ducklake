@@ -443,6 +443,10 @@ private:
 	                                                         DuckLakeSnapshot snapshot, idx_t generation);
 	shared_ptr<DuckLakeCatalogInfoCacheEntry> GetCatalogInfoCacheEntry(DuckLakeTransaction &transaction,
 	                                                                   DuckLakeSnapshot snapshot, idx_t generation);
+	//! Builds the given table from the metadata of its schema version and pins it
+	shared_ptr<DuckLakeSchemaCacheEntry> PinTableFromInfo(DuckLakeTransaction &transaction, const string &key,
+	                                                      idx_t generation, const DuckLakeCatalogInfo &info,
+	                                                      TableIndex table_id);
 	shared_ptr<DuckLakeSchemaCacheEntry> GetPinnedSchemaCacheEntry(DuckLakeTransaction &transaction,
 	                                                               DuckLakeSnapshot snapshot);
 	void LoadNameMaps(DuckLakeTransaction &transaction);

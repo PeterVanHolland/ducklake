@@ -249,6 +249,34 @@ ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_7.db' AS dl (DATA_PATH '{T
 ----
 the metadata has no data path
 
+# a view whose columns do not match
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_8.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation')
+
+statement ok
+CREATE TABLE dl.t AS SELECT 42 AS i
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH '{TEST_DIR}/metadata_table_validation_8.db' AS meta
+
+statement ok
+ALTER TABLE meta.ducklake_schema_versions RENAME TO schema_versions_table
+
+statement ok
+CREATE VIEW meta.ducklake_schema_versions(begin_snapshot, schema_version, table_index) AS
+FROM schema_versions_table
+
+statement ok
+DETACH meta
+
+statement error
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_8.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation')
+----
+column 3 of metadata table "ducklake_schema_versions" is "table_index" of type BIGINT, expected "table_id" of type BIGINT
+
 # a catalog that lacks a later v1.1-dev1 addition still has its other tables checked
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_dev.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', DUCKLAKE_VERSION '1.1-dev1')

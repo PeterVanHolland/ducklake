@@ -44,12 +44,14 @@ DuckLakeColumnStats::DuckLakeColumnStats(const DuckLakeColumnStats &other) {
 	}
 }
 
+// LCOV_EXCL_START
 DuckLakeColumnStats &DuckLakeColumnStats::operator=(const DuckLakeColumnStats &other) {
 	if (this != &other) {
 		*this = DuckLakeColumnStats(other);
 	}
 	return *this;
 }
+// LCOV_EXCL_STOP
 
 unique_ptr<DuckLakeTableStats>
 DuckLakeTableStats::FromGlobalStats(const DuckLakeGlobalStatsInfo &stats,

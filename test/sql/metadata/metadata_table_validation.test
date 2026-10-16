@@ -249,7 +249,7 @@ ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_7.db' AS dl (DATA_PATH '{T
 ----
 the metadata has no data path
 
-# a view whose columns do not match
+# a view whose table changed after the view was created
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_8.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation')
 
@@ -266,8 +266,13 @@ statement ok
 ALTER TABLE meta.ducklake_schema_versions RENAME TO schema_versions_table
 
 statement ok
-CREATE VIEW meta.ducklake_schema_versions(begin_snapshot, schema_version, table_index) AS
-FROM schema_versions_table
+ALTER TABLE meta.schema_versions_table RENAME COLUMN begin_snapshot TO snapshot_id
+
+statement ok
+CREATE VIEW meta.ducklake_schema_versions(begin_snapshot) AS FROM schema_versions_table
+
+statement ok
+ALTER TABLE meta.schema_versions_table RENAME COLUMN table_id TO table_index
 
 statement ok
 DETACH meta

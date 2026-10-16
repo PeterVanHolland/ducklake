@@ -512,7 +512,7 @@ DuckLakeMetadataManager::GetMetadataTableColumns(const vector<string> &table_nam
 		auto &columns = result[table_name];
 		if (entry->type == CatalogType::VIEW_ENTRY) {
 			auto &view = entry->Cast<ViewCatalogEntry>();
-			view.BindView(context);
+			view.BindView(context, BindViewAction::FORCE_REBIND);
 			auto view_columns = view.GetColumnInfo();
 			for (idx_t i = 0; i < view_columns->names.size(); i++) {
 				auto &column_name = i < view.aliases.size() ? view.aliases[i] : view_columns->names[i];

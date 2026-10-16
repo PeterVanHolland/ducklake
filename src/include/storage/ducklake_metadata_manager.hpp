@@ -372,8 +372,7 @@ public:
 	static string GetTableColumnSchemaSql(TableIndex table_id);
 	static string GetInlinedTableNamesSql(TableIndex table_id);
 	static string GetInlinedTablesBeforeSchemaChangeSql(TableIndex table_id);
-	//! The top-level columns of each inlined data table at the schema version of that table, or all of its columns
-	//! with their parent column, parents first
+	//! The top-level columns of each inlined data table at its schema version, or all columns with their parent
 	static string GetInlinedTableColumnsSql(optional_idx table_id = optional_idx(), bool with_fields = false);
 	//! The inserts of the given rows, in batches
 	static string InsertValuesSql(const string &table_name, const vector<string> &values);

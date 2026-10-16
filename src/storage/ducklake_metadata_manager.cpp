@@ -733,9 +733,15 @@ public:
 		return ReadStruct(type, result) && pos == text.size();
 	}
 
+	//! Whether a field was written as a cast, which newer writers never write
+	bool ReadAnyCast() const {
+		return read_cast;
+	}
+
 private:
 	const string &text;
 	idx_t pos = 0;
+	bool read_cast = false;
 
 	bool Consume(const string &token) {
 		if (text.compare(pos, token.size(), token) != 0) {
@@ -781,7 +787,12 @@ private:
 
 	bool ReadCast(string &content) {
 		string type_name;
-		return Consume("CAST(") && ReadQuoted(content) && Consume(" AS ") && ReadUntilField(type_name) && Consume(")");
+		if (!Consume("CAST(") || !ReadQuoted(content) || !Consume(" AS ") || !ReadUntilField(type_name) ||
+		    !Consume(")")) {
+			return false;
+		}
+		read_cast = true;
+		return true;
 	}
 
 	bool ReadStruct(const LogicalType &type, Value &result) {
@@ -873,11 +884,12 @@ private:
 //! The text DuckLake 1.1 writes for a STRUCT value that DuckLake 1.0 wrote as a literal, or nothing when it is kept
 static optional<string> V10StructLiteralToText(const string &text, const LogicalType &type) {
 	Value value;
-	if (!V10StructLiteralReader(text).Read(type, value)) {
+	V10StructLiteralReader reader(text);
+	if (!reader.Read(type, value)) {
 		return nullopt;
 	}
 	// newer writers write no casts but escape quotes and backslashes, so a text with a backslash and no cast is kept
-	if (!StringUtil::Contains(text, "CAST(")) {
+	if (!reader.ReadAnyCast()) {
 		auto current = Value(text).DefaultTryCastAs(type);
 		if (current && (Value::NotDistinctFrom(*current, value) || StringUtil::Contains(text, "\\"))) {
 			return nullopt;
@@ -932,15 +944,24 @@ void DuckLakeMetadataManager::MigrateInlinedStructValues() {
 			                                       column_name, table_name, column_name));
 			values->ThrowIfError(StringUtil::Format(
 			    "Failed to read inlined-data table \"%s\" while migrating to v1.1-dev1: ", entry.first));
-			vector<pair<string, string>> rewrites;
+			vector<pair<string, string>> candidates;
+			unordered_set<string> new_texts;
 			for (auto &row : *values) {
 				auto old_text = row.GetValue<string>(0);
 				auto new_text = V10StructLiteralToText(old_text, type);
 				if (new_text) {
-					rewrites.emplace_back(std::move(old_text), std::move(*new_text));
+					new_texts.insert(*new_text);
+					candidates.emplace_back(std::move(old_text), std::move(*new_text));
 				}
 			}
-			// one CASE for many values, as one UPDATE for each value would rewrite the text of an earlier one
+			// a text that another rewrite produces is kept, so a later batch cannot rewrite the result of an earlier
+			// one
+			vector<pair<string, string>> rewrites;
+			for (auto &candidate : candidates) {
+				if (new_texts.find(candidate.first) == new_texts.end()) {
+					rewrites.push_back(std::move(candidate));
+				}
+			}
 			for (idx_t start = 0; start < rewrites.size(); start += VALUES_PER_UPDATE) {
 				string cases;
 				string old_texts;

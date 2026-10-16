@@ -1,0 +1,40 @@
+# name: benchmark/micro/read/warm_old_schema_version_reads.benchmark
+# description: Read 20 tables of 500 columns whose inlined rows each sit in their own old schema version, warm catalog
+# group: [read]
+
+name Warm Old Schema Version Reads
+group micro
+subgroup read
+
+require ducklake
+
+cache_file warm_old_versions_ready.marker
+
+load
+SET VARIABLE wide_columns = (SELECT 'SELECT ' || string_agg(j || ' AS c' || j, ', ' ORDER BY j) FROM range(500) t(j));
+@create warm_old_versions
+@attach warm_old_versions AS lake (DATA_PATH '${BENCHMARK_DIR}/warm_old_versions_files')
+CALL lake.set_option('data_inlining_row_limit', 10);
+@for k in range(20)
+CREATE TABLE lake.w_@{k} AS FROM query(getvariable('wide_columns'));
+@end
+CREATE TABLE lake.last (i INTEGER);
+SELECT CASE WHEN (SELECT count(*) FROM __ducklake_metadata_lake.ducklake_data_file) <> 0
+OR (SELECT count(DISTINCT idt.schema_version) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables idt
+JOIN __ducklake_metadata_lake.ducklake_table t USING (table_id) WHERE t.table_name LIKE 'w\_%' ESCAPE '\') <> 20
+THEN error('every wide table must be inlined in its own schema version') END;
+DETACH lake;
+@seal warm_old_versions
+COPY (SELECT 1) TO '${BENCHMARK_DIR}/warm_old_versions_ready.marker' (FORMAT CSV);
+@attach warm_old_versions AS lake (READ_ONLY)
+
+reload
+@attach warm_old_versions AS lake (READ_ONLY)
+
+# No cleanup: the run is read-only, and the discarded warmup run fills the caches on purpose
+run benchmark/micro/queries/warm_old_schema_version_reads.sql
+
+result_query I
+SELECT * FROM __answer
+----
+499

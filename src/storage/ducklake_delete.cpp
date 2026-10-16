@@ -492,8 +492,10 @@ void DuckLakeDelete::FlushDelete(DuckLakeTransaction &transaction, ClientContext
 		}
 	}
 	if (sorted_deletes.size() != deleted_rows.Count() && !allow_duplicates) {
+		// LCOV_EXCL_START
 		throw NotImplementedException("The same row was updated multiple times - this is not (yet) supported in "
 		                              "DuckLake. Eliminate duplicate matches prior to running the UPDATE");
+		// LCOV_EXCL_STOP
 	}
 	global_state.total_deleted_count += sorted_deletes.size();
 

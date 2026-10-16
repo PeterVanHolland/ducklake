@@ -126,6 +126,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(murmur3_func);
 }
 
+// LCOV_EXCL_START
 void DucklakeExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
@@ -136,6 +137,7 @@ std::string DucklakeExtension::Name() {
 std::string DucklakeExtension::Version() const {
 #ifdef EXT_VERSION_DUCKLAKE
 	return EXT_VERSION_DUCKLAKE;
+// LCOV_EXCL_STOP
 #else
 	return "";
 #endif

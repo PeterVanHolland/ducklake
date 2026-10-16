@@ -112,14 +112,6 @@ struct ColumnFilterInfo {
 
 	ColumnFilterInfo(ColumnFilterInfo &&other) = default;
 	ColumnFilterInfo &operator=(ColumnFilterInfo &&other) = default;
-	ColumnFilterInfo &operator=(const ColumnFilterInfo &other) {
-		if (this != &other) {
-			column_field_index = other.column_field_index;
-			column_type = other.column_type;
-			table_filter = other.table_filter ? other.table_filter->Copy() : nullptr;
-		}
-		return *this;
-	}
 };
 
 enum class DuckLakeFilterNodeType : uint8_t { COLUMN_FILTER, CONJUNCTION_AND, CONJUNCTION_OR, MATCH_NONE };
@@ -277,8 +269,6 @@ public:
 	//! The order of the rows in a flushed file
 	string InlinedFlushOrder(const string &sort_order_sql) const;
 
-	DuckLakeMetadataManager &Get(DuckLakeTransaction &transaction);
-
 	virtual unique_ptr<QueryResult> AttachMetadata(const string &attach_query);
 
 	virtual bool MetadataExists();
@@ -309,7 +299,6 @@ public:
 	//! Rvalue sugar so call sites can pass `R"(...)"` and `StringUtil::Format(...)` directly.
 	//! Named-rvalue decays to an lvalue inside, so the virtual dispatch still picks up the
 	//! string-ref overrides without derived classes needing to add anything.
-	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &&query);
 	unique_ptr<QueryResult> Execute(string &&query);
 	unique_ptr<QueryResult> Query(DuckLakeSnapshot snapshot, string &&query);
 	unique_ptr<QueryResult> Query(string &&query);
@@ -325,7 +314,7 @@ public:
 	//! Both used by the regular metadata-manager methods and by server-side commit, which runs the
 	//! SQL on a fresh Connection without going through the metadata-manager wrapper.
 	static string LatestSnapshotQuery();
-	static string GlobalTableStatsQuery(bool include_exactness, optional_idx table_id = optional_idx());
+	static string GlobalTableStatsQuery(bool include_exactness);
 	//! Pure parsers for the results of the above queries.
 	static unique_ptr<DuckLakeSnapshot> ParseSnapshot(QueryResult &result,
 	                                                  optional_ptr<string> catalog_version = nullptr);
@@ -429,10 +418,7 @@ public:
 	static string WriteNewTableOptions(const vector<DuckLakeConfigOption> &new_options);
 	static string WriteNewColumnTags(const vector<DuckLakeColumnTagInfo> &new_tags);
 	static string WriteNewViewColumnTags(const vector<DuckLakeViewColumnTagInfo> &new_tags);
-	virtual string WriteNewDataFiles(DuckLakeSnapshot &commit_snapshot, const vector<DuckLakeFileInfo> &new_files,
-	                                 const vector<DuckLakeTableInfo> &new_tables,
-	                                 vector<DuckLakeSchemaInfo> &new_schemas_result);
-	//! SQL branch of WriteNewDataFiles, shared with the server-side commit path. Returns SQL with
+	//! SQL that writes new data files, shared with the server-side commit path. Returns SQL with
 	//! {METADATA_CATALOG} / {SNAPSHOT_ID} placeholders. Caller supplies resolved paths (one per file,
 	//! same order) since path policy differs across callers (schema-relative vs. always-absolute).
 	static string WriteNewDataFilesSqlBatch(const vector<DuckLakeFileInfo> &new_files,
@@ -452,8 +438,6 @@ public:
 	static string FormatInlinedDataInsert(const string &inlined_table_name, idx_t row_id_start,
 	                                      bool has_preserved_row_ids, const vector<int64_t> *row_ids,
 	                                      const vector<string> &cells_per_row);
-	virtual string WriteNewInlinedFileDeletes(DuckLakeSnapshot &commit_snapshot,
-	                                          const vector<DuckLakeInlinedFileDeletionInfo> &new_deletes);
 	//! Static deterministic name of the per-table inlined deletion table.
 	static string InlinedFileDeletionTableName(TableIndex table_id);
 	//! Pure SQL builder for inlined file deletions (CREATE TABLE IF NOT EXISTS + INSERT). Sets
@@ -465,7 +449,7 @@ public:
 	string WriteNewInlinedFileDeletesSqlBatch(const vector<DuckLakeInlinedFileDeletionInfo> &new_deletes);
 	//! Get the name of the inlined deletion table for a given table ID
 	virtual string GetInlinedDeletionTableName(TableIndex table_id, DuckLakeSnapshot snapshot,
-	                                           bool create_if_not_exists = false, bool include_local_changes = true);
+	                                           bool include_local_changes = true);
 	//! Probe for the physical inlined-deletion table without aborting the active metadata transaction.
 	virtual bool InlinedDeletionTableExists(const string &table_name);
 	//! Also drops the empty inlined data tables of the replaced tables
@@ -565,7 +549,6 @@ public:
 	shared_ptr<DuckLakeInlinedData> TransformInlinedData(QueryResult &result, const vector<LogicalType> &expected_types,
 	                                                     const string &inlined_table_name);
 
-	virtual void DeleteInlinedData(const DuckLakeInlinedTableInfo &inlined_table);
 	//! The statements deleting the inlined rows and inlined file deletions that the transaction flushed
 	static string GenerateDeleteFlushedInlinedData(const vector<FlushedInlinedTableInfo> &flushed_tables,
 	                                               const map<TableIndex, idx_t> &flushed_file_deletions,
@@ -635,9 +618,6 @@ protected:
 public:
 	//! Get path relative to catalog path
 	DuckLakePath GetRelativePath(const string &path);
-	//! Get path relative to schema path
-	DuckLakePath GetRelativePath(SchemaIndex schema_id, const string &path,
-	                             vector<DuckLakeSchemaInfo> &new_schemas_result);
 	//! Get path relative to table path
 	DuckLakePath GetRelativePath(TableIndex table_id, const string &path, const vector<DuckLakeTableInfo> &new_tables,
 	                             vector<DuckLakeSchemaInfo> &new_schemas_result);
@@ -668,7 +648,6 @@ protected:
 	string FromRelativePath(const DuckLakePath &path, const string &base_path);
 	string FromRelativePath(const DuckLakePath &path);
 	string FromRelativePath(TableIndex table_id, const DuckLakePath &path);
-	string GetPath(SchemaIndex schema_id, vector<DuckLakeSchemaInfo> &new_schemas_result);
 	string GetPath(TableIndex table_id, const vector<DuckLakeTableInfo> &new_tables,
 	               const vector<DuckLakeSchemaInfo> &new_schemas_result);
 	FileSystem &GetFileSystem();
@@ -748,7 +727,6 @@ private:
 protected:
 	DuckLakeTransaction &transaction;
 	mutex paths_lock;
-	map<SchemaIndex, string> schema_paths;
 	map<TableIndex, string> table_paths;
 	bool pending_cache_clear = false;
 };

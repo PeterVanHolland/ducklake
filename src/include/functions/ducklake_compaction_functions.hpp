@@ -100,7 +100,7 @@ public:
 	                                               const DuckLakeTableEntry &table);
 	static unique_ptr<LogicalOperator>
 	PlanRewriteScan(ClientContext &context, Binder &binder, DuckLakeTableEntry &table, DuckLakeCopyInput &copy_input,
-	                bool write_row_id, bool write_snapshot_id,
+	                bool write_snapshot_id,
 	                const std::function<unique_ptr<DuckLakeMultiFileList>(DuckLakeFunctionInfo &)> &create_file_list,
 	                unique_ptr<LogicalCopyToFile> &copy);
 

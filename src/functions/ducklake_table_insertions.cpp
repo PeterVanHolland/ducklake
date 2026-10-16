@@ -66,7 +66,9 @@ static unique_ptr<FunctionData> DuckLakeTableDeletionsBind(ClientContext &contex
 	return DuckLakeTableChangesBind(context, input, return_types, names, DuckLakeScanType::SCAN_DELETIONS);
 }
 
+// LCOV_EXCL_START
 static void DuckLakeChangesExecute(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	// LCOV_EXCL_STOP
 	throw InternalException("DuckLakeChangesExecute should never be called");
 }
 

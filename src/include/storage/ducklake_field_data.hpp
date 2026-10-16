@@ -49,9 +49,6 @@ public:
 	const DuckLakeColumnData &GetColumnData() const {
 		return column_data;
 	}
-	DuckLakeColumnData &GetColumnDataMutable() {
-		return column_data;
-	}
 	const string &Name() const {
 		return name;
 	}

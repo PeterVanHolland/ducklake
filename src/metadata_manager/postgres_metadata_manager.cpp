@@ -332,6 +332,7 @@ bool PostgresMetadataManager::IsDroppedInlinedTableError(const string &message,
 	// the lines after the primary message can quote the failed query
 	auto server_error = GetServerError(message);
 	server_error = server_error.substr(0, server_error.find('\n'));
+	// a failing probe leaves the commit its own error
 	try {
 		for (auto &entry : inlined_tables) {
 			for (auto &table_name : entry.second) {
@@ -345,7 +346,6 @@ bool PostgresMetadataManager::IsDroppedInlinedTableError(const string &message,
 			}
 		}
 	} catch (std::exception &) { // NOLINT
-		                         // the commit reports its own error
 	}
 	return false;
 }

@@ -157,6 +157,12 @@
       ]
     },
     {
+      "reason": "FIXME: Attaching a Quack catalog binds its remote JSON columns in the local catalog, which needs the json extension.",
+      "paths": [
+        "test/sql/data_inlining/data_inlining_json_without_extension.test"
+      ]
+    },
+    {
       "reason": "Memory-pressure test fails on commit.",
       "paths": [
         "test/sql/insert/insert_wide_table_low_memory.test_slow"

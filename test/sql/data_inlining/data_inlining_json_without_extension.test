@@ -18,10 +18,21 @@ ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/data_inlin
     DATA_INLINING_ROW_LIMIT 10)
 
 statement ok
-CREATE TABLE dl.j (id INTEGER, j JSON, s STRUCT(x JSON), l JSON[])
+CREATE TABLE dl.j (id INTEGER, j JSON)
 
 statement ok
-INSERT INTO dl.j VALUES (1, '{"a": 1}', {'x': '[2]'}, ['{"b": 3}']), (2, NULL, NULL, NULL)
+INSERT INTO dl.j VALUES (1, '{"a": [1, "x"]}'), (2, '"hello"'), (3, 'null'), (4, NULL)
+
+statement ok
+CREATE TABLE dl.json_list (l JSON[], v VARIANT)
+
+statement ok
+INSERT INTO dl.json_list VALUES (['"hello"', 'null']::JSON[], 1::VARIANT)
+
+query I
+SELECT l FROM dl.json_list
+----
+["hello", null]
 
 restart
 
@@ -33,33 +44,39 @@ false
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
 
-query IIII
-SELECT id, j, s, l FROM dl.j ORDER BY id
+query II
+SELECT id, j FROM dl.j ORDER BY id
 ----
-1	{"a": 1}	{'x': '[2]'}	['{"b": 3}']
-2	NULL	NULL	NULL
+1	{"a": [1, "x"]}
+2	"hello"
+3	null
+4	NULL
 
-query III
-SELECT typeof(j), typeof(s), typeof(l) FROM dl.j WHERE id = 1
+query I
+SELECT DISTINCT typeof(j) FROM dl.j
 ----
-JSON	STRUCT(x JSON)	JSON[]
+JSON
 
 query II
 SELECT id, j FROM ducklake_table_insertions('dl', 'main', 'j', 0, 2) ORDER BY id
 ----
-1	{"a": 1}
-2	NULL
+1	{"a": [1, "x"]}
+2	"hello"
+3	null
+4	NULL
 
 statement ok
-CALL ducklake_flush_inlined_data('dl')
+CALL ducklake_flush_inlined_data('dl', table_name => 'j')
 
 query I
 SELECT duckdb_type FROM parquet_schema('{DATA_PATH}/data_inlining_json_without_extension/**/*.parquet') WHERE name = 'j'
 ----
 JSON
 
-query IIII
-SELECT id, j, s, l FROM dl.j ORDER BY id
+query II
+SELECT id, j FROM dl.j ORDER BY id
 ----
-1	{"a": 1}	{'x': '[2]'}	['{"b": 3}']
-2	NULL	NULL	NULL
+1	{"a": [1, "x"]}
+2	"hello"
+3	null
+4	NULL

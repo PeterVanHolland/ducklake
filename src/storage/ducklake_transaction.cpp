@@ -237,32 +237,6 @@ void LocalTableChanges::AppendDeleteFiles(TableIndex table_id, const string &dat
 	entry.insert(entry.end(), std::make_move_iterator(files.begin()), std::make_move_iterator(files.end()));
 }
 
-//! Cast the rows to the given types, as an ALTER COLUMN TYPE does not cast the rows that are already inlined
-static void CastInlinedData(ClientContext &context, DuckLakeInlinedData &inlined_data,
-                            const vector<LogicalType> &new_types) {
-	auto &existing_types = inlined_data.data->Types();
-	if (existing_types == new_types) {
-		return;
-	}
-	auto casted_data = make_uniq<ColumnDataCollection>(context, new_types);
-	ColumnDataAppendState append_state;
-	casted_data->InitializeAppend(append_state);
-	for (auto &chunk : inlined_data.data->Chunks()) {
-		DataChunk casted_chunk;
-		casted_chunk.Initialize(context, new_types);
-		for (idx_t col_idx = 0; col_idx < chunk.ColumnCount(); col_idx++) {
-			if (existing_types[col_idx] != new_types[col_idx]) {
-				VectorOperations::Cast(context, chunk.data[col_idx], casted_chunk.data[col_idx], chunk.size());
-			} else {
-				casted_chunk.data[col_idx].Reference(chunk.data[col_idx]);
-			}
-		}
-		casted_chunk.SetChildCardinality(chunk.size());
-		casted_data->Append(append_state, casted_chunk);
-	}
-	inlined_data.data = std::move(casted_data);
-}
-
 void LocalTableChanges::AppendInlinedData(ClientContext &context, TableIndex table_id,
                                           unique_ptr<DuckLakeInlinedData> new_data) {
 	lock_guard<mutex> guard(lock);
@@ -270,7 +244,8 @@ void LocalTableChanges::AppendInlinedData(ClientContext &context, TableIndex tab
 	if (table_changes.new_inlined_data) {
 		// already exists - append
 		auto &existing_data = *table_changes.new_inlined_data;
-		CastInlinedData(context, existing_data, new_data->data->Types());
+		// an ALTER COLUMN TYPE does not cast the rows that are already inlined
+		existing_data.CastTo(context, new_data->data->Types());
 		existing_data.data->Append(*new_data->data);
 		// merge preserved row_ids from update inlining
 		existing_data.MergeRowIds(*new_data, new_data->data->Count());
@@ -367,7 +342,7 @@ void LocalTableChanges::RecomputeOutdatedStats(ClientContext &context) {
 			continue;
 		}
 		auto &table = *inlined_data->outdated_stats_table;
-		CastInlinedData(context, *inlined_data, table.GetColumns().GetColumnTypes());
+		inlined_data->CastTo(context, table.GetColumns().GetColumnTypes());
 		DuckLakeInlineData::RecomputeColumnStats(table, *inlined_data);
 	}
 }

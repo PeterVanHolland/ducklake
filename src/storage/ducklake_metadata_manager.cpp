@@ -954,8 +954,7 @@ void DuckLakeMetadataManager::MigrateInlinedStructValues() {
 					candidates.emplace_back(std::move(old_text), std::move(*new_text));
 				}
 			}
-			// a text that another rewrite produces is kept, so a later batch cannot rewrite the result of an earlier
-			// one
+			// a text that another rewrite produces is kept, so no batch rewrites the result of another
 			vector<pair<string, string>> rewrites;
 			for (auto &candidate : candidates) {
 				if (new_texts.find(candidate.first) == new_texts.end()) {
@@ -1260,7 +1259,7 @@ string DuckLakeMetadataManager::GetInlinedTableColumnsSql(optional_idx table_id,
 	}
 	auto parent_select = with_fields ? ", col.parent_column" : "";
 	auto parent_filter = with_fields ? "" : " AND col.parent_column IS NULL";
-	auto order = with_fields ? "\nORDER BY inlined.table_name, col.parent_column NULLS FIRST, col.column_order" : "";
+	auto order = with_fields ? "ORDER BY inlined.table_name, col.parent_column NULLS FIRST, col.column_order" : "";
 	return StringUtil::Format(R"(
 WITH inlined AS (
 	SELECT idt.table_id, idt.table_name, COALESCE(sv.begin_snapshot, (
@@ -1273,8 +1272,8 @@ WITH inlined AS (
 SELECT inlined.table_name, col.column_name, col.column_type, col.column_id%s
 FROM inlined
 JOIN {METADATA_CATALOG}.ducklake_column col ON col.table_id = inlined.table_id%s
-WHERE col.begin_snapshot <= inlined.snapshot_id AND (col.end_snapshot IS NULL OR col.end_snapshot > inlined.snapshot_id)%s
-)",
+WHERE col.begin_snapshot <= inlined.snapshot_id AND (col.end_snapshot IS NULL OR col.end_snapshot > inlined.snapshot_id)
+%s)",
 	                          table_filter, parent_select, parent_filter, order);
 }
 

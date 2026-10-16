@@ -12,6 +12,7 @@
 #include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/common/type_visitor.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "storage/ducklake_catalog.hpp"
 #include "common/ducklake_types.hpp"
 #include "storage/ducklake_schema_entry.hpp"
@@ -3040,6 +3041,12 @@ string DuckLakeMetadataManager::GetColumnTypeInternal(const LogicalType &column_
 	return column_type.ToString();
 }
 
+//! JSON is read as VARCHAR from the metadata catalog, so that the read needs no json extension
+static LogicalType InlinedReadType(const LogicalType &type) {
+	return TypeVisitor::VisitReplace(
+	    type, [](const LogicalType &child) { return child.IsJSONType() ? LogicalType::VARCHAR : child; });
+}
+
 string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const LogicalType &type) {
 	auto &metadata_type = transaction.GetCatalog().MetadataType();
 	if (metadata_type.empty() || metadata_type == "duckdb" || metadata_type == "quack" ||
@@ -3052,7 +3059,7 @@ string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const L
 		expression = "decode(" + expression + ")";
 	}
 	auto storage_type = DuckLakeUtil::GetInlinedStorageType(*this, type);
-	expression = "CAST(" + expression + " AS " + storage_type.ToString() + ")";
+	expression = "CAST(" + expression + " AS " + InlinedReadType(storage_type).ToString() + ")";
 	if (storage_type != type) {
 		expression = DuckLakeUtil::InlinedVariantExpression(expression, type, false);
 	}
@@ -3820,16 +3827,38 @@ shared_ptr<DuckLakeInlinedData> DuckLakeMetadataManager::TransformInlinedData(Qu
 		                            "but read %llu",
 		                            inlined_table_name, expected_types.size(), result_types.size());
 	}
+	bool cast_json = false;
 	for (idx_t i = 0; i < expected_types.size(); i++) {
-		if (result_types[i] != expected_types[i]) {
+		if (result_types[i] == expected_types[i]) {
+			continue;
+		}
+		if (result_types[i] != InlinedReadType(expected_types[i])) {
 			throw InvalidInputException("Failed to read inlined data from DuckLake table \"%s\": expected %s for "
 			                            "column %llu but read %s",
 			                            inlined_table_name, expected_types[i], i + 1, result_types[i]);
 		}
+		cast_json = true;
 	}
 	auto data = make_uniq<ColumnDataCollection>(*context, expected_types);
+	DataChunk json_chunk;
+	if (cast_json) {
+		json_chunk.Initialize(*context, expected_types);
+	}
 	while (auto chunk = result.Fetch()) {
-		data->Append(*chunk);
+		if (!cast_json) {
+			data->Append(*chunk);
+			continue;
+		}
+		json_chunk.Reset();
+		for (idx_t i = 0; i < expected_types.size(); i++) {
+			if (result_types[i] == expected_types[i]) {
+				json_chunk.data[i].Reference(chunk->data[i]);
+			} else {
+				VectorOperations::DefaultCast(chunk->data[i], json_chunk.data[i], chunk->size());
+			}
+		}
+		json_chunk.SetCardinality(*chunk);
+		data->Append(json_chunk);
 	}
 	auto inlined_data = make_shared_ptr<DuckLakeInlinedData>();
 	inlined_data->data = std::move(data);

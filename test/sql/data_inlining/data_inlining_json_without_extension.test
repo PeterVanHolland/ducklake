@@ -1,0 +1,65 @@
+# name: test/sql/data_inlining/data_inlining_json_without_extension.test
+# description: Inlined JSON columns are read and flushed while the json extension is not loaded
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/data_inlining_json_without_extension.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+LOAD json
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/data_inlining_json_without_extension',
+    DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.j (id INTEGER, j JSON, s STRUCT(x JSON), l JSON[])
+
+statement ok
+INSERT INTO dl.j VALUES (1, '{"a": 1}', {'x': '[2]'}, ['{"b": 3}']), (2, NULL, NULL, NULL)
+
+restart
+
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'json'
+----
+false
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+
+query IIII
+SELECT id, j, s, l FROM dl.j ORDER BY id
+----
+1	{"a": 1}	{'x': '[2]'}	['{"b": 3}']
+2	NULL	NULL	NULL
+
+query III
+SELECT typeof(j), typeof(s), typeof(l) FROM dl.j WHERE id = 1
+----
+JSON	STRUCT(x JSON)	JSON[]
+
+query II
+SELECT id, j FROM ducklake_table_insertions('dl', 'main', 'j', 0, 2) ORDER BY id
+----
+1	{"a": 1}
+2	NULL
+
+statement ok
+CALL ducklake_flush_inlined_data('dl')
+
+query I
+SELECT duckdb_type FROM parquet_schema('{DATA_PATH}/data_inlining_json_without_extension/**/*.parquet') WHERE name = 'j'
+----
+JSON
+
+query IIII
+SELECT id, j, s, l FROM dl.j ORDER BY id
+----
+1	{"a": 1}	{'x': '[2]'}	['{"b": 3}']
+2	NULL	NULL	NULL

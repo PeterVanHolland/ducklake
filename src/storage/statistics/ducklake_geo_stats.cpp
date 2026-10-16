@@ -102,7 +102,9 @@ bool DuckLakeColumnGeoStats::ParseStats(const string &stats_name, const vector<V
 			return true;
 		}
 	}
+	// LCOV_EXCL_START
 	return false;
+	// LCOV_EXCL_STOP
 }
 
 unique_ptr<BaseStatistics> DuckLakeColumnGeoStats::ToStats() const {

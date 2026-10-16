@@ -179,7 +179,9 @@ bool DuckLakeInitializer::DuckLakeIsInitialized(DuckLakeTransaction &transaction
 			return true;
 		}
 	}
+	// LCOV_EXCL_START
 	return false;
+	// LCOV_EXCL_STOP
 }
 
 void DuckLakeInitializer::InitializeDataPath() {
@@ -292,8 +294,10 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction,
 				catalog_version = DuckLakeVersion::V1_1_DEV_1;
 			}
 			if (catalog_version != DUCKLAKE_LATEST_VERSION) {
+				// LCOV_EXCL_START
 				throw NotImplementedException("Unsupported DuckLake version '%s'",
 				                              DuckLakeVersionToString(catalog_version));
+				// LCOV_EXCL_STOP
 			}
 			resolved_version = catalog_version;
 		}

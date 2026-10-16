@@ -152,8 +152,10 @@ string ToSQLString(DuckLakeMetadataManager &metadata_manager, const Value &value
 		return EscapeVarcharForSQL(value.ToString());
 	case LogicalTypeId::VARIANT: {
 		if (!use_native_type) {
+			// LCOV_EXCL_START
 			throw InternalException("VARIANT values must be encoded as Parquet Variant blobs before being "
 			                        "inlined in this catalog type");
+			// LCOV_EXCL_STOP
 		}
 		return value.ToSQLString();
 	}
@@ -193,7 +195,6 @@ string ToByteaHexLiteral(const string &raw_bytes) {
 }
 
 string DuckLakeUtil::ValueToSQL(DuckLakeMetadataManager &metadata_manager, ClientContext &context, const Value &val) {
-	// FIXME: this should be upstreamed
 	if (val.IsNull()) {
 		return val.ToString();
 	}
@@ -376,9 +377,59 @@ void DuckLakeUtil::ValidateCanEnableInlining(const ColumnList &columns, bool pre
 	}
 }
 
+string DuckLakeUtil::ReplacePlaceholders(const string &sql, const vector<pair<string, string>> &replacements) {
+	string result;
+	result.reserve(sql.size());
+	idx_t pos = 0;
+	while (pos < sql.size()) {
+		auto next = sql.find_first_of("'\"{", pos);
+		if (next == string::npos) {
+			result.append(sql, pos, string::npos);
+			break;
+		}
+		result.append(sql, pos, next - pos);
+		pos = next;
+		auto c = sql[pos];
+		if (c == '{') {
+			bool replaced = false;
+			for (auto &replacement : replacements) {
+				if (sql.compare(pos, replacement.first.size(), replacement.first) == 0) {
+					result += replacement.second;
+					pos += replacement.first.size();
+					replaced = true;
+					break;
+				}
+			}
+			if (!replaced) {
+				result += c;
+				pos++;
+			}
+			continue;
+		}
+		// copy the quoted text up to its closing quote, a doubled quote does not close it
+		idx_t end = pos + 1;
+		while (end < sql.size()) {
+			if (sql[end] == c) {
+				if (end + 1 < sql.size() && sql[end + 1] == c) {
+					end += 2;
+					continue;
+				}
+				break;
+			}
+			end++;
+		}
+		end = MinValue<idx_t>(end + 1, sql.size());
+		result.append(sql, pos, end - pos);
+		pos = end;
+	}
+	return result;
+}
+
 string DuckLakeUtil::ReplaceSkippingQuotes(const string &sql, const string &from, const string &to) {
 	if (from.empty()) {
+		// LCOV_EXCL_START
 		return sql;
+		// LCOV_EXCL_STOP
 	}
 
 	auto tokens = Parser::Tokenize(sql);
@@ -405,7 +456,9 @@ string DuckLakeUtil::ReplaceSkippingQuotes(const string &sql, const string &from
 
 	while (pos < sql.size()) {
 		while (range_idx < no_replace_ranges.size() && pos >= no_replace_ranges[range_idx].second) {
+			// LCOV_EXCL_START
 			range_idx++;
+			// LCOV_EXCL_STOP
 		}
 
 		// If inside a quoted range, copy verbatim to its end
@@ -556,7 +609,9 @@ void DuckLakeUtil::CopyExtensionSettings(ClientContext &from, ClientContext &to)
 	for (auto &entry : db_config.GetExtensionSettings()) {
 		auto &option = entry.second;
 		if (!option.setting_index.IsValid()) {
+			// LCOV_EXCL_START
 			continue;
+			// LCOV_EXCL_STOP
 		}
 		auto setting_index = option.setting_index.GetIndex();
 		// these change the types read from the metadata and data files
@@ -638,6 +693,9 @@ static string ParseRowGroupSizeBytes(ClientContext &, const string &, const Valu
 	auto row_group_size_bytes = DBConfig::ParseMemoryLimitOrMaximum(val.ToString());
 	if (row_group_size_bytes == 0) {
 		throw NotImplementedException("Row group size bytes cannot be 0");
+	}
+	if (row_group_size_bytes == NumericLimits<idx_t>::Maximum()) {
+		throw InvalidInputException("Row group size bytes must be a finite size, not \"%s\"", val.ToString());
 	}
 	return to_string(row_group_size_bytes);
 }

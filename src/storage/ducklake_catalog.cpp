@@ -593,7 +593,9 @@ static DuckLakeCatalogInfo CatalogInfoForTable(const DuckLakeCatalogInfo &info, 
 		}
 	}
 	auto schema_id = result.tables.empty() ? SchemaIndex() : result.tables[0].schema_id;
-	while (schema_id.IsValid()) {
+	set<SchemaIndex> added_schemas;
+	// a cycle of parents stops at a schema that was added already, building the catalog reports it
+	while (schema_id.IsValid() && added_schemas.insert(schema_id).second) {
 		optional_ptr<const DuckLakeSchemaInfo> parent;
 		for (auto &schema : info.schemas) {
 			if (schema.id == schema_id) {
@@ -660,23 +662,37 @@ void DuckLakeCatalog::LoadTablesAtSchemaVersions(DuckLakeTransaction &transactio
 		auto &table_ids = entry.second;
 		auto key = SchemaCacheKey(schema_version);
 		auto generation = SchemaCacheGeneration(schema_version);
-		if (pins.Get(key, generation) || (table_ids.size() == 1 && pins.GetTable(key, table_ids[0], generation)) ||
-		    cache.Get<DuckLakeSchemaCacheEntry>(SchemaCacheEntryKey(schema_version, generation)) ||
-		    cache.Get<DuckLakeCatalogInfoCacheEntry>(CatalogInfoCacheKey(schema_version, generation))) {
+		if (pins.Get(key, generation)) {
 			continue;
 		}
-		DuckLakeSnapshot snapshot(GetBeginSnapshotForSchemaVersion(table_ids[0], schema_version, transaction),
-		                          schema_version, 0, 0);
-		if (table_ids.size() > 1) {
-			// tables that share a schema version are often used together, so the metadata of all of them is cached
-			auto info_entry = GetCatalogInfoCacheEntry(transaction, snapshot, generation);
-			for (auto &table_id : table_ids) {
-				PinTableFromInfo(transaction, key, generation, info_entry->info, table_id);
+		auto cached = cache.Get<DuckLakeSchemaCacheEntry>(SchemaCacheEntryKey(schema_version, generation));
+		if (cached) {
+			pins.Pin(key, generation, std::move(cached));
+			continue;
+		}
+		vector<TableIndex> missing_tables;
+		for (auto &table_id : table_ids) {
+			if (!pins.GetTable(key, table_id, generation)) {
+				missing_tables.push_back(table_id);
 			}
+		}
+		if (missing_tables.empty()) {
 			continue;
 		}
-		auto info = transaction.GetMetadataManager().GetCatalogForSnapshot(snapshot, table_ids);
-		PinTableFromInfo(transaction, key, generation, info, table_ids[0]);
+		auto info_entry = cache.Get<DuckLakeCatalogInfoCacheEntry>(CatalogInfoCacheKey(schema_version, generation));
+		if (!info_entry) {
+			DuckLakeSnapshot snapshot(GetBeginSnapshotForSchemaVersion(table_ids[0], schema_version, transaction),
+			                          schema_version, 0, 0);
+			if (table_ids.size() == 1) {
+				auto info = transaction.GetMetadataManager().GetCatalogForSnapshot(snapshot, table_ids);
+				PinTableFromInfo(transaction, key, generation, info, table_ids[0]);
+				continue;
+			}
+			info_entry = GetCatalogInfoCacheEntry(transaction, snapshot, generation);
+		}
+		for (auto &table_id : missing_tables) {
+			PinTableFromInfo(transaction, key, generation, info_entry->info, table_id);
+		}
 	}
 }
 
@@ -711,8 +727,8 @@ shared_ptr<DuckLakeCatalogInfoCacheEntry> DuckLakeCatalog::GetCatalogInfoCacheEn
 	}
 	auto info = transaction.GetMetadataManager().GetCatalogForSnapshot(snapshot);
 	// tables of old schema versions are built without the views and macros
-	info.views.clear();
-	info.macros.clear();
+	info.views = vector<DuckLakeViewInfo>();
+	info.macros = vector<DuckLakeMacroInfo>();
 	return cache.GetOrCreate<DuckLakeCatalogInfoCacheEntry>(key, std::move(info));
 }
 

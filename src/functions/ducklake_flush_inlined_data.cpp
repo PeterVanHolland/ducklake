@@ -317,7 +317,7 @@ unique_ptr<LogicalOperator> DuckLakeDataFlusher::GenerateFlushCommand() {
 	DuckLakeCopyInput copy_input(context, table);
 	unique_ptr<LogicalCopyToFile> copy;
 	auto root = DuckLakeCompactor::PlanRewriteScan(
-	    context, binder, table, copy_input, true, true,
+	    context, binder, table, copy_input, true,
 	    [&](DuckLakeFunctionInfo &read_info) {
 		    read_info.scan_type = DuckLakeScanType::SCAN_FOR_FLUSH;
 		    read_info.flush_sort_order_sql = sort_order_sql;

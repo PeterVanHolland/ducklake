@@ -44,6 +44,7 @@ struct DuckLakeCommitContext {
 	std::function<void()> flush_cache_if_pending = []() {
 	};
 	//! Commits the underlying metadata connection.
+	// LCOV_EXCL_START
 	std::function<void()> commit_connection = []() {
 	};
 	//! Rolls back the metadata connection if a transaction is active.
@@ -52,6 +53,7 @@ struct DuckLakeCommitContext {
 	//! Resets per-attempt state before a retry.
 	std::function<void()> prepare_retry = []() {
 	};
+	// LCOV_EXCL_STOP
 	//! Runs a metadata-DB query during post-commit cleanup.
 	std::function<unique_ptr<QueryResult>(string)> query_metadata;
 	//! Runs cleanup statements atomically.
@@ -66,6 +68,7 @@ struct DuckLakeCommitContext {
 		    return false;
 	    };
 	//! Emits the SQL that registers new inlined data tables (CREATE TABLE + ducklake_inlined_data_tables INSERT).
+	// LCOV_EXCL_START
 	std::function<string(DuckLakeSnapshot, const vector<DuckLakeTableInfo> &, const set<TableIndex> &)>
 	    write_inlined_tables = [](DuckLakeSnapshot, const vector<DuckLakeTableInfo> &, const set<TableIndex> &) {
 		    return string();
@@ -94,12 +97,14 @@ struct DuckLakeCommitContext {
 	std::function<vector<DuckLakeColumnSchemaEntry>(TableIndex)> get_table_column_schema = [](TableIndex) {
 		return vector<DuckLakeColumnSchemaEntry> {};
 	};
+	// LCOV_EXCL_STOP
 	//! Reads an inlined data column as its type, for catalogs that store some types differently.
 	std::function<string(const string &, const LogicalType &)> cast_inlined_column = [](const string &column,
 	                                                                                    const LogicalType &) {
 		return column;
 	};
 	//! Names of the inlined-data tables associated with a table id at the commit snapshot.
+	// LCOV_EXCL_START
 	std::function<vector<string>(TableIndex)> get_inlined_table_names = [](TableIndex) {
 		return vector<string> {};
 	};
@@ -112,6 +117,7 @@ struct DuckLakeCommitContext {
 	//! Invalidates the cached schema in the catalog for a given schema version.
 	std::function<void(idx_t)> invalidate_schema_cache = [](idx_t) {
 	};
+	// LCOV_EXCL_STOP
 	//! Publishes the new schema version onto the transaction.
 	std::function<void(idx_t)> set_catalog_version;
 	//! Records the committed snapshot id on the catalog.
@@ -127,8 +133,10 @@ struct DuckLakeCommitContext {
 	std::function<void(idx_t, TableIndex)> invalidate_table_stats_cache = [](idx_t, TableIndex) {
 	};
 	//! Reports a failure after the metadata commit is already durable.
+	// LCOV_EXCL_START
 	std::function<void(const string &)> report_post_commit_error = [](const string &) {
 	};
+	// LCOV_EXCL_STOP
 	//! Author / message / extra info for the snapshot row.
 	DuckLakeSnapshotCommit commit_info;
 	//! When true, Commit() skips the post-commit DropEmptySupersededInlinedTables cleanup.

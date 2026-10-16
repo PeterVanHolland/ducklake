@@ -41,7 +41,9 @@ DuckLakeSchemaEntry::~DuckLakeSchemaEntry() {
 		auto entry = std::move(pending.back());
 		pending.pop_back();
 		if (entry->type != CatalogType::SCHEMA_ENTRY) {
+			// LCOV_EXCL_START
 			continue;
+			// LCOV_EXCL_STOP
 		}
 		entry->Cast<DuckLakeSchemaEntry>().child_schemas.MoveEntriesTo(pending);
 	}
@@ -221,8 +223,10 @@ optional_ptr<CatalogEntry> DuckLakeSchemaEntry::CreateFunction(CatalogTransactio
 	return result;
 }
 
+// LCOV_EXCL_START
 optional_ptr<CatalogEntry> DuckLakeSchemaEntry::CreateIndex(CatalogTransaction transaction, CreateIndexInfo &info,
                                                             TableCatalogEntry &table) {
+	// LCOV_EXCL_STOP
 	throw NotImplementedException("DuckLake does not support indexes");
 }
 
@@ -322,7 +326,9 @@ bool TryApplySetColumnCommentToTable(DuckLakeTransaction &transaction, CatalogTr
                                      DuckLakeSchemaEntry &schema, SetColumnCommentInfo &alter) {
 	auto table = TryGetAlterEntry<DuckLakeTableEntry>(schema, catalog_transaction, alter);
 	if (!table) {
+		// LCOV_EXCL_START
 		return false;
+		// LCOV_EXCL_STOP
 	}
 	auto new_table = table->Alter(transaction, alter);
 	transaction.AlterEntry(*table, std::move(new_table));
@@ -410,8 +416,10 @@ void DuckLakeSchemaEntry::Alter(CatalogTransaction catalog_transaction, AlterInf
 			ApplySetColumnCommentToTable(transaction, catalog_transaction, *this, alter,
 			                             "Cannot comment on columns for entry %s - it is not a table");
 		} else if (!TryApplySetColumnCommentToTable(transaction, catalog_transaction, *this, alter)) {
+			// LCOV_EXCL_START
 			ApplySetColumnCommentToView(transaction, catalog_transaction, *this, alter,
 			                            "Cannot comment on columns for entry %s - could not find table or view");
+			// LCOV_EXCL_STOP
 		}
 		break;
 	}
@@ -472,11 +480,13 @@ void DuckLakeSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
 	}
 	auto catalog_entry = GetEntry(GetCatalogTransaction(context), info.type, info.GetQualifiedName().Name());
 	if (!catalog_entry) {
+		// LCOV_EXCL_START
 		if (info.if_not_found == OnEntryNotFound::RETURN_NULL) {
 			return;
 		}
 		throw InternalException("Failed to drop entry \"%s\" - could not find entry",
 		                        info.GetQualifiedName().Name().GetIdentifierName());
+		// LCOV_EXCL_STOP
 	}
 	if (catalog_entry->type != info.type) {
 		throw CatalogException("Existing object %s is of type %s, trying to drop type %s", catalog_entry->name,

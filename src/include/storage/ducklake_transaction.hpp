@@ -345,6 +345,8 @@ public:
 	//! Post-commit cleanup of empty inlined-data tables superseded by later schema versions.
 	void DropEmptySupersededInlinedTablesClientSide();
 	void ReportPostCommitError(const string &message);
+	//! Whether the error names an inlined table the commit read that is no longer registered
+	bool ReadInlinedTableDropped(const string &message, const map<TableIndex, vector<string>> &read_inlined_tables);
 
 	static DuckLakeGlobalStatsInfo ConvertNewGlobalStats(TableIndex table_id,
 	                                                     const DuckLakeNewGlobalStats &new_global_stats);

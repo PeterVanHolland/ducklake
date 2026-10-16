@@ -1473,6 +1473,48 @@ void DuckLakeTransaction::DropEmptySupersededInlinedTablesClientSide() {
 	}
 }
 
+//! Whether the message names the identifier and not a longer one that contains it
+static bool MentionsIdentifier(const string &message, const string &identifier) {
+	auto is_identifier_char = [](char c) {
+		return StringUtil::CharacterIsAlphaNumeric(c) || c == '_';
+	};
+	for (auto pos = message.find(identifier); pos != string::npos; pos = message.find(identifier, pos + 1)) {
+		auto end = pos + identifier.size();
+		if ((pos == 0 || !is_identifier_char(message[pos - 1])) &&
+		    (end == message.size() || !is_identifier_char(message[end]))) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool DuckLakeTransaction::ReadInlinedTableDropped(const string &message,
+                                                  const map<TableIndex, vector<string>> &read_inlined_tables) {
+	// the failed transaction still sees the registrations of its own snapshot
+	if (connection->context->transaction.HasActiveTransaction()) {
+		return false;
+	}
+	for (auto &entry : read_inlined_tables) {
+		for (auto &table_name : entry.second) {
+			if (!MentionsIdentifier(message, table_name)) {
+				continue;
+			}
+			auto result = metadata_manager->Query(DuckLakeMetadataManager::GetInlinedTableNamesSql(entry.first));
+			if (result->HasError()) {
+				return false;
+			}
+			bool registered = false;
+			for (auto &row : *result) {
+				registered = registered || row.GetValue<string>(0) == table_name;
+			}
+			if (!registered) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 void DuckLakeTransaction::ReportPostCommitError(const string &message) {
 	DUCKDB_LOG_WARNING(db, StringUtil::Format("DuckLake post-commit cleanup failed: %s", message));
 }
@@ -1481,6 +1523,8 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
                                         const TransactionChangeInformation &transaction_changes,
                                         const DuckLakeRetryConfig &retry_config) {
 	vector<unique_ptr<SQLStatement>> inlined_inserts;
+	// inlined tables read at the transaction snapshot, which another attach can drop meanwhile
+	map<TableIndex, vector<string>> read_inlined_tables;
 	DuckLakeCommitContext context;
 	context.conflict_query_executor = [&](string q) -> unique_ptr<QueryResult> {
 		auto result = metadata_manager->Query(transaction_snapshot, q);
@@ -1512,7 +1556,8 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		return result;
 	};
 	context.is_retryable_metadata_error = [&](const string &message) {
-		return metadata_manager->IsRetryableCommitError(message);
+		return metadata_manager->IsRetryableCommitError(message) ||
+		       ReadInlinedTableDropped(message, read_inlined_tables);
 	};
 	context.flush_cache_if_pending = [&]() {
 		if (metadata_manager->TakePendingCacheClear()) {
@@ -1531,6 +1576,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	};
 	context.prepare_retry = [&]() {
 		inlined_inserts.clear();
+		read_inlined_tables.clear();
 		metadata_manager->ClearInlinedTableCaches();
 		connection->BeginTransaction();
 		snapshot.reset();
@@ -1618,6 +1664,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		for (auto &t : table->GetInlinedDataTables(*this, transaction_snapshot)) {
 			names.push_back(t.table_name);
 		}
+		read_inlined_tables[table_id] = names;
 		return names;
 	};
 	context.get_net_data_file_row_count = [&](TableIndex table_id) -> idx_t {

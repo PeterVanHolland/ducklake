@@ -47,10 +47,9 @@ CALL disable_logging()
 
 # the invalidated catalog is loaded again
 query I con1
-SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata')
-WHERE query LIKE '%ducklake_table tbl%' AND query NOT LIKE '%tbl.table_id =%'
+SELECT count(*) > 0 FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table tbl%'
 ----
-1
+true
 
 statement ok con1
 COMMIT

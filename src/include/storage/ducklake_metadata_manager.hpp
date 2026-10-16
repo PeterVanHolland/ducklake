@@ -336,16 +336,15 @@ public:
 	//! Whether the result contains a column with the given name
 	static bool ResultHasColumn(QueryResult &result, const string &name);
 
-	//! The catalog of the snapshot, or only its schemas and the given table
-	virtual DuckLakeCatalogInfo GetCatalogForSnapshot(DuckLakeSnapshot snapshot, TableIndex only_table = TableIndex());
+	//! Get the catalog information for a specific snapshot
+	virtual DuckLakeCatalogInfo GetCatalogForSnapshot(DuckLakeSnapshot snapshot);
 	//! Transaction-free build of the catalog snapshot. Caller supplies a snapshot-aware query
 	//! executor (responsible for `{METADATA_CATALOG}` / `{SNAPSHOT_ID}` substitution) plus the
 	//! data path and separator used for resolving stored relative paths.
 	static DuckLakeCatalogInfo
 	BuildCatalogForSnapshot(DuckLakeSnapshot snapshot,
 	                        const std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> &query_executor,
-	                        const string &base_data_path, const string &separator, bool supports_v1_1_metadata = false,
-	                        TableIndex only_table = TableIndex());
+	                        const string &base_data_path, const string &separator, bool supports_v1_1_metadata = false);
 	//! The global stats of every table of the snapshot
 	virtual vector<DuckLakeGlobalStatsInfo> GetGlobalTableStats(DuckLakeSnapshot snapshot);
 	//! Get the record count of every table that has global stats

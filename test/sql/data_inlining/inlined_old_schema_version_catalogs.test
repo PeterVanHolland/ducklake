@@ -82,18 +82,16 @@ SELECT sum(a) FROM lake.t
 ----
 6
 
-# each old schema version of t is loaded once and alone, also after changes to another table
+# each old schema version of t is loaded once, also after changes to another table
 query I
-SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table tbl%' AND query LIKE '%tbl.table_id =%'
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table tbl%'
 ----
-2
+7
 
 statement ok
-SET VARIABLE whole_loads = (SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata')
-WHERE query LIKE '%ducklake_table tbl%' AND query NOT LIKE '%tbl.table_id =%')
+SET VARIABLE loads = (SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table tbl%')
 
-# expiring the old snapshots invalidates the old schema versions, and the stale catalog of p does not make q load all
-# of the version they share
+# expiring the old snapshots invalidates the schema version p and q share, so q loads it again
 statement ok
 BEGIN
 
@@ -116,9 +114,7 @@ COMMIT
 statement ok
 CALL disable_logging()
 
-query II
-SELECT count(*) FILTER (WHERE query LIKE '%tbl.table_id =%'),
-	count(*) FILTER (WHERE query NOT LIKE '%tbl.table_id =%') - getvariable('whole_loads')
-FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table tbl%'
+query I
+SELECT count(*) - getvariable('loads') FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table tbl%'
 ----
-4	0
+2

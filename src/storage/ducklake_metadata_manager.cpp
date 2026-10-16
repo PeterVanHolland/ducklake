@@ -730,7 +730,7 @@ public:
 	}
 
 	bool Read(const LogicalType &type, Value &result) {
-		return ReadValue(type, result) && pos == text.size();
+		return ReadStruct(type, result) && pos == text.size();
 	}
 
 private:
@@ -745,26 +745,11 @@ private:
 		return true;
 	}
 
-	//! A quoted string with doubled quotes
 	bool ReadQuoted(string &result) {
-		if (!Consume("'")) {
-			return false;
-		}
-		while (pos < text.size()) {
-			auto c = text[pos++];
-			if (c != '\'') {
-				result += c;
-			} else if (pos < text.size() && text[pos] == '\'') {
-				result += c;
-				pos++;
-			} else {
-				return true;
-			}
-		}
-		return false;
+		return StringUtil::TryParseQuotedString(text, pos, result, '\'');
 	}
 
-	//! The text up to the next field of the struct, with nested brackets and quotes of the value text
+	//! The text up to the next field of the struct, with the nested brackets and quotes of value text
 	bool ReadUntilField(string &result) {
 		idx_t depth = 0;
 		bool quoted = false;
@@ -794,8 +779,13 @@ private:
 		return !quoted && depth == 0 && !result.empty();
 	}
 
+	bool ReadCast(string &content) {
+		string type_name;
+		return Consume("CAST(") && ReadQuoted(content) && Consume(" AS ") && ReadUntilField(type_name) && Consume(")");
+	}
+
 	bool ReadStruct(const LogicalType &type, Value &result) {
-		if (!Consume("{")) {
+		if (type.id() != LogicalTypeId::STRUCT || !Consume("{")) {
 			return false;
 		}
 		auto &child_types = StructType::GetChildTypes(type);
@@ -818,26 +808,58 @@ private:
 		return true;
 	}
 
+	//! Accepts only the form DuckLake 1.0 wrote for the type
 	bool ReadValue(const LogicalType &type, Value &result) {
 		if (Consume("NULL")) {
 			result = Value(type);
 			return true;
 		}
-		if (type.id() == LogicalTypeId::STRUCT) {
-			return ReadStruct(type, result);
-		}
 		string content;
-		if (Consume("CAST(")) {
-			string type_name;
-			if (!ReadQuoted(content) || !Consume(" AS ") || !ReadUntilField(type_name) || !Consume(")")) {
-				return false;
-			}
-		} else if (text.compare(pos, 1, "'") == 0) {
+		switch (type.id()) {
+		case LogicalTypeId::STRUCT:
+			return ReadStruct(type, result);
+		case LogicalTypeId::VARCHAR:
+		case LogicalTypeId::ENUM:
 			if (!ReadQuoted(content)) {
 				return false;
 			}
-		} else if (!ReadUntilField(content)) {
-			return false;
+			break;
+		case LogicalTypeId::UUID:
+		case LogicalTypeId::DATE:
+		case LogicalTypeId::TIME:
+		case LogicalTypeId::TIME_NS:
+		case LogicalTypeId::TIMESTAMP:
+		case LogicalTypeId::TIME_TZ:
+		case LogicalTypeId::TIMESTAMP_TZ:
+		case LogicalTypeId::TIMESTAMP_TZ_NS:
+		case LogicalTypeId::TIMESTAMP_SEC:
+		case LogicalTypeId::TIMESTAMP_MS:
+		case LogicalTypeId::TIMESTAMP_NS:
+		case LogicalTypeId::BLOB:
+		case LogicalTypeId::GEOMETRY:
+		case LogicalTypeId::INTERVAL:
+			if (!ReadCast(content)) {
+				return false;
+			}
+			break;
+		case LogicalTypeId::FLOAT:
+		case LogicalTypeId::DOUBLE:
+			if (text.compare(pos, 5, "CAST(") == 0 ? !ReadCast(content) : !ReadUntilField(content)) {
+				return false;
+			}
+			break;
+		case LogicalTypeId::LIST:
+		case LogicalTypeId::ARRAY:
+		case LogicalTypeId::MAP:
+			if (!ReadUntilField(content)) {
+				return false;
+			}
+			break;
+		default:
+			if (type.IsNested() || !ReadUntilField(content)) {
+				return false;
+			}
+			break;
 		}
 		auto value = Value(content).DefaultTryCastAs(type);
 		if (!value) {
@@ -847,6 +869,27 @@ private:
 		return true;
 	}
 };
+
+//! The text DuckLake 1.1 writes for a STRUCT value that DuckLake 1.0 wrote as a literal, or nothing when it is kept
+static optional<string> V10StructLiteralToText(const string &text, const LogicalType &type) {
+	Value value;
+	if (!V10StructLiteralReader(text).Read(type, value)) {
+		return nullopt;
+	}
+	// newer writers write no casts but escape quotes and backslashes, so a text with a backslash and no cast is kept
+	if (!StringUtil::Contains(text, "CAST(")) {
+		auto current = Value(text).DefaultTryCastAs(type);
+		if (current && (Value::NotDistinctFrom(*current, value) || StringUtil::Contains(text, "\\"))) {
+			return nullopt;
+		}
+	}
+	auto new_text = value.ToString();
+	auto read_back = Value(new_text).DefaultTryCastAs(type);
+	if (!read_back || !Value::NotDistinctFrom(*read_back, value)) {
+		return nullopt;
+	}
+	return new_text;
+}
 
 void DuckLakeMetadataManager::MigrateInlinedStructValues() {
 	if (TypeIsNativelySupported(LogicalType::STRUCT({{"x", LogicalType::INTEGER}}))) {
@@ -875,8 +918,9 @@ void DuckLakeMetadataManager::MigrateInlinedStructValues() {
 			    table_name, column_name);
 		}
 	}
+	static constexpr idx_t VALUES_PER_UPDATE = 1000;
 	for (auto &entry : table_columns) {
-		auto &table_name = entry.first;
+		auto table_name = SQLIdentifier::ToString(entry.first);
 		string updates;
 		for (auto &column : entry.second) {
 			if (column.children.empty() || !StringUtil::CIEquals(column.type, "struct")) {
@@ -885,24 +929,28 @@ void DuckLakeMetadataManager::MigrateInlinedStructValues() {
 			auto type = DuckLakeTypes::FromColumnInfo(column);
 			auto column_name = SQLIdentifier::ToString(column.name);
 			auto values = Query(StringUtil::Format("SELECT DISTINCT %s FROM {METADATA_CATALOG}.%s WHERE %s IS NOT NULL",
-			                                       column_name, SQLIdentifier(table_name), column_name));
+			                                       column_name, table_name, column_name));
 			values->ThrowIfError(StringUtil::Format(
-			    "Failed to read inlined-data table \"%s\" while migrating to v1.1-dev1: ", table_name));
+			    "Failed to read inlined-data table \"%s\" while migrating to v1.1-dev1: ", entry.first));
+			vector<pair<string, string>> rewrites;
 			for (auto &row : *values) {
 				auto old_text = row.GetValue<string>(0);
-				Value value;
-				if (!V10StructLiteralReader(old_text).Read(type, value)) {
-					// a value that is not a literal of DuckLake 1.0 is kept
-					continue;
+				auto new_text = V10StructLiteralToText(old_text, type);
+				if (new_text) {
+					rewrites.emplace_back(std::move(old_text), std::move(*new_text));
 				}
-				auto new_text = value.ToString();
-				auto read_back = Value(new_text).DefaultTryCastAs(type);
-				if (new_text == old_text || !read_back || !Value::NotDistinctFrom(*read_back, value)) {
-					continue;
+			}
+			// one CASE for many values, as one UPDATE for each value would rewrite the text of an earlier one
+			for (idx_t start = 0; start < rewrites.size(); start += VALUES_PER_UPDATE) {
+				string cases;
+				string old_texts;
+				for (idx_t i = start; i < MinValue(start + VALUES_PER_UPDATE, rewrites.size()); i++) {
+					cases += StringUtil::Format(" WHEN %s THEN %s", SQLString(rewrites[i].first),
+					                            SQLString(rewrites[i].second));
+					old_texts += (i == start ? "" : ", ") + SQLString::ToString(rewrites[i].first);
 				}
-				updates += StringUtil::Format("UPDATE {METADATA_CATALOG}.%s SET %s = %s WHERE %s = %s;",
-				                              SQLIdentifier(table_name), column_name, SQLString(new_text), column_name,
-				                              SQLString(old_text));
+				updates += StringUtil::Format("UPDATE {METADATA_CATALOG}.%s SET %s = CASE %s%s END WHERE %s IN (%s);",
+				                              table_name, column_name, column_name, cases, column_name, old_texts);
 			}
 		}
 		if (updates.empty()) {
@@ -911,7 +959,7 @@ void DuckLakeMetadataManager::MigrateInlinedStructValues() {
 		auto result = Execute(updates);
 		result->ThrowIfError(StringUtil::Format(
 		    "Failed to rewrite the struct values of inlined-data table \"%s\" while migrating to v1.1-dev1: ",
-		    table_name));
+		    entry.first));
 	}
 }
 

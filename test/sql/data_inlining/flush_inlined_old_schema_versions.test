@@ -118,8 +118,8 @@ t4	1
 statement ok
 CALL disable_logging()
 
-# the flush loads each old schema version once, with only its table unless the version is shared, and the whole
-# catalog only for the current schema version
+# the flush loads each old schema version once, with only its table unless s1 and s2 share it, and the whole catalog
+# of the current schema version
 query II
 SELECT count(*) FILTER (WHERE query NOT LIKE '%tbl.table_id IN%'), count(*) FILTER (WHERE query LIKE '%tbl.table_id IN%')
 FROM duckdb_logs_parsed('DuckLakeMetadata')

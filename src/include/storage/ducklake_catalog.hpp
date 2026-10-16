@@ -29,6 +29,7 @@
 #include <mutex>
 
 namespace duckdb {
+struct DuckLakeCopyInput;
 struct DuckLakeGlobalStatsInfo;
 class DuckLakeCatalog;
 class ColumnList;
@@ -210,7 +211,6 @@ public:
 		}
 		return default_value;
 	}
-	bool TryGetConfigOption(const string &option, string &result, DuckLakeTableEntry &table) const;
 
 	optional_ptr<BoundAtClause> CatalogSnapshot() const;
 
@@ -233,6 +233,10 @@ public:
 	                             PhysicalOperator &plan) override;
 	PhysicalOperator &PlanMergeInto(ClientContext &context, PhysicalPlanGenerator &planner, LogicalMergeInto &op,
 	                                PhysicalOperator &plan) override;
+	//! Plans the inlining, copy and insert that write the new versions of updated rows
+	PhysicalOperator &PlanUpdateInsert(ClientContext &context, PhysicalPlanGenerator &planner,
+	                                   DuckLakeTableEntry &table, PhysicalOperator &plan,
+	                                   DuckLakeCopyInput &copy_input);
 	unique_ptr<LogicalOperator> BindCreateIndex(Binder &binder, CreateStatement &stmt, TableCatalogEntry &table,
 	                                            unique_ptr<LogicalOperator> plan) override;
 	unique_ptr<LogicalOperator> BindAlterAddIndex(Binder &binder, TableCatalogEntry &table_entry,
@@ -255,8 +259,6 @@ public:
 
 	bool InMemory() override;
 	string GetDBPath() override;
-
-	string GetDataPath();
 
 	bool SupportsTimeTravel() const override {
 		return true;
@@ -347,7 +349,6 @@ public:
 
 	shared_ptr<const DuckLakeNameMap> TryGetMappingById(DuckLakeTransaction &transaction, MappingIndex mapping_id);
 	MappingIndex TryGetCompatibleNameMap(DuckLakeTransaction &transaction, const DuckLakeNameMap &name_map);
-	idx_t GetBeginSnapshotForTable(TableIndex table_id, DuckLakeTransaction &transaction);
 	DuckLakeSnapshot GetSchemaVersionSnapshot(TableIndex table_id, idx_t schema_version,
 	                                          DuckLakeTransaction &transaction);
 	optional_ptr<DuckLakeTableEntry> GetTableAtSchemaVersion(DuckLakeTransaction &transaction, TableIndex table_id,
@@ -361,9 +362,11 @@ public:
 	//! Callback type for instrumenting metadata queries
 	using QueryCallback = std::function<void(const string &query, std::chrono::steady_clock::duration elapsed)>;
 
+	// LCOV_EXCL_START
 	void SetQueryCallback(QueryCallback callback) {
 		query_callback = std::move(callback);
 	}
+	// LCOV_EXCL_STOP
 	const QueryCallback &GetQueryCallback() const {
 		return query_callback;
 	}

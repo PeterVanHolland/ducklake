@@ -104,6 +104,22 @@ struct DuckLakeSchemaCacheEntry : public ObjectCacheEntry {
 	optional_idx GetEstimatedCacheMemory() const override;
 };
 
+//! Cache entry for the metadata of a DuckLake schema version, tables of old versions are built from it one at a time
+struct DuckLakeCatalogInfoCacheEntry : public ObjectCacheEntry {
+	explicit DuckLakeCatalogInfoCacheEntry(DuckLakeCatalogInfo info_p) : info(std::move(info_p)) {
+	}
+
+	DuckLakeCatalogInfo info;
+
+	static string ObjectType() {
+		return "ducklake_catalog_info";
+	}
+	string GetObjectType() override {
+		return ObjectType();
+	}
+	optional_idx GetEstimatedCacheMemory() const override;
+};
+
 //! The DuckLakes of a database instance, including those that are still attaching
 struct DuckLakeAttachedCatalogs : public ObjectCacheEntry {
 	mutex lock;
@@ -132,8 +148,6 @@ public:
 	shared_ptr<DuckLakeSchemaCacheEntry> GetTable(const string &key, TableIndex table_id, idx_t generation);
 	shared_ptr<DuckLakeSchemaCacheEntry> PinTable(const string &key, TableIndex table_id, idx_t generation,
 	                                              shared_ptr<DuckLakeSchemaCacheEntry> entry);
-	//! Whether a table other than the given one is pinned on its own for the schema version
-	bool HasOtherTables(const string &key, TableIndex table_id, idx_t generation);
 	//! Clear all pinned schema cache entries for this pin state.
 	void Clear();
 
@@ -375,6 +389,9 @@ public:
 	idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version, DuckLakeTransaction &transaction);
 	optional_ptr<DuckLakeTableEntry> GetTableAtSchemaVersion(DuckLakeTransaction &transaction, TableIndex table_id,
 	                                                         idx_t schema_version);
+	//! Loads the tables that are about to be read at the given schema versions, with one load for each version
+	void LoadTablesAtSchemaVersions(DuckLakeTransaction &transaction,
+	                                const vector<pair<TableIndex, idx_t>> &table_versions);
 
 	static unique_ptr<DuckLakeStats> ConstructStatsMap(vector<DuckLakeGlobalStatsInfo> &global_stats,
 	                                                   DuckLakeCatalogSet &schema);
@@ -419,21 +436,22 @@ public:
 
 private:
 	void DropSchema(ClientContext &context, DropInfo &info) override;
-	//! Loads the catalog of the snapshot, or only its schemas and the given table
-	unique_ptr<DuckLakeCatalogSet> LoadSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
-	                                                     TableIndex only_table = TableIndex());
+	unique_ptr<DuckLakeCatalogSet> LoadSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
+	unique_ptr<DuckLakeCatalogSet> BuildSchemaSet(DuckLakeTransaction &transaction, DuckLakeCatalogInfo catalog);
 	//! Look up (or load) the ObjectCache entry for a given snapshot.
 	shared_ptr<DuckLakeSchemaCacheEntry> GetSchemaCacheEntry(DuckLakeTransaction &transaction,
-	                                                         DuckLakeSnapshot snapshot, idx_t generation,
-	                                                         TableIndex only_table = TableIndex());
+	                                                         DuckLakeSnapshot snapshot, idx_t generation);
+	shared_ptr<DuckLakeCatalogInfoCacheEntry> GetCatalogInfoCacheEntry(DuckLakeTransaction &transaction,
+	                                                                   DuckLakeSnapshot snapshot, idx_t generation);
 	shared_ptr<DuckLakeSchemaCacheEntry> GetPinnedSchemaCacheEntry(DuckLakeTransaction &transaction,
 	                                                               DuckLakeSnapshot snapshot);
 	void LoadNameMaps(DuckLakeTransaction &transaction);
 	string StatsCacheKey(idx_t next_file_id, TableIndex table_id) const;
 	string RecordCountCacheKey(idx_t snapshot_id) const;
 	string SchemaCacheKey(idx_t schema_version) const;
-	//! The object cache key of a schema version, or of one of its tables, at an invalidation count
-	string SchemaCacheEntryKey(idx_t schema_version, idx_t generation, TableIndex only_table = TableIndex()) const;
+	//! The object cache key of a schema version at an invalidation count
+	string SchemaCacheEntryKey(idx_t schema_version, idx_t generation) const;
+	string CatalogInfoCacheKey(idx_t schema_version, idx_t generation) const;
 	idx_t SchemaCacheGeneration(idx_t schema_version) const;
 	ObjectCache &GetObjectCacheInstance();
 	//! Fails when the name or the metadata catalog of this DuckLake belongs to another DuckLake

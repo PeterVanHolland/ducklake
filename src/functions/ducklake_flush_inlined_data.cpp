@@ -512,13 +512,24 @@ static unique_ptr<LogicalOperator> FlushInlinedDataBind(ClientContext &context, 
 
 	auto schema = DuckLakeTableFunctionUtil::GetStringOption(input, "schema_name");
 	auto table = DuckLakeTableFunctionUtil::GetStringOption(input, "table_name");
-	vector<unique_ptr<LogicalOperator>> flushes;
+	vector<pair<reference<DuckLakeTableEntry>, vector<DuckLakeInlinedTableInfo>>> tables_to_flush;
+	vector<pair<TableIndex, idx_t>> table_versions;
 	for (auto &table_ref : DuckLakeBaseMetadataFunction::GetTablesInScope(context, ducklake_catalog, schema, table)) {
 		auto &table_entry = table_ref.get();
 		if (!ducklake_catalog.AutoCompactEnabled(table_entry)) {
 			continue;
 		}
-		for (auto &inlined_table : table_entry.GetInlinedDataTables(transaction, transaction.GetSnapshot())) {
+		auto inlined_tables = table_entry.GetInlinedDataTables(transaction, transaction.GetSnapshot());
+		for (auto &inlined_table : inlined_tables) {
+			table_versions.emplace_back(table_entry.GetTableId(), inlined_table.schema_version);
+		}
+		tables_to_flush.emplace_back(table_entry, std::move(inlined_tables));
+	}
+	ducklake_catalog.LoadTablesAtSchemaVersions(transaction, table_versions);
+	vector<unique_ptr<LogicalOperator>> flushes;
+	for (auto &table_to_flush : tables_to_flush) {
+		auto &table_entry = table_to_flush.first.get();
+		for (auto &inlined_table : table_to_flush.second) {
 			DuckLakeDataFlusher flusher(context, ducklake_catalog, transaction, *input.binder, table_entry.GetTableId(),
 			                            inlined_table);
 			flushes.push_back(flusher.GenerateFlushCommand());

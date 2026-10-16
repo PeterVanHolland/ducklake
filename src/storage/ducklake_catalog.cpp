@@ -260,6 +260,49 @@ idx_t EstimateSchemaMemory(DuckLakeSchemaEntry &schema) {
 	return estimate;
 }
 
+idx_t EstimateTagsMemory(const vector<DuckLakeTag> &tags) {
+	idx_t estimate = tags.size() * sizeof(DuckLakeTag);
+	for (auto &tag : tags) {
+		estimate += tag.key.size() + tag.value.size();
+	}
+	return estimate;
+}
+
+idx_t EstimateColumnInfoMemory(const DuckLakeColumnInfo &column) {
+	idx_t estimate = sizeof(DuckLakeColumnInfo) + column.name.size() + column.type.size();
+	estimate += column.default_value_type.size() + EstimateTagsMemory(column.tags);
+	estimate += EstimateValueMemory(column.initial_default) + EstimateValueMemory(column.default_value);
+	for (auto &child : column.children) {
+		estimate += EstimateColumnInfoMemory(child);
+	}
+	return estimate;
+}
+
+idx_t EstimateCatalogInfoMemory(const DuckLakeCatalogInfo &info) {
+	idx_t estimate = sizeof(DuckLakeCatalogInfo);
+	for (auto &schema : info.schemas) {
+		estimate += sizeof(DuckLakeSchemaInfo) + schema.uuid.size() + schema.name.size() + schema.path.size();
+		estimate += EstimateTagsMemory(schema.tags);
+	}
+	for (auto &table : info.tables) {
+		estimate += sizeof(DuckLakeTableInfo) + table.uuid.size() + table.name.size() + table.path.size();
+		estimate += EstimateTagsMemory(table.tags);
+		for (auto &column : table.columns) {
+			estimate += EstimateColumnInfoMemory(column);
+		}
+		for (auto &inlined_table : table.inlined_data_tables) {
+			estimate += sizeof(DuckLakeInlinedTableInfo) + inlined_table.table_name.size();
+		}
+	}
+	for (auto &view : info.views) {
+		estimate += sizeof(DuckLakeViewInfo) + view.name.size() + view.sql.size() + EstimateTagsMemory(view.tags);
+	}
+	estimate += info.macros.size() * sizeof(DuckLakeMacroInfo);
+	estimate += info.partitions.size() * sizeof(DuckLakePartitionInfo);
+	estimate += info.sorts.size() * sizeof(DuckLakeSortInfo);
+	return estimate;
+}
+
 idx_t EstimateCatalogSetMemory(const DuckLakeCatalogSet &catalog_set) {
 	idx_t estimate = sizeof(DuckLakeCatalogSet);
 	estimate += catalog_set.GetEntries().size() * (sizeof(string) + sizeof(unique_ptr<CatalogEntry>));
@@ -289,6 +332,10 @@ optional_idx DuckLakeTableRecordCountCacheEntry::GetEstimatedCacheMemory() const
 
 optional_idx DuckLakeSchemaCacheEntry::GetEstimatedCacheMemory() const {
 	return EstimateCatalogSetMemory(catalog_set);
+}
+
+optional_idx DuckLakeCatalogInfoCacheEntry::GetEstimatedCacheMemory() const {
+	return EstimateCatalogInfoMemory(info);
 }
 
 void DuckLakeSchemaPinState::Clear() {
@@ -347,20 +394,6 @@ shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeSchemaPinState::PinTable(const stri
 	D_ASSERT(entry);
 	lock_guard<mutex> guard(lock);
 	return Pin(table_pins[key][table_id], generation, std::move(entry));
-}
-
-bool DuckLakeSchemaPinState::HasOtherTables(const string &key, TableIndex table_id, idx_t generation) {
-	lock_guard<mutex> guard(lock);
-	auto tables = table_pins.find(key);
-	if (tables == table_pins.end()) {
-		return false;
-	}
-	for (auto &pin : tables->second) {
-		if (pin.first != table_id && pin.second.generation == generation) {
-			return true;
-		}
-	}
-	return false;
 }
 
 void DuckLakeCatalog::EnsureCommitInfoProvided(const DuckLakeSnapshotCommit &commit_info) const {
@@ -545,6 +578,28 @@ idx_t DuckLakeCatalog::GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx
 	return metadata_manager.GetBeginSnapshotForSchemaVersion(table_id, schema_version);
 }
 
+//! The schemas of the catalog with only the given table
+static DuckLakeCatalogInfo CatalogInfoForTable(const DuckLakeCatalogInfo &info, TableIndex table_id) {
+	DuckLakeCatalogInfo result;
+	result.schemas = info.schemas;
+	for (auto &table : info.tables) {
+		if (table.id == table_id) {
+			result.tables.push_back(table);
+		}
+	}
+	for (auto &partition : info.partitions) {
+		if (partition.table_id == table_id) {
+			result.partitions.push_back(partition);
+		}
+	}
+	for (auto &sort : info.sorts) {
+		if (sort.table_id == table_id) {
+			result.sorts.push_back(sort);
+		}
+	}
+	return result;
+}
+
 optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLakeTransaction &transaction,
                                                                           TableIndex table_id, idx_t schema_version) {
 	DuckLakeSnapshot snapshot(GetBeginSnapshotForSchemaVersion(table_id, schema_version, transaction), schema_version,
@@ -561,13 +616,13 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
 		    GetObjectCacheInstance().Get<DuckLakeSchemaCacheEntry>(SchemaCacheEntryKey(schema_version, generation));
 		if (cached) {
 			schema_entry = pins.Pin(key, generation, std::move(cached));
-		} else if (pins.HasOtherTables(key, table_id, generation)) {
-			// a second table of this schema version loads all of it
-			schema_entry = pins.Pin(key, generation, GetSchemaCacheEntry(transaction, snapshot, generation));
 		} else {
-			// a whole catalog for each schema version grows with the square of the table count
-			auto table_entry = GetSchemaCacheEntry(transaction, snapshot, generation, table_id);
-			schema_entry = pins.PinTable(key, table_id, generation, std::move(table_entry));
+			// only this table is built, a whole catalog for each schema version grows with the square of the table
+			// count
+			auto info_entry = GetCatalogInfoCacheEntry(transaction, snapshot, generation);
+			auto table_set = BuildSchemaSet(transaction, CatalogInfoForTable(info_entry->info, table_id));
+			schema_entry = pins.PinTable(key, table_id, generation,
+			                             make_shared_ptr<DuckLakeSchemaCacheEntry>(std::move(table_set)));
 		}
 	}
 	auto entry = schema_entry->catalog_set.GetEntryById(table_id);
@@ -577,16 +632,59 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
 	return &entry->Cast<DuckLakeTableEntry>();
 }
 
-shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeCatalog::GetSchemaCacheEntry(DuckLakeTransaction &transaction,
-                                                                          DuckLakeSnapshot snapshot, idx_t generation,
-                                                                          TableIndex only_table) {
+void DuckLakeCatalog::LoadTablesAtSchemaVersions(DuckLakeTransaction &transaction,
+                                                 const vector<pair<TableIndex, idx_t>> &table_versions) {
+	map<idx_t, vector<TableIndex>> version_tables;
+	for (auto &table_version : table_versions) {
+		version_tables[table_version.second].push_back(table_version.first);
+	}
+	auto &pins = transaction.GetSchemaPins();
 	auto &cache = GetObjectCacheInstance();
-	auto key = SchemaCacheEntryKey(snapshot.schema_version, generation, only_table);
+	for (auto &entry : version_tables) {
+		auto schema_version = entry.first;
+		auto &table_ids = entry.second;
+		auto key = SchemaCacheKey(schema_version);
+		auto generation = SchemaCacheGeneration(schema_version);
+		if (pins.Get(key, generation) || (table_ids.size() == 1 && pins.GetTable(key, table_ids[0], generation)) ||
+		    cache.Get<DuckLakeSchemaCacheEntry>(SchemaCacheEntryKey(schema_version, generation)) ||
+		    cache.Get<DuckLakeCatalogInfoCacheEntry>(CatalogInfoCacheKey(schema_version, generation))) {
+			continue;
+		}
+		DuckLakeSnapshot snapshot(GetBeginSnapshotForSchemaVersion(table_ids[0], schema_version, transaction),
+		                          schema_version, 0, 0);
+		if (table_ids.size() > 1) {
+			// tables that share a schema version are often used together, so the metadata of all of them is cached
+			GetCatalogInfoCacheEntry(transaction, snapshot, generation);
+			continue;
+		}
+		auto table_set =
+		    BuildSchemaSet(transaction, transaction.GetMetadataManager().GetCatalogForSnapshot(snapshot, table_ids));
+		pins.PinTable(key, table_ids[0], generation, make_shared_ptr<DuckLakeSchemaCacheEntry>(std::move(table_set)));
+	}
+}
+
+shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeCatalog::GetSchemaCacheEntry(DuckLakeTransaction &transaction,
+                                                                          DuckLakeSnapshot snapshot, idx_t generation) {
+	auto &cache = GetObjectCacheInstance();
+	auto key = SchemaCacheEntryKey(snapshot.schema_version, generation);
 	auto cached = cache.Get<DuckLakeSchemaCacheEntry>(key);
 	if (cached) {
 		return cached;
 	}
-	return cache.GetOrCreate<DuckLakeSchemaCacheEntry>(key, LoadSchemaForSnapshot(transaction, snapshot, only_table));
+	return cache.GetOrCreate<DuckLakeSchemaCacheEntry>(key, LoadSchemaForSnapshot(transaction, snapshot));
+}
+
+shared_ptr<DuckLakeCatalogInfoCacheEntry> DuckLakeCatalog::GetCatalogInfoCacheEntry(DuckLakeTransaction &transaction,
+                                                                                    DuckLakeSnapshot snapshot,
+                                                                                    idx_t generation) {
+	auto &cache = GetObjectCacheInstance();
+	auto key = CatalogInfoCacheKey(snapshot.schema_version, generation);
+	auto cached = cache.Get<DuckLakeCatalogInfoCacheEntry>(key);
+	if (cached) {
+		return cached;
+	}
+	auto info = transaction.GetMetadataManager().GetCatalogForSnapshot(snapshot);
+	return cache.GetOrCreate<DuckLakeCatalogInfoCacheEntry>(key, std::move(info));
 }
 
 shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeCatalog::GetPinnedSchemaCacheEntry(DuckLakeTransaction &transaction,
@@ -767,10 +865,12 @@ void DuckLakeCatalog::SetEntryOids(const ducklake_entry_oids_t &oids) {
 }
 
 unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTransaction &transaction,
-                                                                      DuckLakeSnapshot snapshot,
-                                                                      TableIndex only_table) {
-	auto &metadata_manager = transaction.GetMetadataManager();
-	auto catalog = metadata_manager.GetCatalogForSnapshot(snapshot, only_table);
+                                                                      DuckLakeSnapshot snapshot) {
+	return BuildSchemaSet(transaction, transaction.GetMetadataManager().GetCatalogForSnapshot(snapshot));
+}
+
+unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::BuildSchemaSet(DuckLakeTransaction &transaction,
+                                                               DuckLakeCatalogInfo catalog) {
 	// schemas with invisible parents count as dropped
 	auto skipped_schemas = FindUnreachableSchemas(catalog.schemas);
 	set<TableIndex> skipped_tables;
@@ -1508,12 +1608,12 @@ string DuckLakeCatalog::SchemaCacheKey(idx_t schema_version) const {
 	return StringUtil::Format("ducklake:%s:%s:%s:schema:%llu", GetName(), MetadataPath(), instance_id, schema_version);
 }
 
-string DuckLakeCatalog::SchemaCacheEntryKey(idx_t schema_version, idx_t generation, TableIndex only_table) const {
-	auto key = StringUtil::Format("%s:%llu", SchemaCacheKey(schema_version), generation);
-	if (only_table.IsValid()) {
-		key += StringUtil::Format(":table:%llu", only_table.index);
-	}
-	return key;
+string DuckLakeCatalog::SchemaCacheEntryKey(idx_t schema_version, idx_t generation) const {
+	return StringUtil::Format("%s:%llu", SchemaCacheKey(schema_version), generation);
+}
+
+string DuckLakeCatalog::CatalogInfoCacheKey(idx_t schema_version, idx_t generation) const {
+	return SchemaCacheEntryKey(schema_version, generation) + ":info";
 }
 
 idx_t DuckLakeCatalog::SchemaCacheGeneration(idx_t schema_version) const {
@@ -1526,7 +1626,9 @@ void DuckLakeCatalog::InvalidateTableStatsCache(idx_t next_file_id, TableIndex t
 
 void DuckLakeCatalog::InvalidateSchemaCache(idx_t schema_version) {
 	auto &generation = schema_cache_generations[schema_version % SCHEMA_CACHE_GENERATION_SLOTS];
-	GetObjectCacheInstance().Delete(SchemaCacheEntryKey(schema_version, generation.load()));
+	auto &cache = GetObjectCacheInstance();
+	cache.Delete(SchemaCacheEntryKey(schema_version, generation.load()));
+	cache.Delete(CatalogInfoCacheKey(schema_version, generation.load()));
 	// a load that started earlier publishes under the old count, which no lookup uses again
 	++generation;
 }

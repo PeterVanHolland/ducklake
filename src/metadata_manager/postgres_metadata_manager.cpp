@@ -311,7 +311,7 @@ bool PostgresMetadataManager::IsRetryableCommitError(const string &message) cons
 //! Whether the message names the identifier and not a longer one that contains it
 static bool MentionsIdentifier(const string &message, const string &identifier) {
 	auto is_identifier_char = [](char c) {
-		return StringUtil::CharacterIsAlphaNumeric(c) || c == '_' || c == '$';
+		return StringUtil::CharacterIsAlphaNumeric(c) || c == '_' || c == '$' || (static_cast<uint8_t>(c) & 0x80);
 	};
 	for (auto pos = message.find(identifier); pos != string::npos; pos = message.find(identifier, pos + 1)) {
 		auto end = pos + identifier.size();
@@ -329,7 +329,9 @@ bool PostgresMetadataManager::IsDroppedInlinedTableError(const string &message,
 	if (transaction.GetConnection().context->transaction.HasActiveTransaction()) {
 		return false;
 	}
+	// the lines after the primary message can quote the failed query
 	auto server_error = GetServerError(message);
+	server_error = server_error.substr(0, server_error.find('\n'));
 	try {
 		for (auto &entry : inlined_tables) {
 			for (auto &table_name : entry.second) {

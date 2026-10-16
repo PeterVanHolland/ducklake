@@ -311,7 +311,7 @@ bool PostgresMetadataManager::IsRetryableCommitError(const string &message) cons
 //! Whether the message names the identifier and not a longer one that contains it
 static bool MentionsIdentifier(const string &message, const string &identifier) {
 	auto is_identifier_char = [](char c) {
-		return StringUtil::CharacterIsAlphaNumeric(c) || c == '_' || c == '$' || (static_cast<uint8_t>(c) & 0x80);
+		return StringUtil::CharacterIsAlphaNumeric(c) || c == '_' || c == '$';
 	};
 	for (auto pos = message.find(identifier); pos != string::npos; pos = message.find(identifier, pos + 1)) {
 		auto end = pos + identifier.size();

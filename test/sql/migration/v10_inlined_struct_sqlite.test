@@ -8,16 +8,16 @@ require parquet
 
 require sqlite_scanner
 
-# written by DuckDB 1.5.6 with fields of many types in t, row 2 has only NULL fields and row 3 a NULL struct, and a
-# string with a NUL character in nul
+# written by DuckDB 1.5.6 with fields of many types in t, row 2 has only NULL fields and row 3 a NULL struct, 1001
+# dates in many, and a string with a NUL character in nul
 unzip data/old_ducklake/inlined_struct_text.sqlite.gz {TEST_DIR}/v10_inlined_struct.sqlite
 
-# a newer writer adds a row to the v1.0 catalog in the text format of v1.1
+# a newer writer adds rows to the v1.0 catalog in the text format of v1.1
 statement ok
 ATTACH 'ducklake:sqlite:{TEST_DIR}/v10_inlined_struct.sqlite' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_struct_files/', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.0')
 
 statement ok
-INSERT INTO lake.plain VALUES (2, {'x': 2, 'v': 'a\b, c'''})
+INSERT INTO lake.plain VALUES (2, {'x': 2, 'v': 'a\b, c'''}), (3, {'x': 3, 'v': 'a\b, c'}), (4, {'x': 4, 'v': 'CAST(a\b)'})
 
 statement ok
 DETACH lake
@@ -27,16 +27,18 @@ ATTACH 'ducklake:sqlite:{TEST_DIR}/v10_inlined_struct.sqlite' AS lake (DATA_PATH
 
 # the text DuckDB 1.5.6 wrote for a NUL character is not a plain literal and is kept
 query I
-SELECT s FROM __ducklake_metadata_lake.ducklake_inlined_data_3_3
+SELECT s FROM __ducklake_metadata_lake.ducklake_inlined_data_4_4
 ----
 {'v': CONCAT('a', chr(0), 'b')}
 
-# the newer text is kept, and so is a literal that reads as the same value
+# the newer texts are kept, and so is a literal that reads as the same value
 query I
 SELECT s FROM __ducklake_metadata_lake.ducklake_inlined_data_2_2 ORDER BY id
 ----
 {'x': 1, 'v': 'plain'}
 {'x': 2, 'v': 'a\\b, c\''}
+{'x': 3, 'v': 'a\\b, c'}
+{'x': 4, 'v': 'CAST(a\\b)'}
 
 loop flushed 0 2
 
@@ -58,16 +60,27 @@ SELECT id, s IS NULL, s.d IS NULL AND s.v IS NULL AND s.inner_s IS NULL FROM lak
 3	true	true
 
 query II
-SELECT s.x, s.v = CASE id WHEN 1 THEN 'plain' ELSE 'a\b, c''' END FROM lake.plain ORDER BY id
+SELECT s.x, s.v = ['plain', 'a\b, c''', 'a\b, c', 'CAST(a\b)'][id] FROM lake.plain ORDER BY id
 ----
 1	true
 2	true
+3	true
+4	true
+
+# more texts than one rewrite statement holds
+query II
+SELECT count(*), count(*) FILTER (WHERE s.d = DATE '2000-01-01' + id) FROM lake.many
+----
+1001	1001
 
 statement ok
 CALL ducklake_flush_inlined_data('lake', table_name => 't')
 
 statement ok
 CALL ducklake_flush_inlined_data('lake', table_name => 'plain')
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'many')
 
 endloop
 

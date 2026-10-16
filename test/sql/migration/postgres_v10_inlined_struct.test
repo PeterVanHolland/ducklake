@@ -27,12 +27,15 @@ statement ok
 CREATE TABLE lake.t (id INTEGER, s STRUCT(d DATE, v VARCHAR, b BLOB, u UUID, n DOUBLE, i INTERVAL, l DATE[], inner_s STRUCT(a DATE, q VARCHAR)))
 
 statement ok
-INSERT INTO lake.t VALUES (1, NULL), (2, NULL)
+INSERT INTO lake.t VALUES (1, {'d': DATE '2020-01-01', 'v': 'it''s', 'b': '\x00\xFF'::BLOB,
+    'u': UUID '00000000-0000-0000-0000-000000000001', 'n': 'nan'::DOUBLE, 'i': INTERVAL '3 days', 'l': [DATE '2021-02-03'],
+    'inner_s': {'a': DATE '2022-03-04', 'q': 'a''b'}}), (2, NULL),
+    (3, {'d': DATE '2020-01-02', 'v': 'a\b', 'b': NULL, 'u': NULL, 'n': 1.5, 'i': NULL, 'l': NULL, 'inner_s': NULL})
 
 statement ok
 DETACH lake
 
-# the text DuckDB 1.5.6 writes into a Postgres catalog for this row
+# the text DuckDB 1.5.6 writes into a Postgres catalog for row 1
 statement ok
 CALL postgres_execute('pg', 'UPDATE v10_inlined_struct.ducklake_inlined_data_1_1 SET s = $$' || '{''d'': CAST(''2020-01-01'' AS VARCHAR), ''v'': ''it''''s'', ''b'': CAST(''\x00\xFF'' AS VARCHAR), ''u'': CAST(''00000000-0000-0000-0000-000000000001'' AS UUID), ''n'': CAST(''nan'' AS DOUBLE PRECISION), ''i'': CAST(''0 months 3 days 0 microseconds'' AS INTERVAL), ''l'': [2021-02-03], ''inner_s'': {''a'': CAST(''2022-03-04'' AS VARCHAR), ''q'': ''a''''b''}}' || '$$ WHERE id = 1')
 
@@ -50,6 +53,12 @@ query I
 SELECT s IS NULL FROM lake.t WHERE id = 2
 ----
 true
+
+# the row of a newer writer is kept
+query III
+SELECT s.d, s.v = 'a\b', s.n FROM lake.t WHERE id = 3
+----
+2020-01-02	true	1.5
 
 statement ok
 CALL ducklake_flush_inlined_data('lake')

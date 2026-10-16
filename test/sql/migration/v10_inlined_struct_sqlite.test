@@ -8,11 +8,35 @@ require parquet
 
 require sqlite_scanner
 
-# written by DuckDB 1.5.6 with fields of many types in t, row 2 has only NULL fields and row 3 a NULL struct
+# written by DuckDB 1.5.6 with fields of many types in t, row 2 has only NULL fields and row 3 a NULL struct, and a
+# string with a NUL character in nul
 unzip data/old_ducklake/inlined_struct_text.sqlite.gz {TEST_DIR}/v10_inlined_struct.sqlite
+
+# a newer writer adds a row to the v1.0 catalog in the text format of v1.1
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/v10_inlined_struct.sqlite' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_struct_files/', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.0')
+
+statement ok
+INSERT INTO lake.plain VALUES (2, {'x': 2, 'v': 'a\b, c'''})
+
+statement ok
+DETACH lake
 
 statement ok
 ATTACH 'ducklake:sqlite:{TEST_DIR}/v10_inlined_struct.sqlite' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_struct_files/', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1-dev1', AUTOMATIC_MIGRATION TRUE)
+
+# the text DuckDB 1.5.6 wrote for a NUL character is not a plain literal and is kept
+query I
+SELECT s FROM __ducklake_metadata_lake.ducklake_inlined_data_3_3
+----
+{'v': CONCAT('a', chr(0), 'b')}
+
+# the newer text is kept, and so is a literal that reads as the same value
+query I
+SELECT s FROM __ducklake_metadata_lake.ducklake_inlined_data_2_2 ORDER BY id
+----
+{'x': 1, 'v': 'plain'}
+{'x': 2, 'v': 'a\\b, c\''}
 
 loop flushed 0 2
 
@@ -33,13 +57,17 @@ SELECT id, s IS NULL, s.d IS NULL AND s.v IS NULL AND s.inner_s IS NULL FROM lak
 2	false	true
 3	true	true
 
-query I
-SELECT s FROM lake.plain
+query II
+SELECT s.x, s.v = CASE id WHEN 1 THEN 'plain' ELSE 'a\b, c''' END FROM lake.plain ORDER BY id
 ----
-{'x': 1, 'v': plain}
+1	true
+2	true
 
 statement ok
-CALL ducklake_flush_inlined_data('lake')
+CALL ducklake_flush_inlined_data('lake', table_name => 't')
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'plain')
 
 endloop
 

@@ -31,7 +31,7 @@ COPY (SELECT 1) TO '${BENCHMARK_DIR}/warm_old_versions_ready.marker' (FORMAT CSV
 reload
 @attach warm_old_versions AS lake (READ_ONLY)
 
-# No cleanup: the run is read-only, and the discarded warmup run fills the caches on purpose
+# The warmup fills the caches for the timed runs
 run benchmark/micro/queries/warm_old_schema_version_reads.sql
 
 result_query I

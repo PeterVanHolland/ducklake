@@ -12,7 +12,6 @@
 #include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/common/type_visitor.hpp"
-#include "duckdb/main/extension_helper.hpp"
 #include "storage/ducklake_catalog.hpp"
 #include "common/ducklake_types.hpp"
 #include "storage/ducklake_schema_entry.hpp"
@@ -3057,7 +3056,7 @@ string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const L
 	if (read_type.IsJSONType()) {
 		// without the json extension a JSON column is read as the text it is stored as
 		auto context = transaction.context.lock();
-		if (!context->db->ExtensionIsLoaded("json") && !ExtensionHelper::TryAutoLoadExtension(*context, "json")) {
+		if (!Catalog::TryAutoLoad(*context, "json")) {
 			read_type = LogicalType::VARCHAR;
 		}
 	}

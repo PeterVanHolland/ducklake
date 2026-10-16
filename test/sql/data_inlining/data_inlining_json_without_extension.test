@@ -36,6 +36,9 @@ SELECT l FROM dl.json_list
 
 restart
 
+statement ok
+SET autoload_known_extensions = false
+
 query I
 SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'json'
 ----
@@ -80,3 +83,8 @@ SELECT id, j FROM dl.j ORDER BY id
 2	"hello"
 3	null
 4	NULL
+
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'json'
+----
+false

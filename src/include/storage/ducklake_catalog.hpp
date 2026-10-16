@@ -139,14 +139,14 @@ struct DuckLakeAttachedCatalogs : public ObjectCacheEntry {
 //! Holds pins on DuckLake schema cache entries, keeping them alive while they are still referenced.
 class DuckLakeSchemaPinState {
 public:
-	//! The entry pinned under the key, unless the schema cache was invalidated since
-	shared_ptr<DuckLakeSchemaCacheEntry> Get(const string &key, idx_t generation);
-	//! Pins the entry under the key and returns the entry pinned there, a replaced entry stays alive
-	shared_ptr<DuckLakeSchemaCacheEntry> Pin(const string &key, idx_t generation,
+	//! The entry pinned for the schema version, unless the schema cache was invalidated since
+	shared_ptr<DuckLakeSchemaCacheEntry> Get(idx_t schema_version, idx_t generation);
+	//! Pins the entry for the schema version and returns the entry pinned there, a replaced entry stays alive
+	shared_ptr<DuckLakeSchemaCacheEntry> Pin(idx_t schema_version, idx_t generation,
 	                                         shared_ptr<DuckLakeSchemaCacheEntry> entry);
 	//! The entry holding only the given table of a schema version
-	shared_ptr<DuckLakeSchemaCacheEntry> GetTable(const string &key, TableIndex table_id, idx_t generation);
-	shared_ptr<DuckLakeSchemaCacheEntry> PinTable(const string &key, TableIndex table_id, idx_t generation,
+	shared_ptr<DuckLakeSchemaCacheEntry> GetTable(idx_t schema_version, TableIndex table_id, idx_t generation);
+	shared_ptr<DuckLakeSchemaCacheEntry> PinTable(idx_t schema_version, TableIndex table_id, idx_t generation,
 	                                              shared_ptr<DuckLakeSchemaCacheEntry> entry);
 	//! Clear all pinned schema cache entries for this pin state.
 	void Clear();
@@ -160,9 +160,8 @@ private:
 	                                         shared_ptr<DuckLakeSchemaCacheEntry> entry);
 
 	mutex lock;
-	//! Maps from the cache key of a schema version to its entry
-	unordered_map<string, PinnedEntry> pins;
-	unordered_map<string, unordered_map<TableIndex, PinnedEntry>> table_pins;
+	unordered_map<idx_t, PinnedEntry> pins;
+	unordered_map<idx_t, unordered_map<TableIndex, PinnedEntry>> table_pins;
 	vector<shared_ptr<DuckLakeSchemaCacheEntry>> replaced;
 };
 

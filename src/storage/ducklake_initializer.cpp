@@ -276,12 +276,12 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction,
 				metadata_manager.MigrateV04();
 				catalog_version = DuckLakeVersion::V1_0;
 			}
-			if (catalog_version == DuckLakeVersion::V1_1_DEV_1) {
+			if (catalog_version == DuckLakeVersion::V1_1_DEV_1 && options.access_mode != AccessMode::READ_ONLY) {
 				// dev schemas evolve in place, re-run the v1.1 migration so older dev catalogs get every addition
 				if (options.automatic_migration) {
 					// an explicitly requested migration fails loudly
 					metadata_manager.MigrateV10(true);
-				} else if (options.access_mode != AccessMode::READ_ONLY && !skip_dev_migration) {
+				} else if (!skip_dev_migration) {
 					metadata_manager.MigrateV10Dev();
 					if (ValidChecker::IsInvalidated(transaction.GetConnection().context->ActiveTransaction())) {
 						RestartMetadataTransaction(transaction);

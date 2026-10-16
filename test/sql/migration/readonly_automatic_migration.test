@@ -1,0 +1,34 @@
+# name: test/sql/migration/readonly_automatic_migration.test
+# description: A read-only attach with AUTOMATIC_MIGRATION of an up to date catalog writes nothing
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/readonly_automatic_migration.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/readonly_automatic_migration',
+    DUCKLAKE_VERSION '1.1-dev1')
+
+statement ok
+CREATE TABLE lake.t AS SELECT 1 AS i
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (READ_ONLY, AUTOMATIC_MIGRATION TRUE, DUCKLAKE_VERSION '1.1-dev1')
+
+query I
+SELECT * FROM lake.t
+----
+1
+
+statement error
+INSERT INTO lake.t VALUES (2)
+----
+read-only

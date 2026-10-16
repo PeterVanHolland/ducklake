@@ -733,15 +733,15 @@ public:
 		return ReadStruct(type, result) && pos == text.size();
 	}
 
-	//! Whether a field was written as a cast, which newer writers never write
-	bool ReadAnyCast() const {
-		return read_cast;
+	//! Whether the text holds a cast or a doubled quote, which newer writers never write
+	bool ReadOldSyntax() const {
+		return read_old_syntax;
 	}
 
 private:
 	const string &text;
 	idx_t pos = 0;
-	bool read_cast = false;
+	bool read_old_syntax = false;
 
 	bool Consume(const string &token) {
 		if (text.compare(pos, token.size(), token) != 0) {
@@ -752,7 +752,11 @@ private:
 	}
 
 	bool ReadQuoted(string &result) {
-		return StringUtil::TryParseQuotedString(text, pos, result, '\'');
+		if (!StringUtil::TryParseQuotedString(text, pos, result, '\'')) {
+			return false;
+		}
+		read_old_syntax = read_old_syntax || StringUtil::Contains(result, "'");
+		return true;
 	}
 
 	//! The text up to the next field of the struct, with the nested brackets and quotes of value text
@@ -791,7 +795,7 @@ private:
 		    !Consume(")")) {
 			return false;
 		}
-		read_cast = true;
+		read_old_syntax = true;
 		return true;
 	}
 
@@ -888,8 +892,8 @@ static optional<string> V10StructLiteralToText(const string &text, const Logical
 	if (!reader.Read(type, value)) {
 		return nullopt;
 	}
-	// newer writers write no casts but escape quotes and backslashes, so a text with a backslash and no cast is kept
-	if (!reader.ReadAnyCast()) {
+	// newer writers escape quotes and backslashes, so a text with a backslash and no older syntax is kept
+	if (!reader.ReadOldSyntax()) {
 		auto current = Value(text).DefaultTryCastAs(type);
 		if (current && (Value::NotDistinctFrom(*current, value) || StringUtil::Contains(text, "\\"))) {
 			return nullopt;

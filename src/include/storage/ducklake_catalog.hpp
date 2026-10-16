@@ -443,8 +443,11 @@ private:
 	                                                         DuckLakeSnapshot snapshot, idx_t generation);
 	shared_ptr<DuckLakeCatalogInfoCacheEntry> GetCatalogInfoCacheEntry(DuckLakeTransaction &transaction,
 	                                                                   DuckLakeSnapshot snapshot, idx_t generation);
-	//! Builds the given table from the metadata of its schema version and pins it
-	shared_ptr<DuckLakeSchemaCacheEntry> PinTableFromInfo(DuckLakeTransaction &transaction, const string &key,
+	//! Pins the given table of an old schema version when it is cached on its own
+	shared_ptr<DuckLakeSchemaCacheEntry> PinCachedTable(DuckLakeTransaction &transaction, idx_t schema_version,
+	                                                    idx_t generation, TableIndex table_id);
+	//! Builds the given table from the metadata of its schema version, caches it and pins it
+	shared_ptr<DuckLakeSchemaCacheEntry> PinTableFromInfo(DuckLakeTransaction &transaction, idx_t schema_version,
 	                                                      idx_t generation, const DuckLakeCatalogInfo &info,
 	                                                      TableIndex table_id);
 	shared_ptr<DuckLakeSchemaCacheEntry> GetPinnedSchemaCacheEntry(DuckLakeTransaction &transaction,
@@ -456,6 +459,7 @@ private:
 	//! The object cache key of a schema version at an invalidation count
 	string SchemaCacheEntryKey(idx_t schema_version, idx_t generation) const;
 	string CatalogInfoCacheKey(idx_t schema_version, idx_t generation) const;
+	string TableSchemaCacheKey(idx_t schema_version, idx_t generation, TableIndex table_id) const;
 	idx_t SchemaCacheGeneration(idx_t schema_version) const;
 	ObjectCache &GetObjectCacheInstance();
 	//! Fails when the name or the metadata catalog of this DuckLake belongs to another DuckLake

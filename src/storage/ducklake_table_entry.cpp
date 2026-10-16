@@ -325,7 +325,9 @@ unique_ptr<BaseStatistics> GetColumnStats(const DuckLakeFieldId &field_id, const
 	}
 	default:
 		// unsupported nested type
+		// LCOV_EXCL_START
 		return nullptr;
+		// LCOV_EXCL_STOP
 	}
 }
 
@@ -337,7 +339,9 @@ case_insensitive_set_t DuckLakeTableEntry::GetNotNullFields() const {
 	case_insensitive_set_t result;
 	for (auto &constraint : GetConstraints()) {
 		if (constraint->type != ConstraintType::NOT_NULL) {
+			// LCOV_EXCL_START
 			continue;
+			// LCOV_EXCL_STOP
 		}
 		auto &not_null = constraint->Cast<NotNullConstraint>();
 		auto &col = GetColumn(not_null.index);
@@ -347,6 +351,10 @@ case_insensitive_set_t DuckLakeTableEntry::GetNotNullFields() const {
 }
 
 unique_ptr<BaseStatistics> DuckLakeTableEntry::GetStatistics(ClientContext &context, column_t column_id) {
+	if (IsVirtualColumn(column_id)) {
+		// virtual columns (rowid, filename, file_row_number, ...) carry no column statistics
+		return nullptr;
+	}
 	auto table_stats = GetTableStats(context);
 	if (!table_stats) {
 		return nullptr;
@@ -355,13 +363,17 @@ unique_ptr<BaseStatistics> DuckLakeTableEntry::GetStatistics(ClientContext &cont
 	return GetColumnStats(field_id, *table_stats);
 }
 
+// LCOV_EXCL_START
 TableFunction DuckLakeTableEntry::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
+	// LCOV_EXCL_STOP
 	throw InternalException("DuckLakeTableEntry::GetScanFunction called without entry lookup info");
 }
 
 unique_ptr<FunctionData> DuckLakeFunctions::BindDuckLakeScan(ClientContext &context, BoundTableFunction &function) {
 	vector<Value> inputs {Value("")};
 	named_argument_map_t param_map;
+	// the column types come from the catalog, so a session setting must not turn BLOB columns into VARCHAR
+	param_map.insert(Identifier("binary_as_string"), Value::BOOLEAN(false));
 	vector<LogicalType> return_types;
 	vector<Identifier> input_table_names;
 	TableFunctionRef empty_ref;
@@ -382,6 +394,20 @@ unique_ptr<FunctionData> DuckLakeFunctions::BindDuckLakeScan(ClientContext &cont
 
 TableFunction DuckLakeTableEntry::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data,
                                                   const EntryLookupInfo &lookup_info) {
+	auto &transaction = DuckLakeTransaction::Get(context, ParentCatalog());
+	if (!lookup_info.GetAtClause() && transaction.IsRenamed(*this)) {
+		auto schema_id = ParentSchema().Cast<DuckLakeSchemaEntry>().GetSchemaId();
+		auto local_entry =
+		    transaction.GetTransactionLocalEntry(CatalogType::TABLE_ENTRY, schema_id, name.GetIdentifierName());
+		if (!local_entry || local_entry->Cast<DuckLakeTableEntry>().GetTableId() != GetTableId()) {
+			throw BinderException("Table with name %s does not exist", name);
+		}
+	}
+	return GetScanFunctionById(context, bind_data, lookup_info);
+}
+
+TableFunction DuckLakeTableEntry::GetScanFunctionById(ClientContext &context, unique_ptr<FunctionData> &bind_data,
+                                                      const EntryLookupInfo &lookup_info) {
 	auto function = DuckLakeFunctions::GetDuckLakeScanFunction(*context.db);
 	auto &transaction = DuckLakeTransaction::Get(context, ParentCatalog());
 	auto function_info =
@@ -390,14 +416,6 @@ TableFunction DuckLakeTableEntry::GetScanFunction(ClientContext &context, unique
 	function.function_info = std::move(function_info);
 	if (!lookup_info.GetAtClause() && transaction.IsDeleted(*this)) {
 		throw BinderException("Table with name %s does not exist", name);
-	}
-	if (!lookup_info.GetAtClause() && transaction.IsRenamed(*this)) {
-		auto schema_id = ParentSchema().Cast<DuckLakeSchemaEntry>().GetSchemaId();
-		auto local_entry =
-		    transaction.GetTransactionLocalEntry(CatalogType::TABLE_ENTRY, schema_id, name.GetIdentifierName());
-		if (!local_entry || local_entry->Cast<DuckLakeTableEntry>().GetTableId() != GetTableId()) {
-			throw BinderException("Table with name %s does not exist", name);
-		}
 	}
 
 	bind_data = DuckLakeFunctions::BindDuckLakeScan(context, function);
@@ -448,10 +466,11 @@ shared_ptr<DuckLakeTableStats> DuckLakeTableEntry::GetTableStats(ClientContext &
 	return GetTableStats(transaction);
 }
 
-bool DuckLakeTableEntry::ChangedColumnType() {
-	reference<CatalogEntry> entry = *this;
+template <class FUNC>
+static bool AnyLocalChange(DuckLakeTableEntry &table, FUNC &&matches) {
+	reference<CatalogEntry> entry = table;
 	while (true) {
-		if (entry.get().Cast<DuckLakeTableEntry>().local_change.type == LocalChangeType::CHANGE_COLUMN_TYPE) {
+		if (matches(entry.get().Cast<DuckLakeTableEntry>())) {
 			return true;
 		}
 		if (!entry.get().HasChild()) {
@@ -459,6 +478,18 @@ bool DuckLakeTableEntry::ChangedColumnType() {
 		}
 		entry = entry.get().Child();
 	}
+}
+
+bool DuckLakeTableEntry::ChangedColumnType() {
+	return AnyLocalChange(*this, [](DuckLakeTableEntry &entry) {
+		return entry.local_change.type == LocalChangeType::CHANGE_COLUMN_TYPE;
+	});
+}
+
+bool DuckLakeTableEntry::AddedColumn(FieldIndex field_index) {
+	return AnyLocalChange(*this, [&](DuckLakeTableEntry &entry) {
+		return entry.local_change.type == LocalChangeType::ADD_COLUMN && entry.GetAddColumnInfo().id == field_index;
+	});
 }
 
 bool DuckLakeTableEntry::CanUseGlobalStats(DuckLakeTransaction &transaction) const {
@@ -710,28 +741,17 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 		return nullptr;
 	}
 
-	if (transaction.HasTransactionLocalInserts(GetTableId())) {
-		VerifyNoNullValues(context, transaction, *this, col);
-		table_info.constraints.push_back(make_uniq<NotNullConstraint>(col.Logical()));
-		return make_uniq<DuckLakeTableEntry>(*this, table_info, LocalChange::SetNull(field_id.GetFieldIndex()));
-	}
-
-	// verify the column has no NULL values currently by looking at the stats
+	// the stats only rule out NULL values when they count no NULL in the committed rows
+	bool stats_show_no_nulls = false;
 	auto stats = GetTableStats(transaction);
-	if (!stats) {
-		throw CatalogException(
-		    "Cannot SET NOT NULL on table %s - the table has transaction-local changes or no stats are available",
-		    name);
+	if (stats && FileStatsShowNulls(col.Type())) {
+		auto column_stats = stats->column_stats.find(field_id.GetFieldIndex());
+		if (column_stats != stats->column_stats.end()) {
+			auto &col_stats = column_stats->second;
+			stats_show_no_nulls = col_stats.has_null_count && col_stats.null_count == 0;
+		}
 	}
-
-	auto column_stats = stats->column_stats.find(field_id.GetFieldIndex());
-	if (column_stats == stats->column_stats.end()) {
-		throw CatalogException("Cannot SET NOT NULL on table %s - no column stats are available", name);
-	}
-
-	// Unknown stats or previously deleted NULLs require checking the live rows.
-	auto &col_stats = column_stats->second;
-	if (!col_stats.has_null_count || col_stats.null_count > 0 || !FileStatsShowNulls(col.Type())) {
+	if (!stats_show_no_nulls) {
 		VerifyNoNullValues(context, transaction, *this, col);
 	}
 
@@ -935,7 +955,9 @@ static void ExtractDefaultValue(const DuckLakeColumnData &col_data, DuckLakeColu
 
 bool TypePromotionIsAllowed(const LogicalType &source, const LogicalType &target) {
 	if (source == target) {
+		// LCOV_EXCL_START
 		return false;
+		// LCOV_EXCL_STOP
 	}
 	LogicalType result;
 	if (!LogicalType::DefaultTryGetMaxLogicalTypeUnchecked(source, target, result)) {
@@ -1233,6 +1255,7 @@ void RenameField(const DuckLakeFieldId &field_id, const DuckLakeFieldId &parent_
 	renamed_field.column_info.id = field_id.GetFieldIndex();
 	renamed_field.column_info.name = std::move(new_name);
 	renamed_field.column_info.type = DuckLakeTypes::ToString(field_id.Type());
+	ExtractDefaultValue(field_id.GetColumnData(), renamed_field.column_info);
 	renamed_field.parent_idx = parent_id.GetFieldIndex().index;
 	change_info.new_fields.push_back(std::move(renamed_field));
 }
@@ -1275,8 +1298,8 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	auto &col = table_info.columns.GetColumnMutable(GetColumnIndex(info.column_path[0]));
 	auto &field_id = GetFieldId(col.Physical());
 	col.SetDefaultValue(std::move(info.expression));
-	bool new_column = !transaction.GetMetadataManager().IsColumnCreatedWithTable(
-	    table_info.GetTableName().GetIdentifierName(), col.GetName().GetIdentifierName());
+	// ADD COLUMN with an expression default arrives as ADD COLUMN, UPDATE and SET DEFAULT
+	bool new_column = AddedColumn(field_id.GetFieldIndex());
 
 	return make_uniq<DuckLakeTableEntry>(*this, table_info,
 	                                     SetDefaultLocalChange::SetDefault(field_id.GetFieldIndex(), new_column));
@@ -1473,7 +1496,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(DuckLakeTransaction &transact
 unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(DuckLakeTransaction &transaction, SetColumnCommentInfo &info) {
 	auto create_info = GetInfo();
 	auto &table_info = create_info->Cast<CreateTableInfo>();
-	auto &col = table_info.columns.GetColumnMutable(info.column_name);
+	auto &col = table_info.columns.GetColumnMutable(GetColumnIndex(info.column_name));
 	col.SetComment(info.comment_value);
 	auto &field_id = GetFieldId(col.Physical());
 

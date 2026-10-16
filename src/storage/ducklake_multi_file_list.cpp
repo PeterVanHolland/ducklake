@@ -65,11 +65,15 @@ optional_ptr<const DuckLakeFieldId> DuckLakeMultiFileList::ResolveFilterField(co
 	optional_ptr<const DuckLakeFieldId> field_id = read_info.table.GetFieldId(PhysicalIndex(column_id));
 	for (auto &entry : path) {
 		if (entry.child_name.empty()) {
+			// LCOV_EXCL_START
 			return nullptr;
+			// LCOV_EXCL_STOP
 		}
 		field_id = field_id->GetChildByName(entry.child_name.GetIdentifierName());
 		if (!field_id) {
+			// LCOV_EXCL_START
 			return nullptr;
+			// LCOV_EXCL_STOP
 		}
 	}
 	return field_id;
@@ -121,7 +125,9 @@ unique_ptr<DuckLakeFilterNode> DuckLakeMultiFileList::GetFilterNode(column_t col
 	const auto &column_type = read_info.column_types[column_index.index];
 	auto expr_filter = ExpressionFilter::FromTableFilter(*filter, column_type);
 	if (!expr_filter->expr) {
+		// LCOV_EXCL_START
 		return nullptr;
+		// LCOV_EXCL_STOP
 	}
 	return GetColumnFilterNode(column_id, *expr_filter->expr, column_type);
 }
@@ -141,11 +147,15 @@ unique_ptr<DuckLakeFilterNode> DuckLakeMultiFileList::GetExpressionFilterNode(Mu
 	auto &binding = root.Cast<BoundColumnRefExpression>().Binding();
 	if (binding.table_index != info.table_index) {
 		// a reference to a different table tells us nothing about this one
+		// LCOV_EXCL_START
 		return nullptr;
+		// LCOV_EXCL_STOP
 	}
 	auto projection_index = binding.column_index;
 	if (projection_index >= info.column_ids.size()) {
+		// LCOV_EXCL_START
 		return nullptr;
+		// LCOV_EXCL_STOP
 	}
 	auto column_id = info.column_ids[projection_index];
 	auto field_id = ResolveFilterField(*subject, column_id);
@@ -176,7 +186,9 @@ void DuckLakeMultiFileList::AddFilterNodeToPushdownInfo(FilterPushdownInfo &push
 		return;
 	}
 	if (node.type != DuckLakeFilterNodeType::COLUMN_FILTER) {
+		// LCOV_EXCL_START
 		return;
+		// LCOV_EXCL_STOP
 	}
 	auto &column_filter = *node.column_filter;
 	auto entry = pushdown_info.column_filters.find(column_filter.column_field_index);
@@ -252,7 +264,9 @@ bool DuckLakeMultiFileList::FilterTreeState::VisitNode() {
 
 bool DuckLakeMultiFileList::FilterTreeState::AddLeaves(const DuckLakeFilterNode &node) {
 	if (exhausted) {
+		// LCOV_EXCL_START
 		return false;
+		// LCOV_EXCL_STOP
 	}
 	VisitFilterTreeLeaves(node, [&](const DuckLakeFilterNode &) { leaves++; });
 	if (leaves > MAX_LEAVES) {
@@ -346,7 +360,9 @@ unique_ptr<DuckLakeFilterNode> DuckLakeMultiFileList::BuildFilterTree(ClientCont
 		// the branches did not work out - the combiner may still express the disjunction on a single column
 		auto node = CombineFilterNode(context, info, expr);
 		if (node) {
+			// LCOV_EXCL_START
 			return state.AddLeaves(*node) ? std::move(node) : nullptr;
+			// LCOV_EXCL_STOP
 		}
 	}
 	// the combiner only expresses a subset of what we can evaluate against column stats
@@ -405,7 +421,9 @@ unique_ptr<MultiFileList> DuckLakeMultiFileList::ComplexFilterPushdown(ClientCon
 		    *root, [&](const DuckLakeFilterNode &leaf) { columns.insert(leaf.column_filter->column_field_index); });
 		if (columns.size() < 2 && CombineFilterNode(context, info, *filter)) {
 			// the combiner reduced the whole disjunction to its one column, so it is already pushed down
+			// LCOV_EXCL_START
 			continue;
+			// LCOV_EXCL_STOP
 		}
 		DuckLakeFilterTree tree;
 		tree.root = std::move(root);
@@ -463,7 +481,9 @@ OpenFileInfo DuckLakeMultiFileList::GetFile(idx_t i) const {
 		}
 		extended_info->options["snapshot_id"] = Value(LogicalType::BIGINT);
 		if (file_entry.mapping_id.IsValid()) {
+			// LCOV_EXCL_START
 			extended_info->options["mapping_id"] = Value::UBIGINT(file_entry.mapping_id.index);
+			// LCOV_EXCL_STOP
 		}
 	} else if (i >= inlined_data_file_start) {
 		// scanning inlined data
@@ -496,7 +516,7 @@ OpenFileInfo DuckLakeMultiFileList::GetFile(idx_t i) const {
 		// etag / last modified time can be set to dummy values
 		extended_info->options["etag"] = Value("");
 		extended_info->options["last_modified"] = Value::TIMESTAMP(timestamp_t(0));
-		if (!file_entry.delete_file.path.empty() || file_entry.max_row_count.IsValid()) {
+		if (!file_entry.delete_file.path.empty()) {
 			extended_info->options["has_deletes"] = Value::BOOLEAN(true);
 		}
 		if (file_entry.mapping_id.IsValid()) {

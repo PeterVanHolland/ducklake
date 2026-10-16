@@ -61,7 +61,7 @@ struct DuckLakeColumnStats {
 	bool has_min = false;
 	bool has_max = false;
 	bool any_valid = true;
-	//! Invalidated bounds must never be reseeded
+	//! The table has rows without bounds, new values only set them once the live values are known to be NULL
 	bool bounds_unknown = false;
 	bool has_contains_nan = false;
 	bool min_is_exact = false;

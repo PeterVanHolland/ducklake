@@ -126,7 +126,8 @@ CALL postgres_execute('pg', 'DROP TABLE registered_cached_inlined.ducklake_inlin
 statement error con2
 COMMIT
 ----
-ducklake_inlined_data_1_1" does not exist
+Failed to commit DuckLake transaction.
+Failed to read the inlined row counts from DuckLake
 
 # the rewritten file was removed
 query I

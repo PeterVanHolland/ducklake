@@ -1,0 +1,49 @@
+# name: test/sql/migration/v10_inlined_struct_sqlite.test
+# description: the v1.1 migration rewrites the STRUCT values that DuckDB 1.5.6 inlined into a SQLite catalog as SQL literals
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+require sqlite_scanner
+
+# written by DuckDB 1.5.6 with fields of many types in t, row 2 has only NULL fields and row 3 a NULL struct
+unzip data/old_ducklake/inlined_struct_text.sqlite.gz {TEST_DIR}/v10_inlined_struct.sqlite
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/v10_inlined_struct.sqlite' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_struct_files/', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1-dev1', AUTOMATIC_MIGRATION TRUE)
+
+loop flushed 0 2
+
+query IIIIIIII
+SELECT s.d, s.ts, s.tz = TIMESTAMPTZ '2020-01-01 10:11:12+00', s.t, s.i, s.u, hex(s.b), s.v = 'it''s, {x}'
+FROM lake.t WHERE id = 1
+----
+2020-01-01	2020-01-01 10:11:12.5	true	10:11:12	1 month 2 days 00:00:03	00000000-0000-0000-0000-000000000001	00FF6162	true
+
+query IIIIIIIII
+SELECT isnan(s.n), s.x, s.f, s.dec, s.l, s.dl, s.m['k''1'], s.inner_s.a, s.inner_s.q = 'a''b' FROM lake.t WHERE id = 1
+----
+true	-7	1.5	12.34	[1, NULL, 3]	[2021-02-03]	1	2022-03-04	true
+
+query III
+SELECT id, s IS NULL, s.d IS NULL AND s.v IS NULL AND s.inner_s IS NULL FROM lake.t WHERE id > 1 ORDER BY id
+----
+2	false	true
+3	true	true
+
+query I
+SELECT s FROM lake.plain
+----
+{'x': 1, 'v': plain}
+
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+endloop
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 't')
+----
+1

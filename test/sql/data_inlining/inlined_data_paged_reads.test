@@ -13,7 +13,7 @@ test-env DATA_PATH {TEST_DIR}
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_data_paged_reads', DATA_INLINING_ROW_LIMIT 10)
 
-# many rows of small values are read in pages that grow, with deletes, changes and a sorted flush across pages
+# many rows of small values are read in pages that grow, with deletes, changes and a sorted flush in one page
 statement ok
 CREATE TABLE dl.small (id INTEGER, s VARCHAR) WITH (data_inlining_row_limit = 10000);
 

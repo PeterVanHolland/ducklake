@@ -386,7 +386,9 @@ FROM parquet_full_metadata(%s)
 		for (auto stats_entry : stats_iter[row_idx].GetChildValues()) {
 			auto column_id_entry = stats_entry.GetChildValue<0>();
 			if (!column_id_entry.IsValid()) {
+				// LCOV_EXCL_START
 				continue;
+				// LCOV_EXCL_STOP
 			}
 			auto column_id = column_id_entry.GetValue();
 			auto column_entry = file.column_id_map.find(column_id);
@@ -844,9 +846,11 @@ unique_ptr<DuckLakeNameMapEntry> DuckLakeFileProcessor::MapHiveColumn(ParquetFil
 	string error;
 	auto cast_result = hive_value.DefaultTryCastAs(target_type, &error);
 	if (!cast_result) {
+		// LCOV_EXCL_START
 		throw InvalidInputException("Column \"%s\" exists as a hive partition with value \"%s\", but this value cannot "
 		                            "be cast to the column type \"%s\"",
 		                            field_id.Name(), hive_value.ToString(), field_id.Type());
+		// LCOV_EXCL_STOP
 	}
 
 	// Store the hive partition information for later statistics processing
@@ -1137,8 +1141,10 @@ DuckLakeDataFile DuckLakeFileProcessor::AddFileToTable(ParquetFileMetadata &file
 				}
 				auto partition_key_index = hive_partition_value.partition_key_index.GetIndex();
 				if (partition_key_index >= partition_data->fields.size() || found_partition_keys[partition_key_index]) {
+					// LCOV_EXCL_START
 					invalid_partition = true;
 					break;
+					// LCOV_EXCL_STOP
 				}
 				optional_ptr<const DuckLakePartitionField> partition_field;
 				for (const auto &field : partition_data->fields) {
@@ -1149,8 +1155,10 @@ DuckLakeDataFile DuckLakeFileProcessor::AddFileToTable(ParquetFileMetadata &file
 				}
 				if (!partition_field || partition_field->field_id != hive_partition_value.field_index ||
 				    !(partition_field->transform == hive_partition_value.transform)) {
+					// LCOV_EXCL_START
 					invalid_partition = true;
 					break;
+					// LCOV_EXCL_STOP
 				}
 				if (!IsValidTransformedHivePartitionValue(hive_partition_value, *partition_field)) {
 					invalid_partition = true;

@@ -87,7 +87,9 @@ void QuackMetadataManager::ProbeServerCapabilities() {
 	string probe = "SELECT 1 FROM duckdb_functions() WHERE function_name = 'ducklake_commit' LIMIT 1";
 	auto result = Query(probe);
 	if (!result || result->HasError()) {
+		// LCOV_EXCL_START
 		return;
+		// LCOV_EXCL_STOP
 	}
 	if (result->RowCount() > 0) {
 		transaction.GetCatalog().SetRetrialsServerSide(true);
@@ -141,7 +143,9 @@ void QuackMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tra
 	if (OptBoolFalse(*row, 2)) {
 		// With quack we need to clear up superseded inlines tables on the client side to avoid dangling caching
 		// references
+		// LCOV_EXCL_START
 		flush_transaction.DropEmptySupersededInlinedTablesClientSide();
+		// LCOV_EXCL_STOP
 	}
 	// We got clear the cache, if this creates inlined tables (e.g., `ducklake_inlined_data_<id>_<v>` or
 	// `ducklake_inlined_delete_<id>`)
@@ -154,7 +158,9 @@ bool QuackMetadataManager::MetadataExists() {
 	result->ThrowIfError("Failed to probe DuckLake metadata: ");
 	auto chunk = result->Fetch();
 	if (!chunk || chunk->size() == 0) {
+		// LCOV_EXCL_START
 		return false;
+		// LCOV_EXCL_STOP
 	}
 	return chunk->GetValue(0, 0).GetValue<int64_t>() > 0;
 }

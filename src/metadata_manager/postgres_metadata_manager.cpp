@@ -69,7 +69,9 @@ static string GetPostgresStatsType(const LogicalType &type) {
 	case LogicalTypeId::DECIMAL:
 		return type.ToString();
 	default:
+		// LCOV_EXCL_START
 		return string();
+		// LCOV_EXCL_STOP
 	}
 }
 

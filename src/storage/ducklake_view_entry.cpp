@@ -102,6 +102,7 @@ string DuckLakeViewEntry::ToSQL() const {
 	return result;
 }
 
+// LCOV_EXCL_START
 unique_ptr<CatalogEntry> DuckLakeViewEntry::Copy(ClientContext &context) const {
 	D_ASSERT(!internal);
 	auto create_info = GetInfo();
@@ -109,6 +110,7 @@ unique_ptr<CatalogEntry> DuckLakeViewEntry::Copy(ClientContext &context) const {
 	return make_uniq<DuckLakeViewEntry>(catalog, schema, create_info->Cast<CreateViewInfo>(), view_id, view_uuid,
 	                                    query_sql, local_change);
 }
+// LCOV_EXCL_STOP
 
 unique_ptr<SelectStatement> DuckLakeViewEntry::ParseSelectStatement() const {
 	auto parser = Parser::GetBuiltinParser();

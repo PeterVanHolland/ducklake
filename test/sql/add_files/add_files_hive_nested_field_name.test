@@ -53,3 +53,28 @@ query II
 SELECT s, a FROM ducklake.t3
 ----
 {'a': NULL, 'b': 8}	1
+
+# hive partitions only apply to top-level columns, like in read_parquet
+statement ok
+COPY (SELECT {'a': 7, 'b': 8} AS s, 1 AS a) TO '{DATA_PATH}/add_files_hive_nested_field_name_files' (FORMAT parquet, PARTITION_BY (a))
+
+query II
+SELECT s, a FROM read_parquet('{DATA_PATH}/add_files_hive_nested_field_name_files/a=1/*.parquet', hive_partitioning => true)
+----
+{'a': 7, 'b': 8}	1
+
+statement ok
+CREATE TABLE ducklake.t4(s STRUCT(a INTEGER, b INTEGER), a INTEGER)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 't4', '{DATA_PATH}/add_files_hive_nested_field_name_files/a=1/*.parquet', hive_partitioning => true)
+
+query I
+SELECT a FROM ducklake.t4
+----
+1
+
+query II
+SELECT s, a FROM ducklake.t4
+----
+{'a': 7, 'b': 8}	1

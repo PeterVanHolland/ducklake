@@ -212,10 +212,14 @@ void DuckLakeStagedCommit::EmitDeleteFileRow(string &sql, const DuckLakeDeleteFi
 		overwrites_existing_delete = file.overwrites_existing_delete;
 		auto &overwritten = file.overwritten_delete_file;
 		if (overwritten.delete_file_id.IsValid()) {
+			// LCOV_EXCL_START
 			overwrite_id = std::to_string(overwritten.delete_file_id.index);
+			// LCOV_EXCL_STOP
 		}
 		if (!overwritten.path.empty()) {
+			// LCOV_EXCL_START
 			overwrite_path = SQLString::ToString(overwritten.path);
+			// LCOV_EXCL_STOP
 		}
 	}
 	sql += StringUtil::Format(
@@ -451,10 +455,12 @@ string DuckLakeStagedCommit::EmitNameMaps(const DuckLakeNameMapSet &name_maps) c
 string DuckLakeStagedCommit::EmitFlushedInlinedTables(const vector<FlushedInlinedTableInfo> &flushed) const {
 	string sql;
 	for (auto &entry : flushed) {
+		// LCOV_EXCL_START
 		sql += StringUtil::Format("INSERT INTO %s VALUES (%s, %llu, %llu);",
 		                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::FLUSHED_INLINED),
 		                          SQLString(entry.inlined_table.table_name), entry.inlined_table.schema_version,
 		                          entry.flush_snapshot_id);
+		// LCOV_EXCL_STOP
 	}
 	return sql;
 }

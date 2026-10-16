@@ -154,12 +154,6 @@ string DuckLakeTypes::ToString(const LogicalType &type) {
 		if (type.IsJSONType()) {
 			return "json";
 		}
-		if (type.id() == LogicalTypeId::UNBOUND) {
-			const auto type_name = type.GetAlias();
-			if (StringUtil::CIEquals(type_name, "json")) {
-				return "json";
-			}
-		}
 		throw InvalidInputException("Unsupported user-defined type");
 	}
 	switch (type.id()) {

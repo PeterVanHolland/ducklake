@@ -95,9 +95,11 @@ SET extra_stats = '{"bbox": {"xmin": 1.000000, "xmax": 1.000000, "ymin": 2.00000
 WHERE table_id IN (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name IN ('mixed', 'merged'))
 
 statement ok
-CREATE TABLE null_stats AS
-SELECT s.extra_stats FROM __ducklake_metadata_dl.ducklake_file_column_stats s
-JOIN __ducklake_metadata_dl.ducklake_table t USING (table_id) WHERE t.table_name = 'nulls'
+SET VARIABLE nulls_table = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'nulls')
+
+statement ok
+SET VARIABLE null_stats = (SELECT extra_stats FROM __ducklake_metadata_dl.ducklake_file_column_stats
+	WHERE table_id = getvariable('nulls_table'))
 
 statement ok
 DETACH dl
@@ -134,9 +136,8 @@ SELECT count(*) FROM dl.merged WHERE st_intersects_extent(g, 'POINT(100 100)'::G
 
 # a file of only NULL geometries keeps its empty statistics
 query I
-SELECT count(*) FROM __ducklake_metadata_dl.ducklake_file_column_stats s
-JOIN __ducklake_metadata_dl.ducklake_table t USING (table_id)
-WHERE t.table_name = 'nulls' AND s.extra_stats IN (SELECT extra_stats FROM null_stats)
+SELECT count(*) FROM __ducklake_metadata_dl.ducklake_file_column_stats
+WHERE table_id = getvariable('nulls_table') AND extra_stats = getvariable('null_stats')
 ----
 1
 

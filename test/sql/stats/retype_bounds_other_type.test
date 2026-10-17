@@ -1,0 +1,189 @@
+# name: test/sql/stats/retype_bounds_other_type.test
+# description: file bounds of an older type do not prune rows after ALTER COLUMN TYPE
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/retype_bounds_other_type', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+USE ducklake
+
+# Imported BOOLEAN bounds use numbers
+statement ok
+COPY (SELECT true AS v) TO '{DATA_PATH}/retype_bounds_other_type_bool.parquet'
+
+statement ok
+COPY (SELECT false AS v) TO '{DATA_PATH}/retype_bounds_other_type_false.parquet'
+
+statement ok
+CREATE TABLE booleans (v BOOLEAN)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'booleans', '{DATA_PATH}/retype_bounds_other_type_bool.parquet')
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'booleans', '{DATA_PATH}/retype_bounds_other_type_false.parquet')
+
+query II rowsort
+SELECT s.min_value, s.max_value FROM __ducklake_metadata_ducklake.ducklake_file_column_stats s JOIN __ducklake_metadata_ducklake.ducklake_table t USING (table_id) WHERE t.table_name = 'booleans'
+----
+0	0
+1	1
+
+statement ok
+ALTER TABLE booleans ALTER COLUMN v TYPE INTEGER
+
+query I
+SELECT count(*) FROM booleans WHERE v = 1
+----
+1
+
+query I
+SELECT count(*) FROM booleans WHERE v = 0
+----
+1
+
+statement ok
+ALTER TABLE booleans ALTER COLUMN v TYPE DOUBLE
+
+query I
+SELECT count(*) FROM booleans WHERE v = 1
+----
+1
+
+query I
+SELECT count(*) FROM booleans WHERE v = 0
+----
+1
+
+# Legacy BOOLEAN bounds
+statement ok
+CREATE TABLE old_booleans (v BOOLEAN)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'old_booleans', '{DATA_PATH}/retype_bounds_other_type_bool.parquet')
+
+statement ok
+SET VARIABLE old_id = (SELECT table_id FROM __ducklake_metadata_ducklake.ducklake_table WHERE table_name = 'old_booleans')
+
+statement ok
+USE memory
+
+statement ok
+UPDATE __ducklake_metadata_ducklake.ducklake_file_column_stats SET min_value = 'true', max_value = 'true' WHERE table_id = getvariable('old_id')
+
+statement ok
+UPDATE __ducklake_metadata_ducklake.ducklake_table_column_stats SET min_value = 'true', max_value = 'true' WHERE table_id = getvariable('old_id')
+
+statement ok
+USE ducklake
+
+statement ok
+ALTER TABLE old_booleans ALTER COLUMN v TYPE INTEGER
+
+query I
+SELECT count(*) FROM old_booleans WHERE v = 1
+----
+1
+
+# Import and retype in one transaction
+statement ok
+CREATE TABLE local_booleans (v BOOLEAN)
+
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'local_booleans', '{DATA_PATH}/retype_bounds_other_type_bool.parquet')
+
+statement ok
+ALTER TABLE local_booleans ALTER COLUMN v TYPE INTEGER
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM local_booleans WHERE v = 1
+----
+1
+
+# Wide DECIMAL bounds can round differently from stored values
+statement ok
+CREATE TABLE decimals (v DECIMAL(38,0))
+
+statement ok
+INSERT INTO decimals VALUES ('-9007199254740994')
+
+statement ok
+ALTER TABLE decimals ALTER COLUMN v TYPE DOUBLE
+
+statement ok
+SET VARIABLE scanned = (SELECT v FROM decimals)
+
+query I
+SELECT count(*) FROM decimals WHERE v = getvariable('scanned')
+----
+1
+
+statement ok
+CREATE TABLE local_decimals (v DECIMAL(38,0))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO local_decimals VALUES ('-9007199254740994')
+
+statement ok
+ALTER TABLE local_decimals ALTER COLUMN v TYPE DOUBLE
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM local_decimals WHERE v = getvariable('scanned')
+----
+1
+
+# Compatible bounds still prune
+statement ok
+CREATE TABLE native_booleans (v BOOLEAN)
+
+statement ok
+INSERT INTO native_booleans VALUES (true)
+
+statement ok
+INSERT INTO native_booleans VALUES (false)
+
+statement ok
+ALTER TABLE native_booleans ALTER COLUMN v TYPE INTEGER
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM native_booleans WHERE v = 1
+----
+analyzed_plan	<REGEX>:.*Total Files Read: 1\s.*
+
+statement ok
+CREATE TABLE narrow_decimals (v DECIMAL(15,2))
+
+statement ok
+INSERT INTO narrow_decimals VALUES (1.25)
+
+statement ok
+INSERT INTO narrow_decimals VALUES (7.5)
+
+statement ok
+ALTER TABLE narrow_decimals ALTER COLUMN v TYPE DOUBLE
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM narrow_decimals WHERE v = 7.5
+----
+analyzed_plan	<REGEX>:.*Total Files Read: 1\s.*

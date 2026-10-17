@@ -1072,6 +1072,9 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFiel
 	// we need to drop and recreate the column
 	// drop the field
 	result.DropField(source_id);
+	if (source_type.id() == LogicalTypeId::BOOLEAN) {
+		result.boolean_to_number_fields.push_back(source_id.GetFieldIndex());
+	}
 
 	// re-create with the new type
 	auto column_data = source_id.GetColumnData().Copy();

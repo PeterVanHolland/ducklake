@@ -6,6 +6,7 @@
 #include "storage/ducklake_transaction.hpp"
 #include "storage/ducklake_transaction_manager.hpp"
 #include "storage/ducklake_variant_stats.hpp"
+#include "storage/ducklake_geo_stats.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "common/ducklake_util.hpp"
 #include "duckdb/planner/tableref/bound_at_clause.hpp"
@@ -507,6 +508,57 @@ AND NOT EXISTS (
 	result->ThrowIfError("Failed to add the schema versions of inlined-data tables while migrating to v1.1: ");
 }
 
+void DuckLakeMetadataManager::MigrateAddedGeometryStats() {
+	// files added without geospatial statistics were stored as files without geometries
+	auto result = Query(R"(
+SELECT s.table_id, s.column_id, s.data_file_id, s.extra_stats
+FROM {METADATA_CATALOG}.ducklake_file_column_stats s
+JOIN {METADATA_CATALOG}.ducklake_data_file f ON f.data_file_id = s.data_file_id
+WHERE s.extra_stats IS NOT NULL AND (s.null_count IS NULL OR s.null_count < f.record_count) AND EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column c
+	WHERE c.table_id = s.table_id AND c.column_id = s.column_id AND lower(c.column_type) LIKE 'geometry%'
+))");
+	result->ThrowIfError("Failed to read the geometry statistics while migrating to v1.1: ");
+	map<pair<idx_t, idx_t>, vector<idx_t>> files_by_column;
+	for (auto &row : *result) {
+		DuckLakeColumnGeoStats stats;
+		stats.Deserialize(row.GetValue<string>(3));
+		if (stats.geo_types.empty()) {
+			files_by_column[{row.GetValue<idx_t>(0), row.GetValue<idx_t>(1)}].push_back(row.GetValue<idx_t>(2));
+		}
+	}
+	if (files_by_column.empty()) {
+		return;
+	}
+	DuckLakeColumnGeoStats unknown;
+	unknown.SetUnknownExtent();
+	unknown.SetUnknownTypes();
+	string unknown_stats;
+	unknown.TrySerialize(unknown_stats);
+	string query;
+	for (auto &entry : files_by_column) {
+		auto table_id = entry.first.first;
+		auto column_id = entry.first.second;
+		// the table statistics merge those of the files, so they become unknown too
+		query += StringUtil::Format(
+		    "UPDATE {METADATA_CATALOG}.ducklake_table_column_stats SET extra_stats = %s WHERE table_id = %d AND "
+		    "column_id = %d;",
+		    unknown_stats, table_id, column_id);
+		auto &file_ids = entry.second;
+		for (idx_t start = 0; start < file_ids.size(); start += 1000) {
+			vector<string> batch;
+			for (idx_t i = start; i < MinValue<idx_t>(start + 1000, file_ids.size()); i++) {
+				batch.push_back(to_string(file_ids[i]));
+			}
+			query += StringUtil::Format("UPDATE {METADATA_CATALOG}.ducklake_file_column_stats SET extra_stats = %s "
+			                            "WHERE column_id = %d AND data_file_id IN (%s);",
+			                            unknown_stats, column_id, StringUtil::Join(batch, ", "));
+		}
+	}
+	auto update = Execute(query);
+	update->ThrowIfError("Failed to update the geometry statistics while migrating to v1.1: ");
+}
+
 void DuckLakeMetadataManager::MigrateRenamedFieldDefaults() {
 	// the defaults of a struct field cannot change, so a later row of the field without them lost them in a rename
 	auto result = Execute(R"(
@@ -532,6 +584,7 @@ void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	MigrateInlinedColumnNames(from_dev1);
 	MigrateInlinedSchemaVersions();
 	MigrateRenamedFieldDefaults();
+	MigrateAddedGeometryStats();
 	MigrateInlinedDataTypes();
 	ExecuteMigration(V1_1MigrationQuery(), from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");
 }

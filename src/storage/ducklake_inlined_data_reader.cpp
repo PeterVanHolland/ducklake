@@ -20,11 +20,111 @@ DuckLakeInlinedDataReader::DuckLakeInlinedDataReader(DuckLakeFunctionInfo &read_
     : BaseFileReader(info), read_info(read_info), table_name(std::move(table_name_p)) {
 	columns = std::move(columns_p);
 }
+
 DuckLakeInlinedDataReader::DuckLakeInlinedDataReader(DuckLakeFunctionInfo &read_info, const OpenFileInfo &info,
                                                      shared_ptr<DuckLakeInlinedData> data_p,
                                                      vector<MultiFileColumnDefinition> columns_p)
     : BaseFileReader(info), read_info(read_info), data(std::move(data_p)) {
 	columns = std::move(columns_p);
+}
+
+void DuckLakeInlinedDataReader::SetCommittedRows(shared_ptr<DuckLakeCommittedInlinedRows> rows) {
+	committed_rows = std::move(rows);
+}
+
+void DuckLakeInlinedDataReader::GetColumnToRead(const DuckLakeFunctionInfo &read_info,
+                                                DuckLakeMetadataManager &metadata_manager,
+                                                const DuckLakeInlinedColNames &col_names,
+                                                const MultiFileColumnDefinition &col, string &column,
+                                                LogicalType &type) {
+	if (!col.identifier.IsNull() && col.identifier.type().id() == LogicalTypeId::INTEGER) {
+		string virtual_column;
+		switch (IntegerValue::Get(col.identifier)) {
+		case MultiFileReader::ORDINAL_FIELD_ID:
+		case MultiFileReader::ROW_ID_FIELD_ID:
+			virtual_column = col_names.row_id;
+			break;
+		case MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID:
+			if (read_info.scan_type == DuckLakeScanType::SCAN_DELETIONS) {
+				// when scanning deletions end_snapshot is the snapshot marker
+				virtual_column = col_names.end_snapshot;
+			} else {
+				virtual_column = col_names.begin_snapshot;
+			}
+			break;
+		default:
+			break;
+		}
+		if (!virtual_column.empty()) {
+			column = SQLIdentifier::ToString(virtual_column);
+			type = LogicalType::BIGINT;
+			return;
+		}
+	}
+	column = SQLIdentifier::ToString(col.name.GetIdentifierName());
+	if (read_info.scan_type != DuckLakeScanType::SCAN_FOR_FLUSH) {
+		// the flush source already casts its columns
+		column = metadata_manager.CastColumnToTarget(column, col.type);
+	}
+	type = col.type;
+}
+
+shared_ptr<DuckLakeCommittedInlinedRows>
+DuckLakeInlinedDataReader::ReadCommittedRows(DuckLakeFunctionInfo &read_info, const string &table_name,
+                                             const vector<MultiFileColumnDefinition> &columns,
+                                             optional_idx &next_file_id) {
+	auto transaction = read_info.GetTransaction();
+	auto &metadata_manager = transaction->GetMetadataManager();
+	auto col_names = metadata_manager.InlinedColNames();
+	auto result = make_shared_ptr<DuckLakeCommittedInlinedRows>();
+	vector<LogicalType> types;
+	for (auto &col : columns) {
+		string column;
+		LogicalType type;
+		GetColumnToRead(read_info, metadata_manager, col_names, col, column, type);
+		result->columns.push_back(std::move(column));
+		types.push_back(std::move(type));
+	}
+	result->columns.push_back("(SELECT MAX(next_file_id) FROM {METADATA_CATALOG}.ducklake_snapshot)");
+	types.push_back(LogicalType::BIGINT);
+	auto query_result =
+	    metadata_manager.ReadInlinedData(read_info.snapshot, table_name, result->columns, DuckLakeInlinedDataPage());
+	result->rows = metadata_manager.TransformInlinedData(*query_result, types, table_name);
+	auto &rows = *result->rows->data;
+	if (rows.Count() > 0) {
+		auto file_id = rows.GetValue(types.size() - 1, 0).GetValue<idx_t>();
+		if (!next_file_id.IsValid() || file_id < next_file_id.GetIndex()) {
+			next_file_id = file_id;
+		}
+	}
+	return result;
+}
+
+//! Select the columns from rows read before, or return nullptr when one of them was not read
+static shared_ptr<DuckLakeInlinedData> ProjectCommittedRows(ClientContext &context,
+                                                            const DuckLakeCommittedInlinedRows &committed_rows,
+                                                            const vector<string> &columns_to_read) {
+	auto &source = *committed_rows.rows->data;
+	vector<column_t> column_ids;
+	vector<LogicalType> types;
+	for (auto &column : columns_to_read) {
+		auto entry = std::find(committed_rows.columns.begin(), committed_rows.columns.end(), column);
+		if (entry == committed_rows.columns.end()) {
+			return nullptr;
+		}
+		column_ids.push_back(NumericCast<column_t>(entry - committed_rows.columns.begin()));
+		types.push_back(source.Types()[column_ids.back()]);
+	}
+	auto result = make_shared_ptr<DuckLakeInlinedData>();
+	result->data = make_uniq<ColumnDataCollection>(context, types);
+	ColumnDataScanState scan_state;
+	source.InitializeScan(scan_state, column_ids);
+	DataChunk chunk;
+	chunk.Initialize(context, types);
+	while (source.Scan(scan_state, chunk)) {
+		result->data->Append(chunk);
+	}
+	return result;
 }
 
 bool DuckLakeInlinedDataReader::TryInitializeScan(ClientContext &context, GlobalTableFunctionState &gstate,
@@ -44,40 +144,11 @@ bool DuckLakeInlinedDataReader::TryInitializeScan(ClientContext &context, Global
 		auto col_names = metadata_manager.InlinedColNames();
 		// push the projections directly into the read
 		for (auto &column_id : column_indexes) {
-			auto index = column_id.GetPrimaryIndex();
-			auto &col = columns[index];
-			if (!col.identifier.IsNull() && col.identifier.type().id() == LogicalTypeId::INTEGER) {
-				auto identifier = IntegerValue::Get(col.identifier);
-				string virtual_column;
-				switch (identifier) {
-				case MultiFileReader::ORDINAL_FIELD_ID:
-				case MultiFileReader::ROW_ID_FIELD_ID:
-					virtual_column = col_names.row_id;
-					break;
-				case MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID:
-					if (read_info.scan_type == DuckLakeScanType::SCAN_DELETIONS) {
-						// when scanning deletions end_snapshot is the snapshot marker
-						virtual_column = col_names.end_snapshot;
-					} else {
-						virtual_column = col_names.begin_snapshot;
-					}
-					break;
-				default:
-					break;
-				}
-				if (!virtual_column.empty()) {
-					columns_to_read.push_back(SQLIdentifier::ToString(virtual_column));
-					expected_types.push_back(LogicalType::BIGINT);
-					continue;
-				}
-			}
-			auto column_name = SQLIdentifier::ToString(columns[index].name.GetIdentifierName());
-			if (read_info.scan_type != DuckLakeScanType::SCAN_FOR_FLUSH) {
-				// the flush source already casts its columns
-				column_name = metadata_manager.CastColumnToTarget(column_name, col.type);
-			}
-			columns_to_read.push_back(column_name);
-			expected_types.push_back(col.type);
+			string column;
+			LogicalType type;
+			GetColumnToRead(read_info, metadata_manager, col_names, columns[column_id.GetPrimaryIndex()], column, type);
+			columns_to_read.push_back(std::move(column));
+			expected_types.push_back(std::move(type));
 		}
 		// every projected column is copied from the page, the row id and begin snapshot that order the pages follow
 		for (idx_t i = 0; i < columns_to_read.size(); i++) {
@@ -96,7 +167,17 @@ bool DuckLakeInlinedDataReader::TryInitializeScan(ClientContext &context, Global
 			filter.delete_data->deleted_rows.clear();
 		}
 		scan_chunk.Initialize(context, expected_types);
-		LoadNextPage(context);
+		if (committed_rows) {
+			data = ProjectCommittedRows(context, *committed_rows, columns_to_read);
+		}
+		if (data) {
+			// the rows were read before the file list of the scan, they are its only page
+			read_all_pages = true;
+			data->data->InitializeScan(state);
+			MapDeletedRows();
+		} else {
+			LoadNextPage(context);
+		}
 	} else {
 		// scanning from transaction-local data - we already have the data
 		// push the projections into the scan

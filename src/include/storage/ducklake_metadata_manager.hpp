@@ -286,8 +286,8 @@ public:
 		return NumericLimits<idx_t>::Maximum();
 	}
 
-	//! Check whether a table with the given columns can be inlined
-	bool CanInlineColumns(const ColumnList &columns);
+	//! Why the rows of a table with the given columns cannot be inlined, empty when they can
+	string GetInliningObstacle(const ColumnList &columns);
 	//! Whether the inlined data table of a table with this many columns fits the backend
 	bool InlinedTableFits(idx_t column_count) const;
 	bool CanInlineColumns(const vector<DuckLakeColumnInfo> &columns);
@@ -444,6 +444,8 @@ public:
 	                                     const map<TableIndex, set<FieldIndex>> &cleared_columns, idx_t next_file_id);
 	static string WriteExpiredColumnTags(const vector<DuckLakeDroppedColumn> &dropped_columns);
 	static string WriteNewColumns(const vector<DuckLakeNewColumn> &new_columns);
+	//! Columns added and dropped in the same commit, which begin and end in its snapshot
+	static string WriteDroppedNewColumns(const vector<DuckLakeNewColumn> &columns);
 	static string WriteNewTags(const vector<DuckLakeTagInfo> &new_tags);
 	static string WriteNewTableOptions(const vector<DuckLakeConfigOption> &new_options);
 	static string WriteNewColumnTags(const vector<DuckLakeColumnTagInfo> &new_tags);
@@ -598,13 +600,13 @@ public:
 	virtual void MigrateV02(bool allow_failures = false);
 	virtual void MigrateV03(bool allow_failures = false);
 	virtual void MigrateV04();
-	virtual void MigrateV10(bool allow_failures = false);
-	//! Logs development migration failures during attach
-	virtual void MigrateV10Dev();
-	//! Whether the catalog already has every metadata table and column of v1.1-dev1
-	bool HasV1_1Dev1Additions();
+	virtual void MigrateV10(bool from_dev1 = false);
+	//! Whether the catalog already has every metadata table and column of v1.1
+	bool HasV1_1Additions();
 	//! Renames inlined metadata columns to the prefixed variants, skipping already renamed tables
 	virtual void MigrateInlinedColumnNames(bool probe_renamed);
+	//! Renames the given (old name, new name) columns of each inlined table
+	virtual void RenameInlinedColumns(const map<string, vector<pair<string, string>>> &renames);
 	//! Adds the schema version rows of inlined tables that older versions registered without one
 	void MigrateInlinedSchemaVersions();
 	//! Restores the defaults that older versions dropped when they renamed a struct field
@@ -668,6 +670,7 @@ public:
 protected:
 	string GetInlinedTableQuery(const DuckLakeTableInfo &table, const string &table_name);
 	bool CanInlineColumn(const string &name, const LogicalType &type);
+	string GetInliningObstacle(const string &name, const LogicalType &type);
 	string GetColumnType(const DuckLakeColumnInfo &col);
 	string GetColumnDefinitions(const vector<DuckLakeColumnInfo> &columns);
 	string GetKnownFilesForCleanupQuery() const;

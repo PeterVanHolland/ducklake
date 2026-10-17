@@ -478,10 +478,8 @@ static bool MapSortToSchemaVersion(ClientContext &context, unique_ptr<Expression
 	return mapped;
 }
 
-unique_ptr<LogicalOperator> DuckLakeCompactor::InsertSort(Binder &binder, unique_ptr<LogicalOperator> &plan,
-                                                          DuckLakeTableEntry &table,
-                                                          const DuckLakeTableEntry &latest_table,
-                                                          optional_ptr<DuckLakeSort> sort_data) {
+bool DuckLakeCompactor::InsertSort(Binder &binder, unique_ptr<LogicalOperator> &plan, DuckLakeTableEntry &table,
+                                   const DuckLakeTableEntry &latest_table, optional_ptr<DuckLakeSort> sort_data) {
 	// the projection that converts the columns for the copy stays above the sort, which reads the scan
 	bool has_copy_projection = plan->type == LogicalOperatorType::LOGICAL_PROJECTION;
 	auto &input = has_copy_projection ? plan->children[0] : plan;
@@ -493,8 +491,8 @@ unique_ptr<LogicalOperator> DuckLakeCompactor::InsertSort(Binder &binder, unique
 	auto orders = BindSortOrders(binder, latest_table.schema, latest_table.GetColumns(), latest_table.name, scan_index,
 	                             sort_orders);
 	if (orders.empty()) {
-		// Then the sorts were not in the DuckDB dialect and we return the original plan
-		return std::move(plan);
+		// Then the sorts were not in the DuckDB dialect and we keep the original plan
+		return false;
 	}
 	if (!ScanHasSortColumns(latest_table, table, orders, scan_index)) {
 		for (auto &order : orders) {
@@ -507,7 +505,7 @@ unique_ptr<LogicalOperator> DuckLakeCompactor::InsertSort(Binder &binder, unique
 			if (correlated ||
 			    !MapSortToSchemaVersion(binder.context, order.expression, latest_table, table, scan_index)) {
 				// the sort cannot be evaluated on the columns the files were written with
-				return std::move(plan);
+				return false;
 			}
 		}
 	}
@@ -517,9 +515,10 @@ unique_ptr<LogicalOperator> DuckLakeCompactor::InsertSort(Binder &binder, unique
 	order->children.push_back(std::move(input));
 	if (has_copy_projection) {
 		plan->children[0] = std::move(order);
-		return std::move(plan);
+	} else {
+		plan = LogicalProjection::CreateIdentity(binder.GenerateTableIndex(), std::move(order));
 	}
-	return LogicalProjection::CreateIdentity(binder.GenerateTableIndex(), std::move(order));
+	return true;
 }
 
 optional_ptr<DuckLakeTableEntry>
@@ -727,10 +726,8 @@ DuckLakeCompactor::GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry>
 	auto sort_data = latest_table.GetSortData();
 	bool sort_applied = false;
 	if (sort_data) {
-		auto unsorted_root = root.get();
-		root = DuckLakeCompactor::InsertSort(binder, root, table, latest_table, sort_data);
-		// InsertSort returns root if the sort isn't in DuckDB dialect.
-		sort_applied = root.get() != unsorted_root;
+		// InsertSort keeps root if the sort isn't in DuckDB dialect.
+		sort_applied = DuckLakeCompactor::InsertSort(binder, root, table, latest_table, sort_data);
 	}
 
 	// adjacent files are merged into one file that starts at the first file's row_id_start

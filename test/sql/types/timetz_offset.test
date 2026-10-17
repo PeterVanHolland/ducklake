@@ -272,3 +272,39 @@ SELECT id, x::VARCHAR FROM ducklake.f WHERE x >= TIMETZ '06:00:00+03' ORDER BY i
 ----
 2	23:00:00-05
 3	06:00:00+03
+
+# a parallel rewrite of a sorted table with a TIMETZ column writes its rows in sorted order
+statement ok
+PRAGMA verify_parallelism
+
+statement ok
+SET threads = 8
+
+statement ok
+CREATE TABLE ducklake.sp (id INTEGER, k BIGINT, x TIMETZ);
+
+statement ok
+CALL ducklake.set_option('parquet_row_group_size', 2048, table_name => 'sp')
+
+statement ok
+ALTER TABLE ducklake.sp SET SORTED BY (k)
+
+statement ok
+INSERT INTO ducklake.sp SELECT i, (i * 7919) % 100003, TIMETZ '10:00:00+02' FROM range(100000) t(i)
+
+statement ok
+DELETE FROM ducklake.sp WHERE id % 10 = 3
+
+statement ok
+CALL ducklake_rewrite_data_files('ducklake', 'sp', delete_threshold => 0)
+
+query III
+SELECT count(*), count(DISTINCT filename), min(x)::VARCHAR FROM ducklake.sp
+----
+90000	1	10:00:00+02
+
+query I
+SELECT count(*) FROM (SELECT k < lag(k) OVER (ORDER BY file_row_number) AS out_of_order FROM ducklake.sp)
+WHERE out_of_order
+----
+0

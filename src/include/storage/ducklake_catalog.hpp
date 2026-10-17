@@ -104,6 +104,22 @@ struct DuckLakeSchemaCacheEntry : public ObjectCacheEntry {
 	optional_idx GetEstimatedCacheMemory() const override;
 };
 
+//! Cache entry for the metadata of a DuckLake schema version, tables of old versions are built from it one at a time
+struct DuckLakeCatalogInfoCacheEntry : public ObjectCacheEntry {
+	explicit DuckLakeCatalogInfoCacheEntry(DuckLakeCatalogInfo info_p) : info(std::move(info_p)) {
+	}
+
+	DuckLakeCatalogInfo info;
+
+	static string ObjectType() {
+		return "ducklake_catalog_info";
+	}
+	string GetObjectType() override {
+		return ObjectType();
+	}
+	optional_idx GetEstimatedCacheMemory() const override;
+};
+
 //! The DuckLakes of a database instance, including those that are still attaching
 struct DuckLakeAttachedCatalogs : public ObjectCacheEntry {
 	mutex lock;
@@ -123,14 +139,30 @@ struct DuckLakeAttachedCatalogs : public ObjectCacheEntry {
 //! Holds pins on DuckLake schema cache entries, keeping them alive while they are still referenced.
 class DuckLakeSchemaPinState {
 public:
-	void Pin(shared_ptr<DuckLakeSchemaCacheEntry> entry);
+	//! The entry pinned for the schema version, unless the schema cache was invalidated since
+	shared_ptr<DuckLakeSchemaCacheEntry> Get(idx_t schema_version, idx_t generation);
+	//! Pins the entry for the schema version and returns the entry pinned there, a replaced entry stays alive
+	shared_ptr<DuckLakeSchemaCacheEntry> Pin(idx_t schema_version, idx_t generation,
+	                                         shared_ptr<DuckLakeSchemaCacheEntry> entry);
+	//! The entry holding only the given table of a schema version
+	shared_ptr<DuckLakeSchemaCacheEntry> GetTable(idx_t schema_version, TableIndex table_id, idx_t generation);
+	shared_ptr<DuckLakeSchemaCacheEntry> PinTable(idx_t schema_version, TableIndex table_id, idx_t generation,
+	                                              shared_ptr<DuckLakeSchemaCacheEntry> entry);
 	//! Clear all pinned schema cache entries for this pin state.
 	void Clear();
 
 private:
+	struct PinnedEntry {
+		shared_ptr<DuckLakeSchemaCacheEntry> entry;
+		idx_t generation;
+	};
+	shared_ptr<DuckLakeSchemaCacheEntry> Pin(PinnedEntry &pin, idx_t generation,
+	                                         shared_ptr<DuckLakeSchemaCacheEntry> entry);
+
 	mutex lock;
-	// Maps from address of the schema cache entry to the schema cache entry.
-	unordered_map<DuckLakeSchemaCacheEntry *, shared_ptr<DuckLakeSchemaCacheEntry>> pins;
+	unordered_map<idx_t, PinnedEntry> pins;
+	unordered_map<idx_t, unordered_map<TableIndex, PinnedEntry>> table_pins;
+	vector<shared_ptr<DuckLakeSchemaCacheEntry>> replaced;
 };
 
 enum class InlinedDeletionCacheResult { EXISTS, DOES_NOT_EXIST, UNKNOWN };
@@ -353,6 +385,9 @@ public:
 	idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version, DuckLakeTransaction &transaction);
 	optional_ptr<DuckLakeTableEntry> GetTableAtSchemaVersion(DuckLakeTransaction &transaction, TableIndex table_id,
 	                                                         idx_t schema_version);
+	//! Loads the tables that are about to be read at the given schema versions, with one load for each version
+	void LoadTablesAtSchemaVersions(DuckLakeTransaction &transaction,
+	                                const vector<pair<TableIndex, idx_t>> &table_versions);
 
 	static unique_ptr<DuckLakeStats> ConstructStatsMap(vector<DuckLakeGlobalStatsInfo> &global_stats,
 	                                                   DuckLakeCatalogSet &schema);
@@ -400,13 +435,30 @@ public:
 private:
 	void DropSchema(ClientContext &context, DropInfo &info) override;
 	unique_ptr<DuckLakeCatalogSet> LoadSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
+	unique_ptr<DuckLakeCatalogSet> BuildSchemaSet(DuckLakeTransaction &transaction, DuckLakeCatalogInfo catalog);
 	//! Look up (or load) the ObjectCache entry for a given snapshot.
 	shared_ptr<DuckLakeSchemaCacheEntry> GetSchemaCacheEntry(DuckLakeTransaction &transaction,
-	                                                         DuckLakeSnapshot snapshot);
+	                                                         DuckLakeSnapshot snapshot, idx_t generation);
+	shared_ptr<DuckLakeCatalogInfoCacheEntry> GetCatalogInfoCacheEntry(DuckLakeTransaction &transaction,
+	                                                                   DuckLakeSnapshot snapshot, idx_t generation);
+	//! Pins the given table of an old schema version when it is cached on its own
+	shared_ptr<DuckLakeSchemaCacheEntry> PinCachedTable(DuckLakeTransaction &transaction, idx_t schema_version,
+	                                                    idx_t generation, TableIndex table_id);
+	//! Builds the given table from the metadata of its schema version, caches it and pins it
+	shared_ptr<DuckLakeSchemaCacheEntry> PinTableFromInfo(DuckLakeTransaction &transaction, idx_t schema_version,
+	                                                      idx_t generation, const DuckLakeCatalogInfo &info,
+	                                                      TableIndex table_id);
+	shared_ptr<DuckLakeSchemaCacheEntry> GetPinnedSchemaCacheEntry(DuckLakeTransaction &transaction,
+	                                                               DuckLakeSnapshot snapshot);
 	void LoadNameMaps(DuckLakeTransaction &transaction);
 	string StatsCacheKey(idx_t next_file_id, TableIndex table_id) const;
 	string RecordCountCacheKey(idx_t snapshot_id) const;
 	string SchemaCacheKey(idx_t schema_version) const;
+	//! The object cache key of a schema version at an invalidation count
+	string SchemaCacheEntryKey(idx_t schema_version, idx_t generation) const;
+	string CatalogInfoCacheKey(idx_t schema_version, idx_t generation) const;
+	string TableSchemaCacheKey(idx_t schema_version, idx_t generation, TableIndex table_id) const;
+	idx_t SchemaCacheGeneration(idx_t schema_version) const;
 	ObjectCache &GetObjectCacheInstance();
 	//! Fails when the name or the metadata catalog of this DuckLake belongs to another DuckLake
 	void RegisterCatalog();
@@ -432,6 +484,9 @@ private:
 	string separator = "/";
 	//! A unique tracker for catalog changes in uncommitted transactions.
 	atomic<idx_t> last_uncommitted_catalog_version;
+	static constexpr idx_t SCHEMA_CACHE_GENERATION_SLOTS = 256;
+	//! Counts the invalidations of the schema versions of each slot, an entry of an earlier count is not used again
+	atomic<idx_t> schema_cache_generations[SCHEMA_CACHE_GENERATION_SLOTS] {};
 	//! The metadata server type
 	string metadata_type;
 	//! The resolved DuckLake spec version of the attached catalog

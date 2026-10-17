@@ -1007,16 +1007,25 @@ unordered_set<string> DuckLakeMetadataManager::GetInlinedTableNames(TableIndex t
 	return table_names;
 }
 
-DuckLakeCatalogInfo DuckLakeMetadataManager::GetCatalogForSnapshot(DuckLakeSnapshot snapshot) {
+static string TableFilter(const string &table_alias, const vector<TableIndex> &only_tables) {
+	if (only_tables.empty()) {
+		return string();
+	}
+	return StringUtil::Format("\n  AND %s.table_id IN (%s)", table_alias, GenerateIDList(only_tables));
+}
+
+DuckLakeCatalogInfo DuckLakeMetadataManager::GetCatalogForSnapshot(DuckLakeSnapshot snapshot,
+                                                                   const vector<TableIndex> &only_tables) {
 	auto &ducklake_catalog = transaction.GetCatalog();
 	return BuildCatalogForSnapshot(
 	    snapshot, [this](DuckLakeSnapshot s, string q) { return Query(s, q); }, ducklake_catalog.DataPath(),
-	    ducklake_catalog.Separator(), ducklake_catalog.SupportsV1_1Metadata());
+	    ducklake_catalog.Separator(), ducklake_catalog.SupportsV1_1Metadata(), only_tables);
 }
 
 DuckLakeCatalogInfo DuckLakeMetadataManager::BuildCatalogForSnapshot(
     DuckLakeSnapshot snapshot, const std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> &query_executor,
-    const string &base_data_path, const string &separator, bool supports_v1_1_metadata) {
+    const string &base_data_path, const string &separator, bool supports_v1_1_metadata,
+    const vector<TableIndex> &only_tables) {
 	DuckLakeCatalogInfo catalog;
 	// load the schema information
 	string parent_schema_select = supports_v1_1_metadata ? ", parent_schema_id" : "";
@@ -1087,11 +1096,11 @@ SELECT schema_id, tbl.table_id, table_uuid::VARCHAR, table_name,
 FROM {METADATA_CATALOG}.ducklake_table tbl
 LEFT JOIN {METADATA_CATALOG}.ducklake_column col USING (table_id)
 WHERE {SNAPSHOT_ID} >= tbl.begin_snapshot AND ({SNAPSHOT_ID} < tbl.end_snapshot OR tbl.end_snapshot IS NULL)
-  AND (({SNAPSHOT_ID} >= col.begin_snapshot AND ({SNAPSHOT_ID} < col.end_snapshot OR col.end_snapshot IS NULL)) OR column_id IS NULL)
+  AND (({SNAPSHOT_ID} >= col.begin_snapshot AND ({SNAPSHOT_ID} < col.end_snapshot OR col.end_snapshot IS NULL)) OR column_id IS NULL)%s
 ORDER BY table_id, parent_column NULLS FIRST, column_order
 )",
 	                                           ListAggregation(TAG_FIELDS), ListAggregation(INLINED_DATA_TABLES_FIELDS),
-	                                           ListAggregation(TAG_FIELDS)));
+	                                           ListAggregation(TAG_FIELDS), TableFilter("tbl", only_tables)));
 	result->ThrowIfError("Failed to get table information from DuckLake: ");
 	const idx_t COLUMN_INDEX_START = 8;
 	auto &tables = catalog.tables;
@@ -1183,6 +1192,77 @@ ORDER BY table_id, parent_column NULLS FIRST, column_order
 			parent.children.push_back(std::move(column_info));
 		}
 	}
+	// load partition information
+	result = query_executor(snapshot, StringUtil::Format(R"(
+SELECT partition_id, part.table_id, partition_key_index, column_id, transform
+FROM {METADATA_CATALOG}.ducklake_partition_info part
+JOIN {METADATA_CATALOG}.ducklake_partition_column part_col USING (partition_id)
+WHERE {SNAPSHOT_ID} >= part.begin_snapshot AND ({SNAPSHOT_ID} < part.end_snapshot OR part.end_snapshot IS NULL)%s
+ORDER BY part.table_id, partition_id, partition_key_index
+)",
+	                                                     TableFilter("part", only_tables)));
+	result->ThrowIfError("Failed to get partition information from DuckLake: ");
+	auto &partitions = catalog.partitions;
+	for (auto &row : *result) {
+		auto partition_id = row.GetValue<uint64_t>(0);
+		auto table_id = TableIndex(row.GetValue<uint64_t>(1));
+
+		if (partitions.empty() || partitions.back().table_id != table_id) {
+			DuckLakePartitionInfo partition_info;
+			partition_info.id = partition_id;
+			partition_info.table_id = table_id;
+			partitions.push_back(std::move(partition_info));
+		}
+		auto &partition_entry = partitions.back();
+
+		DuckLakePartitionFieldInfo partition_field;
+		partition_field.partition_key_index = row.GetValue<uint64_t>(2);
+		partition_field.field_id = FieldIndex(row.GetValue<uint64_t>(3));
+		partition_field.transform = row.GetValue<string>(4);
+		partition_entry.fields.push_back(std::move(partition_field));
+	}
+
+	// load sort information
+	result = query_executor(snapshot, StringUtil::Format(R"(
+SELECT sort.sort_id, sort.table_id, sort_expr.sort_key_index, sort_expr.expression, sort_expr.dialect, sort_expr.sort_direction, sort_expr.null_order
+FROM {METADATA_CATALOG}.ducklake_sort_info sort
+JOIN {METADATA_CATALOG}.ducklake_sort_expression sort_expr USING (sort_id)
+WHERE {SNAPSHOT_ID} >= sort.begin_snapshot AND ({SNAPSHOT_ID} < sort.end_snapshot OR sort.end_snapshot IS NULL)%s
+ORDER BY sort.table_id, sort.sort_id, sort_expr.sort_key_index
+)",
+	                                                     TableFilter("sort", only_tables)));
+	result->ThrowIfError("Failed to get sort information from DuckLake: ");
+	auto &sorts = catalog.sorts;
+	for (auto &row : *result) {
+		auto sort_id = row.GetValue<uint64_t>(0);
+		auto table_id = TableIndex(row.GetValue<uint64_t>(1));
+
+		if (sorts.empty() || sorts.back().table_id != table_id) {
+			DuckLakeSortInfo sort_info;
+			sort_info.id = sort_id;
+			sort_info.table_id = table_id;
+			sorts.push_back(std::move(sort_info));
+		}
+		auto &sort_entry = sorts.back();
+
+		DuckLakeSortFieldInfo sort_field;
+		sort_field.sort_key_index = row.GetValue<uint64_t>(2);
+		sort_field.expression = row.GetValue<string>(3);
+		sort_field.dialect = row.GetValue<string>(4);
+
+		auto sort_direction_str = row.GetValue<string>(5);
+		sort_field.sort_direction =
+		    (StringUtil::CIEquals(sort_direction_str, "DESC") ? OrderType::DESCENDING : OrderType::ASCENDING);
+
+		auto null_order_str = row.GetValue<string>(6);
+		sort_field.null_order = (StringUtil::CIEquals(null_order_str, "NULLS_FIRST") ? OrderByNullType::NULLS_FIRST
+		                                                                             : OrderByNullType::NULLS_LAST);
+		sort_entry.fields.push_back(std::move(sort_field));
+	}
+
+	if (!only_tables.empty()) {
+		return catalog;
+	}
 	// load view information
 	auto view_column_tags_select = supports_v1_1_metadata ? StringUtil::Format(R"(,
 	(
@@ -1265,72 +1345,6 @@ WHERE  {SNAPSHOT_ID} >= ducklake_macro.begin_snapshot AND ({SNAPSHOT_ID} < duckl
 		auto macro_implementations = row.GetValue<Value>(3);
 		macro_info.implementations = LoadMacroImplementations(macro_implementations);
 		macros.push_back(std::move(macro_info));
-	}
-
-	// load partition information
-	result = query_executor(snapshot, R"(
-SELECT partition_id, part.table_id, partition_key_index, column_id, transform
-FROM {METADATA_CATALOG}.ducklake_partition_info part
-JOIN {METADATA_CATALOG}.ducklake_partition_column part_col USING (partition_id)
-WHERE {SNAPSHOT_ID} >= part.begin_snapshot AND ({SNAPSHOT_ID} < part.end_snapshot OR part.end_snapshot IS NULL)
-ORDER BY part.table_id, partition_id, partition_key_index
-)");
-	result->ThrowIfError("Failed to get partition information from DuckLake: ");
-	auto &partitions = catalog.partitions;
-	for (auto &row : *result) {
-		auto partition_id = row.GetValue<uint64_t>(0);
-		auto table_id = TableIndex(row.GetValue<uint64_t>(1));
-
-		if (partitions.empty() || partitions.back().table_id != table_id) {
-			DuckLakePartitionInfo partition_info;
-			partition_info.id = partition_id;
-			partition_info.table_id = table_id;
-			partitions.push_back(std::move(partition_info));
-		}
-		auto &partition_entry = partitions.back();
-
-		DuckLakePartitionFieldInfo partition_field;
-		partition_field.partition_key_index = row.GetValue<uint64_t>(2);
-		partition_field.field_id = FieldIndex(row.GetValue<uint64_t>(3));
-		partition_field.transform = row.GetValue<string>(4);
-		partition_entry.fields.push_back(std::move(partition_field));
-	}
-
-	// load sort information
-	result = query_executor(snapshot, R"(
-SELECT sort.sort_id, sort.table_id, sort_expr.sort_key_index, sort_expr.expression, sort_expr.dialect, sort_expr.sort_direction, sort_expr.null_order
-FROM {METADATA_CATALOG}.ducklake_sort_info sort
-JOIN {METADATA_CATALOG}.ducklake_sort_expression sort_expr USING (sort_id)
-WHERE {SNAPSHOT_ID} >= sort.begin_snapshot AND ({SNAPSHOT_ID} < sort.end_snapshot OR sort.end_snapshot IS NULL)
-ORDER BY sort.table_id, sort.sort_id, sort_expr.sort_key_index
-)");
-	result->ThrowIfError("Failed to get sort information from DuckLake: ");
-	auto &sorts = catalog.sorts;
-	for (auto &row : *result) {
-		auto sort_id = row.GetValue<uint64_t>(0);
-		auto table_id = TableIndex(row.GetValue<uint64_t>(1));
-
-		if (sorts.empty() || sorts.back().table_id != table_id) {
-			DuckLakeSortInfo sort_info;
-			sort_info.id = sort_id;
-			sort_info.table_id = table_id;
-			sorts.push_back(std::move(sort_info));
-		}
-		auto &sort_entry = sorts.back();
-
-		DuckLakeSortFieldInfo sort_field;
-		sort_field.sort_key_index = row.GetValue<uint64_t>(2);
-		sort_field.expression = row.GetValue<string>(3);
-		sort_field.dialect = row.GetValue<string>(4);
-
-		auto sort_direction_str = row.GetValue<string>(5);
-		sort_field.sort_direction =
-		    (StringUtil::CIEquals(sort_direction_str, "DESC") ? OrderType::DESCENDING : OrderType::ASCENDING);
-
-		auto null_order_str = row.GetValue<string>(6);
-		sort_field.null_order = (StringUtil::CIEquals(null_order_str, "NULLS_FIRST") ? OrderByNullType::NULLS_FIRST
-		                                                                             : OrderByNullType::NULLS_LAST);
-		sort_entry.fields.push_back(std::move(sort_field));
 	}
 
 	return catalog;

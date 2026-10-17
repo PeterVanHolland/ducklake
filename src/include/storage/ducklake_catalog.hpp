@@ -175,8 +175,9 @@ public:
 	//! Returns the inlining limit (0 if the table is not eligible)
 	idx_t GetInliningLimit(ClientContext &context, DuckLakeTableEntry &table);
 	//! Inlining limit for a table that does not exist yet (CTAS), given its scope and columns
-	idx_t GetInliningLimit(ClientContext &context, SchemaIndex schema_id, TableIndex table_id,
-	                       const ColumnList &columns, optional_ptr<const map<string, string>> table_options = nullptr);
+	idx_t GetInliningLimit(ClientContext &context, const Identifier &table_name, SchemaIndex schema_id,
+	                       TableIndex table_id, const ColumnList &columns,
+	                       optional_ptr<const map<string, string>> table_options = nullptr);
 	//! Whether inserts in this scope sort their data according to SORTED BY (the sort_on_insert option)
 	bool SortOnInsert(SchemaIndex schema_id, TableIndex table_id,
 	                  optional_ptr<const map<string, string>> table_options = nullptr) const;

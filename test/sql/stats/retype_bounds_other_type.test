@@ -42,6 +42,50 @@ SELECT count(*) FROM booleans WHERE v = 1
 ----
 1
 
+# files added before the bounds were written as numbers, and an added file retyped in its own transaction
+statement ok
+CREATE TABLE old_booleans (v BOOLEAN)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'old_booleans', '{DATA_PATH}/retype_bounds_other_type_bool.parquet')
+
+statement ok
+SET VARIABLE old_id = (SELECT table_id FROM __ducklake_metadata_ducklake.ducklake_table WHERE table_name = 'old_booleans')
+
+statement ok
+UPDATE __ducklake_metadata_ducklake.ducklake_file_column_stats SET min_value = 'true', max_value = 'true' WHERE table_id = getvariable('old_id')
+
+statement ok
+UPDATE __ducklake_metadata_ducklake.ducklake_table_column_stats SET min_value = 'true', max_value = 'true' WHERE table_id = getvariable('old_id')
+
+statement ok
+ALTER TABLE old_booleans ALTER COLUMN v TYPE INTEGER
+
+query I
+SELECT count(*) FROM old_booleans WHERE v = 1
+----
+1
+
+statement ok
+CREATE TABLE local_booleans (v BOOLEAN)
+
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'local_booleans', '{DATA_PATH}/retype_bounds_other_type_bool.parquet')
+
+statement ok
+ALTER TABLE local_booleans ALTER COLUMN v TYPE INTEGER
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM local_booleans WHERE v = 1
+----
+1
+
 # a wide DECIMAL reads as another DOUBLE than its bound text
 statement ok
 CREATE TABLE decimals (v DECIMAL(38,0))
@@ -57,6 +101,26 @@ SET VARIABLE scanned = (SELECT v FROM decimals)
 
 query I
 SELECT count(*) FROM decimals WHERE v = getvariable('scanned')
+----
+1
+
+statement ok
+CREATE TABLE local_decimals (v DECIMAL(38,0))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO local_decimals VALUES ('-9007199254740994')
+
+statement ok
+ALTER TABLE local_decimals ALTER COLUMN v TYPE DOUBLE
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM local_decimals WHERE v = getvariable('scanned')
 ----
 1
 

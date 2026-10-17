@@ -72,6 +72,8 @@ struct DuckLakeCommitState {
 	map<TableIndex, set<FieldIndex>> float_widened_columns;
 	//! The widened columns with values that read as DOUBLE without FLOAT rounding
 	map<TableIndex, set<FieldIndex>> float_bounds_to_clear;
+	//! Columns retyped to a numeric type
+	map<TableIndex, set<FieldIndex>> numeric_retyped_columns;
 	//! The oid of each entry that gets its id in this commit
 	ducklake_entry_oids_t new_entry_oids;
 	//! The existing tables that get a new inlined data table in this commit

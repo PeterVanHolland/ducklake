@@ -426,6 +426,16 @@ FROM parquet_full_metadata(%s)
 			if (column.bounds_type.id() != LogicalTypeId::INVALID) {
 				stats.CastBoundsFrom(column.bounds_type);
 			}
+			if (stats.type.id() == LogicalTypeId::BOOLEAN) {
+				// footers write true and false where DuckLake writes 1 and 0, which still read after a type change
+				for (auto bound : {&stats.min, &stats.max}) {
+					if (*bound == "true") {
+						*bound = "1";
+					} else if (*bound == "false") {
+						*bound = "0";
+					}
+				}
+			}
 
 			stats.has_null_count = TryGetCount(stats_entry.GetChildValue<3>(), stats.null_count);
 			stats.has_num_values = TryGetCount(stats_entry.GetChildValue<4>(), stats.num_values);

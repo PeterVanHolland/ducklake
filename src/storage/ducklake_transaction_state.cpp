@@ -28,6 +28,11 @@
 
 namespace duckdb {
 
+//! A DECIMAL with more digits than a DOUBLE holds can be read as another DOUBLE than its bound text
+static bool IsWideDecimal(const LogicalType &type) {
+	return type.id() == LogicalTypeId::DECIMAL && DecimalType::GetWidth(type) > std::numeric_limits<double>::digits10;
+}
+
 bool DuckLakeCommitState::WidensFloatColumns(TableIndex table_id) const {
 	return float_widened_columns.find(table_id) != float_widened_columns.end();
 }
@@ -45,6 +50,11 @@ void DuckLakeCommitState::PrepareFloatBounds(TableIndex table_id, map<FieldIndex
 			continue;
 		}
 		auto &stats = column_entry->second;
+		if (IsWideDecimal(stats.type)) {
+			stats.ClearBounds();
+			stats.bounds_unknown = true;
+			continue;
+		}
 		if (stats.type.id() != LogicalTypeId::FLOAT) {
 			// written with the new type already
 			continue;
@@ -1784,6 +1794,9 @@ void DuckLakeTransactionState::GetNewTableInfo(DuckLakeCommitState &commit_state
 				auto field_index = new_field.column_info.id;
 				bool retyped = std::find(changed_fields.dropped_fields.begin(), changed_fields.dropped_fields.end(),
 				                         field_index) != changed_fields.dropped_fields.end();
+				if (retyped && DuckLakeTypes::FromString(new_field.column_info.type).IsNumeric()) {
+					commit_state.numeric_retyped_columns[commit_state.GetTableId(table)].insert(field_index);
+				}
 				if (retyped && new_field.column_info.type == DuckLakeTypes::ToString(LogicalType::DOUBLE)) {
 					auto widened_table_id = commit_state.GetTableId(table);
 					commit_state.float_widened_columns[widened_table_id].insert(field_index);
@@ -2105,10 +2118,7 @@ FROM {METADATA_CATALOG}.ducklake_column WHERE (table_id, column_id) IN (%s))",
 		auto column_type = row.GetValue<string>(2);
 		if (column_type != float_type) {
 			older_type[table_id].insert(field_index);
-			// a DECIMAL with more digits than a DOUBLE holds can be read as another DOUBLE than its bound text
-			auto type = DuckLakeTypes::FromString(column_type);
-			if (type.id() == LogicalTypeId::DECIMAL &&
-			    DecimalType::GetWidth(type) > std::numeric_limits<double>::digits10) {
+			if (IsWideDecimal(DuckLakeTypes::FromString(column_type))) {
 				result.cleared[table_id].insert(field_index);
 			}
 		} else if (row.IsNull(3)) {
@@ -2248,6 +2258,8 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 		}
 		batch_queries += DuckLakeMetadataManager::WriteFloatWidenedStats(float_bounds.widened, float_bounds.cleared,
 		                                                                 commit_snapshot.next_file_id);
+		batch_queries += DuckLakeMetadataManager::WriteNumericRetypedStats(commit_state.numeric_retyped_columns,
+		                                                                   commit_snapshot.next_file_id);
 		batch_queries += DuckLakeMetadataManager::WriteDroppedColumns(result.dropped_columns);
 		// Truly dropped columns - i.e. not re-added under the same field id in this commit, as
 		// happens for RENAME/ALTER - also expire their committed column tags (GH #1310).

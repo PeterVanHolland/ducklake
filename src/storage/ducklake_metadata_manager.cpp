@@ -1794,12 +1794,7 @@ string DuckLakeMetadataManager::GenerateColumnFilterCondition(const ColumnFilter
 
 	string null_checks;
 	for (const auto &stat : referenced_stats) {
-		auto stat_column = StatsColumn(cte_name, stat);
-		if (stat == "min_value" || stat == "max_value") {
-			// a bound that does not read as the column type, as a bound of an older type can, is unknown
-			stat_column = CastStatsToTarget(stat_column, column_filter.column_type, StatsCastType::ORDERING);
-		}
-		null_checks += stat_column + " IS NULL OR ";
+		null_checks += StatsColumn(cte_name, stat) + " IS NULL OR ";
 	}
 	string nan_check;
 	if (column_filter.column_type.IsFloating() &&
@@ -3362,17 +3357,29 @@ static string RewriteColumnStatsBoundsSql(const map<TableIndex, set<FieldIndex>>
 	                          bounds, column_pairs);
 }
 
+//! Sets both bounds to the expression, with {BOUND} standing for the bound
+static string SetBoundsSql(const string &expression) {
+	string result;
+	for (auto bound : {"min_value", "max_value"}) {
+		result += result.empty() ? "" : ", ";
+		result += string(bound) + " = " + StringUtil::Replace(expression, "{BOUND}", bound);
+	}
+	return result;
+}
+
 string DuckLakeMetadataManager::WriteFloatWidenedStats(const map<TableIndex, set<FieldIndex>> &widened_columns,
                                                        const map<TableIndex, set<FieldIndex>> &cleared_columns,
                                                        idx_t next_file_id) {
-	string widened_bounds;
-	for (auto bound : {"min_value", "max_value"}) {
-		widened_bounds += widened_bounds.empty() ? "" : ", ";
-		widened_bounds +=
-		    StringUtil::Format("%s = CAST(CAST(CAST(%s AS REAL) AS DOUBLE PRECISION) AS VARCHAR)", bound, bound);
-	}
+	auto widened_bounds = SetBoundsSql("CAST(CAST(CAST({BOUND} AS REAL) AS DOUBLE PRECISION) AS VARCHAR)");
 	return RewriteColumnStatsBoundsSql(widened_columns, widened_bounds, next_file_id) +
 	       RewriteColumnStatsBoundsSql(cleared_columns, "min_value = NULL, max_value = NULL", next_file_id);
+}
+
+string DuckLakeMetadataManager::WriteNumericRetypedStats(const map<TableIndex, set<FieldIndex>> &retyped_columns,
+                                                         idx_t next_file_id) {
+	// BOOLEAN bounds of files added before they were written as numbers
+	auto number_bounds = SetBoundsSql("CASE {BOUND} WHEN 'true' THEN '1' WHEN 'false' THEN '0' ELSE {BOUND} END");
+	return RewriteColumnStatsBoundsSql(retyped_columns, number_bounds, next_file_id);
 }
 
 static string ExpireDroppedColumns(const vector<DuckLakeDroppedColumn> &dropped_columns, const string &metadata_table) {

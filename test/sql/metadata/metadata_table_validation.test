@@ -305,6 +305,6 @@ statement ok
 DETACH meta
 
 statement error
-ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_dev.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', AUTOMATIC_MIGRATION TRUE)
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_dev.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
 ----
 metadata table "ducklake_view_column_tag" has no column "value"

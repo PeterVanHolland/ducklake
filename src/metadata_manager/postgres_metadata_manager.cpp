@@ -304,6 +304,34 @@ bool PostgresMetadataManager::IsRetryableCommitError(const string &message) cons
 	return false;
 }
 
+//! The DuckDB name of a type in information_schema.columns
+static string MetadataColumnType(const string &postgres_type) {
+	auto type_id = TransformStringToLogicalTypeId(postgres_type == "character varying" ? "varchar" : postgres_type);
+	return type_id == LogicalTypeId::UNBOUND ? postgres_type : LogicalType(type_id).ToString();
+}
+
+map<string, vector<pair<string, string>>>
+PostgresMetadataManager::GetMetadataTableColumns(const vector<string> &table_names) {
+	// one round trip, instead of loading the entry of every table
+	auto &catalog = transaction.GetCatalog();
+	auto remote_query = StringUtil::Format("SELECT table_name, column_name, data_type FROM information_schema.columns "
+	                                       "WHERE table_schema = %s ORDER BY table_name, ordinal_position",
+	                                       SQLString::ToString(catalog.MetadataSchemaName().GetIdentifierName()));
+	auto result = DuckLakeMetadataManager::Query(
+	    StringUtil::Format("SELECT * FROM postgres_query({METADATA_CATALOG_NAME_LITERAL}, %s, use_transaction = true)",
+	                       SQLString::ToString(remote_query)));
+	result->ThrowIfError("Failed to read the columns of the DuckLake metadata tables: ");
+	case_insensitive_set_t requested_tables(table_names.begin(), table_names.end());
+	map<string, vector<pair<string, string>>> columns;
+	for (auto &row : *result) {
+		auto table_name = row.GetValue<string>(0);
+		if (requested_tables.count(table_name)) {
+			columns[table_name].emplace_back(row.GetValue<string>(1), MetadataColumnType(row.GetValue<string>(2)));
+		}
+	}
+	return columns;
+}
+
 bool PostgresMetadataManager::InlinedDeletionTableExists(const string &table_name) {
 	auto &catalog = transaction.GetCatalog();
 	auto remote_query = StringUtil::Format(

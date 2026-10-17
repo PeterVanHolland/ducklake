@@ -18,7 +18,7 @@ statement ok
 DETACH dl
 
 # another metadata table has a column of the same name
-foreach table,column ducklake_delete_file,row_group_count ducklake_table_column_stats,min_is_exact ducklake_table_column_stats,max_is_exact
+foreach table,column ducklake_delete_file,row_group_count ducklake_table_column_stats,max_is_exact
 
 statement ok
 ATTACH '{TEST_DIR}/dev1_missing_addition.db' AS meta
@@ -53,3 +53,21 @@ statement ok
 DETACH meta
 
 endloop
+
+# restoring min_is_exact would reverse the stats columns
+statement ok
+ATTACH '{TEST_DIR}/dev1_missing_addition.db' AS meta
+
+statement ok
+ALTER TABLE meta.ducklake_table_column_stats DROP COLUMN min_is_exact
+
+statement ok
+UPDATE meta.ducklake_metadata SET value = '1.1-dev1' WHERE key = 'version'
+
+statement ok
+DETACH meta
+
+statement error
+ATTACH 'ducklake:{TEST_DIR}/dev1_missing_addition.db' AS dl (DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+----
+is "max_is_exact" of type BOOLEAN, expected "min_is_exact" of type BOOLEAN

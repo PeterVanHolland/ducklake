@@ -28,6 +28,7 @@
       "reason": "Test requires a Quack metadata catalog",
       "paths": [
         "test/sql/quack/inlined_superseded_drop_failure.test",
+        "test/sql/quack/metadata_table_validation.test",
         "test/sql/quack/server_side_commit_cache_clear.test"
       ]
     },

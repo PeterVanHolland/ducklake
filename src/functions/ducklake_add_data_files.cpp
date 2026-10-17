@@ -442,13 +442,21 @@ FROM parquet_full_metadata(%s)
 					auto &extent = geo_stats.extent;
 					double *bounds[] = {&extent.x_min, &extent.x_max, &extent.y_min, &extent.y_max,
 					                    &extent.z_min, &extent.z_max, &extent.m_min, &extent.m_max};
+					bool bound_set[8] = {};
 					idx_t bound_idx = 0;
 					geo_bbox.ForEach([&](const VectorIterator<double>::ValueEntry &bound) {
 						if (bound.IsValid()) {
 							*bounds[bound_idx] = bound.GetValue();
+							bound_set[bound_idx] = true;
 						}
 						bound_idx++;
 					});
+					// a box that wraps around the antimeridian has its minimum above its maximum, which stays unknown
+					for (idx_t i = 0; i < 8; i += 2) {
+						if (bound_set[i] && bound_set[i + 1] && *bounds[i] > *bounds[i + 1]) {
+							DuckLakeColumnGeoStats::SetUnknownRange(*bounds[i], *bounds[i + 1]);
+						}
+					}
 				} else {
 					geo_stats.SetUnknownExtent();
 				}
@@ -661,14 +669,10 @@ void DuckLakeParquetTypeChecker::CheckMatchingType() {
 	}
 
 	if (type.id() == LogicalTypeId::GEOMETRY) {
-		if (StringUtil::StartsWith(column.logical_type, "Geography")) {
-			// files of GEOGRAPHY columns carry no geometry types, which DuckLake would read as no geometries
-			failures.push_back("Expected type \"GEOMETRY\" but found a GEOGRAPHY column, which DuckLake does not "
-			                   "support yet");
-			Fail();
-		}
-		// the reader also reads the BLOB columns of GeoParquet v1 files as GEOMETRY
-		if (source_type.id() != LogicalTypeId::GEOMETRY || !StringUtil::StartsWith(column.logical_type, "Geometry")) {
+		// the reader reads GEOGRAPHY columns as GEOMETRY, and also the BLOB columns of GeoParquet v1 files
+		auto native_geometry = StringUtil::StartsWith(column.logical_type, "Geometry") ||
+		                       StringUtil::StartsWith(column.logical_type, "Geography");
+		if (source_type.id() != LogicalTypeId::GEOMETRY || !native_geometry) {
 			auto found_type = source_type.id() == LogicalTypeId::GEOMETRY ? LogicalType::BLOB : source_type;
 			failures.push_back(StringUtil::Format(
 			    "Expected type \"GEOMETRY\" but found type \"%s\". Is this a GeoParquet v1.*.* file? DuckLake only "

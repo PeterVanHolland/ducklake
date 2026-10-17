@@ -442,13 +442,23 @@ FROM parquet_full_metadata(%s)
 					auto &extent = geo_stats.extent;
 					double *bounds[] = {&extent.x_min, &extent.x_max, &extent.y_min, &extent.y_max,
 					                    &extent.z_min, &extent.z_max, &extent.m_min, &extent.m_max};
+					bool bound_set[8] = {};
 					idx_t bound_idx = 0;
 					geo_bbox.ForEach([&](const VectorIterator<double>::ValueEntry &bound) {
 						if (bound.IsValid()) {
 							*bounds[bound_idx] = bound.GetValue();
+							bound_set[bound_idx] = true;
 						}
 						bound_idx++;
 					});
+					// a box that wraps around the antimeridian has its minimum above its maximum, which stays unknown
+					auto unknown = std::numeric_limits<double>::max();
+					for (idx_t i = 0; i < 8; i += 2) {
+						if (bound_set[i] && bound_set[i + 1] && *bounds[i] > *bounds[i + 1]) {
+							*bounds[i] = -unknown;
+							*bounds[i + 1] = unknown;
+						}
+					}
 				} else {
 					geo_stats.SetUnknownExtent();
 				}

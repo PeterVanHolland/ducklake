@@ -515,7 +515,7 @@ void DuckLakeMetadataManager::MigrateAddedGeometryStats() {
 ))";
 	// files added without geospatial statistics were stored as files without geometries
 	auto files = Query(StringUtil::Format(R"(
-SELECT s.table_id, s.column_id, s.data_file_id, s.extra_stats, s.value_count IS NULL OR s.value_count > 0
+SELECT s.table_id, s.column_id, s.extra_stats, s.value_count IS NULL OR s.value_count > 0
 FROM {METADATA_CATALOG}.ducklake_file_column_stats s
 WHERE s.extra_stats IS NOT NULL AND %s)",
 	                                      geometry_column));
@@ -525,30 +525,25 @@ WHERE s.extra_stats IS NOT NULL AND %s)",
 	unknown.SetUnknownTypes();
 	string unknown_stats;
 	unknown.TrySerialize(unknown_stats);
-	map<pair<idx_t, idx_t>, vector<idx_t>> unknown_files;
+	set<string> damaged_stats;
 	map<pair<idx_t, idx_t>, DuckLakeColumnGeoStats> file_stats;
 	for (auto &row : *files) {
-		pair<idx_t, idx_t> column(row.GetValue<idx_t>(0), row.GetValue<idx_t>(1));
+		auto stored_stats = row.GetValue<string>(2);
 		DuckLakeColumnGeoStats stats;
-		stats.Deserialize(row.GetValue<string>(3));
-		if (stats.geo_types.empty() && row.GetValue<bool>(4)) {
-			unknown_files[column].push_back(row.GetValue<idx_t>(2));
+		stats.Deserialize(stored_stats);
+		if (stats.geo_types.empty() && row.GetValue<bool>(3)) {
+			damaged_stats.insert(stored_stats);
 			stats = unknown;
 		}
-		file_stats[column].Merge(stats);
+		file_stats[{row.GetValue<idx_t>(0), row.GetValue<idx_t>(1)}].Merge(stats);
 	}
+	// the damaged files share few texts, so each is one update instead of one per file
 	string query;
-	for (auto &entry : unknown_files) {
-		auto &file_ids = entry.second;
-		for (idx_t start = 0; start < file_ids.size(); start += 1000) {
-			vector<string> batch;
-			for (idx_t i = start; i < MinValue<idx_t>(start + 1000, file_ids.size()); i++) {
-				batch.push_back(to_string(file_ids[i]));
-			}
-			query += StringUtil::Format("UPDATE {METADATA_CATALOG}.ducklake_file_column_stats SET extra_stats = %s "
-			                            "WHERE column_id = %d AND data_file_id IN (%s);",
-			                            unknown_stats, entry.first.second, StringUtil::Join(batch, ", "));
-		}
+	for (auto &stored_stats : damaged_stats) {
+		query += StringUtil::Format(
+		    "UPDATE {METADATA_CATALOG}.ducklake_file_column_stats s SET extra_stats = %s WHERE s.extra_stats = %s AND "
+		    "(s.value_count IS NULL OR s.value_count > 0) AND %s;",
+		    unknown_stats, SQLString::ToString(stored_stats), geometry_column);
 	}
 	// table statistics also lack what a merge before the migration took from the files
 	auto tables = Query(StringUtil::Format(R"(

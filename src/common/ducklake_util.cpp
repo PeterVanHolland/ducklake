@@ -13,6 +13,7 @@
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/path.hpp"
 #include "storage/ducklake_metadata_manager.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
@@ -242,6 +243,22 @@ string DuckLakeUtil::PathSeparator(FileSystem &fs, const string &path) {
 		return "/";
 	}
 	return fs.PathSeparator(path);
+}
+
+string DuckLakeUtil::EscapeGlob(const string &path) {
+	auto start = MinValue<idx_t>(Path::FromString(path).GetBase().size(), path.size());
+	string result = path.substr(0, start);
+	for (auto c : path.substr(start)) {
+		if (c == '*' || c == '?' || c == '[') {
+			// a bracket expression with a single character matches it literally
+			result += '[';
+			result += c;
+			result += ']';
+		} else {
+			result += c;
+		}
+	}
+	return result;
 }
 
 string DuckLakeUtil::JoinPath(FileSystem &fs, const string &a, const string &b) {

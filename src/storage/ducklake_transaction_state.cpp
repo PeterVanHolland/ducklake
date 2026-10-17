@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <thread>
 
 namespace duckdb {
@@ -2101,8 +2102,15 @@ FROM {METADATA_CATALOG}.ducklake_column WHERE (table_id, column_id) IN (%s))",
 	for (auto &row : *query_result) {
 		auto table_id = TableIndex(row.GetValue<idx_t>(0));
 		auto field_index = FieldIndex(row.GetValue<idx_t>(1));
-		if (row.GetValue<string>(2) != float_type) {
+		auto column_type = row.GetValue<string>(2);
+		if (column_type != float_type) {
 			older_type[table_id].insert(field_index);
+			// a DECIMAL with more digits than a DOUBLE holds can be read as another DOUBLE than its bound text
+			auto type = DuckLakeTypes::FromString(column_type);
+			if (type.id() == LogicalTypeId::DECIMAL &&
+			    DecimalType::GetWidth(type) > std::numeric_limits<double>::digits10) {
+				result.cleared[table_id].insert(field_index);
+			}
 		} else if (row.IsNull(3)) {
 			live_float[table_id].insert(field_index);
 		}

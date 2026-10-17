@@ -1794,7 +1794,12 @@ string DuckLakeMetadataManager::GenerateColumnFilterCondition(const ColumnFilter
 
 	string null_checks;
 	for (const auto &stat : referenced_stats) {
-		null_checks += StatsColumn(cte_name, stat) + " IS NULL OR ";
+		auto stat_column = StatsColumn(cte_name, stat);
+		if (stat == "min_value" || stat == "max_value") {
+			// a bound that does not read as the column type, as a bound of an older type can, is unknown
+			stat_column = CastStatsToTarget(stat_column, column_filter.column_type, StatsCastType::ORDERING);
+		}
+		null_checks += stat_column + " IS NULL OR ";
 	}
 	string nan_check;
 	if (column_filter.column_type.IsFloating() &&

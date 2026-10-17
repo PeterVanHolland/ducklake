@@ -1,0 +1,109 @@
+# name: test/sql/migration/v10_added_geometry_stats.test
+# description: migrating a v1.0 catalog gives the GEOMETRY files that the release added with empty statistics unknown statistics
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/v10_added_geometry_stats', DUCKLAKE_VERSION '1.0', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.nostats (g GEOMETRY)
+
+statement ok
+CALL ducklake_add_data_files('dl', 'nostats', 'data/parquet/geometry_point_no_stats.parquet')
+
+statement ok
+CREATE TABLE dl.mixed (g GEOMETRY)
+
+statement ok
+CALL ducklake_add_data_files('dl', 'mixed', 'data/parquet/geometry_point_stats.parquet')
+
+statement ok
+CALL ducklake_add_data_files('dl', 'mixed', 'data/parquet/geometry_far_point_no_stats.parquet')
+
+statement ok
+CREATE TABLE dl.infinite (g GEOMETRY)
+
+statement ok
+CALL ducklake_add_data_files('dl', 'infinite', 'data/parquet/geometry_infinite_point_no_stats.parquet')
+
+statement ok
+CREATE TABLE dl.nulls (g GEOMETRY)
+
+statement ok
+INSERT INTO dl.nulls VALUES (NULL)
+
+# the statistics that the 1.0 release writes for these files
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_file_column_stats SET null_count = NULL,
+	extra_stats = '{"bbox": {"xmin": null, "xmax": null, "ymin": null, "ymax": null, "zmin": null, "zmax": null, "mmin": null, "mmax": null}, "types": []}'
+WHERE data_file_id IN (SELECT data_file_id FROM __ducklake_metadata_dl.ducklake_data_file WHERE path LIKE '%no_stats.parquet')
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_file_column_stats SET null_count = NULL,
+	extra_stats = '{"bbox": {"xmin": 1.000000, "xmax": 1.000000, "ymin": 2.000000, "ymax": 2.000000, "zmin": null, "zmax": null, "mmin": null, "mmax": null}, "types": ["point"]}'
+WHERE data_file_id IN (SELECT data_file_id FROM __ducklake_metadata_dl.ducklake_data_file WHERE path LIKE '%geometry_point_stats.parquet')
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats
+SET extra_stats = '{"bbox": {"xmin": null, "xmax": null, "ymin": null, "ymax": null, "zmin": null, "zmax": null, "mmin": null, "mmax": null}, "types": []}'
+WHERE table_id IN (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name IN ('nostats', 'infinite'))
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats
+SET extra_stats = '{"bbox": {"xmin": 1.000000, "xmax": 1.000000, "ymin": 2.000000, "ymax": 2.000000, "zmin": null, "zmax": null, "mmin": null, "mmax": null}, "types": ["point"]}'
+WHERE table_id IN (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'mixed')
+
+statement ok
+CREATE TABLE null_stats AS
+SELECT s.extra_stats FROM __ducklake_metadata_dl.ducklake_file_column_stats s
+JOIN __ducklake_metadata_dl.ducklake_table t USING (table_id) WHERE t.table_name = 'nulls'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/v10_added_geometry_stats', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+loop i 0 2
+
+query II
+SELECT vertex_extract(g, 'x'), (SELECT count(*) FROM dl.nostats WHERE vertex_extract(g, 'x') = 1) FROM dl.nostats
+----
+1.0	1
+
+query I
+SELECT count(*) FROM dl.mixed WHERE st_intersects_extent(g, 'POINT(100 100)'::GEOMETRY)
+----
+1
+
+query I
+SELECT count(*) FROM dl.infinite WHERE vertex_extract(g, 'x') = 'inf'::DOUBLE
+----
+1
+
+# a file of only NULL geometries keeps its empty statistics
+query I
+SELECT count(*) FROM __ducklake_metadata_dl.ducklake_file_column_stats s
+JOIN __ducklake_metadata_dl.ducklake_table t USING (table_id)
+WHERE t.table_name = 'nulls' AND s.extra_stats IN (SELECT extra_stats FROM null_stats)
+----
+1
+
+query I
+SELECT count(*) FROM dl.nulls WHERE g IS NULL
+----
+1
+
+# merging keeps the statistics unknown
+statement ok
+CALL ducklake_merge_adjacent_files('dl')
+
+endloop

@@ -418,6 +418,8 @@ public:
 	static string WriteDroppedNewColumns(const vector<DuckLakeNewColumn> &columns);
 	static string WriteNewTags(const vector<DuckLakeTagInfo> &new_tags);
 	static string WriteNewTableOptions(const vector<DuckLakeConfigOption> &new_options);
+	//! Writes the option changes of a transaction, in the order they were made
+	static string WriteConfigOptionChangesSql(const vector<DuckLakeConfigOptionUndo> &changes);
 	static string WriteNewColumnTags(const vector<DuckLakeColumnTagInfo> &new_tags);
 	static string WriteNewViewColumnTags(const vector<DuckLakeViewColumnTagInfo> &new_tags);
 	//! SQL that writes new data files, shared with the server-side commit path. Returns SQL with

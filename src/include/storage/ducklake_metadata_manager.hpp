@@ -516,9 +516,10 @@ public:
 	static string RefreshTableSizesSql(const set<TableIndex> &table_ids);
 	static SnapshotChangeInfo
 	GetSnapshotAndStatsAndChanges(SnapshotAndStats &current_snapshot,
-	                              const std::function<unique_ptr<QueryResult>(string)> &executor,
-	                              bool include_exactness);
-	static string GetSnapshotAndStatsAndChangesQuery(bool include_exactness);
+	                              const std::function<unique_ptr<QueryResult>(string)> &executor, const string &query);
+	static string SnapshotAndStatsAndChangesQuery(bool include_exactness);
+	//! The query of the conflict check, which must read the latest snapshot and the table stats consistently
+	virtual string GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot snapshot, bool include_exactness) const;
 	static SnapshotChangeInfo ParseSnapshotAndStatsAndChanges(QueryResult &result, SnapshotAndStats &current_snapshot);
 	virtual unique_ptr<DuckLakeSnapshot> GetSnapshot();
 	virtual unique_ptr<DuckLakeSnapshot> GetSnapshot(BoundAtClause &at_clause, SnapshotBound bound,

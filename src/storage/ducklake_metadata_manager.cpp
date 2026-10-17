@@ -4629,7 +4629,7 @@ string DuckLakeMetadataManager::WriteSnapshotChangesSql(const SnapshotChangeInfo
 	    commit_info.commit_message.ToSQLString(), commit_info.commit_extra_info.ToSQLString());
 }
 
-string DuckLakeMetadataManager::GetSnapshotAndStatsAndChangesQuery(bool include_exactness) {
+string DuckLakeMetadataManager::SnapshotAndStatsAndChangesQuery(bool include_exactness) {
 	// both UNION arms must stay column-aligned - extend them together
 	string snapshot_arm_padding;
 	string stats_arm_columns;
@@ -4708,11 +4708,15 @@ SnapshotChangeInfo DuckLakeMetadataManager::ParseSnapshotAndStatsAndChanges(Quer
 	return change_info;
 }
 
+string DuckLakeMetadataManager::GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot, bool include_exactness) const {
+	return SnapshotAndStatsAndChangesQuery(include_exactness);
+}
+
 SnapshotChangeInfo
 DuckLakeMetadataManager::GetSnapshotAndStatsAndChanges(SnapshotAndStats &current_snapshot,
                                                        const std::function<unique_ptr<QueryResult>(string)> &executor,
-                                                       bool include_exactness) {
-	auto result = executor(GetSnapshotAndStatsAndChangesQuery(include_exactness));
+                                                       const string &query) {
+	auto result = executor(query);
 	auto change_info = ParseSnapshotAndStatsAndChanges(*result, current_snapshot);
 	FillMissingTableSizes(current_snapshot.stats, executor);
 	return change_info;

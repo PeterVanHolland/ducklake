@@ -66,6 +66,8 @@ public:
 
 	//! Create the data path directory if it does not yet exist
 	static void EnsureDirectoryExists(FileSystem &fs, const string &data_path);
+	//! Syncs local files, and the directories holding them up to the root, to stable storage
+	static void SyncLocalFiles(ClientContext &context, const vector<string> &paths);
 
 	//! Replace occurrences of `from` with `to`, skipping content inside
 	//! single-quoted string literals and double-quoted identifiers.

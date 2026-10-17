@@ -268,6 +268,13 @@ void DuckLakeDeleteFileWriter::SetCommitSnapshot(ClientContext &context, DuckLak
 	                                         delete_file.source};
 	MergeDeletesWithSnapshots(deletes, 0, input.positions);
 	auto written_file = Write(context, input, delete_file.format == DeleteFileFormat::PUFFIN);
+	// sync before replacing the tracked delete file, so a retry after a failed sync writes it again
+	try {
+		DuckLakeUtil::SyncLocalFiles(context, {written_file.file_name});
+	} catch (...) {
+		fs.TryRemoveFile(written_file.file_name);
+		throw;
+	}
 	fs.TryRemoveFile(file_name);
 
 	written_file.data_file_id = delete_file.data_file_id;

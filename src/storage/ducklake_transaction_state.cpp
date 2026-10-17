@@ -1022,26 +1022,26 @@ static set<FieldIndex> ReadSkippedStatsFields(TableIndex table_id, const DuckLak
 	return result;
 }
 
-void DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_query, TableIndex table_id,
+bool DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_query, TableIndex table_id,
                                                                 DuckLakeSnapshot snapshot,
                                                                 const CompactionInformation &rewrite_changes,
                                                                 const set<DataFileIndex> &removed_source_ids,
                                                                 const DuckLakeCommitContext &context) {
 	if (tables_changed_by_others.find(table_id) != tables_changed_by_others.end()) {
-		return; // the stats below are read at the transaction snapshot, which misses the other commits
+		return false; // the stats below are read at the transaction snapshot, which misses the other commits
 	}
 	auto columns = context.get_table_column_schema(table_id);
 	if (columns.empty()) {
 		// no schema visible at the commit snapshot
 		// LCOV_EXCL_START
-		return;
+		return false;
 		// LCOV_EXCL_STOP
 	}
 	auto current_stats = context.get_table_stats(table_id);
 	if (!current_stats) {
 		// no committed stats row exists yet - the UPDATE path of UpdateGlobalTableStats only refreshes existing rows
 		// LCOV_EXCL_START
-		return;
+		return false;
 		// LCOV_EXCL_STOP
 	}
 
@@ -1136,7 +1136,7 @@ void DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 	//    That holds iff the gross row count of the post-rewrite files equals the net (delete-adjusted) data-file count.
 	//    (Covers partial rewrites with delete_threshold > 0, leftover delete files, and inlined file deletions.)
 	if (parquet_gross_rows != context.get_net_data_file_row_count(table_id)) {
-		return;
+		return false;
 	}
 	// deleted inlined rows stay stored, and flushing them later does not count them again
 	auto inlined_table_names = context.get_inlined_table_names(table_id);
@@ -1144,7 +1144,7 @@ void DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 	idx_t net_inlined;
 	CountInlinedRows(inlined_table_names, snapshot, context, stored_inlined, net_inlined);
 	if (stored_inlined != net_inlined) {
-		return;
+		return false;
 	}
 
 	// 3. Fold in committed inlined data (REWRITE_DELETES does not rewrite inlined data). Pass only the top-level
@@ -1158,13 +1158,13 @@ void DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 			}
 		}
 		if (!TryMergeInlinedStats(table_id, root_columns, inlined_table_names, snapshot, new_stats, context)) {
-			return; // cannot account for inlined data exactly - keep the existing stats and the scan fallback
+			return false; // inlined data cannot be accounted for exactly, so the existing stats stay
 		}
 		new_stats.record_count += net_inlined;
 	}
 	for (auto &entry : new_stats.column_stats) {
 		if (files_with_stats[entry.first] != file_count) {
-			return; // a file written before a column was added has no stats for it
+			return false; // a file written before a column was added has no stats for it
 		}
 	}
 
@@ -1195,6 +1195,7 @@ void DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 	new_globals.stats = std::move(new_stats);
 	batch_query += DuckLakeMetadataManager::UpdateGlobalTableStatsSql(
 	    DuckLakeTransaction::ConvertNewGlobalStats(table_id, new_globals), context.supports_v1_1_metadata);
+	return true;
 }
 
 static idx_t SubtractDroppedFileStat(idx_t value, idx_t decrement) {
@@ -2368,9 +2369,15 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 				removed_source_ids_by_table[compacted.table_index].insert(compacted.source_id);
 			}
 			auto recompute_snapshot = context.get_snapshot();
+			bool recomputed = false;
 			for (auto &table_entry : removed_source_ids_by_table) {
-				RecomputeGlobalStatsAfterRewrite(batch_queries, table_entry.first, recompute_snapshot,
-				                                 compaction_rewrite_delete_changes, table_entry.second, context);
+				recomputed |=
+				    RecomputeGlobalStatsAfterRewrite(batch_queries, table_entry.first, recompute_snapshot,
+				                                     compaction_rewrite_delete_changes, table_entry.second, context);
+			}
+			if (recomputed && compaction_rewrite_delete_changes.new_files.empty()) {
+				// cached stats are keyed by the next file id, which a rewrite without new files keeps
+				commit_snapshot.next_file_id++;
 			}
 		}
 

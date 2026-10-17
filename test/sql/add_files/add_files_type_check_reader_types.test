@@ -111,11 +111,20 @@ CALL ducklake_add_data_files('dl', 'geometry_float', 'data/parquet/geometry_floa
 ----
 Expected type "GEOMETRY" but found type "FLOAT"
 
-# the statistics of GEOGRAPHY columns carry no geometry types
+# a GEOGRAPHY column is read as GEOMETRY, and its file has no geospatial statistics, which stay unknown
 statement ok
 CREATE TABLE dl.geography (g GEOMETRY)
 
-statement error
+statement ok
 CALL ducklake_add_data_files('dl', 'geography', 'data/parquet/geography.parquet')
+
+query II
+SELECT ST_AsText(g), (SELECT count(*) FROM dl.geography WHERE vertex_extract(g, 'x') = 1) FROM dl.geography
 ----
-found a GEOGRAPHY column
+POINT (1 2)	1
+
+query I
+SELECT count(*) FROM dl.geography
+WHERE st_intersects_extent(g, st_geomfromwkb(from_hex('0101000000000000000000f03f0000000000000040')))
+----
+1

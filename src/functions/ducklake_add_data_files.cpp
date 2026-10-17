@@ -661,14 +661,10 @@ void DuckLakeParquetTypeChecker::CheckMatchingType() {
 	}
 
 	if (type.id() == LogicalTypeId::GEOMETRY) {
-		if (StringUtil::StartsWith(column.logical_type, "Geography")) {
-			// files of GEOGRAPHY columns carry no geometry types, which DuckLake would read as no geometries
-			failures.push_back("Expected type \"GEOMETRY\" but found a GEOGRAPHY column, which DuckLake does not "
-			                   "support yet");
-			Fail();
-		}
-		// the reader also reads the BLOB columns of GeoParquet v1 files as GEOMETRY
-		if (source_type.id() != LogicalTypeId::GEOMETRY || !StringUtil::StartsWith(column.logical_type, "Geometry")) {
+		// the reader reads GEOGRAPHY columns as GEOMETRY, and also the BLOB columns of GeoParquet v1 files
+		auto native_geometry = StringUtil::StartsWith(column.logical_type, "Geometry") ||
+		                       StringUtil::StartsWith(column.logical_type, "Geography");
+		if (source_type.id() != LogicalTypeId::GEOMETRY || !native_geometry) {
 			auto found_type = source_type.id() == LogicalTypeId::GEOMETRY ? LogicalType::BLOB : source_type;
 			failures.push_back(StringUtil::Format(
 			    "Expected type \"GEOMETRY\" but found type \"%s\". Is this a GeoParquet v1.*.* file? DuckLake only "

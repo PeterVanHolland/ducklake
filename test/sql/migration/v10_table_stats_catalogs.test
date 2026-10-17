@@ -68,7 +68,13 @@ statement ok
 INSERT INTO lake.w VALUES (7, 1)
 
 statement ok
+INSERT INTO lake.w SELECT i, 50 FROM range(100, 120) t(i)
+
+statement ok
 UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET min_value = '1' WHERE table_id = 4 AND column_id = 1
+
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET max_value = '100' WHERE table_id = 4 AND column_id = 2
 
 statement ok
 CREATE TABLE memory.variant_stats AS
@@ -106,10 +112,10 @@ FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id < 3 ORD
 2	1	false	1	2
 2	2	true	a	a
 
-query II
-SELECT min(id), max(id) FROM lake.w
+query IIII
+SELECT min(id), max(id), min(k), max(k) FROM lake.w
 ----
-6	7
+6	119	1	50
 
 # the committed stats of a variant whose inlined rows cannot be aggregated are kept
 query I

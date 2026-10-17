@@ -1074,24 +1074,15 @@ static void MergeDataFileStats(TableIndex table_id, DuckLakeSnapshot snapshot,
 			col_stats.has_null_count = true;
 			col_stats.null_count = null_count;
 		}
-		if (!row.IsNull(6)) {
-			col_stats.has_min = true;
-			col_stats.min = row.GetValue<string>(6);
-		}
-		if (!row.IsNull(7)) {
-			col_stats.has_max = true;
-			col_stats.max = row.GetValue<string>(7);
-		}
-		if (!row.IsNull(8)) {
-			col_stats.has_contains_nan = true;
-			col_stats.contains_nan = row.GetValue<bool>(8);
-		}
+		col_stats.has_min = TryReadValue(row, 6, col_stats.min);
+		col_stats.has_max = TryReadValue(row, 7, col_stats.max);
+		col_stats.has_contains_nan = TryReadValue(row, 8, col_stats.contains_nan);
 		if (!row.IsNull(9) && col_stats.extra_stats) {
 			col_stats.extra_stats->Deserialize(row.GetValue<string>(9));
 		}
 		if (has_exactness) {
-			col_stats.min_is_exact = !row.IsNull(10) && row.GetValue<bool>(10);
-			col_stats.max_is_exact = !row.IsNull(11) && row.GetValue<bool>(11);
+			col_stats.min_is_exact = OptBoolFalse(row, 10);
+			col_stats.max_is_exact = OptBoolFalse(row, 11);
 		}
 		new_stats.MergeStats(field_idx, col_stats);
 	}
@@ -1210,13 +1201,15 @@ void DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 	    context.supports_v1_1_metadata);
 }
 
-//! Merges the stats and the count of the stored inlined rows, returning the columns they cannot be computed for
+//! Merges the stats and the count of the stored inlined rows. Returns the nested and other non scalar columns, whose
+//! stats SQL cannot aggregate, and adds the scalar roots it cannot compute to `unknown_fields`.
 static set<FieldIndex> MergeStoredInlinedStats(const vector<DuckLakeColumnSchemaEntry> &columns,
                                                const vector<string> &inlined_table_names,
                                                const ducklake_inlined_table_columns_t &older_columns,
                                                DuckLakeSnapshot snapshot, const DuckLakeCommitContext &context,
-                                               DuckLakeTableStats &new_stats) {
+                                               DuckLakeTableStats &new_stats, set<FieldIndex> &unknown_fields) {
 	set<FieldIndex> result;
+	set<FieldIndex> failed_roots;
 	vector<DuckLakeColumnSchemaEntry> scalar_roots;
 	for (auto &col : columns) {
 		if (col.is_root && IsFoldableScalarType(col.column_type)) {
@@ -1237,7 +1230,7 @@ static set<FieldIndex> MergeStoredInlinedStats(const vector<DuckLakeColumnSchema
 			DuckLakeTableStats column_stats;
 			if (!DuckLakeTransactionState::TryMergeInlinedStats(column, inlined_table_names, older_columns, snapshot,
 			                                                    column_stats, context)) {
-				result.insert(col.field_index);
+				failed_roots.insert(col.field_index);
 				continue;
 			}
 			for (auto &entry : column_stats.column_stats) {
@@ -1248,6 +1241,8 @@ static set<FieldIndex> MergeStoredInlinedStats(const vector<DuckLakeColumnSchema
 	if (inlined_stats.record_count == 0) {
 		return set<FieldIndex>();
 	}
+	// MIN and MAX of a scalar root can be read from its stats, so stale committed bounds would be returned
+	unknown_fields.insert(failed_roots.begin(), failed_roots.end());
 	new_stats.record_count += inlined_stats.record_count;
 	for (auto &entry : inlined_stats.column_stats) {
 		new_stats.MergeStats(entry.first, entry.second);
@@ -1302,9 +1297,9 @@ RecomputeMigratedTable(const DuckLakeGlobalStatsInfo &committed, const vector<Du
 	}
 	// deleted rows count like they did when they were written
 	if (!inlined_table_names.empty()) {
-		for (auto &field_index :
-		     MergeStoredInlinedStats(columns, inlined_table_names, older_columns, snapshot, context, new_stats)) {
-			// the committed stats of the column already cover its inlined rows
+		for (auto &field_index : MergeStoredInlinedStats(columns, inlined_table_names, older_columns, snapshot, context,
+		                                                 new_stats, unknown_fields)) {
+			// MIN and MAX are never read from these stats, and the committed ones already cover the inlined rows
 			auto committed_column = current_stats->column_stats.find(field_index);
 			if (committed_column == current_stats->column_stats.end() || committed_column->second.bounds_unknown) {
 				unknown_fields.insert(field_index);

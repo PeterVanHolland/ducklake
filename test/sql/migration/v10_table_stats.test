@@ -1,0 +1,94 @@
+# name: test/sql/migration/v10_table_stats.test
+# description: Migrating to v1.1 recomputes the table stats that v1.0 left wider or narrower than the live rows
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.6, see the comments of each table
+unzip data/old_ducklake/stale_table_stats.db.gz {TEST_DIR}/stale_table_stats.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/stale_table_stats.db' AS lake (DATA_PATH 'data/old_ducklake/stale_table_stats/', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+# a row inserted and deleted in one transaction
+query III
+SELECT min(id), max(id), count(*) FROM lake.a
+----
+6	6	1
+
+# a deleted inlined row that a rewrite and a flush kept in the bounds
+query III
+SELECT min(id), max(id), count(*) FROM lake.b
+----
+51	69	19
+
+# a file added without the columns name and c
+query I
+SELECT count(*) FROM lake.m WHERE name IS NULL
+----
+1
+
+query I
+SELECT count(*) FROM lake.m WHERE c < 8
+----
+1
+
+# a file and inlined rows without deletes
+query IIIII
+SELECT min(id), max(id), min(s), max(s), count(*) FROM lake.h
+----
+5	200	e	z	22
+
+# inlined rows of a struct, and rows written before the column k was added
+query IIII
+SELECT min(id), max(k), min(st.x), count(*) FROM lake.n
+----
+3	9	30	2
+
+query I
+SELECT count(*) FROM lake.n WHERE k < 9
+----
+1
+
+# a file with deleted rows
+query III
+SELECT min(id), max(id), count(*) FROM lake.d
+----
+5	29	25
+
+# inlined rows that are all deleted
+query II
+SELECT min(id), count(*) FROM lake.e
+----
+NULL	0
+
+# deleted rows count, the columns missing from the added file become unknown, and the struct keeps its bounds
+query IIII
+SELECT table_id, record_count, next_row_id, file_size_bytes FROM __ducklake_metadata_lake.ducklake_table_stats ORDER BY ALL
+----
+1	1	1	0
+2	20	21	1122
+3	21	21	808
+4	22	22	467
+5	2	2	0
+6	30	30	316
+7	2	2	0
+
+query IIIIIII
+SELECT table_id, column_id, contains_null, min_value, max_value, min_is_exact, max_is_exact
+FROM __ducklake_metadata_lake.ducklake_table_column_stats ORDER BY ALL
+----
+1	1	false	6	6	NULL	NULL
+2	1	false	4	69	NULL	NULL
+3	1	false	1	2	NULL	NULL
+3	2	NULL	NULL	NULL	NULL	NULL
+3	3	NULL	NULL	NULL	NULL	NULL
+4	1	false	5	200	NULL	NULL
+4	2	false	e	z	NULL	NULL
+5	1	false	3	4	NULL	NULL
+5	3	false	30	40	NULL	NULL
+5	4	false	c	d	NULL	NULL
+6	1	false	0	29	NULL	NULL
+7	1	false	11	12	NULL	NULL

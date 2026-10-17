@@ -221,12 +221,16 @@ public:
 	                                      const CompactionInformation &rewrite_changes,
 	                                      const set<DataFileIndex> &removed_source_ids,
 	                                      const DuckLakeCommitContext &context);
-	//! Merge committed inlined data's per-column min/max into `target` via typed SQL aggregates. Returns false if the
-	//! inlined data cannot be accounted for exactly (e.g. a non-scalar column), in which case the caller must not
-	//! claim the recomputed stats are exact.
-	bool TryMergeInlinedStats(TableIndex table_id, const vector<DuckLakeColumnSchemaEntry> &columns,
-	                          const vector<string> &inlined_table_names, DuckLakeSnapshot snapshot,
-	                          DuckLakeTableStats &target, const DuckLakeCommitContext &context);
+	//! Recomputes the stats of a table from its live files and every stored inlined row, for a migrated catalog
+	static string RecomputeMigratedTableStats(TableIndex table_id, DuckLakeSnapshot snapshot,
+	                                          const DuckLakeGlobalStatsInfo &committed_stats,
+	                                          bool write_stats_exactness, const DuckLakeCommitContext &context);
+	//! Merge the per-column min/max of every inlined row stored at the snapshot, deleted or not, into `target` via
+	//! typed SQL aggregates. Returns false if the inlined data cannot be accounted for exactly (e.g. a non-scalar
+	//! column), in which case the caller must not claim the recomputed stats are exact.
+	static bool TryMergeInlinedStats(TableIndex table_id, const vector<DuckLakeColumnSchemaEntry> &columns,
+	                                 const vector<string> &inlined_table_names, DuckLakeSnapshot snapshot,
+	                                 DuckLakeTableStats &target, const DuckLakeCommitContext &context);
 	vector<DuckLakeDeleteFileInfo>
 	GetNewDeleteFiles(const DuckLakeCommitState &commit_state,
 	                  vector<DuckLakeOverwrittenDeleteFile> &overwritten_delete_files) const;

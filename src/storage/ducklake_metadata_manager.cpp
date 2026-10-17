@@ -5,6 +5,7 @@
 #include "functions/ducklake_table_functions.hpp"
 #include "storage/ducklake_transaction.hpp"
 #include "storage/ducklake_transaction_manager.hpp"
+#include "storage/ducklake_transaction_state.hpp"
 #include "storage/ducklake_variant_stats.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "common/ducklake_util.hpp"
@@ -527,6 +528,58 @@ AND NOT EXISTS (
 	result->ThrowIfError("Failed to restore the defaults of renamed struct fields while migrating to v1.1: ");
 }
 
+void DuckLakeMetadataManager::MigrateTableStats(bool write_stats_exactness) {
+	auto latest = Query(GetLatestSnapshotQuery());
+	latest->ThrowIfError("Failed to read the latest snapshot while migrating to v1.1: ");
+	auto snapshot = ParseSnapshot(*latest);
+	if (!snapshot) {
+		// LCOV_EXCL_START
+		return;
+		// LCOV_EXCL_STOP
+	}
+	auto committed_stats = ParseGlobalTableStats(*Query(GlobalTableStatsQuery(true)));
+	DuckLakeCommitContext context;
+	context.supports_v1_1_metadata = true;
+	context.query_metadata = [&](string query) {
+		return Query(query);
+	};
+	context.query_metadata_with_snapshot = [&](DuckLakeSnapshot query_snapshot, string query) {
+		return Query(query_snapshot, query);
+	};
+	context.cast_inlined_column = [&](const string &column, const LogicalType &type) {
+		return CastColumnToTarget(column, type);
+	};
+	context.get_table_column_schema = [&](TableIndex table_id) {
+		auto result = Query(*snapshot, GetTableColumnSchemaSql(table_id));
+		result->ThrowIfError("Failed to read the columns of a table while migrating to v1.1: ");
+		vector<DuckLakeColumnSchemaEntry> schema;
+		for (auto &row : *result) {
+			schema.push_back({FieldIndex(row.GetValue<idx_t>(0)), row.GetValue<string>(1),
+			                  DuckLakeTypes::FromString(row.GetValue<string>(2)), row.IsNull(3)});
+		}
+		return schema;
+	};
+	context.get_inlined_table_names = [&](TableIndex table_id) {
+		auto result = Query(GetInlinedTableNamesSql(table_id));
+		result->ThrowIfError("Failed to read the inlined data tables while migrating to v1.1: ");
+		vector<string> names;
+		for (auto &row : *result) {
+			names.push_back(row.GetValue<string>(0));
+		}
+		return names;
+	};
+	string batch;
+	for (auto &stats : committed_stats) {
+		batch += DuckLakeTransactionState::RecomputeMigratedTableStats(stats.table_id, *snapshot, stats,
+		                                                               write_stats_exactness, context);
+	}
+	if (batch.empty()) {
+		return;
+	}
+	auto result = Execute(batch);
+	result->ThrowIfError("Failed to recompute the table stats while migrating to v1.1: ");
+}
+
 void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	// rename first so a conflict aborts before the version is updated, dev catalogs may already be renamed
 	MigrateInlinedColumnNames(from_dev1);
@@ -534,6 +587,8 @@ void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	MigrateRenamedFieldDefaults();
 	MigrateInlinedDataTypes();
 	ExecuteMigration(V1_1MigrationQuery(), from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");
+	// 1.0 did not record whether bounds are exact, so its flags stay unknown
+	MigrateTableStats(from_dev1);
 }
 
 void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed) {
@@ -3897,10 +3952,9 @@ string DuckLakeMetadataManager::ReadInlinedDataAggregatesSql(const string &inlin
 	return StringUtil::Format(R"(
 SELECT %s
 FROM {METADATA_CATALOG}.%s
-WHERE {SNAPSHOT_ID} >= %s AND ({SNAPSHOT_ID} < %s OR %s IS NULL);
+WHERE {SNAPSHOT_ID} >= %s;
 )",
-	                          select_list, inlined_table_name, col_names.begin_snapshot, col_names.end_snapshot,
-	                          col_names.end_snapshot);
+	                          select_list, inlined_table_name, col_names.begin_snapshot);
 }
 
 string DuckLakeMetadataManager::ReadFileColumnStatsForTableSql(TableIndex table_id, bool include_exactness) {

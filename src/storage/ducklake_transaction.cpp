@@ -1483,6 +1483,8 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
                                         const TransactionChangeInformation &transaction_changes,
                                         const DuckLakeRetryConfig &retry_config) {
 	vector<unique_ptr<SQLStatement>> inlined_inserts;
+	// inlined tables read at the transaction snapshot, which another attach can drop meanwhile
+	map<TableIndex, vector<string>> read_inlined_tables;
 	DuckLakeCommitContext context;
 	context.conflict_query_executor = [&](string q) -> unique_ptr<QueryResult> {
 		auto result = metadata_manager->Query(transaction_snapshot, q);
@@ -1514,7 +1516,8 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		return result;
 	};
 	context.is_retryable_metadata_error = [&](const string &message) {
-		return metadata_manager->IsRetryableCommitError(message);
+		return metadata_manager->IsRetryableCommitError(message) ||
+		       metadata_manager->IsDroppedInlinedTableError(message, read_inlined_tables);
 	};
 	context.flush_cache_if_pending = [&]() {
 		if (metadata_manager->TakePendingCacheClear()) {
@@ -1533,6 +1536,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	};
 	context.prepare_retry = [&]() {
 		inlined_inserts.clear();
+		read_inlined_tables.clear();
 		metadata_manager->ClearInlinedTableCaches();
 		connection->BeginTransaction();
 		snapshot.reset();
@@ -1620,6 +1624,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		for (auto &t : table->GetInlinedDataTables(*this, transaction_snapshot)) {
 			names.push_back(t.table_name);
 		}
+		read_inlined_tables[table_id] = names;
 		return names;
 	};
 	context.get_net_data_file_row_count = [&](TableIndex table_id) -> idx_t {

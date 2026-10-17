@@ -230,6 +230,10 @@ public:
 	virtual bool IsRetryableCommitError(const string &) const {
 		return false;
 	}
+	//! Whether the commit error names one of these inlined tables after another attach dropped it
+	virtual bool IsDroppedInlinedTableError(const string &, const map<TableIndex, vector<string>> &) {
+		return false;
+	}
 
 	//! Run the commit retry loop with the metadata server handling retries.
 	virtual void FlushChangesServerSide(DuckLakeTransaction &transaction, DuckLakeSnapshot transaction_snapshot,

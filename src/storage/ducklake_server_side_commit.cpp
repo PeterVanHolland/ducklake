@@ -1,6 +1,7 @@
 #include "storage/ducklake_server_side_commit.hpp"
 
 #include "common/ducklake_row_helpers.hpp"
+#include "common/ducklake_util.hpp"
 #include "common/ducklake_types.hpp"
 #include "common/ducklake_version.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -544,7 +545,7 @@ bool DuckLakeServerSideCommit::ReadSupportsV1_1Metadata() {
 	                                 "{METADATA_CATALOG}", schema_id);
 	auto result = RunQuery(sql, "read catalog version");
 	for (auto &row : *result) {
-		return DuckLakeVersionFromString(row.GetValue<string>(0)) >= DuckLakeVersion::V1_1_DEV_1;
+		return DuckLakeVersionFromString(row.GetValue<string>(0)) >= DuckLakeVersion::V1_1;
 	}
 	return false;
 }
@@ -708,7 +709,9 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
 		for (auto &row : *result) {
 			return row.GetValue<idx_t>(0);
 		}
+		// LCOV_EXCL_START
 		return 0;
+		// LCOV_EXCL_STOP
 	};
 	ctx.set_catalog_version = [&committed_schema_version](idx_t v) {
 		committed_schema_version = v;
@@ -726,9 +729,10 @@ bool DuckLakeServerSideCommit::InlinedFileDeletionTableExists(TableIndex table_i
 }
 
 string DuckLakeServerSideCommit::SubstitutePlaceholders(string sql, const DuckLakeSnapshot &snapshot) const {
-	sql = StringUtil::Replace(sql, "{METADATA_CATALOG}", schema_id);
-	sql = StringUtil::Replace(sql, "{METADATA_CATALOG_NAME_LITERAL}", "(SELECT current_database())");
-	sql = StringUtil::Replace(sql, "{METADATA_SCHEMA_NAME_LITERAL}", SQLString::ToString(metadata_schema_name));
+	sql = DuckLakeUtil::ReplacePlaceholders(
+	    sql, {{"{METADATA_CATALOG}", schema_id},
+	          {"{METADATA_CATALOG_NAME_LITERAL}", "(SELECT current_database())"},
+	          {"{METADATA_SCHEMA_NAME_LITERAL}", SQLString::ToString(metadata_schema_name)}});
 	DuckLakeMetadataManager::SubstituteSnapshotPlaceholders(snapshot, sql);
 	return sql;
 }

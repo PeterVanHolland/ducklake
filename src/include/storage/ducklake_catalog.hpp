@@ -211,7 +211,6 @@ public:
 		}
 		return default_value;
 	}
-	bool TryGetConfigOption(const string &option, string &result, DuckLakeTableEntry &table) const;
 
 	optional_ptr<BoundAtClause> CatalogSnapshot() const;
 
@@ -260,8 +259,6 @@ public:
 
 	bool InMemory() override;
 	string GetDBPath() override;
-
-	string GetDataPath();
 
 	bool SupportsTimeTravel() const override {
 		return true;
@@ -312,7 +309,7 @@ public:
 	}
 	//! Whether the catalog has the v1.1 metadata features
 	bool SupportsV1_1Metadata() const {
-		return ducklake_version >= DuckLakeVersion::V1_1_DEV_1;
+		return ducklake_version >= DuckLakeVersion::V1_1;
 	}
 
 	void OnDetach(ClientContext &context) override;
@@ -352,7 +349,6 @@ public:
 
 	shared_ptr<const DuckLakeNameMap> TryGetMappingById(DuckLakeTransaction &transaction, MappingIndex mapping_id);
 	MappingIndex TryGetCompatibleNameMap(DuckLakeTransaction &transaction, const DuckLakeNameMap &name_map);
-	idx_t GetBeginSnapshotForTable(TableIndex table_id, DuckLakeTransaction &transaction);
 	idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version, DuckLakeTransaction &transaction);
 	optional_ptr<DuckLakeTableEntry> GetTableAtSchemaVersion(DuckLakeTransaction &transaction, TableIndex table_id,
 	                                                         idx_t schema_version);
@@ -365,9 +361,11 @@ public:
 	//! Callback type for instrumenting metadata queries
 	using QueryCallback = std::function<void(const string &query, std::chrono::steady_clock::duration elapsed)>;
 
+	// LCOV_EXCL_START
 	void SetQueryCallback(QueryCallback callback) {
 		query_callback = std::move(callback);
 	}
+	// LCOV_EXCL_STOP
 	const QueryCallback &GetQueryCallback() const {
 		return query_callback;
 	}

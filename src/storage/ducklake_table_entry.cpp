@@ -325,7 +325,9 @@ unique_ptr<BaseStatistics> GetColumnStats(const DuckLakeFieldId &field_id, const
 	}
 	default:
 		// unsupported nested type
+		// LCOV_EXCL_START
 		return nullptr;
+		// LCOV_EXCL_STOP
 	}
 }
 
@@ -337,7 +339,9 @@ case_insensitive_set_t DuckLakeTableEntry::GetNotNullFields() const {
 	case_insensitive_set_t result;
 	for (auto &constraint : GetConstraints()) {
 		if (constraint->type != ConstraintType::NOT_NULL) {
+			// LCOV_EXCL_START
 			continue;
+			// LCOV_EXCL_STOP
 		}
 		auto &not_null = constraint->Cast<NotNullConstraint>();
 		auto &col = GetColumn(not_null.index);
@@ -347,6 +351,10 @@ case_insensitive_set_t DuckLakeTableEntry::GetNotNullFields() const {
 }
 
 unique_ptr<BaseStatistics> DuckLakeTableEntry::GetStatistics(ClientContext &context, column_t column_id) {
+	if (IsVirtualColumn(column_id)) {
+		// virtual columns (rowid, filename, file_row_number, ...) carry no column statistics
+		return nullptr;
+	}
 	auto table_stats = GetTableStats(context);
 	if (!table_stats) {
 		return nullptr;
@@ -355,7 +363,9 @@ unique_ptr<BaseStatistics> DuckLakeTableEntry::GetStatistics(ClientContext &cont
 	return GetColumnStats(field_id, *table_stats);
 }
 
+// LCOV_EXCL_START
 TableFunction DuckLakeTableEntry::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
+	// LCOV_EXCL_STOP
 	throw InternalException("DuckLakeTableEntry::GetScanFunction called without entry lookup info");
 }
 
@@ -384,6 +394,20 @@ unique_ptr<FunctionData> DuckLakeFunctions::BindDuckLakeScan(ClientContext &cont
 
 TableFunction DuckLakeTableEntry::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data,
                                                   const EntryLookupInfo &lookup_info) {
+	auto &transaction = DuckLakeTransaction::Get(context, ParentCatalog());
+	if (!lookup_info.GetAtClause() && transaction.IsRenamed(*this)) {
+		auto schema_id = ParentSchema().Cast<DuckLakeSchemaEntry>().GetSchemaId();
+		auto local_entry =
+		    transaction.GetTransactionLocalEntry(CatalogType::TABLE_ENTRY, schema_id, name.GetIdentifierName());
+		if (!local_entry || local_entry->Cast<DuckLakeTableEntry>().GetTableId() != GetTableId()) {
+			throw BinderException("Table with name %s does not exist", name);
+		}
+	}
+	return GetScanFunctionById(context, bind_data, lookup_info);
+}
+
+TableFunction DuckLakeTableEntry::GetScanFunctionById(ClientContext &context, unique_ptr<FunctionData> &bind_data,
+                                                      const EntryLookupInfo &lookup_info) {
 	auto function = DuckLakeFunctions::GetDuckLakeScanFunction(*context.db);
 	auto &transaction = DuckLakeTransaction::Get(context, ParentCatalog());
 	auto function_info =
@@ -392,14 +416,6 @@ TableFunction DuckLakeTableEntry::GetScanFunction(ClientContext &context, unique
 	function.function_info = std::move(function_info);
 	if (!lookup_info.GetAtClause() && transaction.IsDeleted(*this)) {
 		throw BinderException("Table with name %s does not exist", name);
-	}
-	if (!lookup_info.GetAtClause() && transaction.IsRenamed(*this)) {
-		auto schema_id = ParentSchema().Cast<DuckLakeSchemaEntry>().GetSchemaId();
-		auto local_entry =
-		    transaction.GetTransactionLocalEntry(CatalogType::TABLE_ENTRY, schema_id, name.GetIdentifierName());
-		if (!local_entry || local_entry->Cast<DuckLakeTableEntry>().GetTableId() != GetTableId()) {
-			throw BinderException("Table with name %s does not exist", name);
-		}
 	}
 
 	bind_data = DuckLakeFunctions::BindDuckLakeScan(context, function);
@@ -939,7 +955,9 @@ static void ExtractDefaultValue(const DuckLakeColumnData &col_data, DuckLakeColu
 
 bool TypePromotionIsAllowed(const LogicalType &source, const LogicalType &target) {
 	if (source == target) {
+		// LCOV_EXCL_START
 		return false;
+		// LCOV_EXCL_STOP
 	}
 	LogicalType result;
 	if (!LogicalType::DefaultTryGetMaxLogicalTypeUnchecked(source, target, result)) {

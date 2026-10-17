@@ -293,8 +293,11 @@ void DuckLakeInlinedDataReader::AddVirtualColumn(column_t virtual_column_id) {
 	}
 }
 
+// only reached by pdet/ducklake_internal#112
+// LCOV_EXCL_START
 string DuckLakeInlinedDataReader::GetReaderType() const {
 	return "DuckLake Inlined Data";
 }
+// LCOV_EXCL_STOP
 
 } // namespace duckdb

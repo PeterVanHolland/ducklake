@@ -28,7 +28,16 @@ statement ok
 DETACH lake
 
 statement ok
+CALL enable_logging(level => 'debug')
+
+statement ok
 ATTACH 'ducklake:sqlite:{TEST_DIR}/v11_dev1_inlined_struct.sqlite' AS lake (DATA_PATH '{TEST_DIR}/v11_dev1_inlined_struct_files/', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+# the catalog has every v1.1 addition, so the migration rewrites the literal without its DDL
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'DuckLakeMetadata' AND contains(message, 'ADD COLUMN')
+----
+0
 
 query II
 SELECT s.d, s.v = 'it''s' FROM lake.t

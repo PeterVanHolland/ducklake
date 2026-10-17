@@ -58,10 +58,22 @@ CALL postgres_execute('pg', 'UPDATE stats_index_dev1.ducklake_metadata SET value
 WHERE key = ''version''')
 
 statement ok
+CALL enable_logging(level => 'debug')
+
+statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (METADATA_SCHEMA 'stats_index_dev1', AUTOMATIC_MIGRATION TRUE)
 
 statement ok
 DETACH dl
+
+statement ok
+CALL disable_logging()
+
+# the catalog has every v1.1 addition, so the migration skips their DDL but not the index
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'DuckLakeMetadata' AND contains(message, 'ADD COLUMN')
+----
+0
 
 query II
 SELECT (SELECT indexdef FROM stats_indexes('stats_index_dev1')),

@@ -102,13 +102,17 @@ DETACH lake
 unzip data/old_ducklake/inlined_schema_versions.db.gz {TEST_DIR}/v10_inlined_schema_versions_expired.db
 
 statement ok
-ATTACH 'ducklake:{TEST_DIR}/v10_inlined_schema_versions_expired.db' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_schema_versions_expired', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta')
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_schema_versions_expired.db' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_schema_versions_expired', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 10)
 
 statement ok
 CREATE TABLE lake.z (i INTEGER)
 
 statement ok
 CALL ducklake_expire_snapshots('lake', versions => [6])
+
+# a row of the current schema next to the rows whose schema is unknown
+statement ok
+INSERT INTO lake.m VALUES (200, 9)
 
 statement ok
 DETACH lake
@@ -130,3 +134,15 @@ r	7	8
 t	1	1
 t	2	2
 z	8	9
+
+# the columns of the older rows of m and r are guessed, so the stats of b are left to the scan
+query IIII
+SELECT tbl.table_name, stats.contains_null, stats.min_value, stats.max_value
+FROM meta.ducklake_table_column_stats stats
+JOIN meta.ducklake_column col ON col.table_id = stats.table_id AND col.column_id = stats.column_id AND col.end_snapshot IS NULL
+JOIN meta.ducklake_table tbl ON tbl.table_id = stats.table_id
+WHERE col.column_name = 'b' AND tbl.table_name IN ('m', 'r')
+ORDER BY ALL
+----
+m	NULL	NULL	NULL
+r	NULL	NULL	NULL

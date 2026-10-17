@@ -3375,8 +3375,8 @@ string DuckLakeMetadataManager::WriteFloatWidenedStats(const map<TableIndex, set
 	       RewriteColumnStatsBoundsSql(cleared_columns, "min_value = NULL, max_value = NULL", next_file_id);
 }
 
-string DuckLakeMetadataManager::WriteNumericRetypedStats(const map<TableIndex, set<FieldIndex>> &retyped_columns,
-                                                         idx_t next_file_id) {
+string DuckLakeMetadataManager::WriteBooleanToNumberStats(const map<TableIndex, set<FieldIndex>> &retyped_columns,
+                                                          idx_t next_file_id) {
 	auto number_bounds = SetBoundsSql("CASE {BOUND} WHEN 'true' THEN '1' WHEN 'false' THEN '0' ELSE {BOUND} END");
 	return RewriteColumnStatsBoundsSql(retyped_columns, number_bounds, next_file_id);
 }

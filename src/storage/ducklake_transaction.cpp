@@ -863,12 +863,6 @@ Connection &DuckLakeTransaction::GetConnection() {
 		Settings::Set<CatalogErrorMaxSchemasSetting>(*connection->context, SetScope::SESSION, Value::UBIGINT(0));
 		// metadata queries rely on ascending ORDER BY, which a global SET default_order would change
 		Settings::Set<DefaultOrderSetting>(*connection->context, SetScope::SESSION, Value("ASC"));
-		auto &metadata_type = ducklake_catalog.MetadataType();
-		if (metadata_type == "sqlite" || metadata_type == "sqlite_scanner") {
-			// FIXME: sqlite_scanner's per-scan read connections deadlock against concurrent writers
-			DuckLakeUtil::SetExtensionSetting(*connection->context, "sqlite_disable_multithreaded_scans",
-			                                  Value::BOOLEAN(true));
-		}
 		BeginMetadataTransaction();
 	} else if (metadata_transaction_released) {
 		BeginMetadataTransaction();

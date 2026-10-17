@@ -3045,7 +3045,8 @@ string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const L
 	auto &metadata_type = transaction.GetCatalog().MetadataType();
 	if (metadata_type.empty() || metadata_type == "duckdb" || metadata_type == "quack" ||
 	    metadata_type == "quack_scanner") {
-		return column;
+		// older versions stored struct fields in the order of an ALTER, which a cast by field name restores
+		return DuckLakeTypes::IsNested(type) ? "CAST(" + column + " AS " + type.ToString() + ")" : column;
 	}
 	auto expression = column;
 	if (type.id() == LogicalTypeId::VARCHAR && !TypeIsNativelySupported(type)) {

@@ -412,6 +412,9 @@ public:
 	//! Rewrite the bounds of committed files and tables written while a widened column was FLOAT
 	static string WriteFloatWidenedStats(const map<TableIndex, set<FieldIndex>> &widened_columns,
 	                                     const map<TableIndex, set<FieldIndex>> &cleared_columns, idx_t next_file_id);
+	//! Clear the bounds of added files of the columns retyped to a finer timestamp unit, and of their tables
+	static string WriteRefinedTimestampStats(const map<TableIndex, set<FieldIndex>> &refined_columns,
+	                                         idx_t next_file_id);
 	static string WriteExpiredColumnTags(const vector<DuckLakeDroppedColumn> &dropped_columns);
 	static string WriteNewColumns(const vector<DuckLakeNewColumn> &new_columns);
 	static string WriteNewTags(const vector<DuckLakeTagInfo> &new_tags);

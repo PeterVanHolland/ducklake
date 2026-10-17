@@ -1774,6 +1774,9 @@ void DuckLakeTransactionState::GetNewTableInfo(DuckLakeCommitState &commit_state
 			// note that in case of nested types we might be dropping multiple columns here
 			auto &changed_fields = table.GetChangedFields();
 			HandleChangedFields(commit_state.GetTableId(table), changed_fields, result, txn_added_fields);
+			for (auto &field_index : changed_fields.refined_timestamp_fields) {
+				commit_state.refined_timestamp_columns[commit_state.GetTableId(table)].insert(field_index);
+			}
 			if (table.StartsPartitionSpec()) {
 				auto partition_key = DuckLakeTransaction::GetNewPartitionKey(commit_state, table);
 				partition_key.replaces_equal_spec = true;
@@ -2357,6 +2360,9 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 		auto compacted_tables = local_changes.GetCompactedTables();
 		refreshed_table_sizes.insert(compacted_tables.begin(), compacted_tables.end());
 	}
+	// runs after this commit writes its files and table stats, so it clears those too
+	batch_queries += DuckLakeMetadataManager::WriteRefinedTimestampStats(commit_state.refined_timestamp_columns,
+	                                                                     commit_snapshot.next_file_id);
 	batch_queries += DuckLakeMetadataManager::RefreshTableSizesSql(refreshed_table_sizes);
 
 	// delete the flushed inlined rows and inlined file deletions after the deletes of the transaction

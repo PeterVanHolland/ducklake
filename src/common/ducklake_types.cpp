@@ -103,7 +103,13 @@ LogicalType DuckLakeTypes::FromDuckDBString(const string &type) {
 }
 
 LogicalType DuckLakeTypes::FromDuckDBString(const string &type, ClientContext &context) {
-	return BindDuckLakeTypes(TransformStringToLogicalType(type, context));
+	try {
+		// the Parquet reader creates types like JSON without their extension, so bind them without the catalog
+		return FromDuckDBString(type);
+	} catch (InvalidInputException &) {
+		// types like GEOMETRY with a coordinate system need the client context
+		return BindDuckLakeTypes(TransformStringToLogicalType(type, context));
+	}
 }
 
 LogicalType DuckLakeTypes::FromString(const string &type) {

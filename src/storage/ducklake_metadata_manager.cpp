@@ -448,7 +448,7 @@ struct DuckLakeAddedColumn {
 	const char *type;
 };
 
-static constexpr const DuckLakeAddedColumn V1_1_DEV1_ADDED_COLUMNS[] = {
+static constexpr const DuckLakeAddedColumn V1_1_ADDED_COLUMNS[] = {
     {"ducklake_data_file", "row_group_count", "BIGINT"},
     {"ducklake_delete_file", "row_group_count", "BIGINT"},
     {"ducklake_file_column_stats", "min_is_exact", "BOOLEAN DEFAULT NULL"},
@@ -457,30 +457,18 @@ static constexpr const DuckLakeAddedColumn V1_1_DEV1_ADDED_COLUMNS[] = {
     {"ducklake_table_column_stats", "max_is_exact", "BOOLEAN DEFAULT NULL"},
     {"ducklake_schema", "parent_schema_id", "BIGINT"}};
 
-static string V1_1Dev1MigrationQuery() {
+static string V1_1MigrationQuery() {
 	string query;
-	for (auto &added : V1_1_DEV1_ADDED_COLUMNS) {
+	for (auto &added : V1_1_ADDED_COLUMNS) {
 		query += StringUtil::Format("ALTER TABLE {METADATA_CATALOG}.%s ADD COLUMN {IF_NOT_EXISTS} %s %s;\n",
 		                            added.table, added.column, added.type);
 	}
 	query += R"(CREATE TABLE {IF_NOT_EXISTS} {METADATA_CATALOG}.ducklake_view_column_tag(
 	view_id BIGINT, column_name VARCHAR, begin_snapshot BIGINT, end_snapshot BIGINT, key VARCHAR, value VARCHAR
 );
-UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '1.1-dev1' WHERE key = 'version';
+UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '1.1' WHERE key = 'version';
 )";
 	return query;
-}
-
-bool DuckLakeMetadataManager::HasV1_1Dev1Additions() {
-	string probe = "SELECT 1 FROM (SELECT * FROM {METADATA_CATALOG}.ducklake_view_column_tag LIMIT 0)";
-	idx_t alias_index = 0;
-	for (auto &added : V1_1_DEV1_ADDED_COLUMNS) {
-		// a qualified column cannot resolve to the same column of an earlier subquery
-		auto alias = "added_" + to_string(alias_index++);
-		probe += StringUtil::Format(", (SELECT %s.%s FROM {METADATA_CATALOG}.%s %s LIMIT 0)", alias, added.column,
-		                            added.table, alias);
-	}
-	return !Query(probe)->HasError();
 }
 
 void DuckLakeMetadataManager::MigrateInlinedSchemaVersions() {
@@ -505,7 +493,7 @@ AND NOT EXISTS (
 	WHERE sv.table_id = idt.table_id AND sv.begin_snapshot <= commits.snapshot_id
 ) > 1;
 )");
-	result->ThrowIfError("Failed to add the schema versions of inlined-data tables while migrating to v1.1-dev1: ");
+	result->ThrowIfError("Failed to add the schema versions of inlined-data tables while migrating to v1.1: ");
 }
 
 void DuckLakeMetadataManager::MigrateRenamedFieldDefaults() {
@@ -525,40 +513,16 @@ AND NOT EXISTS (
 	AND later.begin_snapshot < renamed.begin_snapshot
 );
 )");
-	result->ThrowIfError("Failed to restore the defaults of renamed struct fields while migrating to v1.1-dev1: ");
+	result->ThrowIfError("Failed to restore the defaults of renamed struct fields while migrating to v1.1: ");
 }
 
-void DuckLakeMetadataManager::MigrateV10(bool allow_failures) {
-	// rename first so a conflict aborts while the catalog is still at v1.0
-	MigrateInlinedColumnNames(allow_failures);
+void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
+	// rename first so a conflict aborts before the version is updated, dev catalogs may already be renamed
+	MigrateInlinedColumnNames(from_dev1);
 	MigrateInlinedSchemaVersions();
 	MigrateRenamedFieldDefaults();
 	MigrateInlinedDataTypes();
-	ExecuteMigration(V1_1Dev1MigrationQuery(), allow_failures, "1.0", "1.1-dev1");
-}
-
-void DuckLakeMetadataManager::MigrateV10Dev() {
-	auto &db = transaction.GetCatalog().GetDatabase();
-	// Try the schema and column migrations independently
-	try {
-		// DDL locks the metadata tables exclusively on Postgres, a catalog with every addition runs none
-		if (!HasV1_1Dev1Additions()) {
-			ExecuteMigration(V1_1Dev1MigrationQuery(), true, "1.0", "1.1-dev1");
-		}
-	} catch (std::exception &ex) {
-		ErrorData error(ex);
-		DUCKDB_LOG_WARNING(db, StringUtil::Format("DuckLake could not apply the v1.1-dev1 schema additions on "
-		                                          "attach, reattach with AUTOMATIC_MIGRATION TRUE: %s",
-		                                          error.RawMessage()));
-	}
-	try {
-		MigrateInlinedColumnNames(true);
-	} catch (std::exception &ex) {
-		ErrorData error(ex);
-		DUCKDB_LOG_WARNING(db, StringUtil::Format("DuckLake could not rename the inlined metadata columns on "
-		                                          "attach, reattach with AUTOMATIC_MIGRATION TRUE: %s",
-		                                          error.RawMessage()));
-	}
+	ExecuteMigration(V1_1MigrationQuery(), from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");
 }
 
 void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed) {
@@ -566,7 +530,7 @@ void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed) {
 SELECT idt.table_name AS inlined_table_name, tbl.table_name AS user_table_name
 FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
 LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id AND tbl.end_snapshot IS NULL)");
-	tables->ThrowIfError("Failed to list inlined-data tables while migrating to v1.1-dev1: ");
+	tables->ThrowIfError("Failed to list inlined-data tables while migrating to v1.1: ");
 	DuckLakeInlinedColNames old_names(false);
 	DuckLakeInlinedColNames new_names(true);
 	vector<pair<string, string>> col_renames {{old_names.row_id, new_names.row_id},
@@ -599,7 +563,7 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 		auto probe =
 		    Query(StringUtil::Format("SELECT * FROM {METADATA_CATALOG}.%s LIMIT 0", SQLIdentifier(table_name)));
 		probe->ThrowIfError(
-		    StringUtil::Format("Failed to read inlined-data table \"%s\" while migrating to v1.1-dev1: ", table_name));
+		    StringUtil::Format("Failed to read inlined-data table \"%s\" while migrating to v1.1: ", table_name));
 		// the metadata columns are always the first three columns, user columns follow
 		auto &names = probe->GetNames();
 		case_insensitive_set_t user_columns;
@@ -620,7 +584,7 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 			}
 			if (user_columns.count(entry.second)) {
 				throw InvalidInputException(
-				    "Failed to rename inlined-data metadata columns while migrating to v1.1-dev1: table \"%s\" has a "
+				    "Failed to rename inlined-data metadata columns while migrating to v1.1: table \"%s\" has a "
 				    "column \"%s\" colliding with the renamed metadata column. Rename the column and call "
 				    "ducklake_flush_inlined_data() before migrating",
 				    user_table_name, entry.second);
@@ -630,7 +594,7 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 		}
 		if (unexpected_layout) {
 			throw InvalidInputException(
-			    "Failed to rename inlined-data metadata columns of \"%s\" while migrating to v1.1-dev1: the table has "
+			    "Failed to rename inlined-data metadata columns of \"%s\" while migrating to v1.1: the table has "
 			    "an unexpected column layout",
 			    table_name);
 		}
@@ -639,7 +603,7 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 		}
 		auto result = Execute(renames);
 		result->ThrowIfError(StringUtil::Format(
-		    "Failed to rename inlined-data metadata columns of \"%s\" while migrating to v1.1-dev1: ", table_name));
+		    "Failed to rename inlined-data metadata columns of \"%s\" while migrating to v1.1: ", table_name));
 	}
 }
 

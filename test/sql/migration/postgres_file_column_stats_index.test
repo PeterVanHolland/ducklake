@@ -17,7 +17,7 @@ test-env DATA_PATH {TEST_DIR}
 statement ok
 ATTACH '{DUCKLAKE_CONNECTION}' AS pg
 
-foreach schema stats_index_new stats_index_v10 stats_index_user
+foreach schema stats_index_new stats_index_dev1 stats_index_v10 stats_index_user
 
 statement ok
 CALL postgres_execute('pg', 'DROP SCHEMA IF EXISTS ${schema} CASCADE')
@@ -32,7 +32,7 @@ WHERE schemaname = schema_name
 
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
-(DATA_PATH '{DATA_PATH}/stats_index_new', METADATA_SCHEMA 'stats_index_new', DUCKLAKE_VERSION '1.1-dev1')
+(DATA_PATH '{DATA_PATH}/stats_index_new', METADATA_SCHEMA 'stats_index_new', DUCKLAKE_VERSION '1.1')
 
 statement ok
 DETACH dl
@@ -41,6 +41,34 @@ query I
 SELECT indexdef FROM stats_indexes('stats_index_new')
 ----
 CREATE INDEX idx_fcs_table_col ON stats_index_new.ducklake_file_column_stats USING btree (table_id, column_id)
+
+# A development catalog of v1.1-dev1 gets the index when it migrates
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+(DATA_PATH '{DATA_PATH}/stats_index_dev1', METADATA_SCHEMA 'stats_index_dev1', DUCKLAKE_VERSION '1.1')
+
+statement ok
+DETACH dl
+
+statement ok
+CALL postgres_execute('pg', 'DROP INDEX stats_index_dev1.idx_fcs_table_col')
+
+statement ok
+CALL postgres_execute('pg', 'UPDATE stats_index_dev1.ducklake_metadata SET value = ''1.1-dev1''
+WHERE key = ''version''')
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (METADATA_SCHEMA 'stats_index_dev1', AUTOMATIC_MIGRATION TRUE)
+
+statement ok
+DETACH dl
+
+query II
+SELECT (SELECT indexdef FROM stats_indexes('stats_index_dev1')),
+	(SELECT value FROM postgres_query('pg', 'SELECT value FROM stats_index_dev1.ducklake_metadata
+WHERE key = ''version'''))
+----
+CREATE INDEX idx_fcs_table_col ON stats_index_dev1.ducklake_file_column_stats USING btree (table_id, column_id)	1.1
 
 # A catalog written by DuckLake 1.0 gets the index when it migrates
 unzip data/old_ducklake/stale_table_size.db.gz {TEST_DIR}/stats_index_v10.db
@@ -111,9 +139,9 @@ query II
 SELECT (SELECT count(*) FROM stats_indexes('stats_index_user')),
 	(SELECT value FROM postgres_query('pg', 'SELECT value FROM stats_index_user.ducklake_metadata WHERE key = ''version'''))
 ----
-1	1.1-dev1
+1	1.1
 
-foreach schema stats_index_new stats_index_v10 stats_index_user
+foreach schema stats_index_new stats_index_dev1 stats_index_v10 stats_index_user
 
 statement ok
 CALL postgres_execute('pg', 'DROP SCHEMA ${schema} CASCADE')

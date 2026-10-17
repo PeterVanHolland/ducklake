@@ -369,9 +369,11 @@ public:
 	static string GetNetInlinedRowCountSql(const string &inlined_table_name, const DuckLakeInlinedColNames &col_names);
 	//! The rows that are stored, deleted ones included, and the rows that are live
 	static string GetInlinedRowCountsSql(const string &inlined_table_name, const DuckLakeInlinedColNames &col_names);
-	static string GetTableColumnSchemaSql(TableIndex table_id);
-	static string GetInlinedTableNamesSql(TableIndex table_id);
-	static string GetInlinedTablesBeforeSchemaChangeSql(TableIndex table_id);
+	//! The columns of every table or of one at the snapshot, by table
+	static string GetTableColumnSchemaSql(optional_idx table_id = optional_idx());
+	static string GetInlinedTableNamesSql(optional_idx table_id = optional_idx());
+	//! The inlined data tables written before the latest schema change of their table
+	static string GetInlinedTablesBeforeSchemaChangeSql(optional_idx table_id = optional_idx());
 	//! The top-level columns of each inlined data table at the schema version of that table
 	static string GetInlinedTableColumnsSql(optional_idx table_id = optional_idx());
 	//! The inserts of the given rows, in batches

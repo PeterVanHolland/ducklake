@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "common/ducklake_row_helpers.hpp"
 #include "storage/ducklake_stats.hpp"
 #include "storage/ducklake_transaction.hpp"
 
@@ -21,7 +22,13 @@ struct DuckLakeColumnSchemaEntry {
 	//! False for nested struct, list, map and array leaves, only roots are merged from inlined data
 	//! It has no default initializer so the struct stays a C++11 aggregate, and every producer sets it
 	bool is_root;
+
+	//! Reads a row of DuckLakeMetadataManager::GetTableColumnSchemaSql
+	static DuckLakeColumnSchemaEntry FromRow(const QueryResultRow &row);
 };
+
+//! The top-level columns of inlined data tables, by table name
+using ducklake_inlined_table_columns_t = map<string, map<FieldIndex, DuckLakeColumnSchemaEntry>>;
 
 struct DuckLakeCommitContext {
 	//! Runs a metadata-DB query during conflict resolution.
@@ -221,15 +228,18 @@ public:
 	                                      const CompactionInformation &rewrite_changes,
 	                                      const set<DataFileIndex> &removed_source_ids,
 	                                      const DuckLakeCommitContext &context);
-	//! Recomputes the stats of a table from its live files and every stored inlined row, for a migrated catalog
-	static string RecomputeMigratedTableStats(TableIndex table_id, DuckLakeSnapshot snapshot,
-	                                          const DuckLakeGlobalStatsInfo &committed_stats,
-	                                          bool write_stats_exactness, const DuckLakeCommitContext &context);
-	//! Merge the per-column min/max of every inlined row stored at the snapshot, deleted or not, into `target` via
-	//! typed SQL aggregates. Returns false if the inlined data cannot be accounted for exactly (e.g. a non-scalar
-	//! column), in which case the caller must not claim the recomputed stats are exact.
-	static bool TryMergeInlinedStats(TableIndex table_id, const vector<DuckLakeColumnSchemaEntry> &columns,
-	                                 const vector<string> &inlined_table_names, DuckLakeSnapshot snapshot,
+	//! Recomputes the stats of the tables from their live files and every stored inlined row, for a migrated catalog.
+	//! Returns the stats that differ from the committed ones, with the columns that changed.
+	static vector<DuckLakeGlobalStatsInfo>
+	RecomputeMigratedTableStats(const vector<DuckLakeGlobalStatsInfo> &committed_stats, DuckLakeSnapshot snapshot,
+	                            bool write_stats_exactness, const DuckLakeCommitContext &context);
+	//! Merge the count and the per-column min/max of every inlined row stored at the snapshot, deleted or not, into
+	//! `target` via typed SQL aggregates. `older_columns` holds the inlined tables of an older schema. Returns false if
+	//! the inlined data cannot be accounted for exactly (e.g. a non-scalar column), in which case the caller must not
+	//! claim the recomputed stats are exact.
+	static bool TryMergeInlinedStats(const vector<DuckLakeColumnSchemaEntry> &columns,
+	                                 const vector<string> &inlined_table_names,
+	                                 const ducklake_inlined_table_columns_t &older_columns, DuckLakeSnapshot snapshot,
 	                                 DuckLakeTableStats &target, const DuckLakeCommitContext &context);
 	vector<DuckLakeDeleteFileInfo>
 	GetNewDeleteFiles(const DuckLakeCommitState &commit_state,

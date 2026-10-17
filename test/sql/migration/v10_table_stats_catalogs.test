@@ -35,6 +35,15 @@ COPY (SELECT 2 AS id) TO '{DATA_PATH}/v10_table_stats_catalogs_id.parquet'
 statement ok
 CALL ducklake_add_data_files('lake', 'm', '{DATA_PATH}/v10_table_stats_catalogs_id.parquet', allow_missing => true)
 
+statement ok
+CREATE TABLE lake.v (v VARIANT)
+
+statement ok
+INSERT INTO lake.v SELECT {'a': i}::VARIANT FROM range(20) t(i)
+
+statement ok
+INSERT INTO lake.v VALUES (NULL)
+
 # stats like v1.0 could leave, wider and narrower than the live rows
 statement ok
 UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET min_value = '1' WHERE table_id = 1 AND column_id = 1
@@ -44,6 +53,26 @@ UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET max_value = 'w' 
 
 statement ok
 UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET contains_null = false WHERE table_id = 2 AND column_id = 2
+
+# inlined rows written before a column was added
+statement ok
+CREATE TABLE lake.w (id INTEGER)
+
+statement ok
+INSERT INTO lake.w VALUES (6)
+
+statement ok
+ALTER TABLE lake.w ADD COLUMN k INTEGER
+
+statement ok
+INSERT INTO lake.w VALUES (7, 1)
+
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET min_value = '1' WHERE table_id = 4 AND column_id = 1
+
+statement ok
+CREATE TABLE memory.variant_stats AS
+SELECT extra_stats FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id = 3
 
 statement ok
 DETACH lake
@@ -69,13 +98,25 @@ SELECT count(*) FROM lake.m WHERE name IS NULL
 
 query IIIII
 SELECT table_id, column_id, contains_null::BOOLEAN, min_value, max_value
-FROM __ducklake_metadata_lake.ducklake_table_column_stats ORDER BY ALL
+FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id < 3 ORDER BY ALL
 ----
 1	1	false	5	200
 1	2	false	e	z
 1	4	false	5	200
 2	1	false	1	2
 2	2	true	a	a
+
+query II
+SELECT min(id), max(id) FROM lake.w
+----
+6	7
+
+# the committed stats of a variant whose inlined rows cannot be aggregated are kept
+query I
+SELECT count(*) FROM __ducklake_metadata_lake.ducklake_table_column_stats stats, memory.variant_stats committed
+WHERE stats.table_id = 3 AND stats.extra_stats IS NOT DISTINCT FROM committed.extra_stats
+----
+1
 
 # new rows extend the recomputed stats
 statement ok

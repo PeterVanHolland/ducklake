@@ -537,7 +537,6 @@ void DuckLakeMetadataManager::MigrateTableStats(bool write_stats_exactness) {
 		return;
 		// LCOV_EXCL_STOP
 	}
-	auto committed_stats = ParseGlobalTableStats(*Query(GlobalTableStatsQuery(true)));
 	DuckLakeCommitContext context;
 	context.supports_v1_1_metadata = true;
 	context.query_metadata = [&](string query) {
@@ -549,29 +548,11 @@ void DuckLakeMetadataManager::MigrateTableStats(bool write_stats_exactness) {
 	context.cast_inlined_column = [&](const string &column, const LogicalType &type) {
 		return CastColumnToTarget(column, type);
 	};
-	context.get_table_column_schema = [&](TableIndex table_id) {
-		auto result = Query(*snapshot, GetTableColumnSchemaSql(table_id));
-		result->ThrowIfError("Failed to read the columns of a table while migrating to v1.1: ");
-		vector<DuckLakeColumnSchemaEntry> schema;
-		for (auto &row : *result) {
-			schema.push_back({FieldIndex(row.GetValue<idx_t>(0)), row.GetValue<string>(1),
-			                  DuckLakeTypes::FromString(row.GetValue<string>(2)), row.IsNull(3)});
-		}
-		return schema;
-	};
-	context.get_inlined_table_names = [&](TableIndex table_id) {
-		auto result = Query(GetInlinedTableNamesSql(table_id));
-		result->ThrowIfError("Failed to read the inlined data tables while migrating to v1.1: ");
-		vector<string> names;
-		for (auto &row : *result) {
-			names.push_back(row.GetValue<string>(0));
-		}
-		return names;
-	};
+	auto committed_stats = ParseGlobalTableStats(*Query(GlobalTableStatsQuery(true)));
 	string batch;
-	for (auto &stats : committed_stats) {
-		batch += DuckLakeTransactionState::RecomputeMigratedTableStats(stats.table_id, *snapshot, stats,
-		                                                               write_stats_exactness, context);
+	for (auto &stats : DuckLakeTransactionState::RecomputeMigratedTableStats(committed_stats, *snapshot,
+	                                                                         write_stats_exactness, context)) {
+		batch += UpdateGlobalTableStatsSql(stats, write_stats_exactness);
 	}
 	if (batch.empty()) {
 		return;
@@ -965,38 +946,45 @@ idx_t DuckLakeMetadataManager::GetNetInlinedRowCount(const string &inlined_table
 	// LCOV_EXCL_STOP
 }
 
-string DuckLakeMetadataManager::GetTableColumnSchemaSql(TableIndex table_id) {
+//! The filter on one table, or no filter
+static string TableFilter(optional_idx table_id, const string &column, const string &suffix) {
+	if (!table_id.IsValid()) {
+		return string();
+	}
+	return StringUtil::Format("%s = %d%s", column, table_id.GetIndex(), suffix);
+}
+
+string DuckLakeMetadataManager::GetTableColumnSchemaSql(optional_idx table_id) {
 	// Return the full flattened schema: top-level roots (parent_column IS NULL) and every nested leaf, each with its
 	// own column_id (== FieldIndex) and its own leaf column_type. Callers distinguish roots from leaves via
 	// parent_column. column_order == column_id for every row, so the ordering stays deterministic.
 	return StringUtil::Format(R"(
-SELECT column_id, column_name, column_type, parent_column
+SELECT column_id, column_name, column_type, parent_column, table_id
 FROM {METADATA_CATALOG}.ducklake_column
-WHERE table_id = %d
-  AND {SNAPSHOT_ID} >= begin_snapshot
+WHERE %s{SNAPSHOT_ID} >= begin_snapshot
   AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
-ORDER BY column_order)",
-	                          table_id.index);
+ORDER BY table_id, column_order)",
+	                          TableFilter(table_id, "table_id", "\n  AND "));
 }
 
-string DuckLakeMetadataManager::GetInlinedTableNamesSql(TableIndex table_id) {
+string DuckLakeMetadataManager::GetInlinedTableNamesSql(optional_idx table_id) {
+	auto table_filter = TableFilter(table_id, "table_id", "");
 	return StringUtil::Format(R"(
-SELECT DISTINCT table_name
-FROM {METADATA_CATALOG}.ducklake_inlined_data_tables
-WHERE table_id = %d)",
-	                          table_id.index);
+SELECT DISTINCT table_name, table_id
+FROM {METADATA_CATALOG}.ducklake_inlined_data_tables%s)",
+	                          table_filter.empty() ? table_filter : "\nWHERE " + table_filter);
 }
 
-string DuckLakeMetadataManager::GetInlinedTablesBeforeSchemaChangeSql(TableIndex table_id) {
+string DuckLakeMetadataManager::GetInlinedTablesBeforeSchemaChangeSql(optional_idx table_id) {
 	return StringUtil::Format(R"(
-SELECT table_name
-FROM {METADATA_CATALOG}.ducklake_inlined_data_tables
-WHERE table_id = %d AND schema_version < (
-	SELECT MAX(schema_version)
-	FROM {METADATA_CATALOG}.ducklake_schema_versions
-	WHERE table_id = %d AND begin_snapshot <= {SNAPSHOT_ID}
+SELECT idt.table_name
+FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
+WHERE %sidt.schema_version < (
+	SELECT MAX(sv.schema_version)
+	FROM {METADATA_CATALOG}.ducklake_schema_versions sv
+	WHERE sv.table_id = idt.table_id AND sv.begin_snapshot <= {SNAPSHOT_ID}
 ))",
-	                          table_id.index, table_id.index);
+	                          TableFilter(table_id, "idt.table_id", " AND "));
 }
 
 string DuckLakeMetadataManager::GetInlinedTableColumnsSql(optional_idx table_id) {
@@ -1022,7 +1010,7 @@ WHERE col.begin_snapshot <= inlined.snapshot_id AND (col.end_snapshot IS NULL OR
 }
 
 unordered_set<string> DuckLakeMetadataManager::GetInlinedTableNames(TableIndex table_id) {
-	auto result = Query(GetInlinedTableNamesSql(table_id));
+	auto result = Query(GetInlinedTableNamesSql(table_id.index));
 	result->ThrowIfError("Failed to get inlined data tables from DuckLake: ");
 	unordered_set<string> table_names;
 	for (auto &row : *result) {

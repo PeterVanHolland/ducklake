@@ -409,9 +409,9 @@ public:
 	static string WriteDroppedColumns(const vector<DuckLakeDroppedColumn> &dropped_columns);
 	//! Formats a column set as a SQL list of (table_id, column_id) rows
 	static string WriteColumnIdPairs(const map<TableIndex, set<FieldIndex>> &columns);
-	//! Rewrite the bounds of committed files and tables written while a widened column was FLOAT
-	//! Rewrites the BOOLEAN bounds of columns retyped to a number as numbers
+	//! Rewrites legacy BOOLEAN bounds as numbers
 	static string WriteNumericRetypedStats(const map<TableIndex, set<FieldIndex>> &retyped_columns, idx_t next_file_id);
+	//! Rewrite the bounds of committed files and tables written while a widened column was FLOAT
 	static string WriteFloatWidenedStats(const map<TableIndex, set<FieldIndex>> &widened_columns,
 	                                     const map<TableIndex, set<FieldIndex>> &cleared_columns, idx_t next_file_id);
 	static string WriteExpiredColumnTags(const vector<DuckLakeDroppedColumn> &dropped_columns);

@@ -427,7 +427,7 @@ FROM parquet_full_metadata(%s)
 				stats.CastBoundsFrom(column.bounds_type);
 			}
 			if (stats.type.id() == LogicalTypeId::BOOLEAN) {
-				// footers write true and false where DuckLake writes 1 and 0, which still read after a type change
+				// Numeric BOOLEAN bounds survive type promotion
 				for (auto bound : {&stats.min, &stats.max}) {
 					if (*bound == "true") {
 						*bound = "1";

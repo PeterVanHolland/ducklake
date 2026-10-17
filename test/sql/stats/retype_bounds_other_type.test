@@ -16,9 +16,12 @@ ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/rety
 statement ok
 USE ducklake
 
-# an added file keeps the true and false bounds of its footer
+# Imported BOOLEAN bounds use numbers
 statement ok
 COPY (SELECT true AS v) TO '{DATA_PATH}/retype_bounds_other_type_bool.parquet'
+
+statement ok
+COPY (SELECT false AS v) TO '{DATA_PATH}/retype_bounds_other_type_false.parquet'
 
 statement ok
 CREATE TABLE booleans (v BOOLEAN)
@@ -27,10 +30,24 @@ statement ok
 CALL ducklake_add_data_files('ducklake', 'booleans', '{DATA_PATH}/retype_bounds_other_type_bool.parquet')
 
 statement ok
+CALL ducklake_add_data_files('ducklake', 'booleans', '{DATA_PATH}/retype_bounds_other_type_false.parquet')
+
+query II rowsort
+SELECT s.min_value, s.max_value FROM __ducklake_metadata_ducklake.ducklake_file_column_stats s JOIN __ducklake_metadata_ducklake.ducklake_table t USING (table_id) WHERE t.table_name = 'booleans'
+----
+0	0
+1	1
+
+statement ok
 ALTER TABLE booleans ALTER COLUMN v TYPE INTEGER
 
 query I
 SELECT count(*) FROM booleans WHERE v = 1
+----
+1
+
+query I
+SELECT count(*) FROM booleans WHERE v = 0
 ----
 1
 
@@ -42,7 +59,12 @@ SELECT count(*) FROM booleans WHERE v = 1
 ----
 1
 
-# files added before the bounds were written as numbers, and an added file retyped in its own transaction
+query I
+SELECT count(*) FROM booleans WHERE v = 0
+----
+1
+
+# Legacy BOOLEAN bounds
 statement ok
 CREATE TABLE old_booleans (v BOOLEAN)
 
@@ -53,10 +75,16 @@ statement ok
 SET VARIABLE old_id = (SELECT table_id FROM __ducklake_metadata_ducklake.ducklake_table WHERE table_name = 'old_booleans')
 
 statement ok
+USE memory
+
+statement ok
 UPDATE __ducklake_metadata_ducklake.ducklake_file_column_stats SET min_value = 'true', max_value = 'true' WHERE table_id = getvariable('old_id')
 
 statement ok
 UPDATE __ducklake_metadata_ducklake.ducklake_table_column_stats SET min_value = 'true', max_value = 'true' WHERE table_id = getvariable('old_id')
+
+statement ok
+USE ducklake
 
 statement ok
 ALTER TABLE old_booleans ALTER COLUMN v TYPE INTEGER
@@ -66,6 +94,7 @@ SELECT count(*) FROM old_booleans WHERE v = 1
 ----
 1
 
+# Import and retype in one transaction
 statement ok
 CREATE TABLE local_booleans (v BOOLEAN)
 
@@ -86,7 +115,7 @@ SELECT count(*) FROM local_booleans WHERE v = 1
 ----
 1
 
-# a wide DECIMAL reads as another DOUBLE than its bound text
+# Wide DECIMAL bounds can round differently from stored values
 statement ok
 CREATE TABLE decimals (v DECIMAL(38,0))
 
@@ -124,7 +153,7 @@ SELECT count(*) FROM local_decimals WHERE v = getvariable('scanned')
 ----
 1
 
-# bounds that read as the new type still prune
+# Compatible bounds still prune
 statement ok
 CREATE TABLE native_booleans (v BOOLEAN)
 

@@ -28,7 +28,7 @@
 
 namespace duckdb {
 
-//! A DECIMAL with more digits than a DOUBLE holds can be read as another DOUBLE than its bound text
+//! Wide decimal values and their bound strings can round differently
 static bool IsWideDecimal(const LogicalType &type) {
 	return type.id() == LogicalTypeId::DECIMAL && DecimalType::GetWidth(type) > std::numeric_limits<double>::digits10;
 }
@@ -50,17 +50,11 @@ void DuckLakeCommitState::PrepareFloatBounds(TableIndex table_id, map<FieldIndex
 			continue;
 		}
 		auto &stats = column_entry->second;
-		if (IsWideDecimal(stats.type)) {
-			stats.ClearBounds();
-			stats.bounds_unknown = true;
+		if (stats.type.id() != LogicalTypeId::FLOAT && !IsWideDecimal(stats.type)) {
 			continue;
 		}
-		if (stats.type.id() != LogicalTypeId::FLOAT) {
-			// written with the new type already
-			continue;
-		}
-		bool keep_bounds =
-		    can_widen && (clear_entry == float_bounds_to_clear.end() || !clear_entry->second.count(field_index));
+		bool keep_bounds = stats.type.id() == LogicalTypeId::FLOAT && can_widen &&
+		                   (clear_entry == float_bounds_to_clear.end() || !clear_entry->second.count(field_index));
 		if (keep_bounds) {
 			stats.WidenFloatBounds();
 		} else {

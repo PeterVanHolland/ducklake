@@ -3357,7 +3357,7 @@ static string RewriteColumnStatsBoundsSql(const map<TableIndex, set<FieldIndex>>
 	                          bounds, column_pairs);
 }
 
-//! Sets both bounds to the expression, with {BOUND} standing for the bound
+//! Expands {BOUND} for min_value and max_value
 static string SetBoundsSql(const string &expression) {
 	string result;
 	for (auto bound : {"min_value", "max_value"}) {
@@ -3377,7 +3377,6 @@ string DuckLakeMetadataManager::WriteFloatWidenedStats(const map<TableIndex, set
 
 string DuckLakeMetadataManager::WriteNumericRetypedStats(const map<TableIndex, set<FieldIndex>> &retyped_columns,
                                                          idx_t next_file_id) {
-	// BOOLEAN bounds of files added before they were written as numbers
 	auto number_bounds = SetBoundsSql("CASE {BOUND} WHEN 'true' THEN '1' WHEN 'false' THEN '0' ELSE {BOUND} END");
 	return RewriteColumnStatsBoundsSql(retyped_columns, number_bounds, next_file_id);
 }

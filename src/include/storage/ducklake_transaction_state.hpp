@@ -230,7 +230,8 @@ public:
 	                                      const DuckLakeCommitContext &context);
 	//! Recomputes the stats of the tables of a migrated catalog, returning only the changed tables and columns
 	static vector<DuckLakeGlobalStatsInfo>
-	RecomputeMigratedTableStats(const vector<DuckLakeGlobalStatsInfo> &committed_stats, DuckLakeSnapshot snapshot,
+	RecomputeMigratedTableStats(const vector<DuckLakeGlobalStatsInfo> &committed_stats,
+	                            const unordered_set<idx_t> &tables_with_files, DuckLakeSnapshot snapshot,
 	                            bool write_stats_exactness, const DuckLakeCommitContext &context);
 	//! Merges the count and bounds of every inlined row stored at the snapshot, deleted ones included. Returns false if
 	//! a column cannot be aggregated, which can leave partial stats in target.

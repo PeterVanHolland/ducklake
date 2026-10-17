@@ -564,8 +564,9 @@ void DuckLakeMetadataManager::MigrateTableStats(bool write_stats_exactness) {
 	};
 	auto committed_stats = ParseGlobalTableStats(*Query(GlobalTableStatsQuery(true)));
 	string batch;
-	for (auto &stats : DuckLakeTransactionState::RecomputeMigratedTableStats(committed_stats, *snapshot,
-	                                                                         write_stats_exactness, context)) {
+	auto tables_with_files = GetTablesWithLiveDataFiles();
+	for (auto &stats : DuckLakeTransactionState::RecomputeMigratedTableStats(
+	         committed_stats, tables_with_files, *snapshot, write_stats_exactness, context)) {
 		batch += UpdateGlobalTableStatsSql(stats, write_stats_exactness);
 	}
 	if (batch.empty()) {
@@ -990,7 +991,7 @@ string DuckLakeMetadataManager::GetTableColumnSchemaSql(optional_idx table_id) {
 	// own column_id (== FieldIndex) and its own leaf column_type. Callers distinguish roots from leaves via
 	// parent_column. column_order == column_id for every row, so the ordering stays deterministic.
 	return StringUtil::Format(R"(
-SELECT column_id, column_name, column_type, parent_column, table_id
+SELECT column_id, column_name, column_type, parent_column, table_id, initial_default
 FROM {METADATA_CATALOG}.ducklake_column
 WHERE %s{SNAPSHOT_ID} >= begin_snapshot
   AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)

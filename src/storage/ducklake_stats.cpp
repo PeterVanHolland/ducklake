@@ -232,6 +232,13 @@ optional<Value> TryCastStatsBound(const string &bound, const LogicalType &type) 
 	return Value(bound).DefaultTryCastAs(type);
 }
 
+bool StatsBoundLessThan(const Value &left, const Value &right) {
+	if (left.type().id() == LogicalTypeId::TIME_TZ) {
+		return left.GetValue<dtime_tz_t>() < right.GetValue<dtime_tz_t>();
+	}
+	return left < right;
+}
+
 //! Returns false when either bound is unknown
 static bool TryCompareBounds(const LogicalType &type, const string &left, const string &right, int32_t &result) {
 	if (!RequiresValueComparison(type)) {
@@ -245,7 +252,7 @@ static bool TryCompareBounds(const LogicalType &type, const string &left, const 
 	if (!left_value || !right_value) {
 		return false;
 	}
-	result = *left_value < *right_value ? -1 : (*left_value == *right_value ? 0 : 1);
+	result = StatsBoundLessThan(*left_value, *right_value) ? -1 : (*left_value == *right_value ? 0 : 1);
 	return true;
 }
 

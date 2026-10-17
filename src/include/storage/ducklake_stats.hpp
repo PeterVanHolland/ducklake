@@ -36,6 +36,8 @@ inline bool FileStatsShowNulls(const LogicalType &type) {
 
 //! Bounds that cannot be cast are unknown
 optional<Value> TryCastStatsBound(const string &bound, const LogicalType &type);
+//! Orders two stats bounds of the same type, TIMETZ by instant as SQL does
+bool StatsBoundLessThan(const Value &left, const Value &right);
 
 struct DuckLakeColumnStats;
 struct DuckLakeGlobalColumnStatsInfo;

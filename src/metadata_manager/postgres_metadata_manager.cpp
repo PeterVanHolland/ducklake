@@ -405,12 +405,16 @@ void PostgresMetadataManager::ClearCache() {
 	result->ThrowIfError("Failed to clear the PostgreSQL metadata cache: ");
 }
 
+static string PostgresQuery(const string &remote_query) {
+	return StringUtil::Format("SELECT * FROM postgres_query({METADATA_CATALOG_NAME_LITERAL}, %s)",
+	                          SQLString(remote_query));
+}
+
 string PostgresMetadataManager::GetLatestSnapshotQuery() const {
 	auto remote_query = LatestSnapshotQuery();
 	SubstituteCatalogPlaceholders(remote_query,
 	                              SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName()));
-	return StringUtil::Format("SELECT * FROM postgres_query({METADATA_CATALOG_NAME_LITERAL}, %s)",
-	                          SQLString(remote_query));
+	return PostgresQuery(remote_query);
 }
 
 string PostgresMetadataManager::GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
@@ -423,8 +427,7 @@ string PostgresMetadataManager::GenerateFileListQuery(DuckLakeTableEntry &table,
 	    table, snapshot, filter_info, dynamic_filters, runtime_filter_stats_columns, file_list_type, schema);
 	// placeholders inside the literal are not replaced later
 	SubstituteSnapshotPlaceholders(snapshot, remote_query);
-	return StringUtil::Format("SELECT * FROM postgres_query({METADATA_CATALOG_NAME_LITERAL}, %s)",
-	                          SQLString(remote_query));
+	return PostgresQuery(remote_query);
 }
 
 } // namespace duckdb

@@ -27,18 +27,32 @@ Transaction &DuckLakeTransactionManager::StartTransaction(ClientContext &context
 
 ErrorData DuckLakeTransactionManager::CommitTransaction(ClientContext &context, Transaction &transaction) {
 	auto &ducklake_transaction = transaction.Cast<DuckLakeTransaction>();
+	ErrorData error;
 	try {
 		ducklake_transaction.Commit();
 	} catch (std::exception &ex) {
-		return ErrorData(ex);
+		error = ErrorData(ex);
 	}
-	lock_guard<mutex> l(transaction_lock);
-	transactions.erase(transaction);
-	return ErrorData();
+	// a transaction whose commit failed is not rolled back afterwards, so it is done either way
+	// it is destroyed after the lock is released, closing its connection can roll back other transactions
+	shared_ptr<DuckLakeTransaction> finished_transaction;
+	{
+		lock_guard<mutex> l(transaction_lock);
+		if (error.HasError() && ducklake_transaction.CommitOutcomeUnknown()) {
+			ducklake_transaction.GetWrittenFiles(in_doubt_files);
+		}
+		auto entry = transactions.find(transaction);
+		if (entry != transactions.end()) {
+			finished_transaction = std::move(entry->second);
+			transactions.erase(entry);
+		}
+	}
+	return error;
 }
 
 void DuckLakeTransactionManager::GetWrittenFiles(vector<string> &result) {
 	lock_guard<mutex> l(transaction_lock);
+	result.insert(result.end(), in_doubt_files.begin(), in_doubt_files.end());
 	for (auto &entry : transactions) {
 		entry.second->GetWrittenFiles(result);
 	}

@@ -47,6 +47,14 @@ struct DuckLakeCommitContext {
 	// LCOV_EXCL_START
 	std::function<void()> commit_connection = []() {
 	};
+	//! The id of the metadata transaction that tells the outcome of a failed commit.
+	std::function<optional_idx()> get_commit_transaction_id = []() {
+		return optional_idx();
+	};
+	//! Whether the metadata transaction with the id was committed after its commit failed.
+	std::function<DuckLakeCommitOutcome(optional_idx)> get_commit_outcome = [](optional_idx) {
+		return DuckLakeCommitOutcome::NOT_COMMITTED;
+	};
 	//! Rolls back the metadata connection if a transaction is active.
 	std::function<void()> try_rollback = []() {
 	};
@@ -157,6 +165,9 @@ public:
 	DuckLakeTransactionState(DatabaseInstance &db, bool require_commit_message, DuckLakeNameMapSet &new_name_maps,
 	                         string data_path, string separator);
 	~DuckLakeTransactionState();
+
+	//! Set when the commit failed after the catalog may have committed it
+	bool commit_outcome_unknown = false;
 
 	void Commit(DuckLakeSnapshot transaction_snapshot, const TransactionChangeInformation &transaction_changes,
 	            const DuckLakeRetryConfig &retry_config, const DuckLakeCommitContext &context);

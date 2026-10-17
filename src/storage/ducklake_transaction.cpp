@@ -1524,6 +1524,15 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	context.commit_connection = [&]() {
 		connection->Commit();
 	};
+	context.get_commit_transaction_id = [&]() {
+		// reading the id costs a query, so only commits that wrote files learn the outcome of a failed COMMIT
+		vector<string> written_files;
+		GetWrittenFiles(written_files);
+		return written_files.empty() ? optional_idx() : metadata_manager->GetCommitTransactionId();
+	};
+	context.get_commit_outcome = [&](optional_idx transaction_id) {
+		return metadata_manager->GetCommitOutcome(transaction_id, retry_config);
+	};
 	context.try_rollback = [&]() {
 		if (connection->context->transaction.HasActiveTransaction()) {
 			connection->Rollback();
@@ -1801,6 +1810,10 @@ bool DuckLakeTransaction::HasTransactionLocalInserts(TableIndex table_id) const 
 
 bool DuckLakeTransaction::HasTransactionInlinedData(TableIndex table_id) const {
 	return state->local_changes.HasTransactionInlinedData(table_id);
+}
+
+bool DuckLakeTransaction::CommitOutcomeUnknown() const {
+	return state->commit_outcome_unknown;
 }
 
 void DuckLakeTransaction::GetWrittenFiles(vector<string> &result) const {

@@ -37,6 +37,12 @@ SELECT count(*) FROM dl.wrapped WHERE vertex_extract(g, 'y') = 0
 ----
 2
 
+# only x is unknown, y keeps the range of the file
+query I
+SELECT contains(extra_stats, '"ymin":0.0,"ymax":0.0') FROM __ducklake_metadata_dl.ducklake_file_column_stats
+----
+true
+
 # the statistics read back from the catalog stay unknown in x
 statement ok
 DETACH dl

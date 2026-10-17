@@ -452,11 +452,9 @@ FROM parquet_full_metadata(%s)
 						bound_idx++;
 					});
 					// a box that wraps around the antimeridian has its minimum above its maximum, which stays unknown
-					auto unknown = std::numeric_limits<double>::max();
 					for (idx_t i = 0; i < 8; i += 2) {
 						if (bound_set[i] && bound_set[i + 1] && *bounds[i] > *bounds[i + 1]) {
-							*bounds[i] = -unknown;
-							*bounds[i + 1] = unknown;
+							DuckLakeColumnGeoStats::SetUnknownRange(*bounds[i], *bounds[i + 1]);
 						}
 					}
 				} else {

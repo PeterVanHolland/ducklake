@@ -226,9 +226,6 @@ struct DuckLakePartitionFieldInfo {
 	bool operator==(const DuckLakePartitionFieldInfo &new_field) const {
 		return field_id == new_field.field_id && transform == new_field.transform;
 	}
-	bool operator!=(const DuckLakePartitionFieldInfo &new_field) const {
-		return !(*this == new_field);
-	}
 };
 
 struct DuckLakePartitionInfo {
@@ -239,9 +236,6 @@ struct DuckLakePartitionInfo {
 	bool replaces_equal_spec = false;
 	bool operator==(const DuckLakePartitionInfo &new_partition) const {
 		return table_id == new_partition.table_id && fields == new_partition.fields;
-	}
-	bool operator!=(vector<DuckLakePartitionInfo>::const_reference value) const {
-		return !(*this == value);
 	}
 };
 
@@ -255,9 +249,6 @@ struct DuckLakeSortFieldInfo {
 		return expression == new_field.expression && dialect == new_field.dialect &&
 		       sort_direction == new_field.sort_direction && null_order == new_field.null_order;
 	}
-	bool operator!=(const DuckLakeSortFieldInfo &new_field) const {
-		return !(*this == new_field);
-	}
 };
 
 struct DuckLakeSortInfo {
@@ -266,9 +257,6 @@ struct DuckLakeSortInfo {
 	vector<DuckLakeSortFieldInfo> fields;
 	bool operator==(const DuckLakeSortInfo &new_sort) const {
 		return table_id == new_sort.table_id && fields == new_sort.fields;
-	}
-	bool operator!=(vector<DuckLakeSortInfo>::const_reference value) const {
-		return !(*this == value);
 	}
 };
 
@@ -417,7 +405,6 @@ struct DuckLakeFileListEntry {
 	DuckLakeFileData delete_file;
 	optional_idx row_id_start;
 	optional_idx snapshot_id;
-	optional_idx max_row_count;
 	//! Upper bound filter, we only include rows where _ducklake_internal_snapshot_id <= snapshot_filter
 	optional_idx snapshot_filter_max;
 	//! Lower bound filter, we only include rows where _ducklake_internal_snapshot_id >= snapshot_filter_min
@@ -474,7 +461,6 @@ struct DuckLakeCompactionBaseFileData {
 	idx_t row_count = 0;
 	idx_t begin_snapshot = 0;
 	optional_idx end_snapshot;
-	optional_idx max_row_count;
 };
 
 struct DuckLakeFileForCleanup {

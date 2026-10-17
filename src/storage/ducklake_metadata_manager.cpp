@@ -509,41 +509,36 @@ AND NOT EXISTS (
 }
 
 void DuckLakeMetadataManager::MigrateAddedGeometryStats() {
-	// files added without geospatial statistics were stored as files without geometries
-	auto result = Query(R"(
-SELECT s.table_id, s.column_id, s.data_file_id, s.extra_stats
-FROM {METADATA_CATALOG}.ducklake_file_column_stats s
-JOIN {METADATA_CATALOG}.ducklake_data_file f ON f.data_file_id = s.data_file_id
-WHERE s.extra_stats IS NOT NULL AND (s.null_count IS NULL OR s.null_count < f.record_count) AND EXISTS (
+	auto geometry_column = R"(EXISTS (
 	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column c
 	WHERE c.table_id = s.table_id AND c.column_id = s.column_id AND lower(c.column_type) LIKE 'geometry%'
-))");
-	result->ThrowIfError("Failed to read the geometry statistics while migrating to v1.1: ");
-	map<pair<idx_t, idx_t>, vector<idx_t>> files_by_column;
-	for (auto &row : *result) {
-		DuckLakeColumnGeoStats stats;
-		stats.Deserialize(row.GetValue<string>(3));
-		if (stats.geo_types.empty()) {
-			files_by_column[{row.GetValue<idx_t>(0), row.GetValue<idx_t>(1)}].push_back(row.GetValue<idx_t>(2));
-		}
-	}
-	if (files_by_column.empty()) {
-		return;
-	}
+))";
+	// files added without geospatial statistics were stored as files without geometries
+	auto files = Query(StringUtil::Format(R"(
+SELECT s.table_id, s.column_id, s.data_file_id, s.extra_stats, s.value_count IS NULL OR s.value_count > 0
+FROM {METADATA_CATALOG}.ducklake_file_column_stats s
+WHERE s.extra_stats IS NOT NULL AND %s)",
+	                                      geometry_column));
+	files->ThrowIfError("Failed to read the geometry statistics of files while migrating to v1.1: ");
 	DuckLakeColumnGeoStats unknown;
 	unknown.SetUnknownExtent();
 	unknown.SetUnknownTypes();
 	string unknown_stats;
 	unknown.TrySerialize(unknown_stats);
+	map<pair<idx_t, idx_t>, vector<idx_t>> unknown_files;
+	map<pair<idx_t, idx_t>, DuckLakeColumnGeoStats> file_stats;
+	for (auto &row : *files) {
+		pair<idx_t, idx_t> column(row.GetValue<idx_t>(0), row.GetValue<idx_t>(1));
+		DuckLakeColumnGeoStats stats;
+		stats.Deserialize(row.GetValue<string>(3));
+		if (stats.geo_types.empty() && row.GetValue<bool>(4)) {
+			unknown_files[column].push_back(row.GetValue<idx_t>(2));
+			stats = unknown;
+		}
+		file_stats[column].Merge(stats);
+	}
 	string query;
-	for (auto &entry : files_by_column) {
-		auto table_id = entry.first.first;
-		auto column_id = entry.first.second;
-		// the table statistics merge those of the files, so they become unknown too
-		query += StringUtil::Format(
-		    "UPDATE {METADATA_CATALOG}.ducklake_table_column_stats SET extra_stats = %s WHERE table_id = %d AND "
-		    "column_id = %d;",
-		    unknown_stats, table_id, column_id);
+	for (auto &entry : unknown_files) {
 		auto &file_ids = entry.second;
 		for (idx_t start = 0; start < file_ids.size(); start += 1000) {
 			vector<string> batch;
@@ -552,8 +547,36 @@ WHERE s.extra_stats IS NOT NULL AND (s.null_count IS NULL OR s.null_count < f.re
 			}
 			query += StringUtil::Format("UPDATE {METADATA_CATALOG}.ducklake_file_column_stats SET extra_stats = %s "
 			                            "WHERE column_id = %d AND data_file_id IN (%s);",
-			                            unknown_stats, column_id, StringUtil::Join(batch, ", "));
+			                            unknown_stats, entry.first.second, StringUtil::Join(batch, ", "));
 		}
+	}
+	// table statistics also lack what a merge before the migration took from the files
+	auto tables = Query(StringUtil::Format(R"(
+SELECT s.table_id, s.column_id, s.extra_stats
+FROM {METADATA_CATALOG}.ducklake_table_column_stats s
+WHERE s.extra_stats IS NOT NULL AND %s)",
+	                                       geometry_column));
+	tables->ThrowIfError("Failed to read the geometry statistics of tables while migrating to v1.1: ");
+	for (auto &row : *tables) {
+		auto entry = file_stats.find({row.GetValue<idx_t>(0), row.GetValue<idx_t>(1)});
+		if (entry == file_stats.end()) {
+			continue;
+		}
+		DuckLakeColumnGeoStats stats;
+		stats.Deserialize(row.GetValue<string>(2));
+		string stored_stats;
+		stats.TrySerialize(stored_stats);
+		stats.Merge(entry->second);
+		string merged_stats;
+		stats.TrySerialize(merged_stats);
+		if (merged_stats != stored_stats) {
+			query += StringUtil::Format("UPDATE {METADATA_CATALOG}.ducklake_table_column_stats SET extra_stats = %s "
+			                            "WHERE table_id = %d AND column_id = %d;",
+			                            merged_stats, entry->first.first, entry->first.second);
+		}
+	}
+	if (query.empty()) {
+		return;
 	}
 	auto update = Execute(query);
 	update->ThrowIfError("Failed to update the geometry statistics while migrating to v1.1: ");

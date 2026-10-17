@@ -3053,7 +3053,15 @@ string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const L
 		expression = "decode(" + expression + ")";
 	}
 	auto storage_type = DuckLakeUtil::GetInlinedStorageType(*this, type);
-	expression = "CAST(" + expression + " AS " + storage_type.ToString() + ")";
+	auto read_type = storage_type;
+	if (read_type.IsJSONType()) {
+		// without the json extension a JSON column is read as the text it is stored as
+		auto context = transaction.context.lock();
+		if (!Catalog::TryAutoLoad(*context, "json")) {
+			read_type = LogicalType::VARCHAR;
+		}
+	}
+	expression = "CAST(" + expression + " AS " + read_type.ToString() + ")";
 	if (storage_type != type) {
 		expression = DuckLakeUtil::InlinedVariantExpression(expression, type, false);
 	}
@@ -3800,18 +3808,20 @@ shared_ptr<DuckLakeInlinedData> DuckLakeMetadataManager::TransformInlinedData(Qu
 		// LCOV_EXCL_STOP
 	}
 	for (idx_t i = 0; i < expected_types.size(); i++) {
-		if (result_types[i] != expected_types[i]) {
+		auto json_as_text = expected_types[i].IsJSONType() && result_types[i] == LogicalType::VARCHAR;
+		if (result_types[i] != expected_types[i] && !json_as_text) {
 			throw InvalidInputException("Failed to read inlined data from DuckLake table \"%s\": expected %s for "
 			                            "column %llu but read %s",
 			                            inlined_table_name, expected_types[i], i + 1, result_types[i]);
 		}
 	}
-	auto data = make_uniq<ColumnDataCollection>(*context, expected_types);
+	auto data = make_uniq<ColumnDataCollection>(*context, result_types);
 	while (auto chunk = result.Fetch()) {
 		data->Append(*chunk);
 	}
 	auto inlined_data = make_shared_ptr<DuckLakeInlinedData>();
 	inlined_data->data = std::move(data);
+	inlined_data->CastTo(*context, expected_types);
 	return inlined_data;
 }
 

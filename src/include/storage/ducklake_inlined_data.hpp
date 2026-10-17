@@ -32,6 +32,7 @@ struct DuckLakeInlinedData {
 	int64_t GetOutputRowId(idx_t position) const;
 	//! Merge preserved row_ids from update inlining
 	void MergeRowIds(const DuckLakeInlinedData &new_data, idx_t new_data_count);
+	void CastTo(ClientContext &context, const vector<LogicalType> &new_types);
 };
 
 struct DuckLakeInlinedDataDeletes {

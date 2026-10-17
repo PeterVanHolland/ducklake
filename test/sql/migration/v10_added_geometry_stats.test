@@ -40,11 +40,44 @@ CREATE TABLE dl.nulls (g GEOMETRY)
 statement ok
 INSERT INTO dl.nulls VALUES (NULL)
 
+statement ok
+CREATE TABLE dl.repeated (g GEOMETRY[])
+
+statement ok
+INSERT INTO dl.repeated VALUES ([NULL, 'POINT (1 2)'::GEOMETRY])
+
+# a table that the release merged keeps the table statistics of its first file
+statement ok
+CREATE TABLE dl.merged (g GEOMETRY)
+
+statement ok
+CALL ducklake_add_data_files('dl', 'merged', 'data/parquet/geometry_point_stats.parquet')
+
+statement ok
+CALL ducklake_add_data_files('dl', 'merged', 'data/parquet/geometry_far_point_no_stats.parquet')
+
+query I
+SELECT files_created FROM ducklake_merge_adjacent_files('dl', 'merged')
+----
+1
+
 # the statistics that the 1.0 release writes for these files
 statement ok
 UPDATE __ducklake_metadata_dl.ducklake_file_column_stats SET null_count = NULL,
 	extra_stats = '{"bbox": {"xmin": null, "xmax": null, "ymin": null, "ymax": null, "zmin": null, "zmax": null, "mmin": null, "mmax": null}, "types": []}'
 WHERE data_file_id IN (SELECT data_file_id FROM __ducklake_metadata_dl.ducklake_data_file WHERE path LIKE '%no_stats.parquet')
+	AND table_id NOT IN (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'merged')
+
+# the element of one row of a NULL and a point has null_count 1 like the rows of the file
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_file_column_stats
+SET extra_stats = '{"bbox": {"xmin": null, "xmax": null, "ymin": null, "ymax": null, "zmin": null, "zmax": null, "mmin": null, "mmax": null}, "types": []}'
+WHERE table_id IN (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'repeated') AND extra_stats IS NOT NULL
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats
+SET extra_stats = '{"bbox": {"xmin": null, "xmax": null, "ymin": null, "ymax": null, "zmin": null, "zmax": null, "mmin": null, "mmax": null}, "types": []}'
+WHERE table_id IN (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'repeated') AND extra_stats IS NOT NULL
 
 statement ok
 UPDATE __ducklake_metadata_dl.ducklake_file_column_stats SET null_count = NULL,
@@ -59,7 +92,7 @@ WHERE table_id IN (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WH
 statement ok
 UPDATE __ducklake_metadata_dl.ducklake_table_column_stats
 SET extra_stats = '{"bbox": {"xmin": 1.000000, "xmax": 1.000000, "ymin": 2.000000, "ymax": 2.000000, "zmin": null, "zmax": null, "mmin": null, "mmax": null}, "types": ["point"]}'
-WHERE table_id IN (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'mixed')
+WHERE table_id IN (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name IN ('mixed', 'merged'))
 
 statement ok
 CREATE TABLE null_stats AS
@@ -86,6 +119,16 @@ SELECT count(*) FROM dl.mixed WHERE st_intersects_extent(g, 'POINT(100 100)'::GE
 
 query I
 SELECT count(*) FROM dl.infinite WHERE vertex_extract(g, 'x') = 'inf'::DOUBLE
+----
+1
+
+query II
+SELECT vertex_extract(g[2], 'x'), (SELECT count(*) FROM dl.repeated WHERE vertex_extract(g[2], 'x') = 1) FROM dl.repeated
+----
+1.0	1
+
+query I
+SELECT count(*) FROM dl.merged WHERE st_intersects_extent(g, 'POINT(100 100)'::GEOMETRY)
 ----
 1
 

@@ -1,0 +1,60 @@
+# name: test/sql/migration/v10_table_stats_unchanged.test
+# description: Migrating to v1.1 writes only the table stats that change, also for variant stats with quotes
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_table_stats_unchanged.db' AS lake
+(DATA_PATH '{TEST_DIR}/v10_table_stats_unchanged_files', DUCKLAKE_VERSION '1.0', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t (v VARIANT)
+
+statement ok
+INSERT INTO lake.t VALUES ({'text': 'it''s fine'}::VARIANT)
+
+statement ok
+DETACH lake
+
+# the stats are unchanged, so no column stats are written
+statement ok
+CALL enable_logging('DuckLakeMetadata')
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_table_stats_unchanged.db' AS lake
+(DATA_PATH '{TEST_DIR}/v10_table_stats_unchanged_files', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+statement ok
+CALL disable_logging()
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table_column_stats SET%'
+----
+0
+
+# stats that differ from the files are written back from them
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET extra_stats = replace(extra_stats, 'fine', 'late')
+
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_metadata SET value = '1.1-dev1' WHERE key = 'version'
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_table_stats_unchanged.db' AS lake
+(DATA_PATH '{TEST_DIR}/v10_table_stats_unchanged_files', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT contains(extra_stats, 'it''s fine') FROM __ducklake_metadata_lake.ducklake_table_column_stats
+----
+true
+
+query I
+SELECT v.text::VARCHAR FROM lake.t
+----
+it's fine

@@ -836,8 +836,8 @@ CompactionInformation DuckLakeTransactionState::GetCompactionChanges(DuckLakeCom
 
 DuckLakeColumnSchemaEntry DuckLakeColumnSchemaEntry::FromRow(const QueryResultRow &row) {
 	// a nested leaf has a parent column and carries its own leaf type
-	return {FieldIndex(row.GetValue<idx_t>(0)), row.GetValue<string>(1),
-	        DuckLakeTypes::FromString(row.GetValue<string>(2)), row.IsNull(3)};
+	return {FieldIndex(AsIdx(row, 0)), row.GetValue<string>(1), DuckLakeTypes::FromString(row.GetValue<string>(2)),
+	        row.IsNull(3)};
 }
 
 static bool IsFoldableScalarType(const LogicalType &type) {
@@ -861,13 +861,13 @@ static unordered_set<string> ReadInlinedTablesBeforeSchemaChange(optional_idx ta
 }
 
 //! The top-level columns of each inlined table of `table_id` at the schema version it was written with
-static ducklake_inlined_table_columns_t ReadInlinedTableColumns(optional_idx table_id,
-                                                                const DuckLakeCommitContext &context) {
-	ducklake_inlined_table_columns_t result;
+static DuckLakeInlinedTableColumns ReadInlinedTableColumns(optional_idx table_id,
+                                                           const DuckLakeCommitContext &context) {
+	DuckLakeInlinedTableColumns result;
 	auto columns = context.query_metadata(DuckLakeMetadataManager::GetInlinedTableColumnsSql(table_id));
 	columns->ThrowIfError("Failed to read the columns of the inlined data tables from DuckLake: ");
 	for (auto &row : *columns) {
-		FieldIndex field_index(static_cast<idx_t>(row.GetValue<int64_t>(3)));
+		FieldIndex field_index(AsIdx(row, 3));
 		DuckLakeColumnSchemaEntry column {field_index, row.GetValue<string>(1),
 		                                  DuckLakeTypes::FromString(row.GetValue<string>(2)), true};
 		result[row.GetValue<string>(0)].emplace(field_index, std::move(column));
@@ -876,9 +876,9 @@ static ducklake_inlined_table_columns_t ReadInlinedTableColumns(optional_idx tab
 }
 
 //! The top-level columns of the inlined tables written before the latest schema change of their table
-static ducklake_inlined_table_columns_t ReadOlderInlinedTableColumns(optional_idx table_id, DuckLakeSnapshot snapshot,
-                                                                     const DuckLakeCommitContext &context) {
-	ducklake_inlined_table_columns_t result;
+static DuckLakeInlinedTableColumns ReadOlderInlinedTableColumns(optional_idx table_id, DuckLakeSnapshot snapshot,
+                                                                const DuckLakeCommitContext &context) {
+	DuckLakeInlinedTableColumns result;
 	auto older_tables = ReadInlinedTablesBeforeSchemaChange(table_id, snapshot, context);
 	if (older_tables.empty()) {
 		return result;
@@ -908,7 +908,7 @@ static void CountInlinedRows(const vector<string> &inlined_table_names, DuckLake
 
 bool DuckLakeTransactionState::TryMergeInlinedStats(const vector<DuckLakeColumnSchemaEntry> &columns,
                                                     const vector<string> &inlined_table_names,
-                                                    const ducklake_inlined_table_columns_t &older_columns,
+                                                    const DuckLakeInlinedTableColumns &older_columns,
                                                     DuckLakeSnapshot snapshot, DuckLakeTableStats &target,
                                                     const DuckLakeCommitContext &context) {
 	// exact inlined bounds are only computed for top-level foldable scalar columns
@@ -952,7 +952,7 @@ bool DuckLakeTransactionState::TryMergeInlinedStats(const vector<DuckLakeColumnS
 		}
 		result->ThrowIfError("Failed to read inlined-data aggregates from DuckLake: ");
 		for (auto &row : *result) {
-			auto total = static_cast<idx_t>(row.GetValue<int64_t>(0));
+			auto total = AsIdx(row, 0);
 			if (total == 0) {
 				break;
 			}
@@ -962,9 +962,9 @@ bool DuckLakeTransactionState::TryMergeInlinedStats(const vector<DuckLakeColumnS
 				auto &col = columns[col_idx];
 				auto &source_type = sources[col_idx].get().column_type;
 				bool is_float = source_type.IsFloating();
-				bool contains_nan = !row.IsNull(col_offset + 3) && row.GetValue<bool>(col_offset + 3);
+				bool contains_nan = OptBoolFalse(row, col_offset + 3);
 				DuckLakeColumnStats col_stats(col.column_type);
-				auto non_null = static_cast<idx_t>(row.GetValue<int64_t>(col_offset + 2));
+				auto non_null = AsIdx(row, col_offset + 2);
 				col_stats.has_num_values = true;
 				col_stats.num_values = total;
 				col_stats.has_null_count = true;
@@ -998,8 +998,7 @@ bool DuckLakeTransactionState::TryMergeInlinedStats(const vector<DuckLakeColumnS
 	return true;
 }
 
-//! The field ids of the skip_stats_columns option of every table or of one, read from the metadata rather than the
-//! catalog so the server-side commit resolves it too. Only roots matter, inlined stats only cover scalar roots.
+//! The skip_stats_columns fields of every table or of one, read from the metadata for the server-side commit
 static map<TableIndex, set<FieldIndex>> ReadSkippedStatsFields(optional_idx table_id,
                                                                const DuckLakeCommitContext &context) {
 	map<TableIndex, set<FieldIndex>> result;
@@ -1017,7 +1016,7 @@ static map<TableIndex, set<FieldIndex>> ReadSkippedStatsFields(optional_idx tabl
 			continue;
 			// LCOV_EXCL_STOP
 		}
-		auto &fields = result[TableIndex(row.GetValue<idx_t>(0))];
+		auto &fields = result[TableIndex(AsIdx(row, 0))];
 		for (auto &entry : StringUtil::Split(row.GetValue<string>(1), ',')) {
 			idx_t field_index;
 			if (TryCast::Operation<string_t, idx_t>(string_t(entry), field_index)) {
@@ -1046,20 +1045,20 @@ static void MergeDataFileStats(TableIndex table_id, DuckLakeSnapshot snapshot,
 	idx_t last_file_id = 0;
 	idx_t merged_files = 0;
 	for (auto &row : *result) {
-		auto data_file_id = static_cast<idx_t>(row.GetValue<int64_t>(0));
+		auto data_file_id = AsIdx(row, 0);
 		if (skipped_files.find(DataFileIndex(data_file_id)) != skipped_files.end()) {
 			continue; // this file is being rewritten away
 		}
 		if (merged_files == 0 || data_file_id != last_file_id) {
 			last_file_id = data_file_id;
 			merged_files++;
-			new_stats.record_count += static_cast<idx_t>(row.GetValue<int64_t>(1));
-			new_stats.table_size_bytes += static_cast<idx_t>(row.GetValue<int64_t>(2));
+			new_stats.record_count += AsIdx(row, 1);
+			new_stats.table_size_bytes += AsIdx(row, 2);
 		}
 		if (row.IsNull(3)) {
 			continue; // file without column stats
 		}
-		FieldIndex field_idx(static_cast<idx_t>(row.GetValue<int64_t>(3)));
+		FieldIndex field_idx(AsIdx(row, 3));
 		auto type_it = type_by_field.find(field_idx);
 		if (type_it == type_by_field.end()) {
 			continue; // column no longer exists or is nested
@@ -1067,8 +1066,8 @@ static void MergeDataFileStats(TableIndex table_id, DuckLakeSnapshot snapshot,
 		files_with_stats[field_idx]++;
 		DuckLakeColumnStats col_stats(type_it->second);
 		if (!row.IsNull(4) && !row.IsNull(5)) {
-			auto value_count = static_cast<idx_t>(row.GetValue<int64_t>(4));
-			auto null_count = static_cast<idx_t>(row.GetValue<int64_t>(5));
+			auto value_count = AsIdx(row, 4);
+			auto null_count = AsIdx(row, 5);
 			col_stats.has_num_values = true;
 			col_stats.num_values = value_count + null_count;
 			col_stats.has_null_count = true;
@@ -1201,11 +1200,10 @@ void DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 	    context.supports_v1_1_metadata);
 }
 
-//! Merges the stats and the count of the stored inlined rows. Returns the nested and other non scalar columns, whose
-//! stats SQL cannot aggregate, and adds the scalar roots it cannot compute to `unknown_fields`.
+//! Returns the columns that keep their committed stats, and adds the scalar roots it cannot merge to unknown_fields
 static set<FieldIndex> MergeStoredInlinedStats(const vector<DuckLakeColumnSchemaEntry> &columns,
                                                const vector<string> &inlined_table_names,
-                                               const ducklake_inlined_table_columns_t &older_columns,
+                                               const DuckLakeInlinedTableColumns &older_columns,
                                                DuckLakeSnapshot snapshot, const DuckLakeCommitContext &context,
                                                DuckLakeTableStats &new_stats, set<FieldIndex> &unknown_fields) {
 	set<FieldIndex> result;
@@ -1264,8 +1262,8 @@ static bool ColumnStatsChanged(const DuckLakeGlobalColumnStatsInfo &committed,
 	                      recomputed.contains_nan) ||
 	    StoredStatChanged(committed.has_min, committed.min_val, recomputed.has_min, recomputed.min_val) ||
 	    StoredStatChanged(committed.has_max, committed.max_val, recomputed.has_max, recomputed.max_val) ||
-	    StoredStatChanged(committed.has_extra_stats, committed.extra_stats, recomputed.has_extra_stats,
-	                      recomputed.extra_stats)) {
+	    StoredStatChanged(committed.has_extra_stats, SQLString::ToString(committed.extra_stats),
+	                      recomputed.has_extra_stats, recomputed.extra_stats)) {
 		return true;
 	}
 	return compare_exactness &&
@@ -1273,12 +1271,18 @@ static bool ColumnStatsChanged(const DuckLakeGlobalColumnStatsInfo &committed,
 }
 
 //! Recomputes the stats of a table from its live files and every stored inlined row
-static DuckLakeGlobalStatsInfo
-RecomputeMigratedTable(const DuckLakeGlobalStatsInfo &committed, const vector<DuckLakeColumnSchemaEntry> &columns,
-                       const vector<string> &inlined_table_names, const ducklake_inlined_table_columns_t &older_columns,
-                       const set<FieldIndex> &skipped_fields, DuckLakeTableStats &new_stats, idx_t file_count,
-                       map<FieldIndex, idx_t> &files_with_stats, DuckLakeSnapshot snapshot,
-                       const DuckLakeCommitContext &context) {
+static DuckLakeGlobalStatsInfo RecomputeMigratedTable(const DuckLakeGlobalStatsInfo &committed,
+                                                      const vector<DuckLakeColumnSchemaEntry> &columns,
+                                                      const vector<string> &inlined_table_names,
+                                                      const DuckLakeInlinedTableColumns &older_columns,
+                                                      const set<FieldIndex> &skipped_fields, DuckLakeSnapshot snapshot,
+                                                      const DuckLakeCommitContext &context) {
+	// the file stats are read per table, so a large catalog is not held in memory at once
+	DuckLakeTableStats new_stats;
+	idx_t file_count = 0;
+	map<FieldIndex, idx_t> files_with_stats;
+	MergeDataFileStats(committed.table_id, snapshot, columns, set<DataFileIndex>(), context, new_stats, file_count,
+	                   files_with_stats);
 	auto current_stats = DuckLakeTableStats::FromGlobalStats(committed, [&](FieldIndex field_index) {
 		for (auto &col : columns) {
 			if (col.field_index == field_index) {
@@ -1332,13 +1336,13 @@ DuckLakeTransactionState::RecomputeMigratedTableStats(const vector<DuckLakeGloba
 	auto schema = context.query_metadata_with_snapshot(snapshot, DuckLakeMetadataManager::GetTableColumnSchemaSql());
 	schema->ThrowIfError("Failed to read the columns of the tables from DuckLake: ");
 	for (auto &row : *schema) {
-		table_columns[TableIndex(row.GetValue<idx_t>(4))].push_back(DuckLakeColumnSchemaEntry::FromRow(row));
+		table_columns[TableIndex(AsIdx(row, 4))].push_back(DuckLakeColumnSchemaEntry::FromRow(row));
 	}
 	map<TableIndex, vector<string>> inlined_tables;
 	auto inlined = context.query_metadata(DuckLakeMetadataManager::GetInlinedTableNamesSql());
 	inlined->ThrowIfError("Failed to read the inlined data tables from DuckLake: ");
 	for (auto &row : *inlined) {
-		inlined_tables[TableIndex(row.GetValue<idx_t>(1))].push_back(row.GetValue<string>(0));
+		inlined_tables[TableIndex(AsIdx(row, 1))].push_back(row.GetValue<string>(0));
 	}
 	auto older_columns = ReadOlderInlinedTableColumns(optional_idx(), snapshot, context);
 	auto skipped_fields = ReadSkippedStatsFields(optional_idx(), context);
@@ -1348,15 +1352,8 @@ DuckLakeTransactionState::RecomputeMigratedTableStats(const vector<DuckLakeGloba
 		if (columns == table_columns.end()) {
 			continue; // dropped table
 		}
-		// the file stats are read per table, so a large catalog is not held in memory at once
-		DuckLakeTableStats new_stats;
-		idx_t file_count = 0;
-		map<FieldIndex, idx_t> files_with_stats;
-		MergeDataFileStats(committed.table_id, snapshot, columns->second, set<DataFileIndex>(), context, new_stats,
-		                   file_count, files_with_stats);
 		auto recomputed = RecomputeMigratedTable(committed, columns->second, inlined_tables[committed.table_id],
-		                                         older_columns, skipped_fields[committed.table_id], new_stats,
-		                                         file_count, files_with_stats, snapshot, context);
+		                                         older_columns, skipped_fields[committed.table_id], snapshot, context);
 		// only what changed is written, and only to the stats rows that exist
 		map<FieldIndex, reference<const DuckLakeGlobalColumnStatsInfo>> committed_columns;
 		for (auto &col : committed.column_stats) {

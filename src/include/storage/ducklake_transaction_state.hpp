@@ -28,7 +28,7 @@ struct DuckLakeColumnSchemaEntry {
 };
 
 //! The top-level columns of inlined data tables, by table name
-using ducklake_inlined_table_columns_t = map<string, map<FieldIndex, DuckLakeColumnSchemaEntry>>;
+using DuckLakeInlinedTableColumns = map<string, map<FieldIndex, DuckLakeColumnSchemaEntry>>;
 
 struct DuckLakeCommitContext {
 	//! Runs a metadata-DB query during conflict resolution.
@@ -228,18 +228,15 @@ public:
 	                                      const CompactionInformation &rewrite_changes,
 	                                      const set<DataFileIndex> &removed_source_ids,
 	                                      const DuckLakeCommitContext &context);
-	//! Recomputes the stats of the tables from their live files and every stored inlined row, for a migrated catalog.
-	//! Returns the stats that differ from the committed ones, with the columns that changed.
+	//! Recomputes the stats of the tables of a migrated catalog, returning only the changed tables and columns
 	static vector<DuckLakeGlobalStatsInfo>
 	RecomputeMigratedTableStats(const vector<DuckLakeGlobalStatsInfo> &committed_stats, DuckLakeSnapshot snapshot,
 	                            bool write_stats_exactness, const DuckLakeCommitContext &context);
-	//! Merge the count and the per-column min/max of every inlined row stored at the snapshot, deleted or not, into
-	//! `target` via typed SQL aggregates. `older_columns` holds the inlined tables of an older schema. Returns false if
-	//! the inlined data cannot be accounted for exactly (e.g. a non-scalar column), in which case the caller must not
-	//! claim the recomputed stats are exact.
+	//! Merges the count and bounds of every inlined row stored at the snapshot, deleted ones included. Returns false if
+	//! a column cannot be aggregated, which can leave partial stats in target.
 	static bool TryMergeInlinedStats(const vector<DuckLakeColumnSchemaEntry> &columns,
 	                                 const vector<string> &inlined_table_names,
-	                                 const ducklake_inlined_table_columns_t &older_columns, DuckLakeSnapshot snapshot,
+	                                 const DuckLakeInlinedTableColumns &older_columns, DuckLakeSnapshot snapshot,
 	                                 DuckLakeTableStats &target, const DuckLakeCommitContext &context);
 	vector<DuckLakeDeleteFileInfo>
 	GetNewDeleteFiles(const DuckLakeCommitState &commit_state,

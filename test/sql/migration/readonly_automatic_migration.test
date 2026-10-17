@@ -12,7 +12,7 @@ test-env DATA_PATH {TEST_DIR}
 
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/readonly_automatic_migration',
-    DUCKLAKE_VERSION '1.1-dev1')
+    DUCKLAKE_VERSION '1.1')
 
 statement ok
 CREATE TABLE lake.t AS SELECT 1 AS i
@@ -21,7 +21,7 @@ statement ok
 DETACH lake
 
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (READ_ONLY, AUTOMATIC_MIGRATION TRUE, DUCKLAKE_VERSION '1.1-dev1')
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (READ_ONLY, AUTOMATIC_MIGRATION TRUE, DUCKLAKE_VERSION '1.1')
 
 query I
 SELECT * FROM lake.t

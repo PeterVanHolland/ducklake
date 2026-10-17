@@ -3173,8 +3173,9 @@ string DuckLakeMetadataManager::LatestInlinedTableQuery(idx_t table_id) {
 }
 
 string DuckLakeMetadataManager::GetColumnDefinitions(const vector<DuckLakeColumnInfo> &columns) {
+	// the DDL runs on the metadata database, whose keywords differ from DuckDB's
 	return StringUtil::Join(columns, columns.size(), ", ", [&](const DuckLakeColumnInfo &col) {
-		return StringUtil::Format("%s %s", SQLIdentifier(col.name), GetColumnType(col));
+		return StringUtil::Format("%s %s", SQLQuotedIdentifier::ToString(col.name), GetColumnType(col));
 	});
 }
 

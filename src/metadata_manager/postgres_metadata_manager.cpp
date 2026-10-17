@@ -339,7 +339,7 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 		col_names.end_snapshot = names[2].GetIdentifierName();
 		vector<string> select_list;
 		for (idx_t i = 0; i < 3; i++) {
-			select_list.push_back(SQLIdentifier::ToString(names[i].GetIdentifierName()));
+			select_list.push_back(SQLQuotedIdentifier::ToString(names[i].GetIdentifierName()));
 		}
 		string column_defs;
 		bool rewrite = false;
@@ -364,7 +364,7 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 				auto storage_type = UnboundType::TryParseAndDefaultBind(storage_type_name);
 				convert = stored_type != storage_type && stored_type == native_type;
 			}
-			auto column_name = SQLIdentifier::ToString(name);
+			auto column_name = SQLQuotedIdentifier::ToString(name);
 			column_defs += StringUtil::Format("%s%s %s", column_defs.empty() ? "" : ", ", column_name,
 			                                  convert ? storage_type_name : stored_type.ToString());
 			select_list.push_back(convert ? DuckLakeUtil::InlinedStorageExpression(*this, column_name, type)

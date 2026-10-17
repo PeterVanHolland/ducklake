@@ -39,6 +39,9 @@ struct ParsedCatalogEntry {
 
 class DuckLakeUtil {
 public:
+	//! File systems allow at most 255 bytes in a file name
+	static constexpr idx_t MAX_FILE_NAME_LENGTH = 255;
+
 	//! Extracts the value of a literal, or of a cast over a literal, as written in a DEFAULT or parameter default
 	static bool TryGetLiteralValue(const ParsedExpression &expr, Value &result);
 	//! The expression of a literal default stored as text, for a column of the given type

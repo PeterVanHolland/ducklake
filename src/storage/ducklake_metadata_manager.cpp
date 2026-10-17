@@ -547,6 +547,7 @@ void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	MigrateInlinedSchemaVersions();
 	MigrateRenamedFieldDefaults();
 	MigrateInlinedDataTypes();
+	MigrateInlinedStructValues();
 	// DDL locks the metadata tables exclusively on Postgres, skip it when a dev catalog has every addition
 	auto has_additions = from_dev1 && HasV1_1Additions();
 	ExecuteMigration(V1_1MigrationQuery(has_additions), from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");
@@ -704,6 +705,291 @@ static DuckLakeColumnInfo &GetColumnByPath(vector<DuckLakeColumnInfo> &columns, 
 		result = result.get().children[path[i]];
 	}
 	return result.get();
+}
+
+//! Adds a column to the columns of a table or to its parent column, returns false when the parent was not added
+static bool AddColumnInfo(vector<DuckLakeColumnInfo> &columns, unordered_map<idx_t, vector<idx_t>> &column_paths,
+                          DuckLakeColumnInfo column_info, optional_idx parent_id) {
+	vector<idx_t> column_path;
+	if (!parent_id.IsValid()) {
+		column_path.push_back(columns.size());
+		column_paths.emplace(column_info.id.index, std::move(column_path));
+		columns.push_back(std::move(column_info));
+		return true;
+	}
+	auto parent_path = column_paths.find(parent_id.GetIndex());
+	if (parent_path == column_paths.end()) {
+		return false;
+	}
+	auto &parent = GetColumnByPath(columns, parent_path->second);
+	column_path = parent_path->second;
+	column_path.push_back(parent.children.size());
+	column_paths.emplace(column_info.id.index, std::move(column_path));
+	parent.children.push_back(std::move(column_info));
+	return true;
+}
+
+//! Reads the STRUCT values that DuckLake 1.0 wrote as SQL literals, with list and map fields written as their text
+class V10StructLiteralReader {
+public:
+	explicit V10StructLiteralReader(const string &text_p) : text(text_p) {
+	}
+
+	bool Read(const LogicalType &type, Value &result) {
+		return ReadStruct(type, result) && pos == text.size();
+	}
+
+	//! Whether the text holds a cast or a doubled quote, which newer writers never write
+	bool ReadOldSyntax() const {
+		return read_old_syntax;
+	}
+
+private:
+	const string &text;
+	idx_t pos = 0;
+	bool read_old_syntax = false;
+
+	bool Consume(const string &token) {
+		if (text.compare(pos, token.size(), token) != 0) {
+			return false;
+		}
+		pos += token.size();
+		return true;
+	}
+
+	bool ReadQuoted(string &result) {
+		if (!StringUtil::TryParseQuotedString(text, pos, result, '\'')) {
+			return false;
+		}
+		read_old_syntax = read_old_syntax || StringUtil::Contains(result, "'");
+		return true;
+	}
+
+	//! The text up to the next field of the struct, with the nested brackets and quotes of value text
+	bool ReadUntilField(string &result) {
+		idx_t depth = 0;
+		bool quoted = false;
+		auto start = pos;
+		for (; pos < text.size(); pos++) {
+			auto c = text[pos];
+			if (quoted) {
+				if (c == '\\') {
+					pos++;
+				} else if (c == '\'') {
+					quoted = false;
+				}
+			} else if (c == '\'') {
+				quoted = true;
+			} else if (c == '[' || c == '{' || c == '(') {
+				depth++;
+			} else if (c == ']' || c == '}' || c == ')') {
+				if (depth == 0) {
+					break;
+				}
+				depth--;
+			} else if (c == ',' && depth == 0) {
+				break;
+			}
+		}
+		result = text.substr(start, pos - start);
+		return !quoted && depth == 0 && !result.empty();
+	}
+
+	bool ReadCast(string &content) {
+		string type_name;
+		if (!Consume("CAST(") || !ReadQuoted(content) || !Consume(" AS ") || !ReadUntilField(type_name) ||
+		    !Consume(")")) {
+			return false;
+		}
+		read_old_syntax = true;
+		return true;
+	}
+
+	bool ReadStruct(const LogicalType &type, Value &result) {
+		if (type.id() != LogicalTypeId::STRUCT || !Consume("{")) {
+			return false;
+		}
+		auto &child_types = StructType::GetChildTypes(type);
+		vector<Value> children;
+		for (idx_t i = 0; i < child_types.size(); i++) {
+			string name;
+			if ((i > 0 && !Consume(", ")) || !ReadQuoted(name) || name != child_types[i].first || !Consume(": ")) {
+				return false;
+			}
+			Value child;
+			if (!ReadValue(child_types[i].second, child)) {
+				return false;
+			}
+			children.push_back(std::move(child));
+		}
+		if (!Consume("}")) {
+			return false;
+		}
+		result = Value::STRUCT(type, std::move(children));
+		return true;
+	}
+
+	//! Accepts only the form DuckLake 1.0 wrote for the type
+	bool ReadValue(const LogicalType &type, Value &result) {
+		if (Consume("NULL")) {
+			result = Value(type);
+			return true;
+		}
+		string content;
+		switch (type.id()) {
+		case LogicalTypeId::STRUCT:
+			return ReadStruct(type, result);
+		case LogicalTypeId::VARCHAR:
+		case LogicalTypeId::ENUM:
+			if (!ReadQuoted(content)) {
+				return false;
+			}
+			break;
+		case LogicalTypeId::UUID:
+		case LogicalTypeId::DATE:
+		case LogicalTypeId::TIME:
+		case LogicalTypeId::TIME_NS:
+		case LogicalTypeId::TIMESTAMP:
+		case LogicalTypeId::TIME_TZ:
+		case LogicalTypeId::TIMESTAMP_TZ:
+		case LogicalTypeId::TIMESTAMP_TZ_NS:
+		case LogicalTypeId::TIMESTAMP_SEC:
+		case LogicalTypeId::TIMESTAMP_MS:
+		case LogicalTypeId::TIMESTAMP_NS:
+		case LogicalTypeId::BLOB:
+		case LogicalTypeId::GEOMETRY:
+		case LogicalTypeId::INTERVAL:
+			if (!ReadCast(content)) {
+				return false;
+			}
+			break;
+		case LogicalTypeId::FLOAT:
+		case LogicalTypeId::DOUBLE:
+			if (text.compare(pos, 5, "CAST(") == 0 ? !ReadCast(content) : !ReadUntilField(content)) {
+				return false;
+			}
+			break;
+		case LogicalTypeId::LIST:
+		case LogicalTypeId::ARRAY:
+		case LogicalTypeId::MAP:
+			if (!ReadUntilField(content)) {
+				return false;
+			}
+			break;
+		default:
+			if (type.IsNested() || !ReadUntilField(content)) {
+				return false;
+			}
+			break;
+		}
+		auto value = Value(content).DefaultTryCastAs(type);
+		if (!value) {
+			return false;
+		}
+		result = std::move(*value);
+		return true;
+	}
+};
+
+//! The text DuckLake 1.1 writes for a STRUCT value that DuckLake 1.0 wrote as a literal, or nothing when it is kept
+static optional<string> V10StructLiteralToText(const string &text, const LogicalType &type) {
+	Value value;
+	V10StructLiteralReader reader(text);
+	if (!reader.Read(type, value)) {
+		return nullopt;
+	}
+	// newer writers escape quotes and backslashes, so a text with a backslash and no older syntax is kept
+	if (!reader.ReadOldSyntax()) {
+		auto current = Value(text).DefaultTryCastAs(type);
+		if (current && (Value::NotDistinctFrom(*current, value) || StringUtil::Contains(text, "\\"))) {
+			return nullopt;
+		}
+	}
+	auto new_text = value.ToString();
+	auto read_back = Value(new_text).DefaultTryCastAs(type);
+	if (!read_back || !Value::NotDistinctFrom(*read_back, value)) {
+		return nullopt;
+	}
+	return new_text;
+}
+
+void DuckLakeMetadataManager::MigrateInlinedStructValues() {
+	if (TypeIsNativelySupported(LogicalType::STRUCT({{"x", LogicalType::INTEGER}}))) {
+		// catalogs that store nested values natively hold no struct literals
+		return;
+	}
+	auto columns = Query(GetInlinedTableColumnsSql(optional_idx(), true));
+	columns->ThrowIfError("Failed to read the columns of inlined-data tables while migrating to v1.1: ");
+	map<string, vector<DuckLakeColumnInfo>> table_columns;
+	map<string, unordered_map<idx_t, vector<idx_t>>> column_paths;
+	for (auto &row : *columns) {
+		auto table_name = row.GetValue<string>(0);
+		DuckLakeColumnInfo column_info;
+		column_info.name = row.GetValue<string>(1);
+		column_info.type = row.GetValue<string>(2);
+		column_info.id = FieldIndex(row.GetValue<idx_t>(3));
+		optional_idx parent_id;
+		if (!row.IsNull(4)) {
+			parent_id = row.GetValue<idx_t>(4);
+		}
+		auto column_name = column_info.name;
+		if (!AddColumnInfo(table_columns[table_name], column_paths[table_name], std::move(column_info), parent_id)) {
+			throw InvalidInputException(
+			    "Failed to read the columns of inlined-data table \"%s\" while migrating to v1.1: could not find "
+			    "the parent column of column %s",
+			    table_name, column_name);
+		}
+	}
+	static constexpr idx_t VALUES_PER_UPDATE = 1000;
+	for (auto &entry : table_columns) {
+		auto table_name = SQLIdentifier::ToString(entry.first);
+		string updates;
+		for (auto &column : entry.second) {
+			if (column.children.empty() || !StringUtil::CIEquals(column.type, "struct")) {
+				continue;
+			}
+			auto type = DuckLakeTypes::FromColumnInfo(column);
+			auto column_name = SQLIdentifier::ToString(column.name);
+			auto values = Query(StringUtil::Format("SELECT DISTINCT %s FROM {METADATA_CATALOG}.%s WHERE %s IS NOT NULL",
+			                                       column_name, table_name, column_name));
+			values->ThrowIfError(
+			    StringUtil::Format("Failed to read inlined-data table \"%s\" while migrating to v1.1: ", entry.first));
+			vector<pair<string, string>> candidates;
+			unordered_set<string> new_texts;
+			for (auto &row : *values) {
+				auto old_text = row.GetValue<string>(0);
+				auto new_text = V10StructLiteralToText(old_text, type);
+				if (new_text) {
+					new_texts.insert(*new_text);
+					candidates.emplace_back(std::move(old_text), std::move(*new_text));
+				}
+			}
+			// a text that another rewrite produces is kept, so no batch rewrites the result of another
+			vector<pair<string, string>> rewrites;
+			for (auto &candidate : candidates) {
+				if (new_texts.find(candidate.first) == new_texts.end()) {
+					rewrites.push_back(std::move(candidate));
+				}
+			}
+			for (idx_t start = 0; start < rewrites.size(); start += VALUES_PER_UPDATE) {
+				string cases;
+				string old_texts;
+				for (idx_t i = start; i < MinValue(start + VALUES_PER_UPDATE, rewrites.size()); i++) {
+					cases += StringUtil::Format(" WHEN %s THEN %s", SQLString(rewrites[i].first),
+					                            SQLString(rewrites[i].second));
+					old_texts += (i == start ? "" : ", ") + SQLString::ToString(rewrites[i].first);
+				}
+				updates += StringUtil::Format("UPDATE {METADATA_CATALOG}.%s SET %s = CASE %s%s END WHERE %s IN (%s);",
+				                              table_name, column_name, column_name, cases, column_name, old_texts);
+			}
+		}
+		if (updates.empty()) {
+			continue;
+		}
+		auto result = Execute(updates);
+		result->ThrowIfError(StringUtil::Format(
+		    "Failed to rewrite the struct values of inlined-data table \"%s\" while migrating to v1.1: ", entry.first));
+	}
 }
 
 vector<DuckLakeTag> DuckLakeMetadataManager::LoadTags(const Value &tag_map) {
@@ -975,11 +1261,14 @@ WHERE table_id = %d AND schema_version < (
 	                          table_id.index, table_id.index);
 }
 
-string DuckLakeMetadataManager::GetInlinedTableColumnsSql(optional_idx table_id) {
+string DuckLakeMetadataManager::GetInlinedTableColumnsSql(optional_idx table_id, bool with_fields) {
 	string table_filter;
 	if (table_id.IsValid()) {
 		table_filter = StringUtil::Format("\n\tWHERE idt.table_id = %d", table_id.GetIndex());
 	}
+	auto parent_select = with_fields ? ", col.parent_column" : "";
+	auto parent_filter = with_fields ? "" : " AND col.parent_column IS NULL";
+	auto order = with_fields ? "ORDER BY inlined.table_name, col.parent_column NULLS FIRST, col.column_order" : "";
 	return StringUtil::Format(R"(
 WITH inlined AS (
 	SELECT idt.table_id, idt.table_name, COALESCE(sv.begin_snapshot, (
@@ -989,12 +1278,12 @@ WITH inlined AS (
 	LEFT JOIN {METADATA_CATALOG}.ducklake_schema_versions sv
 		ON sv.table_id = idt.table_id AND sv.schema_version = idt.schema_version%s
 )
-SELECT inlined.table_name, col.column_name, col.column_type, col.column_id
+SELECT inlined.table_name, col.column_name, col.column_type, col.column_id%s
 FROM inlined
-JOIN {METADATA_CATALOG}.ducklake_column col ON col.table_id = inlined.table_id AND col.parent_column IS NULL
+JOIN {METADATA_CATALOG}.ducklake_column col ON col.table_id = inlined.table_id%s
 WHERE col.begin_snapshot <= inlined.snapshot_id AND (col.end_snapshot IS NULL OR col.end_snapshot > inlined.snapshot_id)
-)",
-	                          table_filter);
+%s)",
+	                          table_filter, parent_select, parent_filter, order);
 }
 
 unordered_set<string> DuckLakeMetadataManager::GetInlinedTableNames(TableIndex table_id) {
@@ -1163,24 +1452,14 @@ ORDER BY table_id, parent_column NULLS FIRST, column_order
 			column_info.tags = LoadTags(tags);
 		}
 
-		vector<idx_t> column_path;
-		if (row.IsNull(COLUMN_INDEX_START + 6)) {
-			// base column - add the column to this table
-			column_path.push_back(table_entry.columns.size());
-			column_paths.emplace(column_info.id.index, std::move(column_path));
-			table_entry.columns.push_back(std::move(column_info));
-		} else {
-			auto parent_id = FieldIndex(row.GetValue<idx_t>(COLUMN_INDEX_START + 6));
-			auto parent_path = column_paths.find(parent_id.index);
-			if (parent_path == column_paths.end()) {
-				throw InvalidInputException("Failed to load DuckLake - Could not find parent column for column %s",
-				                            column_info.name);
-			}
-			auto &parent = GetColumnByPath(table_entry.columns, parent_path->second);
-			column_path = parent_path->second;
-			column_path.push_back(parent.children.size());
-			column_paths.emplace(column_info.id.index, std::move(column_path));
-			parent.children.push_back(std::move(column_info));
+		optional_idx parent_id;
+		if (!row.IsNull(COLUMN_INDEX_START + 6)) {
+			parent_id = row.GetValue<idx_t>(COLUMN_INDEX_START + 6);
+		}
+		auto column_name = column_info.name;
+		if (!AddColumnInfo(table_entry.columns, column_paths, std::move(column_info), parent_id)) {
+			throw InvalidInputException("Failed to load DuckLake - Could not find parent column for column %s",
+			                            column_name);
 		}
 	}
 	// load view information

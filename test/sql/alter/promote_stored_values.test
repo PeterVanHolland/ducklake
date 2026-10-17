@@ -1,0 +1,377 @@
+# name: test/sql/alter/promote_stored_values.test
+# description: a type promotion is refused when a stored value does not convert, or into FLOAT does not stay exact
+# group: [alter]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/promote_stored_values', DATA_INLINING_ROW_LIMIT 0)
+
+# a date beyond the range of TIMESTAMP
+statement ok
+CREATE TABLE ducklake.far (d DATE);
+
+statement ok
+INSERT INTO ducklake.far VALUES (DATE '2000-01-01'), (DATE '5000000-01-01');
+
+statement error
+ALTER TABLE ducklake.far ALTER d SET DATA TYPE TIMESTAMP;
+----
+holds the value 5000000-01-01, which is out of range for TIMESTAMP
+
+query I
+SELECT d FROM ducklake.far ORDER BY d
+----
+2000-01-01
+5000000-01-01
+
+# a deleted value stays in the file, whose bounds filters read in the new type
+statement ok
+DELETE FROM ducklake.far WHERE d > DATE '3000-01-01';
+
+statement error
+ALTER TABLE ducklake.far ALTER d SET DATA TYPE TIMESTAMP;
+----
+a data file of the column holds the value 5000000-01-01, which is out of range for TIMESTAMP
+
+statement ok
+CREATE TABLE ducklake.near (d DATE);
+
+statement ok
+INSERT INTO ducklake.near VALUES (DATE '2000-01-01'), (NULL);
+
+statement ok
+ALTER TABLE ducklake.near ALTER d SET DATA TYPE TIMESTAMP;
+
+query I
+SELECT count(*) FROM ducklake.near WHERE d > TIMESTAMP '1999-01-01'
+----
+1
+
+# inlined rows
+statement ok
+CREATE TABLE ducklake.far_inlined (d DATE) WITH (data_inlining_row_limit = 10);
+
+statement ok
+INSERT INTO ducklake.far_inlined VALUES (DATE '2000-01-01'), (DATE '5000000-01-01');
+
+statement error
+ALTER TABLE ducklake.far_inlined ALTER d SET DATA TYPE TIMESTAMP;
+----
+holds the value 5000000-01-01, which is out of range for TIMESTAMP
+
+query I
+SELECT count(*) FROM ducklake.far_inlined
+----
+2
+
+# other promotions with a narrower range
+statement ok
+CREATE TABLE ducklake.h (h HUGEINT, ts TIMESTAMP);
+
+statement ok
+INSERT INTO ducklake.h VALUES (120000000000000000000000000000000000000, TIMESTAMP '2000-01-01'), (1, TIMESTAMP '3000-01-01');
+
+statement error
+ALTER TABLE ducklake.h ALTER h SET DATA TYPE DECIMAL(38,0);
+----
+which is out of range for DECIMAL(38,0)
+
+statement error
+ALTER TABLE ducklake.h ALTER ts SET DATA TYPE TIMESTAMP_NS;
+----
+which is out of range for TIMESTAMP_NS
+
+# fields of nested columns
+statement ok
+CREATE TABLE ducklake.s (s STRUCT(d DATE, i INTEGER), l DATE[]);
+
+statement ok
+INSERT INTO ducklake.s VALUES ({'d': DATE '5000000-01-01', 'i': 1}, [DATE '2000-01-01']), ({'d': DATE '2000-01-01', 'i': 2}, [DATE '2000-01-01', DATE '5000000-01-01']);
+
+statement error
+ALTER TABLE ducklake.s ALTER s SET DATA TYPE STRUCT(d TIMESTAMP, i INTEGER);
+----
+holds the value 5000000-01-01, which is out of range for TIMESTAMP
+
+statement error
+ALTER TABLE ducklake.s ALTER l SET DATA TYPE TIMESTAMP[];
+----
+holds the value 5000000-01-01, which is out of range for TIMESTAMP
+
+statement ok
+ALTER TABLE ducklake.s ALTER s SET DATA TYPE STRUCT(d DATE, i BIGINT);
+
+# rows of the transaction
+statement ok
+CREATE TABLE ducklake.local (d DATE);
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.local VALUES (DATE '5000000-01-01');
+
+statement error
+ALTER TABLE ducklake.local ALTER d SET DATA TYPE TIMESTAMP;
+----
+out of range for TIMESTAMP
+
+statement ok
+ROLLBACK
+
+# a concurrent insert is not among the checked values
+statement ok
+CREATE TABLE ducklake.concurrent (d DATE);
+
+statement ok
+INSERT INTO ducklake.concurrent VALUES (DATE '2000-01-01');
+
+statement ok con1
+BEGIN
+
+statement ok con1
+ALTER TABLE ducklake.concurrent ALTER d SET DATA TYPE TIMESTAMP;
+
+statement ok con2
+INSERT INTO ducklake.concurrent VALUES (DATE '5000000-01-01');
+
+statement error con1
+COMMIT
+----
+inserted into it
+
+# into FLOAT the values must stay exact, so that a later promotion to DOUBLE reads the same values
+statement ok
+CREATE TABLE ducklake.f (c INTEGER);
+
+statement ok
+INSERT INTO ducklake.f VALUES (16777217), (2147483647);
+
+statement error
+ALTER TABLE ducklake.f ALTER c SET DATA TYPE FLOAT;
+----
+holds the value 16777217, which FLOAT cannot hold exactly
+
+statement ok
+CREATE TABLE ducklake.exact (c INTEGER, d DECIMAL(4,1));
+
+statement ok
+INSERT INTO ducklake.exact VALUES (16777216, 0.5), (-16777216, 2.0), (3, NULL);
+
+statement ok
+ALTER TABLE ducklake.exact ALTER c SET DATA TYPE FLOAT;
+
+statement ok
+ALTER TABLE ducklake.exact ALTER d SET DATA TYPE FLOAT;
+
+statement ok
+ALTER TABLE ducklake.exact ALTER c SET DATA TYPE DOUBLE;
+
+statement ok
+ALTER TABLE ducklake.exact ALTER d SET DATA TYPE DOUBLE;
+
+query II
+SELECT c, d FROM ducklake.exact ORDER BY c
+----
+-16777216.0	2.0
+3.0	NULL
+16777216.0	0.5
+
+query I
+SELECT count(*) FROM ducklake.exact WHERE c = 16777216
+----
+1
+
+statement ok
+CREATE TABLE ducklake.dec (c DECIMAL(4,1));
+
+statement ok
+INSERT INTO ducklake.dec VALUES (0.5), (1.1);
+
+statement error
+ALTER TABLE ducklake.dec ALTER c SET DATA TYPE FLOAT;
+----
+holds the value 1.1, which FLOAT cannot hold exactly
+
+# a deleted value is never read again
+statement ok
+DELETE FROM ducklake.dec WHERE c = 1.1;
+
+statement ok
+ALTER TABLE ducklake.dec ALTER c SET DATA TYPE FLOAT;
+
+query I
+SELECT c FROM ducklake.dec
+----
+0.5
+
+# a rename in the same transaction keeps the check of the committed files
+statement ok
+CREATE TABLE ducklake.renamed (d DATE);
+
+statement ok
+INSERT INTO ducklake.renamed VALUES (DATE '2000-01-01'), (DATE '5000000-01-01');
+
+statement ok
+DELETE FROM ducklake.renamed WHERE d > DATE '3000-01-01';
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE ducklake.renamed RENAME d TO e;
+
+statement error
+ALTER TABLE ducklake.renamed ALTER e SET DATA TYPE TIMESTAMP;
+----
+a data file of the column holds the value 5000000-01-01
+
+statement ok
+ROLLBACK
+
+# the limits and the bounds of integers beyond 2^24 do not show that FLOAT holds the values between them
+statement ok
+CREATE TABLE ducklake.wide (b BIGINT, i INTEGER);
+
+statement ok
+INSERT INTO ducklake.wide VALUES (16777217, 16777216), (1, 16777217), (1, 16777220);
+
+statement error
+ALTER TABLE ducklake.wide ALTER b SET DATA TYPE FLOAT;
+----
+holds the value 16777217, which FLOAT cannot hold exactly
+
+statement error
+ALTER TABLE ducklake.wide ALTER i SET DATA TYPE FLOAT;
+----
+holds the value 16777217, which FLOAT cannot hold exactly
+
+# the entries of deleted lists are not read
+statement ok
+CREATE TABLE ducklake.lists (l DECIMAL(4,1)[]);
+
+statement ok
+INSERT INTO ducklake.lists VALUES ([0.5]), ([1.1]);
+
+statement ok
+DELETE FROM ducklake.lists WHERE l[1] = 1.1;
+
+statement ok
+ALTER TABLE ducklake.lists ALTER l SET DATA TYPE FLOAT[];
+
+query I
+SELECT l FROM ducklake.lists
+----
+[0.5]
+
+statement ok
+CREATE TABLE ducklake.lists2 (l DECIMAL(4,1)[]);
+
+statement ok
+INSERT INTO ducklake.lists2 VALUES ([0.5]), ([1.1]);
+
+statement ok
+DELETE FROM ducklake.lists2 WHERE l[1] = 0.5;
+
+statement error
+ALTER TABLE ducklake.lists2 ALTER l SET DATA TYPE FLOAT[];
+----
+holds the value 1.1, which FLOAT cannot hold exactly
+
+# a file the transaction deleted as a whole is not read again
+statement ok
+CREATE TABLE ducklake.dropped (d DATE);
+
+statement ok
+INSERT INTO ducklake.dropped VALUES (DATE '5000000-01-01');
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM ducklake.dropped;
+
+statement ok
+ALTER TABLE ducklake.dropped ALTER d SET DATA TYPE TIMESTAMP;
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM ducklake.dropped
+----
+0
+
+# infinities convert, the values between them need not
+statement ok
+CREATE TABLE ducklake.infinite (d DATE) WITH (data_inlining_row_limit = 10);
+
+statement ok
+INSERT INTO ducklake.infinite VALUES (DATE '-infinity'), (DATE '5000000-01-01'), (DATE 'infinity');
+
+statement error
+ALTER TABLE ducklake.infinite ALTER d SET DATA TYPE TIMESTAMP;
+----
+holds the value 5000000-01-01, which is out of range for TIMESTAMP
+
+# a wide integer that rounds to the same DOUBLE as its FLOAT value
+statement ok
+CREATE TABLE ducklake.huge (b BIGINT);
+
+statement ok
+INSERT INTO ducklake.huge VALUES (1152921504606846977);
+
+statement error
+ALTER TABLE ducklake.huge ALTER b SET DATA TYPE FLOAT;
+----
+holds the value 1152921504606846977, which FLOAT cannot hold exactly
+
+# a decimal of a large scale that FLOAT holds exactly
+statement ok
+CREATE TABLE ducklake.scaled (d DECIMAL(38,37));
+
+statement ok
+INSERT INTO ducklake.scaled VALUES (0.5), (-0.25);
+
+statement ok
+ALTER TABLE ducklake.scaled ALTER d SET DATA TYPE FLOAT;
+
+query I
+SELECT d FROM ducklake.scaled ORDER BY d
+----
+-0.25
+0.5
+
+# a decimal is exact in FLOAT when it is a fraction over a power of two with a numerator below 2^24
+statement ok
+CREATE TABLE ducklake.close (d DECIMAL(10,9));
+
+statement ok
+INSERT INTO ducklake.close VALUES (0.5), (0.500000001);
+
+statement error
+ALTER TABLE ducklake.close ALTER d SET DATA TYPE FLOAT;
+----
+holds the value 0.500000001, which FLOAT cannot hold exactly
+
+statement ok
+CREATE TABLE ducklake.power (d DECIMAL(38,30));
+
+statement ok
+INSERT INTO ducklake.power VALUES (33554432), (0.375);
+
+statement ok
+ALTER TABLE ducklake.power ALTER d SET DATA TYPE FLOAT;
+
+query I
+SELECT d FROM ducklake.power ORDER BY d
+----
+0.375
+33554432.0

@@ -197,17 +197,25 @@ static bool TryCastBound(string &bound, const LogicalType &source, const Logical
 	return true;
 }
 
-void DuckLakeColumnStats::CastBoundsFrom(const LogicalType &source) {
+optional<string> DuckLakeColumnStats::CastBoundsFrom(const LogicalType &source) {
+	optional<string> dropped_value;
 	if (has_min && !TryCastBound(min, source, type)) {
+		if (min_is_exact) {
+			dropped_value = min;
+		}
 		min.clear();
 		has_min = false;
 		min_is_exact = false;
 	}
 	if (has_max && !TryCastBound(max, source, type)) {
+		if (!dropped_value && max_is_exact) {
+			dropped_value = max;
+		}
 		max.clear();
 		has_max = false;
 		max_is_exact = false;
 	}
+	return dropped_value;
 }
 
 bool DuckLakeColumnStats::BoundsSurviveTypePromotion(const LogicalType &source, const LogicalType &target) {

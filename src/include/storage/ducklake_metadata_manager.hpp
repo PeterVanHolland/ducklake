@@ -573,6 +573,8 @@ public:
 	void MigrateInlinedSchemaVersions();
 	//! Restores the defaults that older versions dropped when they renamed a struct field
 	void MigrateRenamedFieldDefaults();
+	//! Gives GEOMETRY files that older versions stored with an empty type set but with values unknown statistics
+	void MigrateAddedGeometryStats();
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
 	virtual void MigrateInlinedDataTypes() {
 	}

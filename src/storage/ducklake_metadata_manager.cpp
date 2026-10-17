@@ -6,6 +6,7 @@
 #include "storage/ducklake_transaction.hpp"
 #include "storage/ducklake_transaction_manager.hpp"
 #include "storage/ducklake_variant_stats.hpp"
+#include "storage/ducklake_geo_stats.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "common/ducklake_util.hpp"
 #include "duckdb/planner/tableref/bound_at_clause.hpp"
@@ -507,6 +508,83 @@ AND NOT EXISTS (
 	result->ThrowIfError("Failed to add the schema versions of inlined-data tables while migrating to v1.1: ");
 }
 
+void DuckLakeMetadataManager::MigrateAddedGeometryStats() {
+	auto geometry_column = R"(EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column c
+	WHERE c.table_id = s.table_id AND c.column_id = s.column_id AND lower(c.column_type) LIKE 'geometry%'
+))";
+	// files added without geospatial statistics were stored as files without geometries
+	auto files = Query(StringUtil::Format(R"(
+SELECT s.table_id, s.column_id, s.data_file_id, s.extra_stats, s.value_count IS NULL OR s.value_count > 0
+FROM {METADATA_CATALOG}.ducklake_file_column_stats s
+WHERE s.extra_stats IS NOT NULL AND %s)",
+	                                      geometry_column));
+	files->ThrowIfError("Failed to read the geometry statistics of files while migrating to v1.1: ");
+	DuckLakeColumnGeoStats unknown;
+	unknown.SetUnknownExtent();
+	unknown.SetUnknownTypes();
+	string unknown_stats;
+	unknown.TrySerialize(unknown_stats);
+	vector<string> damaged_files;
+	map<pair<idx_t, idx_t>, DuckLakeColumnGeoStats> file_stats;
+	for (auto &row : *files) {
+		auto column_id = row.GetValue<idx_t>(1);
+		DuckLakeColumnGeoStats stats;
+		stats.Deserialize(row.GetValue<string>(3));
+		if (stats.geo_types.empty() && row.GetValue<bool>(4)) {
+			damaged_files.push_back(StringUtil::Format("(%d, %d)", row.GetValue<idx_t>(2), column_id));
+			stats = unknown;
+		}
+		file_stats[{row.GetValue<idx_t>(0), column_id}].Merge(stats);
+	}
+	// the damaged files are staged, so that one update finds them all
+	string query;
+	if (!damaged_files.empty()) {
+		query += "DROP TABLE IF EXISTS {METADATA_CATALOG}.ducklake_damaged_geometry_stats;";
+		query +=
+		    "CREATE TABLE {METADATA_CATALOG}.ducklake_damaged_geometry_stats(data_file_id BIGINT, column_id BIGINT);";
+		query += InsertValuesSql("ducklake_damaged_geometry_stats", damaged_files);
+		query += StringUtil::Format(R"(
+UPDATE {METADATA_CATALOG}.ducklake_file_column_stats s SET extra_stats = %s WHERE EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_damaged_geometry_stats d
+	WHERE d.data_file_id = s.data_file_id AND d.column_id = s.column_id
+);)",
+		                            unknown_stats);
+		query += "DROP TABLE {METADATA_CATALOG}.ducklake_damaged_geometry_stats;";
+	}
+	// table statistics also lack what a merge before the migration took from the files
+	auto tables = Query(StringUtil::Format(R"(
+SELECT s.table_id, s.column_id, s.extra_stats
+FROM {METADATA_CATALOG}.ducklake_table_column_stats s
+WHERE s.extra_stats IS NOT NULL AND %s)",
+	                                       geometry_column));
+	tables->ThrowIfError("Failed to read the geometry statistics of tables while migrating to v1.1: ");
+	for (auto &row : *tables) {
+		auto entry = file_stats.find({row.GetValue<idx_t>(0), row.GetValue<idx_t>(1)});
+		if (entry == file_stats.end()) {
+			continue;
+		}
+		DuckLakeColumnGeoStats stats;
+		stats.Deserialize(row.GetValue<string>(2));
+		string stored_stats;
+		stats.TrySerialize(stored_stats);
+		stats.Merge(entry->second);
+		string merged_stats;
+		stats.TrySerialize(merged_stats);
+		if (merged_stats != stored_stats) {
+			query += StringUtil::Format("UPDATE {METADATA_CATALOG}.ducklake_table_column_stats SET extra_stats = %s "
+			                            "WHERE table_id = %d AND column_id = %d;",
+			                            merged_stats, entry->first.first, entry->first.second);
+		}
+	}
+	if (query.empty()) {
+		return;
+	}
+	// a catalog that commits each statement must not keep the staged table when the update fails
+	auto update = CommitsEachStatement() ? ExecuteInTransaction(query) : Execute(query);
+	update->ThrowIfError("Failed to update the geometry statistics while migrating to v1.1: ");
+}
+
 void DuckLakeMetadataManager::MigrateRenamedFieldDefaults() {
 	// the defaults of a struct field cannot change, so a later row of the field without them lost them in a rename
 	auto result = Execute(R"(
@@ -532,6 +610,7 @@ void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	MigrateInlinedColumnNames(from_dev1);
 	MigrateInlinedSchemaVersions();
 	MigrateRenamedFieldDefaults();
+	MigrateAddedGeometryStats();
 	MigrateInlinedDataTypes();
 	ExecuteMigration(V1_1MigrationQuery(), from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");
 }

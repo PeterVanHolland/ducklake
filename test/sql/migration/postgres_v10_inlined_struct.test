@@ -40,7 +40,7 @@ statement ok
 CALL postgres_execute('pg', 'UPDATE v10_inlined_struct.ducklake_inlined_data_1_1 SET s = $$' || '{''d'': CAST(''2020-01-01'' AS VARCHAR), ''v'': ''it''''s'', ''b'': CAST(''\x00\xFF'' AS VARCHAR), ''u'': CAST(''00000000-0000-0000-0000-000000000001'' AS UUID), ''n'': CAST(''nan'' AS DOUBLE PRECISION), ''i'': CAST(''0 months 3 days 0 microseconds'' AS INTERVAL), ''l'': [2021-02-03], ''inner_s'': {''a'': CAST(''2022-03-04'' AS VARCHAR), ''q'': ''a''''b''}}' || '$$ WHERE id = 1')
 
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/postgres_v10_inlined_struct', METADATA_SCHEMA 'v10_inlined_struct', DUCKLAKE_VERSION '1.1-dev1', AUTOMATIC_MIGRATION TRUE)
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/postgres_v10_inlined_struct', METADATA_SCHEMA 'v10_inlined_struct', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
 
 loop flushed 0 2
 

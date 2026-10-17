@@ -24,7 +24,7 @@ statement ok
 DETACH lake
 
 statement ok
-ATTACH 'ducklake:sqlite:{TEST_DIR}/v10_inlined_struct.sqlite' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_struct_files/', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1-dev1', AUTOMATIC_MIGRATION TRUE)
+ATTACH 'ducklake:sqlite:{TEST_DIR}/v10_inlined_struct.sqlite' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_struct_files/', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
 
 # the text DuckDB 1.5.6 wrote for a NUL character is not a plain literal and is kept
 query I

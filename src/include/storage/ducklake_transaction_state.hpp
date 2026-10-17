@@ -141,7 +141,7 @@ struct DuckLakeCommitContext {
 	DuckLakeSnapshotCommit commit_info;
 	//! When true, Commit() skips the post-commit DropEmptySupersededInlinedTables cleanup.
 	bool skip_drop_empty_inlined = false;
-	//! Whether the metadata schema has the >= 1.1-dev1 additions.
+	//! Whether the metadata schema has the >= 1.1 additions.
 	bool supports_v1_1_metadata = false;
 	//! Column names of the inlined data tables under this catalog version.
 	DuckLakeInlinedColNames InlinedColNames() const {

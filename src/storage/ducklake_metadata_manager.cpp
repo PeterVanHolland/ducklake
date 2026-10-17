@@ -540,6 +540,7 @@ WHERE s.extra_stats IS NOT NULL AND %s)",
 	// the damaged files are staged, so that one update finds them all
 	string query;
 	if (!damaged_files.empty()) {
+		query += "DROP TABLE IF EXISTS {METADATA_CATALOG}.ducklake_damaged_geometry_stats;";
 		query +=
 		    "CREATE TABLE {METADATA_CATALOG}.ducklake_damaged_geometry_stats(data_file_id BIGINT, column_id BIGINT);";
 		query += InsertValuesSql("ducklake_damaged_geometry_stats", damaged_files);
@@ -579,7 +580,8 @@ WHERE s.extra_stats IS NOT NULL AND %s)",
 	if (query.empty()) {
 		return;
 	}
-	auto update = Execute(query);
+	// a catalog that commits each statement must not keep the staged table when the update fails
+	auto update = CommitsEachStatement() ? ExecuteInTransaction(query) : Execute(query);
 	update->ThrowIfError("Failed to update the geometry statistics while migrating to v1.1: ");
 }
 

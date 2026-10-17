@@ -282,9 +282,9 @@ ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_8.db' AS dl (DATA_PATH '{T
 ----
 column 3 of metadata table "ducklake_schema_versions" is "table_index" of type BIGINT, expected "table_id" of type BIGINT
 
-# a catalog that lacks a later v1.1-dev1 addition still has its other tables checked
+# migrating a 1.1-dev1 catalog restores its missing columns, the other columns are still checked
 statement ok
-ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_dev.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', DUCKLAKE_VERSION '1.1-dev1')
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_dev.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', DUCKLAKE_VERSION '1.1')
 
 statement ok
 DETACH dl
@@ -299,9 +299,12 @@ statement ok
 ALTER TABLE meta.ducklake_view_column_tag DROP COLUMN value
 
 statement ok
+UPDATE meta.ducklake_metadata SET value = '1.1-dev1' WHERE key = 'version'
+
+statement ok
 DETACH meta
 
 statement error
-ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_dev.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', DUCKLAKE_VERSION '1.1-dev1', READ_ONLY)
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_dev.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', AUTOMATIC_MIGRATION TRUE)
 ----
 metadata table "ducklake_view_column_tag" has no column "value"

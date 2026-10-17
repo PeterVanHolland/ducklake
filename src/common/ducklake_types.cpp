@@ -184,7 +184,7 @@ string DuckLakeTypes::ToString(const LogicalType &type) {
 
 void DuckLakeTypes::CheckSupportedType(const LogicalType &type, DuckLakeVersion version) {
 	TypeVisitor::VisitReplace(type, [version](const LogicalType &type) {
-		if (type.id() == LogicalTypeId::SQLNULL && version < DuckLakeVersion::V1_1_DEV_1) {
+		if (type.id() == LogicalTypeId::SQLNULL && version < DuckLakeVersion::V1_1) {
 			ThrowUnsupportedByVersion(version, "the NULL type");
 		}
 		DuckLakeTypes::ToString(type);

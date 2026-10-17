@@ -566,13 +566,9 @@ public:
 	virtual void MigrateV02(bool allow_failures = false);
 	virtual void MigrateV03(bool allow_failures = false);
 	virtual void MigrateV04();
-	virtual void MigrateV10(bool allow_failures = false);
-	//! Logs development migration failures during attach
-	virtual void MigrateV10Dev();
-	//! Whether the catalog already has every metadata table and column of v1.1-dev1
-	bool HasV1_1Dev1Additions();
+	virtual void MigrateV10(bool from_dev1 = false);
 	//! Checks the columns of every metadata table against the tables that this catalog version creates
-	void ValidateMetadataTables(bool allow_missing_v1_1_dev1_additions);
+	void ValidateMetadataTables();
 	//! The type that a metadata column created with the given type is read back as
 	virtual LogicalType StoredMetadataType(const LogicalType &type) {
 		return type;

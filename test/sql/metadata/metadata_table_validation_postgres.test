@@ -15,7 +15,7 @@ test-env DATA_PATH {TEST_DIR}
 statement ok
 ATTACH '{DUCKLAKE_CONNECTION}' AS pg
 
-foreach version 1.0 1.1-dev1
+foreach version 1.0 1.1
 
 statement ok
 CALL postgres_execute('pg', 'DROP SCHEMA IF EXISTS metadata_validation CASCADE')

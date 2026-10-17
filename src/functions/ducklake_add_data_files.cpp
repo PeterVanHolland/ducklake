@@ -7,6 +7,9 @@
 #include "storage/ducklake_table_entry.hpp"
 #include "storage/ducklake_insert.hpp"
 #include "storage/ducklake_catalog.hpp"
+#include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/hive_partitioning.hpp"
@@ -885,6 +888,92 @@ unique_ptr<DuckLakeNameMapEntry> DuckLakeFileProcessor::MapHiveColumn(ParquetFil
 	return result;
 }
 
+//! Whether the value equals the hive string parsed with the first of the types that parses it
+static bool EqualsAsFirstParsed(ClientContext &context, const string &value, const Value &imported,
+                                const vector<LogicalType> &types) {
+	for (auto &type : types) {
+		auto parsed = Value(value).TryCastAs(context, type);
+		if (parsed && !parsed->IsNull()) {
+			auto widened = imported.TryCastAs(context, type);
+			return widened && *parsed == *widened;
+		}
+	}
+	return true;
+}
+
+//! Whether a number converts to an integer or decimal value without rounding
+static bool NumberConvertsExactly(ClientContext &context, const string &value, const Value &imported) {
+	// the largest scale that holds the number comes first, since no promotion keeps more digits
+	vector<LogicalType> types;
+	for (idx_t scale = Decimal::MAX_WIDTH_DECIMAL + 1; scale > 0; scale--) {
+		types.push_back(LogicalType::DECIMAL(Decimal::MAX_WIDTH_DECIMAL, NumericCast<uint8_t>(scale - 1)));
+	}
+	// numbers beyond the range of a decimal, and spellings a decimal does not parse such as hexadecimal integers
+	types.push_back(imported.type());
+	return EqualsAsFirstParsed(context, value, imported, types);
+}
+
+//! The finer types of the family of a temporal type, which a promotion can read a hive value with
+static vector<LogicalType> FinerTemporalTypes(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP:
+		return {LogicalType::TIMESTAMP_NS, LogicalType::TIMESTAMP};
+	case LogicalTypeId::TIME:
+		return {LogicalType::TIME_NS};
+	case LogicalTypeId::TIMESTAMP_TZ:
+		return {LogicalType::TIMESTAMP_TZ_NS, LogicalType::TIMESTAMP_TZ};
+	default:
+		return {};
+	}
+}
+
+//! Whether a time stamp names an offset or a time zone
+static bool NamesTimeZone(const string &value) {
+	timestamp_t result;
+	bool has_offset = false;
+	string_t time_zone(nullptr, 0);
+	auto cast = Timestamp::TryConvertTimestampTZ(value.c_str(), value.size(), result, false, has_offset, time_zone);
+	return cast == TimestampCastResult::SUCCESS && (has_offset || time_zone.GetSize() > 0);
+}
+
+//! A promotion to a time stamp with time zone reads the offset of the hive value, which the other types ignore
+static bool TemporalConvertsExactly(ClientContext &context, const string &value, const Value &imported) {
+	auto &type = imported.type();
+	if (TypePromotionIsAllowed(type, LogicalType::TIMESTAMP_TZ) && NamesTimeZone(value)) {
+		if (Settings::Get<DisableTimestamptzCastsSetting>(context) ||
+		    !EqualsAsFirstParsed(context, value, imported, {LogicalType::TIMESTAMP_TZ})) {
+			return false;
+		}
+	}
+	return EqualsAsFirstParsed(context, value, imported, FinerTemporalTypes(type));
+}
+
+//! Scans parse a hive value again with the type the column has then, so it must convert exactly
+static void CheckHiveValueIsExact(ClientContext &context, const DuckLakeFieldId &field_id, const string &hive_string,
+                                  const Value &hive_value) {
+	auto &type = field_id.Type();
+	if (hive_value.IsNull()) {
+		return;
+	}
+	auto value = HivePartitioning::Unescape(hive_string);
+	bool exact;
+	if (type.IsIntegral() || type.id() == LogicalTypeId::DECIMAL) {
+		exact = NumberConvertsExactly(context, value, hive_value);
+	} else if (type.IsTemporal()) {
+		exact = TemporalConvertsExactly(context, value, hive_value);
+	} else {
+		return;
+	}
+	if (!exact) {
+		throw InvalidInputException("Column \"%s\" exists as a hive partition with value \"%s\", but this value does "
+		                            "not convert exactly to the column type \"%s\"",
+		                            field_id.Name(), value, type);
+	}
+}
+
 bool DuckLakeFileProcessor::TryMapHiveColumn(ParquetFileMetadata &file_metadata, const string &prefix,
                                              const string &name, const DuckLakeFieldId &field_id,
                                              vector<unique_ptr<DuckLakeNameMapEntry>> &column_maps) {
@@ -899,6 +988,7 @@ bool DuckLakeFileProcessor::TryMapHiveColumn(ParquetFileMetadata &file_metadata,
 		return false;
 	}
 	auto hive_value = HivePartitioning::GetValue(context, hive_key, hive_entry->second, field_id.Type());
+	CheckHiveValueIsExact(context, field_id, hive_entry->second, hive_value);
 	column_maps.push_back(MapHiveColumn(file_metadata, field_id, hive_key, hive_value));
 	return true;
 }

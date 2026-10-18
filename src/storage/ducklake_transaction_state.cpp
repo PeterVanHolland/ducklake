@@ -926,9 +926,8 @@ static void CountInlinedRows(const vector<string> &inlined_table_names, DuckLake
 	}
 }
 
-//! Merges the count and bounds of every inlined row stored at the snapshot, deleted ones included, with one query per
-//! inlined table. A column that an older inlined table lacks reads its initial default, when one is given. Returns the
-//! columns whose stats could not be merged.
+//! Merges every stored inlined row with one query per inlined table, returning the columns it cannot merge. A column
+//! that an older inlined table lacks reads its initial default, when one is given.
 static set<FieldIndex> MergeInlinedTableStats(const vector<DuckLakeColumnSchemaEntry> &columns,
                                               const vector<string> &inlined_table_names,
                                               const DuckLakeInlinedTableColumns &older_columns,

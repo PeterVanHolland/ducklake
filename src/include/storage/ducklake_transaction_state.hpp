@@ -232,7 +232,7 @@ public:
 	static vector<DuckLakeGlobalStatsInfo>
 	RecomputeMigratedTableStats(const vector<DuckLakeGlobalStatsInfo> &committed_stats,
 	                            const unordered_set<idx_t> &tables_with_files, DuckLakeSnapshot snapshot,
-	                            bool write_stats_exactness, const DuckLakeCommitContext &context);
+	                            bool read_exactness, bool write_stats_exactness, const DuckLakeCommitContext &context);
 	//! Merges the count and bounds of every inlined row stored at the snapshot, deleted ones included. Returns false if
 	//! a column cannot be aggregated, which can leave partial stats in target.
 	static bool TryMergeInlinedStats(const vector<DuckLakeColumnSchemaEntry> &columns,

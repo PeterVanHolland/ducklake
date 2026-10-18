@@ -582,8 +582,8 @@ public:
 	void MigrateInlinedSchemaVersions();
 	//! Restores the defaults that older versions dropped when they renamed a struct field
 	void MigrateRenamedFieldDefaults();
-	//! Recomputes the table stats, which older versions could leave narrower or wider than the live rows
-	void MigrateTableStats(bool write_stats_exactness);
+	//! The SQL that recomputes the table stats, which older versions could leave narrower or wider than the live rows
+	string MigrateTableStatsSql(bool read_exactness, bool write_stats_exactness);
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
 	virtual void MigrateInlinedDataTypes() {
 	}

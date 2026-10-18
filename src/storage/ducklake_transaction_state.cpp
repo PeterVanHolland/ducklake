@@ -1088,8 +1088,8 @@ static map<TableIndex, set<FieldIndex>> ReadSkippedStatsFields(optional_idx tabl
 //! Merges the per-file stats of the data files of a table visible at the snapshot, apart from the skipped files
 static void MergeDataFileStats(TableIndex table_id, DuckLakeSnapshot snapshot,
                                const vector<DuckLakeColumnSchemaEntry> &columns,
-                               const set<DataFileIndex> &skipped_files, const DuckLakeCommitContext &context,
-                               DuckLakeTableStats &new_stats, idx_t &file_count,
+                               const set<DataFileIndex> &skipped_files, bool include_exactness,
+                               const DuckLakeCommitContext &context, DuckLakeTableStats &new_stats, idx_t &file_count,
                                map<FieldIndex, idx_t> &files_with_stats) {
 	// nested leaves have file stats of their own, so their types are needed too
 	map<FieldIndex, LogicalType> type_by_field;
@@ -1097,7 +1097,7 @@ static void MergeDataFileStats(TableIndex table_id, DuckLakeSnapshot snapshot,
 		type_by_field.insert(make_pair(col.field_index, col.column_type));
 	}
 	auto result = context.query_metadata_with_snapshot(
-	    snapshot, DuckLakeMetadataManager::ReadFileColumnStatsForTableSql(table_id, context.supports_v1_1_metadata));
+	    snapshot, DuckLakeMetadataManager::ReadFileColumnStatsForTableSql(table_id, include_exactness));
 	result->ThrowIfError("Failed to read per-file column stats from DuckLake: ");
 	bool has_exactness = DuckLakeMetadataManager::ResultHasColumn(*result, "min_is_exact");
 	idx_t last_file_id = 0;
@@ -1201,8 +1201,8 @@ void DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 	map<FieldIndex, idx_t> files_with_stats;
 
 	// 1. Merge the per-file stats of the post-rewrite parquet files = (pre-commit visible files - removed) + new files.
-	MergeDataFileStats(table_id, snapshot, columns, removed_source_ids, context, new_stats, file_count,
-	                   files_with_stats);
+	MergeDataFileStats(table_id, snapshot, columns, removed_source_ids, context.supports_v1_1_metadata, context,
+	                   new_stats, file_count, files_with_stats);
 
 	// add the new (rewritten, delete-free) files - their stats are available in memory
 	for (auto &file : rewrite_changes.new_files) {
@@ -1334,11 +1334,14 @@ struct MigratedTablesInfo {
 	unordered_set<string> unknown_schema_tables;
 	map<TableIndex, set<FieldIndex>> skipped_fields;
 	unordered_set<idx_t> tables_with_files;
+	//! Whether the file stats have the exactness flags yet
+	bool read_exactness = false;
 };
 
-static MigratedTablesInfo ReadMigratedTablesInfo(const unordered_set<idx_t> &tables_with_files,
+static MigratedTablesInfo ReadMigratedTablesInfo(const unordered_set<idx_t> &tables_with_files, bool read_exactness,
                                                  DuckLakeSnapshot snapshot, const DuckLakeCommitContext &context) {
 	MigratedTablesInfo result;
+	result.read_exactness = read_exactness;
 	auto schema = context.query_metadata_with_snapshot(snapshot, DuckLakeMetadataManager::GetTableColumnSchemaSql());
 	schema->ThrowIfError("Failed to read the columns of the tables from DuckLake: ");
 	for (auto &row : *schema) {
@@ -1388,8 +1391,8 @@ static DuckLakeGlobalStatsInfo RecomputeMigratedTable(const DuckLakeGlobalStatsI
 	idx_t file_count = 0;
 	map<FieldIndex, idx_t> files_with_stats;
 	if (tables.tables_with_files.count(table_id.index)) {
-		MergeDataFileStats(table_id, snapshot, columns, set<DataFileIndex>(), context, new_stats, file_count,
-		                   files_with_stats);
+		MergeDataFileStats(table_id, snapshot, columns, set<DataFileIndex>(), tables.read_exactness, context, new_stats,
+		                   file_count, files_with_stats);
 	}
 	new_stats.next_row_id = committed.next_row_id;
 	// a file without stats of a column, like one added with allow_missing, leaves the column unknown
@@ -1421,8 +1424,8 @@ static DuckLakeGlobalStatsInfo RecomputeMigratedTable(const DuckLakeGlobalStatsI
 
 vector<DuckLakeGlobalStatsInfo> DuckLakeTransactionState::RecomputeMigratedTableStats(
     const vector<DuckLakeGlobalStatsInfo> &committed_stats, const unordered_set<idx_t> &tables_with_files,
-    DuckLakeSnapshot snapshot, bool write_stats_exactness, const DuckLakeCommitContext &context) {
-	auto tables = ReadMigratedTablesInfo(tables_with_files, snapshot, context);
+    DuckLakeSnapshot snapshot, bool read_exactness, bool write_stats_exactness, const DuckLakeCommitContext &context) {
+	auto tables = ReadMigratedTablesInfo(tables_with_files, read_exactness, snapshot, context);
 	vector<DuckLakeGlobalStatsInfo> result;
 	for (auto &committed : committed_stats) {
 		auto columns = tables.columns.find(committed.table_id);

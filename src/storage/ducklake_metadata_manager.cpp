@@ -542,13 +542,13 @@ AND NOT EXISTS (
 	result->ThrowIfError("Failed to restore the defaults of renamed struct fields while migrating to v1.1: ");
 }
 
-void DuckLakeMetadataManager::MigrateTableStats(bool write_stats_exactness) {
+string DuckLakeMetadataManager::MigrateTableStatsSql(bool read_exactness, bool write_stats_exactness) {
 	auto latest = Query(GetLatestSnapshotQuery());
 	latest->ThrowIfError("Failed to read the latest snapshot while migrating to v1.1: ");
 	auto snapshot = ParseSnapshot(*latest);
 	if (!snapshot) {
 		// LCOV_EXCL_START
-		return;
+		return string();
 		// LCOV_EXCL_STOP
 	}
 	DuckLakeCommitContext context;
@@ -562,18 +562,14 @@ void DuckLakeMetadataManager::MigrateTableStats(bool write_stats_exactness) {
 	context.cast_inlined_column = [&](const string &column, const LogicalType &type) {
 		return CastColumnToTarget(column, type);
 	};
-	auto committed_stats = ParseGlobalTableStats(*Query(GlobalTableStatsQuery(true)));
+	auto committed_stats = ParseGlobalTableStats(*Query(GlobalTableStatsQuery(read_exactness)));
 	string batch;
 	auto tables_with_files = GetTablesWithLiveDataFiles();
 	for (auto &stats : DuckLakeTransactionState::RecomputeMigratedTableStats(
-	         committed_stats, tables_with_files, *snapshot, write_stats_exactness, context)) {
+	         committed_stats, tables_with_files, *snapshot, read_exactness, write_stats_exactness, context)) {
 		batch += UpdateGlobalTableStatsSql(stats, write_stats_exactness);
 	}
-	if (batch.empty()) {
-		return;
-	}
-	auto result = Execute(batch);
-	result->ThrowIfError("Failed to recompute the table stats while migrating to v1.1: ");
+	return batch;
 }
 
 void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
@@ -584,9 +580,10 @@ void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	MigrateInlinedDataTypes();
 	// DDL locks the metadata tables exclusively on Postgres, skip it when a dev catalog has every addition
 	auto has_additions = from_dev1 && HasV1_1Additions();
-	ExecuteMigration(V1_1MigrationQuery(has_additions), from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");
 	// 1.0 did not record whether bounds are exact, so its flags stay unknown
-	MigrateTableStats(from_dev1);
+	auto stats_query = MigrateTableStatsSql(has_additions, from_dev1);
+	// the stats are written with the version, so a failure leaves both to the next migration
+	ExecuteMigration(V1_1MigrationQuery(has_additions) + stats_query, from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");
 }
 
 void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed) {

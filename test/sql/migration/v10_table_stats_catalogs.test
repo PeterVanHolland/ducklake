@@ -77,10 +77,6 @@ statement ok
 UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET max_value = '100' WHERE table_id = 4 AND column_id = 2
 
 statement ok
-CREATE TABLE memory.variant_stats AS
-SELECT extra_stats FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id = 3
-
-statement ok
 DETACH lake
 
 statement ok
@@ -108,7 +104,7 @@ FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id < 3 ORD
 ----
 1	1	false	5	200
 1	2	false	e	z
-1	4	false	5	200
+1	4	NULL	NULL	NULL
 2	1	false	1	2
 2	2	true	a	a
 
@@ -124,12 +120,11 @@ WHERE table_id = 4 AND column_id = 2
 ----
 true	1	50
 
-# the committed stats of a variant whose inlined rows cannot be aggregated are kept
+# the stats of a variant whose inlined rows SQL cannot aggregate are left to the scan
 query I
-SELECT count(*) FROM __ducklake_metadata_lake.ducklake_table_column_stats stats, memory.variant_stats committed
-WHERE stats.table_id = 3 AND stats.extra_stats IS NOT DISTINCT FROM committed.extra_stats
+SELECT extra_stats IS NULL FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id = 3
 ----
-1
+true
 
 # new rows extend the recomputed stats
 statement ok

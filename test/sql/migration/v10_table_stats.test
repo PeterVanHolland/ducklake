@@ -64,7 +64,7 @@ SELECT min(id), count(*) FROM lake.e
 ----
 NULL	0
 
-# deleted rows count, the columns missing from the added file become unknown, and the struct keeps its bounds
+# deleted rows count, columns missing from the added file and struct fields of inlined rows become unknown
 query IIII
 SELECT table_id, record_count, next_row_id, file_size_bytes FROM __ducklake_metadata_lake.ducklake_table_stats ORDER BY ALL
 ----
@@ -88,7 +88,7 @@ FROM __ducklake_metadata_lake.ducklake_table_column_stats ORDER BY ALL
 4	1	false	5	200	NULL	NULL
 4	2	false	e	z	NULL	NULL
 5	1	false	3	4	NULL	NULL
-5	3	false	30	40	NULL	NULL
-5	4	false	c	d	NULL	NULL
+5	3	NULL	NULL	NULL	NULL	NULL
+5	4	NULL	NULL	NULL	NULL	NULL
 6	1	false	0	29	NULL	NULL
 7	1	false	11	12	NULL	NULL

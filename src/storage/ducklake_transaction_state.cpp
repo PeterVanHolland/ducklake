@@ -1259,21 +1259,22 @@ void DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 	    context.supports_v1_1_metadata);
 }
 
-//! Returns the columns that keep their committed stats, and adds the scalar roots it cannot merge to unknown_fields
-static set<FieldIndex> MergeStoredInlinedStats(const vector<DuckLakeColumnSchemaEntry> &columns,
-                                               const vector<string> &inlined_table_names,
-                                               const DuckLakeInlinedTableColumns &older_columns,
-                                               const map<FieldIndex, Value> &initial_defaults,
-                                               const unordered_set<string> &unknown_schema_tables,
-                                               DuckLakeSnapshot snapshot, const DuckLakeCommitContext &context,
-                                               DuckLakeTableStats &new_stats, set<FieldIndex> &unknown_fields) {
-	set<FieldIndex> result;
+//! Merges the stored inlined rows, the columns their stats cannot be computed for become unknown
+static void MergeStoredInlinedStats(const vector<DuckLakeColumnSchemaEntry> &columns,
+                                    const vector<string> &inlined_table_names,
+                                    const DuckLakeInlinedTableColumns &older_columns,
+                                    const map<FieldIndex, Value> &initial_defaults,
+                                    const unordered_set<string> &unknown_schema_tables, DuckLakeSnapshot snapshot,
+                                    const DuckLakeCommitContext &context, DuckLakeTableStats &new_stats,
+                                    set<FieldIndex> &unknown_fields) {
+	// SQL aggregates only cover scalar roots, nested fields and other types are not computed
+	set<FieldIndex> failed_fields;
 	vector<DuckLakeColumnSchemaEntry> scalar_roots;
 	for (auto &col : columns) {
 		if (col.is_root && IsFoldableScalarType(col.column_type)) {
 			scalar_roots.push_back(col);
 		} else {
-			result.insert(col.field_index);
+			failed_fields.insert(col.field_index);
 		}
 	}
 	// the columns of an inlined table without its schema version are guessed, so they get no defaults
@@ -1283,22 +1284,22 @@ static set<FieldIndex> MergeStoredInlinedStats(const vector<DuckLakeColumnSchema
 		(unknown_schema_tables.count(table_name) ? guessed_tables : known_tables).push_back(table_name);
 	}
 	DuckLakeTableStats inlined_stats;
-	auto failed_roots = MergeInlinedTableStats(scalar_roots, known_tables, older_columns, initial_defaults, snapshot,
-	                                           inlined_stats, context);
+	for (auto &field_index : MergeInlinedTableStats(scalar_roots, known_tables, older_columns, initial_defaults,
+	                                                snapshot, inlined_stats, context)) {
+		failed_fields.insert(field_index);
+	}
 	for (auto &field_index : MergeInlinedTableStats(scalar_roots, guessed_tables, older_columns, nullptr, snapshot,
 	                                                inlined_stats, context)) {
-		failed_roots.insert(field_index);
+		failed_fields.insert(field_index);
 	}
 	if (inlined_stats.record_count == 0) {
-		return set<FieldIndex>();
+		return;
 	}
-	// MIN and MAX of a scalar root can be read from its stats, so stale committed bounds would be returned
-	unknown_fields.insert(failed_roots.begin(), failed_roots.end());
+	unknown_fields.insert(failed_fields.begin(), failed_fields.end());
 	new_stats.record_count += inlined_stats.record_count;
 	for (auto &entry : inlined_stats.column_stats) {
 		new_stats.MergeStats(entry.first, entry.second);
 	}
-	return result;
 }
 
 template <class T>
@@ -1390,15 +1391,7 @@ static DuckLakeGlobalStatsInfo RecomputeMigratedTable(const DuckLakeGlobalStatsI
 		MergeDataFileStats(table_id, snapshot, columns, set<DataFileIndex>(), context, new_stats, file_count,
 		                   files_with_stats);
 	}
-	auto current_stats = DuckLakeTableStats::FromGlobalStats(committed, [&](FieldIndex field_index) {
-		for (auto &col : columns) {
-			if (col.field_index == field_index) {
-				return optional_ptr<const LogicalType>(col.column_type);
-			}
-		}
-		return optional_ptr<const LogicalType>();
-	});
-	new_stats.next_row_id = current_stats->next_row_id;
+	new_stats.next_row_id = committed.next_row_id;
 	// a file without stats of a column, like one added with allow_missing, leaves the column unknown
 	set<FieldIndex> unknown_fields;
 	for (auto &col : columns) {
@@ -1409,18 +1402,8 @@ static DuckLakeGlobalStatsInfo RecomputeMigratedTable(const DuckLakeGlobalStatsI
 	// deleted rows count like they did when they were written
 	auto &inlined_table_names = tables.inlined_tables[table_id];
 	if (!inlined_table_names.empty()) {
-		for (auto &field_index : MergeStoredInlinedStats(
-		         columns, inlined_table_names, tables.older_columns, tables.initial_defaults[table_id],
-		         tables.unknown_schema_tables, snapshot, context, new_stats, unknown_fields)) {
-			// MIN and MAX are never read from these stats, and the committed ones already cover the inlined rows
-			auto committed_column = current_stats->column_stats.find(field_index);
-			if (committed_column == current_stats->column_stats.end() || committed_column->second.bounds_unknown) {
-				unknown_fields.insert(field_index);
-				continue;
-			}
-			new_stats.column_stats.erase(field_index);
-			new_stats.column_stats.emplace(field_index, committed_column->second);
-		}
+		MergeStoredInlinedStats(columns, inlined_table_names, tables.older_columns, tables.initial_defaults[table_id],
+		                        tables.unknown_schema_tables, snapshot, context, new_stats, unknown_fields);
 	}
 	for (auto &col : columns) {
 		bool has_stats = new_stats.column_stats.find(col.field_index) != new_stats.column_stats.end();

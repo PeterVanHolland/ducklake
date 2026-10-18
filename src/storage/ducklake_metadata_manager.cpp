@@ -365,20 +365,15 @@ UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '0.2' WHERE key = 'versi
 }
 
 void DuckLakeMetadataManager::ExecuteMigration(string migrate_query, bool allow_failures, const string &from_version,
-                                               const string &to_version) {
-	if (allow_failures) {
-		migrate_query = StringUtil::Replace(migrate_query, "{IF_NOT_EXISTS}", "IF NOT EXISTS");
-		migrate_query = StringUtil::Replace(migrate_query, "{IF_EXISTS}", "IF EXISTS");
-		migrate_query =
-		    StringUtil::Replace(migrate_query, "{WHERE_EMPTY}",
-		                        "WHERE NOT EXISTS (SELECT 1 FROM {METADATA_CATALOG}.ducklake_schema_versions);");
-	} else {
-		// All our place-holders are empty, so if any of these exist it will fail
-		migrate_query = StringUtil::Replace(migrate_query, "{IF_NOT_EXISTS}", "");
-		migrate_query = StringUtil::Replace(migrate_query, "{IF_EXISTS}", "");
-		migrate_query = StringUtil::Replace(migrate_query, "{WHERE_EMPTY}", "");
-	}
-	auto result = Execute(migrate_query);
+                                               const string &to_version, optional_ptr<DuckLakeSnapshot> snapshot) {
+	// All our place-holders are empty without allow_failures, so if any of these exist it will fail
+	string where_empty = "WHERE NOT EXISTS (SELECT 1 FROM {METADATA_CATALOG}.ducklake_schema_versions);";
+	migrate_query =
+	    DuckLakeUtil::ReplacePlaceholders(migrate_query, {{"{IF_NOT_EXISTS}", allow_failures ? "IF NOT EXISTS" : ""},
+	                                                      {"{IF_EXISTS}", allow_failures ? "IF EXISTS" : ""},
+	                                                      {"{WHERE_EMPTY}", allow_failures ? where_empty : ""}});
+	// with a snapshot the statements run as one commit, also on catalogs that commit each statement on its own
+	auto result = snapshot ? Execute(*snapshot, migrate_query) : Execute(migrate_query);
 	result->ThrowIfError("Failed to migrate DuckLake from v" + from_version + " to v" + to_version + ":");
 }
 
@@ -542,15 +537,8 @@ AND NOT EXISTS (
 	result->ThrowIfError("Failed to restore the defaults of renamed struct fields while migrating to v1.1: ");
 }
 
-string DuckLakeMetadataManager::MigrateTableStatsSql(bool read_exactness, bool write_stats_exactness) {
-	auto latest = Query(GetLatestSnapshotQuery());
-	latest->ThrowIfError("Failed to read the latest snapshot while migrating to v1.1: ");
-	auto snapshot = ParseSnapshot(*latest);
-	if (!snapshot) {
-		// LCOV_EXCL_START
-		return string();
-		// LCOV_EXCL_STOP
-	}
+string DuckLakeMetadataManager::MigrateTableStatsSql(DuckLakeSnapshot snapshot, bool read_exactness,
+                                                     bool write_stats_exactness) {
 	DuckLakeCommitContext context;
 	context.supports_v1_1_metadata = true;
 	context.query_metadata = [&](string query) {
@@ -566,7 +554,7 @@ string DuckLakeMetadataManager::MigrateTableStatsSql(bool read_exactness, bool w
 	string batch;
 	auto tables_with_files = GetTablesWithLiveDataFiles();
 	for (auto &stats : DuckLakeTransactionState::RecomputeMigratedTableStats(
-	         committed_stats, tables_with_files, *snapshot, read_exactness, write_stats_exactness, context)) {
+	         committed_stats, tables_with_files, snapshot, read_exactness, write_stats_exactness, context)) {
 		batch += UpdateGlobalTableStatsSql(stats, write_stats_exactness);
 	}
 	return batch;
@@ -580,10 +568,19 @@ void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	MigrateInlinedDataTypes();
 	// DDL locks the metadata tables exclusively on Postgres, skip it when a dev catalog has every addition
 	auto has_additions = from_dev1 && HasV1_1Additions();
+	auto latest = Query(GetLatestSnapshotQuery());
+	latest->ThrowIfError("Failed to read the latest snapshot while migrating to v1.1: ");
+	auto snapshot = ParseSnapshot(*latest);
+	if (!snapshot) {
+		// LCOV_EXCL_START
+		throw InvalidInputException("No snapshot found in DuckLake");
+		// LCOV_EXCL_STOP
+	}
 	// 1.0 did not record whether bounds are exact, so its flags stay unknown
-	auto stats_query = MigrateTableStatsSql(has_additions, from_dev1);
-	// the stats are written with the version, so a failure leaves both to the next migration
-	ExecuteMigration(V1_1MigrationQuery(has_additions) + stats_query, from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");
+	auto stats_query = MigrateTableStatsSql(*snapshot, has_additions, from_dev1);
+	// the stats are written in one commit with the version, so a failure leaves both to the next migration
+	ExecuteMigration(V1_1MigrationQuery(has_additions) + stats_query, from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1",
+	                 snapshot.get());
 }
 
 void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed) {

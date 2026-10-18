@@ -1189,22 +1189,22 @@ void DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 	}
 	auto current_stats = context.get_table_stats(table_id);
 	if (!current_stats) {
-		// no committed stats row exists yet - the UPDATE path of UpdateGlobalTableStats only refreshes existing rows
+		// the stats are only updated, so a table without a stats row is left as it is
 		// LCOV_EXCL_START
 		return;
 		// LCOV_EXCL_STOP
 	}
 
 	DuckLakeTableStats new_stats;
-	new_stats.next_row_id = current_stats->next_row_id; // monotonic - carried forward, never recomputed
+	new_stats.next_row_id = current_stats->next_row_id; // row ids only grow, so the next one is kept
 	idx_t file_count = 0;
 	map<FieldIndex, idx_t> files_with_stats;
 
-	// 1. Merge the per-file stats of the post-rewrite parquet files = (pre-commit visible files - removed) + new files.
+	// the files that stay after the rewrite and the files it writes
 	MergeDataFileStats(table_id, snapshot, columns, removed_source_ids, context.supports_v1_1_metadata, context,
 	                   new_stats, file_count, files_with_stats);
 
-	// add the new (rewritten, delete-free) files - their stats are available in memory
+	// the stats of the files the rewrite writes are in memory
 	for (auto &file : rewrite_changes.new_files) {
 		if (file.table_id != table_id) {
 			continue;
@@ -1218,9 +1218,7 @@ void DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 		}
 	}
 
-	// 2. Delete-free gate: the merged parquet stats are exact only if no deletions remain on the table's data files.
-	//    That holds iff the gross row count of the post-rewrite files equals the net (delete-adjusted) data-file count.
-	//    (Covers partial rewrites with delete_threshold > 0, leftover delete files, and inlined file deletions.)
+	// the file stats are exact only when no row of the files is deleted
 	if (new_stats.record_count != context.get_net_data_file_row_count(table_id)) {
 		return;
 	}
@@ -1233,9 +1231,7 @@ void DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 		return;
 	}
 
-	// 3. Fold in committed inlined data (REWRITE_DELETES does not rewrite inlined data). Pass only the top-level
-	//    roots: TryMergeInlinedStats references each column by name against the inlined table and bails on any
-	//    non-scalar root; feeding it nested leaves would emit MIN("<leaf>") against a column that does not exist.
+	// a rewrite leaves the inlined rows as they are, and only roots are columns of the inlined tables
 	if (net_inlined > 0) {
 		vector<DuckLakeColumnSchemaEntry> root_columns;
 		for (auto &col : columns) {
@@ -1245,7 +1241,7 @@ void DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 		}
 		auto older_columns = ReadOlderInlinedTableColumns(table_id.index, snapshot, context);
 		if (!TryMergeInlinedStats(root_columns, inlined_table_names, older_columns, snapshot, new_stats, context)) {
-			return; // cannot account for inlined data exactly - keep the existing stats and the scan fallback
+			return; // the inlined rows cannot be merged exactly, so the stats stay as they are
 		}
 	}
 	for (auto &entry : new_stats.column_stats) {

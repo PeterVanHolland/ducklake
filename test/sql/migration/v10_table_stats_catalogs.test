@@ -76,6 +76,21 @@ UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET min_value = '1' 
 statement ok
 UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET max_value = '100' WHERE table_id = 4 AND column_id = 2
 
+# a file whose stats count no values or NULLs, like the INTERVAL files of v1.0
+statement ok
+CREATE TABLE lake.u (i INTEGER)
+
+statement ok
+INSERT INTO lake.u SELECT CASE WHEN i = 0 THEN NULL ELSE -10 - i END FROM range(20) t(i)
+
+statement ok
+INSERT INTO lake.u SELECT 10 + i FROM range(20) t(i)
+
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_file_column_stats SET value_count = 0, null_count = 0, min_value = NULL,
+max_value = NULL WHERE data_file_id = (SELECT min(data_file_id) FROM __ducklake_metadata_lake.ducklake_data_file
+WHERE table_id = 5)
+
 statement ok
 DETACH lake
 
@@ -119,6 +134,11 @@ SELECT contains_null::BOOLEAN, min_value, max_value FROM __ducklake_metadata_lak
 WHERE table_id = 4 AND column_id = 2
 ----
 true	1	50
+
+query III
+SELECT count(i), min(i), max(i) FROM lake.u
+----
+39	-29	29
 
 # the stats of a variant whose inlined rows SQL cannot aggregate are left to the scan
 query I

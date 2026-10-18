@@ -1123,7 +1123,8 @@ static void MergeDataFileStats(TableIndex table_id, DuckLakeSnapshot snapshot,
 		}
 		files_with_stats[field_idx]++;
 		DuckLakeColumnStats col_stats(type_it->second);
-		if (!row.IsNull(4) && !row.IsNull(5)) {
+		// every row of a file counts as a value or a NULL, so zero counts of both are unknown
+		if (!row.IsNull(4) && !row.IsNull(5) && AsIdx(row, 4) + AsIdx(row, 5) > 0) {
 			auto value_count = AsIdx(row, 4);
 			auto null_count = AsIdx(row, 5);
 			col_stats.has_num_values = true;

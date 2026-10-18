@@ -429,16 +429,20 @@ string DuckLakeTransactionState::WriteSnapshotChanges(DuckLakeCommitState &commi
 	return DuckLakeMetadataManager::WriteSnapshotChangesSql(change_info, commit_info);
 }
 
+//! Replaces a field queued by this transaction, which keeps the children queued for it
+static void ReplaceQueuedField(DuckLakeColumnInfo &field, const DuckLakeColumnInfo &replacement) {
+	auto children = std::move(field.children);
+	field = replacement;
+	field.children = std::move(children);
+}
+
 static bool UpdateNestedField(vector<DuckLakeColumnInfo> &fields, FieldIndex parent_id, FieldIndex field_id,
                               optional_ptr<const DuckLakeColumnInfo> replacement,
                               optional_ptr<DuckLakeNewColumn> removed) {
 	for (idx_t i = 0; i < fields.size(); i++) {
 		if (fields[i].id == field_id) {
 			if (replacement) {
-				// a renamed field keeps the children queued for it
-				auto children = std::move(fields[i].children);
-				fields[i] = *replacement;
-				fields[i].children = std::move(children);
+				ReplaceQueuedField(fields[i], *replacement);
 			} else {
 				if (removed) {
 					removed->column_info = std::move(fields[i]);
@@ -1766,15 +1770,20 @@ void DuckLakeTransactionState::GetNewTableInfo(DuckLakeCommitState &commit_state
 
 			auto committed_table_id = commit_state.GetTableId(table);
 
-			// Cancel the previous txn-local add for this field, or drop the committed column.
-			CancelOrDropField(committed_table_id, local_change.field_index, true, result, txn_added_fields);
-
-			// Insert the new column with the updated info and register it.
-			DuckLakeNewColumn new_col;
-			new_col.table_id = committed_table_id;
-			new_col.column_info = table.GetColumnInfo(local_change.field_index);
-			txn_added_fields[local_change.field_index.index] = result.new_columns.size();
-			result.new_columns.push_back(std::move(new_col));
+			auto added_column = txn_added_fields.find(local_change.field_index.index);
+			if (added_column != txn_added_fields.end()) {
+				// a column added in this transaction is written with its fields
+				ReplaceQueuedField(result.new_columns[added_column->second].column_info,
+				                   table.GetColumnInfo(local_change.field_index));
+			} else {
+				// drop the committed column and insert it with the updated info
+				CancelOrDropField(committed_table_id, local_change.field_index, true, result, txn_added_fields);
+				DuckLakeNewColumn new_col;
+				new_col.table_id = committed_table_id;
+				new_col.column_info = table.GetColumnInfo(local_change.field_index);
+				txn_added_fields[local_change.field_index.index] = result.new_columns.size();
+				result.new_columns.push_back(std::move(new_col));
+			}
 
 			transaction_changes.altered_tables.insert(table_id);
 			transaction_changes.altered_tables_with_schema_version_changes.insert(table_id);

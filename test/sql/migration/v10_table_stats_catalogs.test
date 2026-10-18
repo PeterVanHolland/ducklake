@@ -91,6 +91,16 @@ UPDATE __ducklake_metadata_lake.ducklake_file_column_stats SET value_count = 0, 
 max_value = NULL WHERE data_file_id = (SELECT min(data_file_id) FROM __ducklake_metadata_lake.ducklake_data_file
 WHERE table_id = 5)
 
+# a bound with the text of a migration placeholder
+statement ok
+CREATE TABLE lake.p (s VARCHAR)
+
+statement ok
+INSERT INTO lake.p VALUES ('a'), ('x{IF_NOT_EXISTS}y')
+
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET max_value = 'b' WHERE table_id = 6
+
 statement ok
 DETACH lake
 
@@ -139,6 +149,11 @@ query III
 SELECT count(i), min(i), max(i) FROM lake.u
 ----
 39	-29	29
+
+query I
+SELECT count(*) FROM lake.p WHERE s = 'x{IF_NOT_EXISTS}y'
+----
+1
 
 # the stats of a variant whose inlined rows SQL cannot aggregate are left to the scan
 query I

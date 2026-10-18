@@ -2719,6 +2719,7 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 					    ". Consider increasing the value with: e.g., \"SET ducklake_max_retry_count = %d;\"\n",
 					    retry_config.max_retry_count, retry_config.max_retry_count * 10);
 				}
+				error_message += context.commit_error_hint(error.Message());
 				error.Throw(error_message);
 			}
 

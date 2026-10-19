@@ -46,7 +46,7 @@ namespace duckdb {
 //! The partition id that data files written under this spec carry (invalid when the table is not partitioned)
 static optional_idx GetPartitionId(optional_ptr<DuckLakePartition> partition_data) {
 	optional_idx result;
-	if (partition_data) {
+	if (partition_data && !partition_data->fields.empty()) {
 		result = partition_data->partition_id;
 	}
 	return result;

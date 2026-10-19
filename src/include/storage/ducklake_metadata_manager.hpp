@@ -260,6 +260,10 @@ public:
 	virtual bool IsRetryableCommitError(const string &) const {
 		return false;
 	}
+	//! Advice added to the error of a commit that failed for good
+	virtual string CommitErrorHint(const string &) const {
+		return string();
+	}
 
 	//! Run the commit retry loop with the metadata server handling retries.
 	virtual void FlushChangesServerSide(DuckLakeTransaction &transaction, DuckLakeSnapshot transaction_snapshot,
@@ -546,9 +550,10 @@ public:
 	static string RefreshTableSizesSql(const set<TableIndex> &table_ids);
 	static SnapshotChangeInfo
 	GetSnapshotAndStatsAndChanges(SnapshotAndStats &current_snapshot,
-	                              const std::function<unique_ptr<QueryResult>(string)> &executor,
-	                              bool include_exactness);
-	static string GetSnapshotAndStatsAndChangesQuery(bool include_exactness);
+	                              const std::function<unique_ptr<QueryResult>(string)> &executor, const string &query);
+	static string SnapshotAndStatsAndChangesQuery(bool include_exactness);
+	//! The query of the conflict check, which must read the latest snapshot and the table stats consistently
+	virtual string GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot snapshot, bool include_exactness) const;
 	static SnapshotChangeInfo ParseSnapshotAndStatsAndChanges(QueryResult &result, SnapshotAndStats &current_snapshot);
 	virtual unique_ptr<DuckLakeSnapshot> GetSnapshot();
 	virtual unique_ptr<DuckLakeSnapshot> GetSnapshot(BoundAtClause &at_clause, SnapshotBound bound,
@@ -611,6 +616,8 @@ public:
 	void MigrateInlinedSchemaVersions();
 	//! Restores the defaults that older versions dropped when they renamed a struct field
 	void MigrateRenamedFieldDefaults();
+	//! Clears the bounds that older versions may have stored in the type of a file or of an earlier column type
+	void MigrateRetypedBounds();
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
 	virtual void MigrateInlinedDataTypes() {
 	}
@@ -640,7 +647,7 @@ protected:
 	//! Wrap field selections with list aggregation of struct objects (DBMS-specific)
 	//! For DuckDB: LIST({'key1': val1, 'key2': val2, ...})
 	//! For Postgres: jsonb_agg(jsonb_build_object('key1', val1, 'key2', val2, ...))
-	static string ListAggregation(const vector<pair<string, string>> &fields);
+	static string ListAggregation(const vector<pair<string, string>> &fields, const string &order = string());
 	//! Parse tag list from ListAggregation value
 	static vector<DuckLakeTag> LoadTags(const Value &tag_map);
 	static vector<DuckLakeViewColumnTag> LoadViewColumnTags(const Value &list);

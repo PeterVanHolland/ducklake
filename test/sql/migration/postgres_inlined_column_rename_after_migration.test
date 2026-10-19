@@ -1,0 +1,121 @@
+# name: test/sql/migration/postgres_inlined_column_rename_after_migration.test
+# description: AUTOMATIC_MIGRATION renames the legacy inlined tables a v1.0 session that stayed attached creates in a v1.1 catalog
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require-env DUCKLAKE_CI
+
+require-env DUCKLAKE_CONNECTION
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.0')
+
+statement ok
+CREATE TABLE dl.t(i INTEGER);
+
+statement ok
+INSERT INTO dl.t VALUES (1);
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE)
+
+# a session that attached at v1.0 before the migration still commits on Postgres, with the v1.0 names
+statement ok
+UPDATE dlmeta.ducklake_metadata SET value = '1.0' WHERE key = 'version'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.0')
+
+statement ok
+CREATE TABLE dl.n(a INTEGER);
+
+statement ok
+INSERT INTO dl.n VALUES (2);
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN j INTEGER;
+
+statement ok
+INSERT INTO dl.t VALUES (3, 4);
+
+statement ok
+UPDATE dlmeta.ducklake_metadata SET value = '1.1' WHERE key = 'version'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10)
+
+statement error
+SELECT * FROM dl.n
+----
+reattach with AUTOMATIC_MIGRATION TRUE
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT * FROM dl.n
+----
+2
+
+query II
+SELECT * FROM dl.t ORDER BY i
+----
+1	NULL
+3	4
+
+statement ok
+INSERT INTO dl.n VALUES (5);
+
+statement ok
+DELETE FROM dl.n WHERE a = 2;
+
+statement ok
+CHECKPOINT dl
+
+query I
+SELECT * FROM dl.n
+----
+5
+
+# the CHECKPOINT flushed both tables
+query II
+SELECT count(*) > 0, (SELECT count(*) > 0 FROM ducklake_list_files('dl', 'n')) FROM ducklake_list_files('dl', 't')
+----
+true	true
+
+statement ok
+DETACH dl
+
+# the catalog stays readable without the option
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10)
+
+query II
+SELECT * FROM dl.t ORDER BY i
+----
+1	NULL
+3	4
+
+query I
+SELECT * FROM dl.n
+----
+5

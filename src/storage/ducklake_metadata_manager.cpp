@@ -574,15 +574,18 @@ case_insensitive_set_t DuckLakeMetadataManager::GetLegacyNamedInlinedTables() {
 	return legacy_tables;
 }
 
-void DuckLakeMetadataManager::RenameLegacyInlinedColumns() {
+void DuckLakeMetadataManager::RepairLegacyInlinedTables() {
 	auto legacy_tables = GetLegacyNamedInlinedTables();
-	if (!legacy_tables.empty()) {
-		MigrateInlinedColumnNames(false, &legacy_tables);
+	if (legacy_tables.empty()) {
+		return;
 	}
+	MigrateInlinedColumnNames(false, &legacy_tables);
+	// the v1.0 session can also register inlined tables without their schema versions
+	MigrateInlinedSchemaVersions();
 }
 
 void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed,
-                                                        optional_ptr<const case_insensitive_set_t> only_tables) {
+                                                        optional_ptr<const case_insensitive_set_t> legacy_tables) {
 	auto tables = Query(R"(
 SELECT idt.table_name AS inlined_table_name, tbl.table_name AS user_table_name
 FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
@@ -598,7 +601,7 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 	string renamed_probe;
 	for (auto &row : *tables) {
 		auto table_name = row.GetValue<string>(0);
-		if (only_tables && !only_tables->count(table_name)) {
+		if (legacy_tables && !legacy_tables->count(table_name)) {
 			continue;
 		}
 		auto user_table_name = row.IsNull(1) ? table_name : row.GetValue<string>(1);
@@ -644,6 +647,11 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 				break;
 			}
 			if (user_columns.count(entry.second)) {
+				if (legacy_tables) {
+					// the attach of a v1.1 catalog does not fail for a table it cannot rename
+					table_renames.clear();
+					break;
+				}
 				throw InvalidInputException(
 				    "Failed to rename inlined-data metadata columns while migrating to v1.1: table \"%s\" has a "
 				    "column \"%s\" colliding with the renamed metadata column. Rename the column and call "
@@ -653,6 +661,9 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 			table_renames.push_back(entry);
 		}
 		if (unexpected_layout) {
+			if (legacy_tables) {
+				continue;
+			}
 			throw InvalidInputException(
 			    "Failed to rename inlined-data metadata columns of \"%s\" while migrating to v1.1: the table has "
 			    "an unexpected column layout",

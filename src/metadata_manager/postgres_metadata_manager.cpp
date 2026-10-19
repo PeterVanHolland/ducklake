@@ -317,6 +317,27 @@ bool PostgresMetadataManager::InlinedDeletionTableExists(const string &table_nam
 	return result->Fetch() != nullptr;
 }
 
+case_insensitive_set_t PostgresMetadataManager::GetLegacyNamedInlinedTables() {
+	// the server catalog is current, the cached tables of the scanner can miss tables a v1.0 session created
+	auto &catalog = transaction.GetCatalog();
+	auto remote_query = StringUtil::Format(
+	    "SELECT c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+	    "JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid WHERE n.nspname = %s AND c.relkind = 'r' AND "
+	    "c.relname LIKE 'ducklake\\_inlined\\_data\\_%%' AND a.attnum = 1 AND a.attname = %s",
+	    SQLString::ToString(catalog.MetadataSchemaName().GetIdentifierName()),
+	    SQLString::ToString(DuckLakeInlinedColNames(false).row_id));
+	auto query = StringUtil::Format(
+	    "SELECT relname FROM postgres_query({METADATA_CATALOG_NAME_LITERAL}, %s, use_transaction = true)",
+	    SQLString::ToString(remote_query));
+	auto result = DuckLakeMetadataManager::Query(query);
+	result->ThrowIfError("Failed to list the inlined-data tables with v1.0 column names: ");
+	case_insensitive_set_t legacy_tables;
+	for (auto &row : *result) {
+		legacy_tables.insert(row.GetValue<string>(0));
+	}
+	return legacy_tables;
+}
+
 void PostgresMetadataManager::MigrateInlinedDataTypes() {
 	auto columns = DuckLakeMetadataManager::Query(GetInlinedTableColumnsSql());
 	columns->ThrowIfError("Failed to read the columns of inlined-data tables while migrating: ");

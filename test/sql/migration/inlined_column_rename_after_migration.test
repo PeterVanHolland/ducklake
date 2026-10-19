@@ -55,7 +55,7 @@ reattach with AUTOMATIC_MIGRATION TRUE
 statement ok
 DETACH dl
 
-# a read-only attach does not rename
+# read-only attaches do not rename
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE, READ_ONLY)
 
@@ -63,6 +63,15 @@ statement error
 SELECT * FROM dl.e
 ----
 reattach with AUTOMATIC_MIGRATION TRUE
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE, SNAPSHOT_VERSION 1)
+
+statement ok
+SELECT row_id FROM dlmeta.ducklake_inlined_data_2_2 LIMIT 0
 
 statement ok
 DETACH dl
@@ -94,7 +103,29 @@ SELECT * FROM dl.e
 statement ok
 DETACH dl
 
-# a second attach finds nothing to rename
+# a v1.0 session can create a column that collides with a renamed metadata column
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+UPDATE dlmeta.ducklake_metadata SET value = '1.0' WHERE key = 'version'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.0')
+
+statement ok
+CREATE TABLE dl.c(_ducklake_row_id INTEGER);
+
+statement ok
+UPDATE dlmeta.ducklake_metadata SET value = '1.1' WHERE key = 'version'
+
+statement ok
+DETACH dl
+
+# the attach leaves that table alone
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE)
 
@@ -102,3 +133,8 @@ query II
 SELECT (SELECT i FROM dl.t), (SELECT i FROM dl.e)
 ----
 1	2
+
+statement error
+SELECT * FROM dl.c
+----
+reattach with AUTOMATIC_MIGRATION TRUE

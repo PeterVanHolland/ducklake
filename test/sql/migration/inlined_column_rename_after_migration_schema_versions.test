@@ -1,0 +1,54 @@
+# name: test/sql/migration/inlined_column_rename_after_migration_schema_versions.test
+# description: AUTOMATIC_MIGRATION also adds the schema versions a v1.0 session leaves out after the migration
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.6, m and r got inlined rows in the commit of their ALTER
+unzip data/old_ducklake/inlined_schema_versions.db.gz {TEST_DIR}/inlined_rename_after_schema_versions.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/inlined_rename_after_schema_versions.db' AS lake (DATA_PATH '{TEST_DIR}/inlined_rename_after_schema_versions', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+# leave m and r as DuckDB 1.5.6 writes them when it commits after the migration
+foreach tbl ducklake_inlined_data_2_7 ducklake_inlined_data_3_7
+
+foreach col row_id begin_snapshot end_snapshot
+
+statement ok
+ALTER TABLE meta.${tbl} RENAME COLUMN _ducklake_${col} TO ${col}
+
+endloop
+
+endloop
+
+statement ok
+DELETE FROM meta.ducklake_schema_versions WHERE table_id IN (2, 3) AND begin_snapshot = 7 AND schema_version = 7
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/inlined_rename_after_schema_versions.db' AS lake (DATA_PATH '{TEST_DIR}/inlined_rename_after_schema_versions', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+query III
+SELECT table_id, begin_snapshot, schema_version FROM meta.ducklake_schema_versions WHERE table_id IN (2, 3) ORDER BY ALL
+----
+2	3	3
+2	7	7
+2	7	8
+3	4	4
+3	7	7
+3	7	8
+
+query II
+SELECT a, b FROM lake.m
+----
+100	5
+
+query I
+SELECT b FROM lake.r
+----
+5

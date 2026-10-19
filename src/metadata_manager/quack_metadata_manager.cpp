@@ -75,6 +75,22 @@ bool QuackMetadataManager::InlinedDeletionTableExists(const string &table_name) 
 	return result->Fetch() != nullptr;
 }
 
+case_insensitive_set_t QuackMetadataManager::GetLegacyNamedInlinedTables() {
+	// the server catalog is current, the cached tables of the client can miss tables a v1.0 session created
+	auto query = StringUtil::Format(
+	    "SELECT table_name FROM duckdb_columns() WHERE database_name = current_database() AND schema_name = "
+	    "{METADATA_SCHEMA_NAME_LITERAL} AND column_index = 1 AND column_name = %s AND "
+	    "starts_with(table_name, 'ducklake_inlined_data_')",
+	    SQLString::ToString(DuckLakeInlinedColNames(false).row_id));
+	auto result = Query(query);
+	result->ThrowIfError("Failed to list the inlined-data tables with v1.0 column names: ");
+	case_insensitive_set_t legacy_tables;
+	for (auto &row : *result) {
+		legacy_tables.insert(row.GetValue<string>(0));
+	}
+	return legacy_tables;
+}
+
 void QuackMetadataManager::ClearCache() {
 	lock_guard<std::recursive_mutex> guard(transaction.GetCatalog().GetMetadataQueryLock());
 	string clear = "CALL quack_clear_cache();";

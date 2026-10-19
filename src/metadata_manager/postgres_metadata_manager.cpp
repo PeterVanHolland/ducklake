@@ -287,19 +287,20 @@ string PostgresMetadataManager::GetColumnTypeInternal(const LogicalType &column_
 }
 
 string PostgresMetadataManager::CommitErrorWithoutQuery(const string &message) const {
-	// the failed query can contain any text, so it is cut by its size
-	const string failed_query = "Failed to execute query \"";
 	const string query_end_marker = "\": ";
-	auto query_start = message.find(failed_query);
-	if (query_start == string::npos) {
-		return message;
+	// the batch of Execute and the server error can contain any text, so the batch is cut by its size
+	const string failed_batch = "Failed to execute query \"";
+	auto batch_start = message.find(failed_batch);
+	if (batch_start != string::npos) {
+		auto batch_end = batch_start + failed_batch.size() + executed_query_size;
+		if (batch_end + query_end_marker.size() <= message.size() &&
+		    message.compare(batch_end, query_end_marker.size(), query_end_marker) == 0) {
+			return message.substr(batch_end);
+		}
 	}
-	auto query_end = query_start + failed_query.size() + executed_query_size;
-	if (query_end + query_end_marker.size() > message.size() ||
-	    message.compare(query_end, query_end_marker.size(), query_end_marker) != 0) {
-		return message;
-	}
-	return message.substr(0, query_start) + message.substr(query_end + query_end_marker.size());
+	// the server error of another failed query follows its last quote and colon
+	auto server_error_start = message.rfind(query_end_marker);
+	return server_error_start == string::npos ? message : message.substr(server_error_start);
 }
 
 bool PostgresMetadataManager::IsRetryableCommitError(const string &message) const {
@@ -409,12 +410,9 @@ unique_ptr<QueryResult> PostgresMetadataManager::Execute(DuckLakeSnapshot snapsh
 	auto catalog_literal = SQLString::ToString(ducklake_catalog.MetadataDatabaseName());
 	// casts of float bounds to text keep their exact value
 	query = "SET LOCAL extra_float_digits = 3;" + query;
-	// the scanner repeats the query without its trailing semicolons
+	// the scanner drops trailing semicolons before it repeats the query in an error
+	StringUtil::RTrim(query, "; \t\n\v\f\r");
 	executed_query_size = query.size();
-	while (executed_query_size > 0 &&
-	       (query[executed_query_size - 1] == ';' || StringUtil::CharacterIsSpace(query[executed_query_size - 1]))) {
-		executed_query_size--;
-	}
 	auto result = transaction.GetConnection().Query(
 	    StringUtil::Format("CALL postgres_execute(%s, %s, prepare=FALSE)", catalog_literal, SQLString(query)));
 	return std::move(result);

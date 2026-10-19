@@ -1756,6 +1756,14 @@ void DuckLakeTransactionState::GetNewTableInfo(DuckLakeCommitState &commit_state
 				// rows that are NULL in this column may only be inlined under the new schema version
 				column_schema_change = true;
 			}
+			if (local_change.type == LocalChangeType::RENAME_COLUMN) {
+				column_schema_change = true;
+				// persist updated sort expressions (column name was updated in the table entry)
+				if (table.GetSortData()) {
+					auto sort_key = DuckLakeTransaction::GetNewSortKey(commit_state, table);
+					result.new_sort_keys.push_back(std::move(sort_key));
+				}
+			}
 			auto &remaining = field_alter_remaining[local_change.field_index];
 			remaining--;
 			// This is an older thus superseded entry for a field that is altered for multiple times in this
@@ -1778,14 +1786,6 @@ void DuckLakeTransactionState::GetNewTableInfo(DuckLakeCommitState &commit_state
 
 			transaction_changes.altered_tables.insert(table_id);
 			transaction_changes.altered_tables_with_schema_version_changes.insert(table_id);
-			if (local_change.type == LocalChangeType::RENAME_COLUMN) {
-				column_schema_change = true;
-				// persist updated sort expressions (column name was updated in the table entry)
-				if (table.GetSortData()) {
-					auto sort_key = DuckLakeTransaction::GetNewSortKey(commit_state, table);
-					result.new_sort_keys.push_back(std::move(sort_key));
-				}
-			}
 			break;
 		}
 		case LocalChangeType::REMOVE_COLUMN:
@@ -2630,7 +2630,7 @@ SnapshotAndStats DuckLakeTransactionState::CheckForConflicts(DuckLakeSnapshot tr
 	SnapshotAndStats snapshot_and_stats;
 	// get all changes made to the system after the current snapshot was started
 	auto changes_made = DuckLakeMetadataManager::GetSnapshotAndStatsAndChanges(
-	    snapshot_and_stats, context.conflict_query_executor, context.supports_v1_1_metadata);
+	    snapshot_and_stats, context.conflict_query_executor, context.snapshot_and_stats_query);
 	// parse changes made by other transactions
 	auto other_changes = SnapshotChangeInformation::ParseChangesMade(changes_made.changes_made);
 
@@ -2719,6 +2719,7 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 					    ". Consider increasing the value with: e.g., \"SET ducklake_max_retry_count = %d;\"\n",
 					    retry_config.max_retry_count, retry_config.max_retry_count * 10);
 				}
+				error_message += context.commit_error_hint(error.Message());
 				error.Throw(error_message);
 			}
 

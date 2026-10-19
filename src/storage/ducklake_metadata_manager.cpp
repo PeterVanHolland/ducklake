@@ -185,12 +185,13 @@ static DuckLakePath ReadPath(const QueryResultRow &row, idx_t col) {
 	return path;
 }
 
-string DuckLakeMetadataManager::ListAggregation(const vector<pair<string, string>> &fields) {
+string DuckLakeMetadataManager::ListAggregation(const vector<pair<string, string>> &fields, const string &order) {
 	// DuckDB syntax: LIST({'key1': val1, 'key2': val2, ...})
 	auto fields_part = StringUtil::Join(fields, fields.size(), ", ", [](const pair<string, string> &entry) {
 		return "'" + entry.first + "': " + entry.second;
 	});
-	return "LIST({" + fields_part + "})";
+	auto order_part = order.empty() ? string() : " ORDER BY " + order;
+	return "LIST({" + fields_part + "}" + order_part + ")";
 }
 
 unique_ptr<QueryResult> DuckLakeMetadataManager::AttachMetadata(const string &attach_query) {
@@ -354,7 +355,7 @@ ALTER TABLE {METADATA_CATALOG}.ducklake_metadata ADD COLUMN scope_id BIGINT;
 ALTER TABLE {METADATA_CATALOG}.ducklake_data_file ADD COLUMN mapping_id BIGINT;
 CREATE TABLE {METADATA_CATALOG}.ducklake_column_mapping(mapping_id BIGINT, table_id BIGINT, type VARCHAR);
 CREATE TABLE {METADATA_CATALOG}.ducklake_name_mapping(mapping_id BIGINT, column_id BIGINT, source_name VARCHAR, target_field_id BIGINT, parent_column BIGINT);
-UPDATE {METADATA_CATALOG}.ducklake_partition_column SET column_id = (SELECT LIST(column_id ORDER BY column_order) FROM {METADATA_CATALOG}.ducklake_column WHERE table_id = ducklake_partition_column.table_id AND parent_column IS NULL AND end_snapshot IS NULL)[ducklake_partition_column.column_id + 1];
+UPDATE {METADATA_CATALOG}.ducklake_partition_column SET column_id = (SELECT LIST(column_id ORDER BY column_order ASC) FROM {METADATA_CATALOG}.ducklake_column WHERE table_id = ducklake_partition_column.table_id AND parent_column IS NULL AND end_snapshot IS NULL)[ducklake_partition_column.column_id + 1];
 UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '0.2' WHERE key = 'version';
 	)";
 	auto result = Execute(migrate_query);
@@ -387,7 +388,7 @@ ALTER TABLE {METADATA_CATALOG}.ducklake_snapshot_changes ADD COLUMN {IF_NOT_EXIS
 ALTER TABLE {METADATA_CATALOG}.ducklake_snapshot_changes ADD COLUMN {IF_NOT_EXISTS} commit_extra_info VARCHAR DEFAULT NULL;
 UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '0.3' WHERE key = 'version';
 CREATE TABLE {IF_NOT_EXISTS} {METADATA_CATALOG}.ducklake_schema_versions(begin_snapshot BIGINT, schema_version BIGINT);
-INSERT INTO {METADATA_CATALOG}.ducklake_schema_versions SELECT * FROM (SELECT MIN(snapshot_id), schema_version FROM {METADATA_CATALOG}.ducklake_snapshot GROUP BY schema_version ORDER BY schema_version) t {WHERE_EMPTY};
+INSERT INTO {METADATA_CATALOG}.ducklake_schema_versions SELECT * FROM (SELECT MIN(snapshot_id), schema_version FROM {METADATA_CATALOG}.ducklake_snapshot GROUP BY schema_version ORDER BY schema_version ASC) t {WHERE_EMPTY};
 ALTER TABLE {IF_EXISTS} {METADATA_CATALOG}.ducklake_file_column_statistics RENAME TO ducklake_file_column_stats;
 ALTER TABLE {METADATA_CATALOG}.ducklake_file_column_stats ADD COLUMN {IF_NOT_EXISTS} extra_stats VARCHAR DEFAULT NULL;
 ALTER TABLE {METADATA_CATALOG}.ducklake_table_column_stats ADD COLUMN {IF_NOT_EXISTS} extra_stats VARCHAR DEFAULT NULL;
@@ -500,8 +501,8 @@ void DuckLakeMetadataManager::MigrateInlinedSchemaVersions() {
 INSERT INTO {METADATA_CATALOG}.ducklake_schema_versions (begin_snapshot, schema_version, table_id)
 SELECT DISTINCT commits.snapshot_id, idt.schema_version, idt.table_id
 FROM (
-	SELECT snapshot_id, schema_version, LAG(snapshot_id) OVER (ORDER BY snapshot_id) AS previous_snapshot_id,
-		LAG(schema_version) OVER (ORDER BY snapshot_id) AS previous_schema_version
+	SELECT snapshot_id, schema_version, LAG(snapshot_id) OVER (ORDER BY snapshot_id ASC) AS previous_snapshot_id,
+		LAG(schema_version) OVER (ORDER BY snapshot_id ASC) AS previous_schema_version
 	FROM {METADATA_CATALOG}.ducklake_snapshot
 ) commits
 JOIN {METADATA_CATALOG}.ducklake_inlined_data_tables idt
@@ -1025,7 +1026,7 @@ FROM {METADATA_CATALOG}.ducklake_column
 WHERE table_id = %d
   AND {SNAPSHOT_ID} >= begin_snapshot
   AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
-ORDER BY column_order)",
+ORDER BY column_order ASC)",
 	                          table_id.index);
 }
 
@@ -1162,7 +1163,7 @@ FROM {METADATA_CATALOG}.ducklake_table tbl
 LEFT JOIN {METADATA_CATALOG}.ducklake_column col USING (table_id)
 WHERE {SNAPSHOT_ID} >= tbl.begin_snapshot AND ({SNAPSHOT_ID} < tbl.end_snapshot OR tbl.end_snapshot IS NULL)
   AND (({SNAPSHOT_ID} >= col.begin_snapshot AND ({SNAPSHOT_ID} < col.end_snapshot OR col.end_snapshot IS NULL)) OR column_id IS NULL)
-ORDER BY table_id, parent_column NULLS FIRST, column_order
+ORDER BY table_id ASC, parent_column ASC NULLS FIRST, column_order ASC
 )",
 	                                           ListAggregation(TAG_FIELDS), ListAggregation(INLINED_DATA_TABLES_FIELDS),
 	                                           ListAggregation(TAG_FIELDS)));
@@ -1314,7 +1315,7 @@ WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < view.end_snapshot OR 
 		AND ducklake_macro_impl.impl_id = ducklake_macro_parameters.impl_id
 		)
 	)",
-	                                            ListAggregation(MACRO_PARAM_FIELDS));
+	                                            ListAggregation(MACRO_PARAM_FIELDS, "column_id ASC"));
 	const vector<pair<string, string>> MACRO_IMPL_FIELDS = {
 	    {"dialect", "dialect"}, {"sql", "sql"}, {"type", "type"}, {"params", macro_param_query}};
 
@@ -1347,7 +1348,7 @@ SELECT partition_id, part.table_id, partition_key_index, column_id, transform
 FROM {METADATA_CATALOG}.ducklake_partition_info part
 JOIN {METADATA_CATALOG}.ducklake_partition_column part_col USING (partition_id)
 WHERE {SNAPSHOT_ID} >= part.begin_snapshot AND ({SNAPSHOT_ID} < part.end_snapshot OR part.end_snapshot IS NULL)
-ORDER BY part.table_id, partition_id, partition_key_index
+ORDER BY part.table_id ASC, partition_id ASC, partition_key_index ASC
 )");
 	result->ThrowIfError("Failed to get partition information from DuckLake: ");
 	auto &partitions = catalog.partitions;
@@ -1376,7 +1377,7 @@ SELECT sort.sort_id, sort.table_id, sort_expr.sort_key_index, sort_expr.expressi
 FROM {METADATA_CATALOG}.ducklake_sort_info sort
 JOIN {METADATA_CATALOG}.ducklake_sort_expression sort_expr USING (sort_id)
 WHERE {SNAPSHOT_ID} >= sort.begin_snapshot AND ({SNAPSHOT_ID} < sort.end_snapshot OR sort.end_snapshot IS NULL)
-ORDER BY sort.table_id, sort.sort_id, sort_expr.sort_key_index
+ORDER BY sort.table_id ASC, sort.sort_id ASC, sort_expr.sort_key_index ASC
 )");
 	result->ThrowIfError("Failed to get sort information from DuckLake: ");
 	auto &sorts = catalog.sorts;
@@ -1466,7 +1467,7 @@ static string TableStatsQuery(const string &select_list, bool include_column_sta
 		query += "LEFT JOIN {METADATA_CATALOG}.ducklake_table_column_stats USING (table_id)\n";
 	}
 	if (include_column_stats) {
-		query += "ORDER BY table_id\n";
+		query += "ORDER BY table_id ASC\n";
 	}
 	return query + ";\n";
 }
@@ -2534,7 +2535,7 @@ LEFT JOIN LATERAL (
 		format
 	FROM {METADATA_CATALOG}.ducklake_delete_file
 	WHERE table_id = %d AND begin_snapshot < %d
-	ORDER BY data_file_id, begin_snapshot DESC
+	ORDER BY data_file_id ASC, begin_snapshot DESC
 ) AS previous_delete
 USING (data_file_id)
 JOIN (
@@ -2562,7 +2563,7 @@ LEFT JOIN LATERAL (
 		format
 	FROM {METADATA_CATALOG}.ducklake_delete_file
 	WHERE table_id = %d AND begin_snapshot <= data.end_snapshot
-	ORDER BY data_file_id, begin_snapshot DESC
+	ORDER BY data_file_id ASC, begin_snapshot DESC
 ) AS previous_delete
 USING (data_file_id), (
 	SELECT CAST(NULL AS VARCHAR) AS path,
@@ -2814,13 +2815,13 @@ WITH %ssnapshot_ranges AS (
 	SELECT
 		begin_snapshot,
 		COALESCE(
-			LEAD(begin_snapshot) OVER (ORDER BY begin_snapshot),
+			LEAD(begin_snapshot) OVER (ORDER BY begin_snapshot ASC),
 			9223372036854775807
 		) AS end_snapshot,
 		schema_version
 	FROM {METADATA_CATALOG}.ducklake_schema_versions
 	WHERE table_id=%d
-	ORDER BY begin_snapshot
+	ORDER BY begin_snapshot ASC
 )
 SELECT %s
 FROM %s
@@ -2840,12 +2841,12 @@ LEFT JOIN (
 	WHERE table_id=%d%s
 ) del USING (data_file_id)
 LEFT JOIN (
-	SELECT data_file_id, ARRAY_AGG(partition_value ORDER BY partition_key_index) keys
+	SELECT data_file_id, ARRAY_AGG(partition_value ORDER BY partition_key_index ASC) keys
 	FROM {METADATA_CATALOG}.ducklake_file_partition_value%s
 	GROUP BY data_file_id
 ) partition_info USING (data_file_id)
 WHERE data.table_id=%d %s
-ORDER BY data.begin_snapshot, data.row_id_start, data.data_file_id, del.begin_snapshot
+ORDER BY data.begin_snapshot ASC, data.row_id_start ASC, data.data_file_id ASC, del.begin_snapshot ASC
 	)",
 	                                candidate_files_cte, table_id.index, select_list, data_file_source, table_id.index,
 	                                delete_file_filter, partition_value_filter, table_id.index, file_filter_clause);
@@ -3248,8 +3249,9 @@ string DuckLakeMetadataManager::LatestInlinedTableQuery(idx_t table_id) {
 }
 
 string DuckLakeMetadataManager::GetColumnDefinitions(const vector<DuckLakeColumnInfo> &columns) {
+	// the DDL runs on the metadata database, whose keywords differ from DuckDB's
 	return StringUtil::Join(columns, columns.size(), ", ", [&](const DuckLakeColumnInfo &col) {
-		return StringUtil::Format("%s %s", SQLIdentifier(col.name), GetColumnType(col));
+		return StringUtil::Format("%s %s", SQLQuotedIdentifier::ToString(col.name), GetColumnType(col));
 	});
 }
 
@@ -3945,7 +3947,7 @@ unique_ptr<QueryResult> DuckLakeMetadataManager::ReadInlinedData(DuckLakeSnapsho
 SELECT %s
 FROM {METADATA_CATALOG}.%s inlined_data
 WHERE {SNAPSHOT_ID} >= %s AND ({SNAPSHOT_ID} < %s OR %s IS NULL)
-ORDER BY %s;)",
+ORDER BY %s ASC;)",
 	                                                 projection, inlined_table_name, col_names.begin_snapshot,
 	                                                 col_names.end_snapshot, col_names.end_snapshot, col_names.row_id));
 	return result;
@@ -4030,7 +4032,7 @@ WHERE data.table_id = %d
   AND data.data_file_id < {NEXT_FILE_ID}
   AND {SNAPSHOT_ID} >= data.begin_snapshot
   AND ({SNAPSHOT_ID} < data.end_snapshot OR data.end_snapshot IS NULL)
-ORDER BY data.data_file_id;
+ORDER BY data.data_file_id ASC;
 )",
 	                          table_id.index);
 }
@@ -4641,7 +4643,7 @@ SELECT mapping_id, table_id, type, column_id, source_name, target_field_id, pare
 FROM {METADATA_CATALOG}.ducklake_column_mapping
 JOIN {METADATA_CATALOG}.ducklake_name_mapping USING (mapping_id)
 %s
-ORDER BY mapping_id, parent_column NULLS FIRST
+ORDER BY mapping_id ASC, parent_column ASC NULLS FIRST
 )",
 	                                       filter));
 	vector<DuckLakeColumnMappingInfo> column_maps;
@@ -4704,7 +4706,7 @@ string DuckLakeMetadataManager::WriteSnapshotChangesSql(const SnapshotChangeInfo
 	    commit_info.commit_message.ToSQLString(), commit_info.commit_extra_info.ToSQLString());
 }
 
-string DuckLakeMetadataManager::GetSnapshotAndStatsAndChangesQuery(bool include_exactness) {
+string DuckLakeMetadataManager::SnapshotAndStatsAndChangesQuery(bool include_exactness) {
 	// both UNION arms must stay column-aligned - extend them together
 	string snapshot_arm_padding;
 	string stats_arm_columns;
@@ -4759,7 +4761,7 @@ SELECT
 FROM {METADATA_CATALOG}.ducklake_table_stats
 LEFT JOIN {METADATA_CATALOG}.ducklake_table_column_stats
     USING (table_id)
-ORDER BY table_id NULLS FIRST;
+ORDER BY table_id ASC NULLS FIRST;
 	)";
 }
 
@@ -4783,11 +4785,15 @@ SnapshotChangeInfo DuckLakeMetadataManager::ParseSnapshotAndStatsAndChanges(Quer
 	return change_info;
 }
 
+string DuckLakeMetadataManager::GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot, bool include_exactness) const {
+	return SnapshotAndStatsAndChangesQuery(include_exactness);
+}
+
 SnapshotChangeInfo
 DuckLakeMetadataManager::GetSnapshotAndStatsAndChanges(SnapshotAndStats &current_snapshot,
                                                        const std::function<unique_ptr<QueryResult>(string)> &executor,
-                                                       bool include_exactness) {
-	auto result = executor(GetSnapshotAndStatsAndChangesQuery(include_exactness));
+                                                       const string &query) {
+	auto result = executor(query);
 	auto change_info = ParseSnapshotAndStatsAndChanges(*result, current_snapshot);
 	FillMissingTableSizes(current_snapshot.stats, executor);
 	return change_info;
@@ -5172,7 +5178,7 @@ SELECT snapshot_id, snapshot_time, schema_version, next_file_id, changes_made, a
 FROM {METADATA_CATALOG}.ducklake_snapshot
 LEFT JOIN {METADATA_CATALOG}.ducklake_snapshot_changes USING (snapshot_id)
 %s %s
-ORDER BY snapshot_id
+ORDER BY snapshot_id ASC
 )",
 	                                    filter.empty() ? "" : "WHERE", filter));
 	res->ThrowIfError("Failed to get snapshot information from DuckLake: ");

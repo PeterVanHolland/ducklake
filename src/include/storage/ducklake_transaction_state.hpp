@@ -33,6 +33,8 @@ using DuckLakeInlinedTableColumns = map<string, map<FieldIndex, DuckLakeColumnSc
 struct DuckLakeCommitContext {
 	//! Runs a metadata-DB query during conflict resolution.
 	std::function<unique_ptr<QueryResult>(string)> conflict_query_executor;
+	//! The query of the latest snapshot, its table stats and the changes since the transaction snapshot
+	string snapshot_and_stats_query;
 	//! Whether the inlined file deletion table of a table exists, it is created lazily
 	std::function<bool(TableIndex)> inlined_file_deletion_table_exists;
 	//! Returns the latest snapshot for the first commit attempt.

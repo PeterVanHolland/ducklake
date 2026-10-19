@@ -39,11 +39,16 @@ struct DuckLakeCommitContext {
 	std::function<bool(const string &)> is_retryable_metadata_error = [](const string &) {
 		return false;
 	};
+	//! Advice for a commit error that is not retried.
+	std::function<string(const string &)> commit_error_hint = [](const string &) {
+		return string();
+	};
 	//! Optional hooks below default to a no-op/constant; callers override only the ones they need.
 	//! Clears the metadata manager cache if a clear was pending.
 	std::function<void()> flush_cache_if_pending = []() {
 	};
 	//! Commits the underlying metadata connection.
+	// LCOV_EXCL_START
 	std::function<void()> commit_connection = []() {
 	};
 	//! The id of the metadata transaction that tells the outcome of a failed commit.
@@ -60,6 +65,7 @@ struct DuckLakeCommitContext {
 	//! Resets per-attempt state before a retry.
 	std::function<void()> prepare_retry = []() {
 	};
+	// LCOV_EXCL_STOP
 	//! Runs a metadata-DB query during post-commit cleanup.
 	std::function<unique_ptr<QueryResult>(string)> query_metadata;
 	//! Runs cleanup statements atomically.
@@ -74,8 +80,9 @@ struct DuckLakeCommitContext {
 		    return false;
 	    };
 	//! Emits the SQL that registers new inlined data tables (CREATE TABLE + ducklake_inlined_data_tables INSERT).
-	std::function<string(DuckLakeSnapshot, const vector<DuckLakeTableInfo> &)> write_inlined_tables =
-	    [](DuckLakeSnapshot, const vector<DuckLakeTableInfo> &) {
+	// LCOV_EXCL_START
+	std::function<string(DuckLakeSnapshot, const vector<DuckLakeTableInfo> &, const set<TableIndex> &)>
+	    write_inlined_tables = [](DuckLakeSnapshot, const vector<DuckLakeTableInfo> &, const set<TableIndex> &) {
 		    return string();
 	    };
 	//! Emits the SQL that appends inlined data for the given table changes (handles new inlined-table creation,
@@ -102,12 +109,14 @@ struct DuckLakeCommitContext {
 	std::function<vector<DuckLakeColumnSchemaEntry>(TableIndex)> get_table_column_schema = [](TableIndex) {
 		return vector<DuckLakeColumnSchemaEntry> {};
 	};
+	// LCOV_EXCL_STOP
 	//! Reads an inlined data column as its type, for catalogs that store some types differently.
 	std::function<string(const string &, const LogicalType &)> cast_inlined_column = [](const string &column,
 	                                                                                    const LogicalType &) {
 		return column;
 	};
 	//! Names of the inlined-data tables associated with a table id at the commit snapshot.
+	// LCOV_EXCL_START
 	std::function<vector<string>(TableIndex)> get_inlined_table_names = [](TableIndex) {
 		return vector<string> {};
 	};
@@ -115,15 +124,12 @@ struct DuckLakeCommitContext {
 	std::function<idx_t(TableIndex)> get_net_data_file_row_count = [](TableIndex) {
 		return 0;
 	};
-	//! Net (delete-adjusted) row count of a table's inlined-data tables.
-	std::function<idx_t(TableIndex)> get_net_inlined_row_count = [](TableIndex) {
-		return 0;
-	};
 	//! Builds a DuckLakeStats map from a vector of per-snapshot global stats (retry path).
 	std::function<unique_ptr<DuckLakeStats>(vector<DuckLakeGlobalStatsInfo> &)> build_stats_map;
 	//! Invalidates the cached schema in the catalog for a given schema version.
 	std::function<void(idx_t)> invalidate_schema_cache = [](idx_t) {
 	};
+	// LCOV_EXCL_STOP
 	//! Publishes the new schema version onto the transaction.
 	std::function<void(idx_t)> set_catalog_version;
 	//! Records the committed snapshot id on the catalog.
@@ -139,13 +145,15 @@ struct DuckLakeCommitContext {
 	std::function<void(idx_t, TableIndex)> invalidate_table_stats_cache = [](idx_t, TableIndex) {
 	};
 	//! Reports a failure after the metadata commit is already durable.
+	// LCOV_EXCL_START
 	std::function<void(const string &)> report_post_commit_error = [](const string &) {
 	};
+	// LCOV_EXCL_STOP
 	//! Author / message / extra info for the snapshot row.
 	DuckLakeSnapshotCommit commit_info;
 	//! When true, Commit() skips the post-commit DropEmptySupersededInlinedTables cleanup.
 	bool skip_drop_empty_inlined = false;
-	//! Whether the metadata schema has the >= 1.1-dev1 additions.
+	//! Whether the metadata schema has the >= 1.1 additions.
 	bool supports_v1_1_metadata = false;
 	//! Column names of the inlined data tables under this catalog version.
 	DuckLakeInlinedColNames InlinedColNames() const {

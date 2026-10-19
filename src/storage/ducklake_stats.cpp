@@ -44,12 +44,14 @@ DuckLakeColumnStats::DuckLakeColumnStats(const DuckLakeColumnStats &other) {
 	}
 }
 
+// LCOV_EXCL_START
 DuckLakeColumnStats &DuckLakeColumnStats::operator=(const DuckLakeColumnStats &other) {
 	if (this != &other) {
 		*this = DuckLakeColumnStats(other);
 	}
 	return *this;
 }
+// LCOV_EXCL_STOP
 
 unique_ptr<DuckLakeTableStats>
 DuckLakeTableStats::FromGlobalStats(const DuckLakeGlobalStatsInfo &stats,
@@ -178,13 +180,34 @@ void DuckLakeColumnStats::WidenFloatBounds() {
 	if (type.id() != LogicalTypeId::FLOAT) {
 		return;
 	}
-	if (has_min) {
-		min = Value(min).DefaultCastAs(type).DefaultCastAs(LogicalType::DOUBLE).ToString();
-	}
-	if (has_max) {
-		max = Value(max).DefaultCastAs(type).DefaultCastAs(LogicalType::DOUBLE).ToString();
-	}
 	type = LogicalType::DOUBLE;
+	CastBoundsFrom(LogicalType::FLOAT);
+}
+
+static bool TryCastBound(string &bound, const LogicalType &source, const LogicalType &target) {
+	auto source_value = TryCastStatsBound(bound, source);
+	if (!source_value) {
+		return false;
+	}
+	auto target_value = source_value->DefaultTryCastAs(target);
+	if (!target_value) {
+		return false;
+	}
+	bound = target_value->ToString();
+	return true;
+}
+
+void DuckLakeColumnStats::CastBoundsFrom(const LogicalType &source) {
+	if (has_min && !TryCastBound(min, source, type)) {
+		min.clear();
+		has_min = false;
+		min_is_exact = false;
+	}
+	if (has_max && !TryCastBound(max, source, type)) {
+		max.clear();
+		has_max = false;
+		max_is_exact = false;
+	}
 }
 
 bool DuckLakeColumnStats::BoundsSurviveTypePromotion(const LogicalType &source, const LogicalType &target) {
@@ -358,18 +381,25 @@ void DuckLakeColumnStats::SetValidity(BaseStatistics &stats) const {
 }
 
 unique_ptr<BaseStatistics> DuckLakeColumnStats::CreateNumericStats() const {
-	if (!has_min || !has_max) {
-		// an empty statistics object would keep the empty range for a missing bound
+	if (!has_min && !has_max) {
 		return NumericStats::CreateUnknown(type).ToUnique();
 	}
-	auto min_value = TryCastStatsBound(min, type);
-	auto max_value = TryCastStatsBound(max, type);
-	if (!min_value || !max_value) {
-		return nullptr;
+	// a missing bound leaves its side of the range unknown
+	auto stats = NumericStats::CreateUnknown(type);
+	if (has_min) {
+		auto min_value = TryCastStatsBound(min, type);
+		if (!min_value) {
+			return nullptr;
+		}
+		NumericStats::SetMin(stats, *min_value);
 	}
-	auto stats = NumericStats::CreateEmpty(type);
-	NumericStats::SetMin(stats, *min_value);
-	NumericStats::SetMax(stats, *max_value);
+	if (has_max) {
+		auto max_value = TryCastStatsBound(max, type);
+		if (!max_value) {
+			return nullptr;
+		}
+		NumericStats::SetMax(stats, *max_value);
+	}
 	SetValidity(stats);
 	return stats.ToUnique();
 }

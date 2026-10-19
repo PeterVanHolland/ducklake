@@ -35,6 +35,7 @@ struct NewTableInfo {
 	vector<DuckLakeViewColumnTagInfo> new_view_column_tags;
 	vector<DuckLakeDroppedColumn> dropped_columns;
 	vector<DuckLakeNewColumn> new_columns;
+	vector<DuckLakeNewColumn> dropped_new_columns;
 	vector<DuckLakeTableInfo> new_inlined_data_tables;
 	vector<DuckLakeSortInfo> new_sort_keys;
 	vector<DuckLakeConfigOption> new_table_options;
@@ -74,6 +75,8 @@ struct DuckLakeCommitState {
 	map<TableIndex, set<FieldIndex>> float_bounds_to_clear;
 	//! The oid of each entry that gets its id in this commit
 	ducklake_entry_oids_t new_entry_oids;
+	//! The existing tables that get a new inlined data table in this commit
+	set<TableIndex> replaced_inlined_tables;
 
 	void AddNewEntry(const CatalogEntry &entry, idx_t id) {
 		new_entry_oids.emplace(make_pair(entry.type, id), entry.oid);

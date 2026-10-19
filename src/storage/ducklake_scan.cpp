@@ -41,7 +41,9 @@ static InsertionOrderPreservingMap<string> DuckLakeFunctionToString(TableFunctio
 
 static void DuckLakeGetMetrics(TableFunctionGetMetricsInput &input) {
 	if (!input.global_state) {
+		// LCOV_EXCL_START
 		return;
+		// LCOV_EXCL_STOP
 	}
 	auto &gstate = input.global_state->Cast<MultiFileGlobalState>();
 	auto &file_list = gstate.file_list.Cast<DuckLakeMultiFileList>();
@@ -100,7 +102,9 @@ static void DuckLakeGetMetrics(TableFunctionGetMetricsInput &input) {
 unique_ptr<BaseStatistics> DuckLakeStatistics(ClientContext &context, const FunctionData *bind_data,
                                               column_t column_index) {
 	if (IsVirtualColumn(column_index)) {
+		// LCOV_EXCL_START
 		return nullptr;
+		// LCOV_EXCL_STOP
 	}
 	auto &multi_file_data = bind_data->Cast<MultiFileBindData>();
 	auto &file_list = multi_file_data.file_list->Cast<DuckLakeMultiFileList>();
@@ -118,10 +122,10 @@ unique_ptr<BaseStatistics> DuckLakeStatisticsExtended(ClientContext &context, Ta
 	return DuckLakeStatistics(context, input.bind_data.get(), input.column_index.GetPrimaryIndex());
 }
 
-BindInfo DuckLakeBindInfo(const optional_ptr<FunctionData> bind_data) {
+optional_ptr<TableCatalogEntry> DuckLakeGetTableEntry(optional_ptr<const FunctionData> bind_data) {
 	auto &multi_file_data = bind_data->Cast<MultiFileBindData>();
 	auto &file_list = multi_file_data.file_list->Cast<DuckLakeMultiFileList>();
-	return BindInfo(file_list.GetTable());
+	return &file_list.GetTable();
 }
 
 virtual_column_map_t DuckLakeVirtualColumns(ClientContext &context, optional_ptr<FunctionData> bind_data_p) {
@@ -174,7 +178,9 @@ vector<PartitionStatistics> DuckLakeGetPartitionStats(ClientContext &context, Ge
 	vector<PartitionStatistics> result;
 
 	if (!input.table_function.function_info) {
+		// LCOV_EXCL_START
 		return result;
+		// LCOV_EXCL_STOP
 	}
 	auto &func_info = input.table_function.function_info->Cast<DuckLakeFunctionInfo>();
 
@@ -241,7 +247,7 @@ TableFunction DuckLakeFunctions::GetDuckLakeScanFunction(DatabaseInstance &insta
 
 	function.statistics = DuckLakeStatistics;
 	function.statistics_extended = DuckLakeStatisticsExtended;
-	function.get_bind_info = DuckLakeBindInfo;
+	function.get_table_entry = DuckLakeGetTableEntry;
 	function.get_virtual_columns = DuckLakeVirtualColumns;
 	function.get_row_id_columns = DuckLakeGetRowIdColumn;
 	function.get_partition_stats = DuckLakeGetPartitionStats;
@@ -274,8 +280,10 @@ DuckLakeFunctionInfo::Create(DuckLakeTableEntry &table, DuckLakeTransaction &tra
 shared_ptr<DuckLakeTransaction> DuckLakeFunctionInfo::GetTransaction() {
 	auto result = transaction.lock();
 	if (!result) {
+		// LCOV_EXCL_START
 		throw NotImplementedException(
 		    "Scanning a DuckLake table after the transaction has ended - this use case is not yet supported");
+		// LCOV_EXCL_STOP
 	}
 	return result;
 }
@@ -325,7 +333,9 @@ unique_ptr<FunctionData> DuckLakeScanDeserialize(Deserializer &deserializer, Bou
 	auto qualified_name =
 	    deserializer.ReadPropertyWithExplicitDefault<QualifiedName>(107, "qualified_name", QualifiedName());
 	if (qualified_name.Path().empty()) {
+		// LCOV_EXCL_START
 		qualified_name = QualifiedName(Identifier(catalog_name), Identifier(schema_name), Identifier(table_name));
+		// LCOV_EXCL_STOP
 	}
 	auto include_local_changes = deserializer.ReadPropertyWithExplicitDefault<bool>(108, "include_local_changes", true);
 

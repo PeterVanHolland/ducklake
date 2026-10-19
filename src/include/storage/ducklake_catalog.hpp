@@ -163,6 +163,9 @@ public:
 	const string &DataPath() const {
 		return options.data_path;
 	}
+	const case_insensitive_map_t<Value> &MetadataParameters() const {
+		return options.metadata_parameters;
+	}
 	const string &MetadataType() const {
 		return metadata_type;
 	}

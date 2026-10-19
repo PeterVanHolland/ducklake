@@ -21,9 +21,6 @@ public:
 	}
 
 	bool TypeIsNativelySupported(const LogicalType &type) override;
-	bool SupportsAppender() const override {
-		return false;
-	}
 	bool ReadsInlinedDataInPages() const override {
 		return false;
 	}

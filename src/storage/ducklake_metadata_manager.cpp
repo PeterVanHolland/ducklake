@@ -11,7 +11,6 @@
 #include "common/ducklake_util.hpp"
 #include "duckdb/planner/tableref/bound_at_clause.hpp"
 #include "duckdb/common/types/blob.hpp"
-#include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "storage/ducklake_catalog.hpp"
 #include "common/ducklake_types.hpp"
@@ -25,7 +24,6 @@
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/planner/expression.hpp"
-#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "storage/ducklake_partition_data.hpp"
 #include "duckdb/parser/parser.hpp"
@@ -537,6 +535,81 @@ AND NOT EXISTS (
 	result->ThrowIfError("Failed to restore the defaults of renamed struct fields while migrating to v1.1: ");
 }
 
+//! A bound that a FLOAT file writes, but that reads differently as DOUBLE
+static string FloatBoundSql(const string &bound) {
+	return StringUtil::Format("(TRY_CAST(TRY_CAST(%s AS REAL) AS VARCHAR) = %s AND TRY_CAST(TRY_CAST(%s AS REAL) AS "
+	                          "DOUBLE PRECISION) <> TRY_CAST(%s AS DOUBLE PRECISION))",
+	                          bound, bound, bound, bound);
+}
+
+//! A timestamp bound with more fractional digits than the column type keeps
+static string FinerTimestampBoundSql(const string &bound) {
+	return StringUtil::Format("length(regexp_extract(%s, '\\.([0-9]+)', 1)) > (SELECT min(CASE column_type WHEN "
+	                          "'timestamp_s' THEN 0 WHEN 'timestamp_ms' THEN 3 ELSE 6 END) FROM "
+	                          "{METADATA_CATALOG}.ducklake_column AS col WHERE col.table_id = stats.table_id AND "
+	                          "col.column_id = stats.column_id AND col.column_type IN ('timestamp', 'timestamp_ms', "
+	                          "'timestamp_s'))",
+	                          bound);
+}
+
+void DuckLakeMetadataManager::MigrateRetypedBounds() {
+	// older versions stored the bounds of added files in the type of the file and kept the bounds of a file across a
+	// type change, while the column history does not show the type of every file, so those bounds become unknown
+	auto column_has_type = [](const string &types) {
+		return StringUtil::Format(R"(EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS col
+	WHERE col.table_id = stats.table_id AND col.column_id = stats.column_id AND col.column_type IN (%s)
+))",
+		                          types);
+	};
+	auto retyped = string(R"(EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS col
+	WHERE col.table_id = stats.table_id AND col.column_id = stats.column_id AND col.column_type <> 'float64'
+))");
+	auto added_file = string(R"(EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_data_file AS added
+	WHERE added.data_file_id = stats.data_file_id AND added.mapping_id IS NOT NULL
+))");
+	auto table_has_added_file = string(R"(EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_data_file AS added
+	WHERE added.table_id = stats.table_id AND added.mapping_id IS NOT NULL
+))");
+	auto float_column = column_has_type("'float64'");
+	auto timestamp_column = column_has_type("'timestamp', 'timestamp_ms', 'timestamp_s'");
+	auto timestamptz_column = column_has_type("'timestamptz'");
+	string query;
+	query +=
+	    StringUtil::Format(R"(
+UPDATE {METADATA_CATALOG}.ducklake_file_column_stats AS stats
+SET min_value = CASE WHEN %s THEN NULL ELSE stats.min_value END,
+	max_value = CASE WHEN %s THEN NULL ELSE stats.max_value END
+WHERE %s AND (%s OR %s) AND (%s OR %s);)",
+	                       FloatBoundSql("stats.min_value"), FloatBoundSql("stats.max_value"), float_column, retyped,
+	                       added_file, FloatBoundSql("stats.min_value"), FloatBoundSql("stats.max_value"));
+	query += StringUtil::Format(R"(
+UPDATE {METADATA_CATALOG}.ducklake_file_column_stats AS stats
+SET min_value = CASE WHEN %s THEN NULL ELSE stats.min_value END,
+	max_value = CASE WHEN %s THEN NULL ELSE stats.max_value END
+WHERE %s AND %s AND (%s OR %s);)",
+	                            FinerTimestampBoundSql("stats.min_value"), FinerTimestampBoundSql("stats.max_value"),
+	                            timestamp_column, added_file, FinerTimestampBoundSql("stats.min_value"),
+	                            FinerTimestampBoundSql("stats.max_value"));
+	// the release dropped the nanoseconds of these bounds
+	query += StringUtil::Format(R"(
+UPDATE {METADATA_CATALOG}.ducklake_file_column_stats AS stats SET min_value = NULL, max_value = NULL
+WHERE %s AND %s AND (stats.min_value IS NOT NULL OR stats.max_value IS NOT NULL);)",
+	                            timestamptz_column, added_file);
+	// table bounds merged from those files can hide a larger value
+	query += StringUtil::Format(R"(
+UPDATE {METADATA_CATALOG}.ducklake_table_column_stats AS stats SET min_value = NULL, max_value = NULL
+WHERE (stats.min_value IS NOT NULL OR stats.max_value IS NOT NULL)
+AND ((%s AND (%s OR %s)) OR ((%s OR %s) AND %s));)",
+	                            float_column, retyped, table_has_added_file, timestamp_column, timestamptz_column,
+	                            table_has_added_file);
+	auto result = Execute(query);
+	result->ThrowIfError("Failed to clear the bounds of retyped columns while migrating to v1.1: ");
+}
+
 string DuckLakeMetadataManager::MigrateTableStatsSql(DuckLakeSnapshot snapshot, bool read_exactness,
                                                      bool write_stats_exactness) {
 	DuckLakeCommitContext context;
@@ -565,6 +638,7 @@ void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	MigrateInlinedColumnNames(from_dev1);
 	MigrateInlinedSchemaVersions();
 	MigrateRenamedFieldDefaults();
+	MigrateRetypedBounds();
 	MigrateInlinedDataTypes();
 	// DDL locks the metadata tables exclusively on Postgres, skip it when a dev catalog has every addition
 	auto has_additions = from_dev1 && HasV1_1Additions();
@@ -1243,7 +1317,7 @@ FROM {METADATA_CATALOG}.ducklake_view view
 WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < view.end_snapshot OR view.end_snapshot IS NULL)
 )",
 	                                                     ListAggregation(TAG_FIELDS), view_column_tags_select));
-	result->ThrowIfError("Failed to get partition information from DuckLake: ");
+	result->ThrowIfError("Failed to get view information from DuckLake: ");
 	auto &views = catalog.views;
 	for (auto &row : *result) {
 		DuckLakeViewInfo view_info;
@@ -3114,7 +3188,8 @@ string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const L
 	auto &metadata_type = transaction.GetCatalog().MetadataType();
 	if (metadata_type.empty() || metadata_type == "duckdb" || metadata_type == "quack" ||
 	    metadata_type == "quack_scanner") {
-		return column;
+		// older versions stored struct fields in the order of an ALTER, which a cast by field name restores
+		return DuckLakeTypes::IsNested(type) ? "CAST(" + column + " AS " + type.ToString() + ")" : column;
 	}
 	auto expression = column;
 	if (type.id() == LogicalTypeId::VARCHAR && !TypeIsNativelySupported(type)) {

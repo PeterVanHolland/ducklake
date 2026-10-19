@@ -203,7 +203,7 @@ public:
 	//! Check if the inlined data tables of this metadata backend can store the values of the chunk
 	virtual bool CanInlineValues(DataChunk &chunk);
 	//! Check if this metadata manager supports the DuckDB Appender API for fast inserts
-	//! Returns true for DuckDB metadata, false for external databases (Postgres, SQLite)
+	//! Returns true for DuckDB and SQLite metadata, false for Postgres and Quack
 	virtual bool SupportsAppender() const {
 		return true;
 	}
@@ -229,6 +229,10 @@ public:
 	virtual bool CanSkipSnapshotFetch(const TransactionChangeInformation &changes) const;
 	virtual bool IsRetryableCommitError(const string &) const {
 		return false;
+	}
+	//! Advice added to the error of a commit that failed for good
+	virtual string CommitErrorHint(const string &) const {
+		return string();
 	}
 
 	//! Run the commit retry loop with the metadata server handling retries.
@@ -582,6 +586,8 @@ public:
 	void MigrateInlinedSchemaVersions();
 	//! Restores the defaults that older versions dropped when they renamed a struct field
 	void MigrateRenamedFieldDefaults();
+	//! Clears the bounds that older versions may have stored in the type of a file or of an earlier column type
+	void MigrateRetypedBounds();
 	//! The SQL that recomputes the table stats, which older versions could leave narrower or wider than the live rows
 	string MigrateTableStatsSql(DuckLakeSnapshot snapshot, bool read_exactness, bool write_stats_exactness);
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
@@ -648,7 +654,7 @@ protected:
 	string GetColumnDefinitions(const vector<DuckLakeColumnInfo> &columns);
 	string GetKnownFilesForCleanupQuery() const;
 
-	//! Optimized data file writing using DuckDB Appender API (only for DuckDB metadata manager)
+	//! Optimized data file writing using DuckDB Appender API (DuckDB and SQLite metadata managers)
 	string WriteNewDataFilesWithAppender(DuckLakeSnapshot &commit_snapshot, const vector<DuckLakeFileInfo> &new_files,
 	                                     const vector<DuckLakeTableInfo> &new_tables,
 	                                     vector<DuckLakeSchemaInfo> &new_schemas_result);

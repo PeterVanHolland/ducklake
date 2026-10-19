@@ -286,25 +286,31 @@ string PostgresMetadataManager::GetColumnTypeInternal(const LogicalType &column_
 	}
 }
 
-string PostgresMetadataManager::CommitErrorWithoutQuery(const string &message) const {
-	const string query_end_marker = "\": ";
-	// the batch of Execute and the server error can contain any text, so the batch is cut by its size
+optional_idx PostgresMetadataManager::BatchServerErrorStart(const string &message) const {
+	// the batch and the server error can contain any text, so the batch is found by its size
 	const string failed_batch = "Failed to execute query \"";
 	auto batch_start = message.find(failed_batch);
-	if (batch_start != string::npos) {
-		auto batch_end = batch_start + failed_batch.size() + executed_query_size;
-		if (batch_end + query_end_marker.size() <= message.size() &&
-		    message.compare(batch_end, query_end_marker.size(), query_end_marker) == 0) {
-			return message.substr(batch_end);
-		}
+	if (batch_start == string::npos) {
+		return optional_idx();
 	}
-	// the server error of another failed query follows its last quote and colon
-	auto server_error_start = message.rfind(query_end_marker);
-	return server_error_start == string::npos ? message : message.substr(server_error_start);
+	auto batch_end = batch_start + failed_batch.size() + executed_query_size;
+	if (batch_end + 3 > message.size() || message.compare(batch_end, 3, "\": ") != 0) {
+		return optional_idx();
+	}
+	return batch_end;
+}
+
+string PostgresMetadataManager::CommitErrorWithoutQuery(const string &message) const {
+	auto server_error_start = BatchServerErrorStart(message);
+	return server_error_start.IsValid() ? message.substr(server_error_start.GetIndex()) : message;
 }
 
 bool PostgresMetadataManager::IsRetryableCommitError(const string &message) const {
-	auto server_error = CommitErrorWithoutQuery(message);
+	auto batch_server_error_start = BatchServerErrorStart(message);
+	// the server error of another failed query follows its last quote and colon
+	auto server_error_start =
+	    batch_server_error_start.IsValid() ? batch_server_error_start.GetIndex() : message.rfind("\": ");
+	auto server_error = server_error_start == string::npos ? message : message.substr(server_error_start);
 	// constraint names are not translated, so a conflict on a metadata primary key is found in any language
 	for (auto end = server_error.find("_pkey"); end != string::npos; end = server_error.find("_pkey", end + 1)) {
 		auto start = end;

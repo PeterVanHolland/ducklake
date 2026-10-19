@@ -58,6 +58,9 @@ protected:
 	string CastStatsToTarget(const string &stats, const LogicalType &type, StatsCastType cast_type) override;
 
 private:
+	//! Where the server error starts in the error of the last Execute
+	optional_idx BatchServerErrorStart(const string &message) const;
+
 	//! The size of the last query of Execute, which the scanner repeats in front of a server error
 	idx_t executed_query_size = 0;
 };

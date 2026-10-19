@@ -286,10 +286,14 @@ string PostgresMetadataManager::GetColumnTypeInternal(const LogicalType &column_
 	}
 }
 
-bool PostgresMetadataManager::IsRetryableCommitError(const string &message) const {
+string PostgresMetadataManager::CommitErrorWithoutQuery(const string &message) const {
 	// the server error follows the failed query, which can contain any text
 	auto server_error_start = message.rfind("\": ");
-	auto server_error = server_error_start == string::npos ? message : message.substr(server_error_start);
+	return server_error_start == string::npos ? message : message.substr(server_error_start);
+}
+
+bool PostgresMetadataManager::IsRetryableCommitError(const string &message) const {
+	auto server_error = CommitErrorWithoutQuery(message);
 	// constraint names are not translated, so a conflict on a metadata primary key is found in any language
 	for (auto end = server_error.find("_pkey"); end != string::npos; end = server_error.find("_pkey", end + 1)) {
 		auto start = end;

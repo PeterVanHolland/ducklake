@@ -1529,6 +1529,9 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	context.is_retryable_metadata_error = [&](const string &message) {
 		return metadata_manager->IsRetryableCommitError(message);
 	};
+	context.commit_error_without_query = [&](const string &message) {
+		return metadata_manager->CommitErrorWithoutQuery(message);
+	};
 	context.commit_error_hint = [&](const string &message) {
 		return metadata_manager->CommitErrorHint(message);
 	};

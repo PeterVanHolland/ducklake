@@ -15,6 +15,10 @@ require-env DUCKLAKE_AZURE_DFS_CONTAINER_PATH
 
 test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
 
+# read the files from storage after CHECKPOINT
+statement ok
+SET enable_external_file_cache = false
+
 statement ok
 CREATE SECRET ducklake_azure_container_path (TYPE AZURE, CONNECTION_STRING '{AZURE_STORAGE_CONNECTION_STRING}')
 
@@ -57,9 +61,9 @@ statement ok
 CHECKPOINT ducklake
 
 query II
-SELECT (SELECT count(*) FROM ducklake.t), (SELECT sum(i) FROM ducklake.account_first)
+SELECT (SELECT sum(i) FROM ducklake.t), (SELECT sum(i) FROM ducklake.account_first)
 ----
-100	1
+4950	1
 
 # the same lake with its data path in the account-first spelling
 statement ok
@@ -90,10 +94,10 @@ statement ok
 CHECKPOINT ducklake
 
 query III
-SELECT (SELECT count(*) FROM ducklake.t), (SELECT sum(i) FROM ducklake.account_first),
+SELECT (SELECT sum(i) FROM ducklake.t), (SELECT sum(i) FROM ducklake.account_first),
 	(SELECT sum(i) FROM ducklake.container_first)
 ----
-100	1	2
+4950	1	2
 
 query I
 SELECT parse_filename(file) FROM glob(getvariable('account_first') || '*.parquet') ORDER BY ALL

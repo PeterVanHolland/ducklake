@@ -163,6 +163,9 @@ public:
 	const string &DataPath() const {
 		return options.data_path;
 	}
+	const case_insensitive_map_t<Value> &MetadataParameters() const {
+		return options.metadata_parameters;
+	}
 	const string &MetadataType() const {
 		return metadata_type;
 	}
@@ -175,8 +178,9 @@ public:
 	//! Returns the inlining limit (0 if the table is not eligible)
 	idx_t GetInliningLimit(ClientContext &context, DuckLakeTableEntry &table);
 	//! Inlining limit for a table that does not exist yet (CTAS), given its scope and columns
-	idx_t GetInliningLimit(ClientContext &context, SchemaIndex schema_id, TableIndex table_id,
-	                       const ColumnList &columns, optional_ptr<const map<string, string>> table_options = nullptr);
+	idx_t GetInliningLimit(ClientContext &context, const Identifier &table_name, SchemaIndex schema_id,
+	                       TableIndex table_id, const ColumnList &columns,
+	                       optional_ptr<const map<string, string>> table_options = nullptr);
 	//! Whether inserts in this scope sort their data according to SORTED BY (the sort_on_insert option)
 	bool SortOnInsert(SchemaIndex schema_id, TableIndex table_id,
 	                  optional_ptr<const map<string, string>> table_options = nullptr) const;
@@ -309,7 +313,7 @@ public:
 	}
 	//! Whether the catalog has the v1.1 metadata features
 	bool SupportsV1_1Metadata() const {
-		return ducklake_version >= DuckLakeVersion::V1_1_DEV_1;
+		return ducklake_version >= DuckLakeVersion::V1_1;
 	}
 
 	void OnDetach(ClientContext &context) override;

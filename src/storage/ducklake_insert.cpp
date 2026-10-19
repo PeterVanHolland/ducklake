@@ -46,7 +46,7 @@ namespace duckdb {
 //! The partition id that data files written under this spec carry (invalid when the table is not partitioned)
 static optional_idx GetPartitionId(optional_ptr<DuckLakePartition> partition_data) {
 	optional_idx result;
-	if (partition_data) {
+	if (partition_data && !partition_data->fields.empty()) {
 		result = partition_data->partition_id;
 	}
 	return result;
@@ -838,7 +838,8 @@ PhysicalOperator &DuckLakeCatalog::PlanCreateTableAs(ClientContext &context, Phy
 	auto pipeline = DuckLakeInsert::PlanInsertPipeline(
 	    context, planner, plan, op.schema, columns, create_info.GetTableName(), sort_data.get(),
 	    SortOnInsert(duck_schema.GetSchemaId(), TableIndex(), &table_options),
-	    GetInliningLimit(context, duck_schema.GetSchemaId(), TableIndex(), columns, &table_options));
+	    GetInliningLimit(context, create_info.GetTableName(), duck_schema.GetSchemaId(), TableIndex(), columns,
+	                     &table_options));
 
 	DuckLakeTypes::CheckSupportedTypes(columns, GetDuckLakeVersion());
 	auto table_uuid = duck_transaction.GenerateUUID();

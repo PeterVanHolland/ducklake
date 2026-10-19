@@ -52,7 +52,7 @@
         "test/sql/concurrent/postgres_concurrent_attach_new.test",
         "test/sql/concurrent/postgres_concurrent_attach_new_migrate.test",
         "test/sql/migration/postgres_dev_migration_failure.test",
-        "test/sql/migration/postgres_concurrent_dev_attach.test",
+        "test/sql/migration/postgres_dev1_migration_skips_present_ddl.test",
         "test/sql/benchmark/postgres_catalog.test",
         "test/sql/issues/issue_843_postgres_legacy_inlined_types.test",
         "test/sql/data_inlining/inlined_superseded_drop_failure_postgres.test",
@@ -173,6 +173,12 @@
       "reason": "FIXME: Flaky timeout on quack.",
       "paths": [
         "test/sql/alter/many_schema_versions_low_memory.test_slow"
+      ]
+    },
+    {
+      "reason": "FIXME: Not implemented Error: Multiple streaming scans or streaming scans + CTAS / insert in the same query are not currently supported",
+      "paths": [
+        "test/sql/sorted_table/set_sorted_by_idempotent.test"
       ]
     },
     {

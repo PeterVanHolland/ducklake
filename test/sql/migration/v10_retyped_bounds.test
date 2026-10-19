@@ -51,7 +51,7 @@ SELECT (SELECT count(*) FROM lake.i2f WHERE f = 16777219), (SELECT count(*) FROM
 ----
 1	1	1
 
-# a bound that a FLOAT file could have written is dropped, and so are the bounds of the tables
+# a bound that a FLOAT file could have written is dropped, and the table bounds are recomputed from the files
 query IIIII
 SELECT tbl.table_name, stats.data_file_id, stats.column_id, stats.min_value, stats.max_value
 FROM meta.ducklake_file_column_stats stats JOIN meta.ducklake_table tbl USING (table_id)
@@ -78,7 +78,7 @@ dbl	1	true
 dbl2	1	true
 dc	1	false
 dc	2	true
-i2f	1	true
+i2f	1	false
 r	1	true
 st	1	true
 tf	1	true

@@ -277,6 +277,11 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				catalog_version = DuckLakeVersion::V1_0;
 			}
 			if (catalog_version >= target_version) {
+				if (catalog_version == DuckLakeVersion::V1_1 && options.automatic_migration &&
+				    options.access_mode != AccessMode::READ_ONLY) {
+					// a v1.0 session that stayed attached across the migration creates inlined tables with old names
+					metadata_manager.RenameLegacyInlinedColumns();
+				}
 				resolved_version = catalog_version;
 				continue;
 			}

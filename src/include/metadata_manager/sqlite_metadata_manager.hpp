@@ -33,6 +33,7 @@ public:
 	}
 	bool IsRetryableCommitError(const string &message) const override;
 	void RenameInlinedColumns(const map<string, vector<pair<string, string>>> &renames) override;
+	case_insensitive_set_t GetLegacyNamedInlinedTables() override;
 
 	string GetColumnTypeInternal(const LogicalType &type) override;
 };

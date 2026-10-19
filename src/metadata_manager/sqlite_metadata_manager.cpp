@@ -68,4 +68,20 @@ void SQLiteMetadataManager::RenameInlinedColumns(const map<string, vector<pair<s
 	result->ThrowIfError("Failed to rename inlined-data metadata columns while migrating to v1.1: ");
 }
 
+case_insensitive_set_t SQLiteMetadataManager::GetLegacyNamedInlinedTables() {
+	// the catalog loads the columns of each table with its own query, SQLite lists them all at once
+	auto remote_query = StringUtil::Format(
+	    "SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) p WHERE m.type = 'table' AND m.name GLOB "
+	    "'ducklake_inlined_data_*' AND p.cid = 0 AND p.name = %s",
+	    SQLString::ToString(DuckLakeInlinedColNames(false).row_id));
+	auto result = Query(StringUtil::Format("SELECT name FROM sqlite_query({METADATA_CATALOG_NAME_LITERAL}, %s)",
+	                                       SQLString::ToString(remote_query)));
+	result->ThrowIfError("Failed to list the inlined-data tables with v1.0 column names: ");
+	case_insensitive_set_t legacy_tables;
+	for (auto &row : *result) {
+		legacy_tables.insert(row.GetValue<string>(0));
+	}
+	return legacy_tables;
+}
+
 } // namespace duckdb

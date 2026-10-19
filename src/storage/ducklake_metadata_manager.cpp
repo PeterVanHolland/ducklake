@@ -552,7 +552,37 @@ void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	ExecuteMigration(V1_1MigrationQuery(has_additions), from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");
 }
 
-void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed) {
+case_insensitive_set_t DuckLakeMetadataManager::GetLegacyNamedInlinedTables() {
+	// the catalog knows the column names, probing every inlined table is slow
+	auto &context = *transaction.GetConnection().context;
+	auto &ducklake_catalog = transaction.GetCatalog();
+	auto &catalog = Catalog::GetCatalog(context, Identifier(ducklake_catalog.MetadataDatabaseName()));
+	auto &schema = catalog.GetSchema(context, ducklake_catalog.MetadataSchemaName());
+	auto legacy_row_id = DuckLakeInlinedColNames(false).row_id;
+	case_insensitive_set_t legacy_tables;
+	schema.Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
+		auto &name = entry.name.GetIdentifierName();
+		if (entry.type != CatalogType::TABLE_ENTRY || !StringUtil::StartsWith(name, "ducklake_inlined_data_")) {
+			return;
+		}
+		auto &columns = entry.Cast<TableCatalogEntry>().GetColumns();
+		if (columns.LogicalColumnCount() > 0 &&
+		    StringUtil::CIEquals(columns.GetColumn(LogicalIndex(0)).Name().GetIdentifierName(), legacy_row_id)) {
+			legacy_tables.insert(name);
+		}
+	});
+	return legacy_tables;
+}
+
+void DuckLakeMetadataManager::RenameLegacyInlinedColumns() {
+	auto legacy_tables = GetLegacyNamedInlinedTables();
+	if (!legacy_tables.empty()) {
+		MigrateInlinedColumnNames(false, &legacy_tables);
+	}
+}
+
+void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed,
+                                                        optional_ptr<const case_insensitive_set_t> only_tables) {
 	auto tables = Query(R"(
 SELECT idt.table_name AS inlined_table_name, tbl.table_name AS user_table_name
 FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
@@ -568,6 +598,9 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 	string renamed_probe;
 	for (auto &row : *tables) {
 		auto table_name = row.GetValue<string>(0);
+		if (only_tables && !only_tables->count(table_name)) {
+			continue;
+		}
 		auto user_table_name = row.IsNull(1) ? table_name : row.GetValue<string>(1);
 		if (!renamed_probe.empty()) {
 			renamed_probe += " UNION ALL ";

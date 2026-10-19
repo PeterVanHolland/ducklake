@@ -203,7 +203,7 @@ public:
 	//! Check if the inlined data tables of this metadata backend can store the values of the chunk
 	virtual bool CanInlineValues(DataChunk &chunk);
 	//! Check if this metadata manager supports the DuckDB Appender API for fast inserts
-	//! Returns true for DuckDB metadata, false for external databases (Postgres, SQLite)
+	//! Returns true for DuckDB and SQLite metadata, false for Postgres and Quack
 	virtual bool SupportsAppender() const {
 		return true;
 	}
@@ -229,6 +229,10 @@ public:
 	virtual bool CanSkipSnapshotFetch(const TransactionChangeInformation &changes) const;
 	virtual bool IsRetryableCommitError(const string &) const {
 		return false;
+	}
+	//! Advice added to the error of a commit that failed for good
+	virtual string CommitErrorHint(const string &) const {
+		return string();
 	}
 
 	//! Run the commit retry loop with the metadata server handling retries.
@@ -516,9 +520,10 @@ public:
 	static string RefreshTableSizesSql(const set<TableIndex> &table_ids);
 	static SnapshotChangeInfo
 	GetSnapshotAndStatsAndChanges(SnapshotAndStats &current_snapshot,
-	                              const std::function<unique_ptr<QueryResult>(string)> &executor,
-	                              bool include_exactness);
-	static string GetSnapshotAndStatsAndChangesQuery(bool include_exactness);
+	                              const std::function<unique_ptr<QueryResult>(string)> &executor, const string &query);
+	static string SnapshotAndStatsAndChangesQuery(bool include_exactness);
+	//! The query of the conflict check, which must read the latest snapshot and the table stats consistently
+	virtual string GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot snapshot, bool include_exactness) const;
 	static SnapshotChangeInfo ParseSnapshotAndStatsAndChanges(QueryResult &result, SnapshotAndStats &current_snapshot);
 	virtual unique_ptr<DuckLakeSnapshot> GetSnapshot();
 	virtual unique_ptr<DuckLakeSnapshot> GetSnapshot(BoundAtClause &at_clause, SnapshotBound bound,
@@ -579,6 +584,8 @@ public:
 	void MigrateInlinedSchemaVersions();
 	//! Restores the defaults that older versions dropped when they renamed a struct field
 	void MigrateRenamedFieldDefaults();
+	//! Clears the bounds that older versions may have stored in the type of a file or of an earlier column type
+	void MigrateRetypedBounds();
 	//! Rewrites the inlined STRUCT values that DuckLake 1.0 stored as SQL literals in text catalogs
 	void MigrateInlinedStructValues();
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
@@ -610,7 +617,7 @@ protected:
 	//! Wrap field selections with list aggregation of struct objects (DBMS-specific)
 	//! For DuckDB: LIST({'key1': val1, 'key2': val2, ...})
 	//! For Postgres: jsonb_agg(jsonb_build_object('key1', val1, 'key2', val2, ...))
-	static string ListAggregation(const vector<pair<string, string>> &fields);
+	static string ListAggregation(const vector<pair<string, string>> &fields, const string &order = string());
 	//! Parse tag list from ListAggregation value
 	static vector<DuckLakeTag> LoadTags(const Value &tag_map);
 	static vector<DuckLakeViewColumnTag> LoadViewColumnTags(const Value &list);
@@ -645,7 +652,7 @@ protected:
 	string GetColumnDefinitions(const vector<DuckLakeColumnInfo> &columns);
 	string GetKnownFilesForCleanupQuery() const;
 
-	//! Optimized data file writing using DuckDB Appender API (only for DuckDB metadata manager)
+	//! Optimized data file writing using DuckDB Appender API (DuckDB and SQLite metadata managers)
 	string WriteNewDataFilesWithAppender(DuckLakeSnapshot &commit_snapshot, const vector<DuckLakeFileInfo> &new_files,
 	                                     const vector<DuckLakeTableInfo> &new_tables,
 	                                     vector<DuckLakeSchemaInfo> &new_schemas_result);

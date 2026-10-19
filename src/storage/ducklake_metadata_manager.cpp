@@ -1343,7 +1343,8 @@ string DuckLakeMetadataManager::GetInlinedTableColumnsSql(optional_idx table_id,
 	}
 	auto parent_select = with_fields ? ", col.parent_column" : "";
 	auto parent_filter = with_fields ? "" : " AND col.parent_column IS NULL";
-	auto order = with_fields ? "ORDER BY inlined.table_name, col.parent_column NULLS FIRST, col.column_order" : "";
+	auto order =
+	    with_fields ? "ORDER BY inlined.table_name ASC, col.parent_column ASC NULLS FIRST, col.column_order ASC" : "";
 	return StringUtil::Format(R"(
 WITH inlined AS (
 	SELECT idt.table_id, idt.table_name, COALESCE(sv.begin_snapshot, (

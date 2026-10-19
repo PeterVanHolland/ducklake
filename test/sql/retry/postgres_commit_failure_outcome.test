@@ -10,16 +10,18 @@ require postgres_scanner
 
 require-env DUCKLAKE_CI
 
+require-env DUCKLAKE_CONNECTION
+
 test-env DATA_PATH {TEST_DIR}
 
 statement ok
-ATTACH 'dbname=ducklakedb' AS pg (TYPE postgres)
+ATTACH '{DUCKLAKE_CONNECTION}' AS pg
 
 statement ok
 CALL postgres_execute('pg', 'DROP SCHEMA IF EXISTS commit_failure_outcome CASCADE')
 
 statement ok
-ATTACH 'ducklake:postgres:dbname=ducklakedb' AS lake
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
 (DATA_PATH '{DATA_PATH}/commit_failure_outcome', METADATA_SCHEMA 'commit_failure_outcome',
 DATA_INLINING_ROW_LIMIT 0)
 
@@ -147,7 +149,7 @@ statement ok
 DETACH lake
 
 statement ok
-ATTACH 'ducklake:postgres:dbname=ducklakedb' AS lake
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
 (DATA_PATH '{DATA_PATH}/commit_failure_outcome', METADATA_SCHEMA 'commit_failure_outcome')
 
 query I

@@ -1,5 +1,5 @@
 # name: test/sql/remove_orphans/azure_container_at_account_path.test
-# description: orphan cleanup keeps the live files of a data path in the abfss://<container>@<account> form
+# description: orphan cleanup treats both Azure spellings of a path as the same file
 # group: [remove_orphans]
 
 require ducklake
@@ -13,27 +13,90 @@ require-env AZURE_STORAGE_CONNECTION_STRING
 # abfss://<container>@<account>.dfs.core.windows.net/<prefix> on a storage account with a hierarchical namespace
 require-env DUCKLAKE_AZURE_DFS_CONTAINER_PATH
 
-test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
 
 statement ok
 CREATE SECRET ducklake_azure_container_path (TYPE AZURE, CONNECTION_STRING '{AZURE_STORAGE_CONNECTION_STRING}')
 
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DUCKLAKE_AZURE_DFS_CONTAINER_PATH}/container_at_account_{UUID}/', DATA_INLINING_ROW_LIMIT 0)
+SET VARIABLE container_first = '{DUCKLAKE_AZURE_DFS_CONTAINER_PATH}/container_at_account_{UUID}/'
+
+# the same directory as abfss://<account>.dfs.core.windows.net/<container>/<prefix>/...
+statement ok
+SET VARIABLE account_first = regexp_replace(getvariable('container_first'), '^(abfss?://)([^@/]+)@([^/]+)/', '\1\3/\2/')
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake
+	(DATA_PATH getvariable('container_first'), DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CALL ducklake.set_option('delete_older_than', '1 millisecond')
 
 statement ok
 CREATE TABLE ducklake.t AS SELECT i FROM range(100) t(i)
 
 statement ok
-COPY (SELECT 1 AS i) TO '{DUCKLAKE_AZURE_DFS_CONTAINER_PATH}/container_at_account_{UUID}/orphan.parquet'
+CREATE TABLE ducklake.account_first(i BIGINT)
 
-# the azure extension lists the files as abfss://<account>.dfs.core.windows.net/<container>/<path>
+statement ok
+COPY (SELECT 1::BIGINT AS i) TO (getvariable('container_first') || 'account_first.parquet')
+
+# a file under the data path, registered by its account-first path
+statement ok
+CALL ducklake_add_data_files('ducklake', 'account_first', getvariable('account_first') || 'account_first.parquet')
+
+statement ok
+COPY (SELECT 1 AS i) TO (getvariable('container_first') || 'orphan.parquet')
+
 query I
-SELECT parse_filename(path) FROM ducklake_delete_orphaned_files('ducklake', cleanup_all => true)
+SELECT parse_filename(path) FROM ducklake_delete_orphaned_files('ducklake', cleanup_all => true, dry_run => true)
 ----
 orphan.parquet
 
-query I
-SELECT count(*) FROM ducklake.t
+statement ok
+CHECKPOINT ducklake
+
+query II
+SELECT (SELECT count(*) FROM ducklake.t), (SELECT sum(i) FROM ducklake.account_first)
 ----
-100
+100	1
+
+# the same lake with its data path in the account-first spelling
+statement ok
+DETACH ducklake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH getvariable('account_first'), OVERRIDE_DATA_PATH TRUE)
+
+statement ok
+CREATE TABLE ducklake.container_first(i BIGINT)
+
+statement ok
+COPY (SELECT 2::BIGINT AS i) TO (getvariable('account_first') || 'container_first.parquet')
+
+# a file under the data path, registered by its <container>@<account> path
+statement ok
+CALL ducklake_add_data_files('ducklake', 'container_first', getvariable('container_first') || 'container_first.parquet')
+
+statement ok
+COPY (SELECT 1 AS i) TO (getvariable('account_first') || 'orphan.parquet')
+
+query I
+SELECT parse_filename(path) FROM ducklake_delete_orphaned_files('ducklake', cleanup_all => true, dry_run => true)
+----
+orphan.parquet
+
+statement ok
+CHECKPOINT ducklake
+
+query III
+SELECT (SELECT count(*) FROM ducklake.t), (SELECT sum(i) FROM ducklake.account_first),
+	(SELECT sum(i) FROM ducklake.container_first)
+----
+100	1	2
+
+query I
+SELECT parse_filename(file) FROM glob(getvariable('account_first') || '*.parquet') ORDER BY ALL
+----
+account_first.parquet
+container_first.parquet

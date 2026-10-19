@@ -52,3 +52,27 @@ query I
 SELECT b FROM lake.r
 ----
 5
+
+# a repair that stopped after the schema versions finds the names again without adding a row twice
+foreach col row_id begin_snapshot end_snapshot
+
+statement ok
+ALTER TABLE meta.ducklake_inlined_data_2_7 RENAME COLUMN _ducklake_${col} TO ${col}
+
+endloop
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/inlined_rename_after_schema_versions.db' AS lake (DATA_PATH '{TEST_DIR}/inlined_rename_after_schema_versions', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT count(*) FROM meta.ducklake_schema_versions WHERE table_id IN (2, 3)
+----
+6
+
+query II
+SELECT a, b FROM lake.m
+----
+100	5

@@ -287,9 +287,19 @@ string PostgresMetadataManager::GetColumnTypeInternal(const LogicalType &column_
 }
 
 string PostgresMetadataManager::CommitErrorWithoutQuery(const string &message) const {
-	// the server error follows the failed query, which can contain any text
-	auto server_error_start = message.rfind("\": ");
-	return server_error_start == string::npos ? message : message.substr(server_error_start);
+	// the failed query can contain any text, so it is cut by its size
+	const string failed_query = "Failed to execute query \"";
+	const string query_end_marker = "\": ";
+	auto query_start = message.find(failed_query);
+	if (query_start == string::npos) {
+		return message;
+	}
+	auto query_end = query_start + failed_query.size() + executed_query_size;
+	if (query_end + query_end_marker.size() > message.size() ||
+	    message.compare(query_end, query_end_marker.size(), query_end_marker) != 0) {
+		return message;
+	}
+	return message.substr(0, query_start) + message.substr(query_end + query_end_marker.size());
 }
 
 bool PostgresMetadataManager::IsRetryableCommitError(const string &message) const {
@@ -399,6 +409,12 @@ unique_ptr<QueryResult> PostgresMetadataManager::Execute(DuckLakeSnapshot snapsh
 	auto catalog_literal = SQLString::ToString(ducklake_catalog.MetadataDatabaseName());
 	// casts of float bounds to text keep their exact value
 	query = "SET LOCAL extra_float_digits = 3;" + query;
+	// the scanner repeats the query without its trailing semicolons
+	executed_query_size = query.size();
+	while (executed_query_size > 0 &&
+	       (query[executed_query_size - 1] == ';' || StringUtil::CharacterIsSpace(query[executed_query_size - 1]))) {
+		executed_query_size--;
+	}
 	auto result = transaction.GetConnection().Query(
 	    StringUtil::Format("CALL postgres_execute(%s, %s, prepare=FALSE)", catalog_literal, SQLString(query)));
 	return std::move(result);

@@ -56,6 +56,10 @@ protected:
 	                             const string &metadata_table_prefix) override;
 	string CastValueToTarget(const Value &value, const LogicalType &type) override;
 	string CastStatsToTarget(const string &stats, const LogicalType &type, StatsCastType cast_type) override;
+
+private:
+	//! The size of the last query of Execute, which the scanner repeats in front of a server error
+	idx_t executed_query_size = 0;
 };
 
 } // namespace duckdb

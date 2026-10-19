@@ -579,9 +579,9 @@ void DuckLakeMetadataManager::RepairLegacyInlinedTables() {
 	if (legacy_tables.empty()) {
 		return;
 	}
-	MigrateInlinedColumnNames(false, &legacy_tables);
-	// the v1.0 session can also register inlined tables without their schema versions
+	// a v1.0 session can also leave out schema versions, added first since the rename ends the repair
 	MigrateInlinedSchemaVersions();
+	MigrateInlinedColumnNames(false, &legacy_tables);
 }
 
 void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed,

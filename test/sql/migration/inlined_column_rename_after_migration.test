@@ -25,6 +25,13 @@ DETACH dl
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE)
 
+# a v1.1 table can have a user column with a v1.0 metadata column name
+statement ok
+CREATE TABLE dl.u(row_id INTEGER);
+
+statement ok
+INSERT INTO dl.u VALUES (3);
+
 # a session that attached at v1.0 before the migration still creates tables with the v1.0 names
 statement ok
 UPDATE dlmeta.ducklake_metadata SET value = '1.0' WHERE key = 'version'
@@ -71,7 +78,7 @@ statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE, SNAPSHOT_VERSION 1)
 
 statement ok
-SELECT row_id FROM dlmeta.ducklake_inlined_data_2_2 LIMIT 0
+SELECT row_id FROM dlmeta.ducklake_inlined_data_3_3 LIMIT 0
 
 statement ok
 DETACH dl
@@ -129,10 +136,10 @@ DETACH dl
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE)
 
-query II
-SELECT (SELECT i FROM dl.t), (SELECT i FROM dl.e)
+query III
+SELECT (SELECT i FROM dl.t), (SELECT i FROM dl.e), (SELECT row_id FROM dl.u)
 ----
-1	2
+1	2	3
 
 statement error
 SELECT * FROM dl.c

@@ -17,3 +17,21 @@ SELECT snapshot_id, changes FROM ducklake.snapshots() WHERE snapshot_id BETWEEN 
 7	{flushed_inlined=[1]}
 8	{compacted_table=[1]}
 9	{inlined_insert=[1]}
+
+# snapshot 8 compacted table 1 with the legacy compacted_table change type
+query II
+SELECT snapshot_id, changes FROM ducklake.snapshots() WHERE snapshot_id IN (6, 7, 9) ORDER BY snapshot_id
+----
+6	{tables_inserted_into=[1]}
+7	{flushed_inlined=[1]}
+9	{inlined_insert=[1]}
+
+query I
+SELECT count(*) FROM ducklake.snapshots() WHERE snapshot_id = 8
+----
+1
+
+query I
+SELECT cardinality(changes) > 0 FROM ducklake.snapshots() WHERE snapshot_id = 8
+----
+true

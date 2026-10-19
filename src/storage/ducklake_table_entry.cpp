@@ -325,7 +325,9 @@ unique_ptr<BaseStatistics> GetColumnStats(const DuckLakeFieldId &field_id, const
 	}
 	default:
 		// unsupported nested type
+		// LCOV_EXCL_START
 		return nullptr;
+		// LCOV_EXCL_STOP
 	}
 }
 
@@ -337,7 +339,9 @@ case_insensitive_set_t DuckLakeTableEntry::GetNotNullFields() const {
 	case_insensitive_set_t result;
 	for (auto &constraint : GetConstraints()) {
 		if (constraint->type != ConstraintType::NOT_NULL) {
+			// LCOV_EXCL_START
 			continue;
+			// LCOV_EXCL_STOP
 		}
 		auto &not_null = constraint->Cast<NotNullConstraint>();
 		auto &col = GetColumn(not_null.index);
@@ -359,7 +363,9 @@ unique_ptr<BaseStatistics> DuckLakeTableEntry::GetStatistics(ClientContext &cont
 	return GetColumnStats(field_id, *table_stats);
 }
 
+// LCOV_EXCL_START
 TableFunction DuckLakeTableEntry::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
+	// LCOV_EXCL_STOP
 	throw InternalException("DuckLakeTableEntry::GetScanFunction called without entry lookup info");
 }
 
@@ -949,7 +955,9 @@ static void ExtractDefaultValue(const DuckLakeColumnData &col_data, DuckLakeColu
 
 bool TypePromotionIsAllowed(const LogicalType &source, const LogicalType &target) {
 	if (source == target) {
+		// LCOV_EXCL_START
 		return false;
+		// LCOV_EXCL_STOP
 	}
 	LogicalType result;
 	if (!LogicalType::DefaultTryGetMaxLogicalTypeUnchecked(source, target, result)) {

@@ -27,7 +27,8 @@
     {
       "reason": "Test requires a Quack metadata catalog",
       "paths": [
-        "test/sql/quack/inlined_superseded_drop_failure.test"
+        "test/sql/quack/inlined_superseded_drop_failure.test",
+        "test/sql/quack/server_side_commit_cache_clear.test"
       ]
     },
     {
@@ -67,7 +68,8 @@
     {
       "reason": "on_init ends with USE memory, which a DuckLake opened as the main database does not have",
       "paths": [
-        "test/sql/attach/ducklake_main_database.test"
+        "test/sql/attach/ducklake_main_database.test",
+        "test/sql/attach/ducklake_main_database_reopen.test"
       ]
     },
     {

@@ -103,7 +103,13 @@ LogicalType DuckLakeTypes::FromDuckDBString(const string &type) {
 }
 
 LogicalType DuckLakeTypes::FromDuckDBString(const string &type, ClientContext &context) {
-	return BindDuckLakeTypes(TransformStringToLogicalType(type, context));
+	try {
+		// the Parquet reader creates types like JSON without their extension, so bind them without the catalog
+		return FromDuckDBString(type);
+	} catch (InvalidInputException &) {
+		// types like GEOMETRY with a coordinate system need the client context
+		return BindDuckLakeTypes(TransformStringToLogicalType(type, context));
+	}
 }
 
 LogicalType DuckLakeTypes::FromString(const string &type) {
@@ -154,12 +160,6 @@ string DuckLakeTypes::ToString(const LogicalType &type) {
 		if (type.IsJSONType()) {
 			return "json";
 		}
-		if (type.id() == LogicalTypeId::UNBOUND) {
-			const auto type_name = type.GetAlias();
-			if (StringUtil::CIEquals(type_name, "json")) {
-				return "json";
-			}
-		}
 		throw InvalidInputException("Unsupported user-defined type");
 	}
 	switch (type.id()) {
@@ -190,7 +190,7 @@ string DuckLakeTypes::ToString(const LogicalType &type) {
 
 void DuckLakeTypes::CheckSupportedType(const LogicalType &type, DuckLakeVersion version) {
 	TypeVisitor::VisitReplace(type, [version](const LogicalType &type) {
-		if (type.id() == LogicalTypeId::SQLNULL && version < DuckLakeVersion::V1_1_DEV_1) {
+		if (type.id() == LogicalTypeId::SQLNULL && version < DuckLakeVersion::V1_1) {
 			ThrowUnsupportedByVersion(version, "the NULL type");
 		}
 		DuckLakeTypes::ToString(type);

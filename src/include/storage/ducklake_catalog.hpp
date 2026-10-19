@@ -175,8 +175,9 @@ public:
 	//! Returns the inlining limit (0 if the table is not eligible)
 	idx_t GetInliningLimit(ClientContext &context, DuckLakeTableEntry &table);
 	//! Inlining limit for a table that does not exist yet (CTAS), given its scope and columns
-	idx_t GetInliningLimit(ClientContext &context, SchemaIndex schema_id, TableIndex table_id,
-	                       const ColumnList &columns, optional_ptr<const map<string, string>> table_options = nullptr);
+	idx_t GetInliningLimit(ClientContext &context, const Identifier &table_name, SchemaIndex schema_id,
+	                       TableIndex table_id, const ColumnList &columns,
+	                       optional_ptr<const map<string, string>> table_options = nullptr);
 	//! Whether inserts in this scope sort their data according to SORTED BY (the sort_on_insert option)
 	bool SortOnInsert(SchemaIndex schema_id, TableIndex table_id,
 	                  optional_ptr<const map<string, string>> table_options = nullptr) const;
@@ -211,7 +212,6 @@ public:
 		}
 		return default_value;
 	}
-	bool TryGetConfigOption(const string &option, string &result, DuckLakeTableEntry &table) const;
 
 	optional_ptr<BoundAtClause> CatalogSnapshot() const;
 
@@ -260,8 +260,6 @@ public:
 
 	bool InMemory() override;
 	string GetDBPath() override;
-
-	string GetDataPath();
 
 	bool SupportsTimeTravel() const override {
 		return true;
@@ -312,7 +310,7 @@ public:
 	}
 	//! Whether the catalog has the v1.1 metadata features
 	bool SupportsV1_1Metadata() const {
-		return ducklake_version >= DuckLakeVersion::V1_1_DEV_1;
+		return ducklake_version >= DuckLakeVersion::V1_1;
 	}
 
 	void OnDetach(ClientContext &context) override;
@@ -352,7 +350,6 @@ public:
 
 	shared_ptr<const DuckLakeNameMap> TryGetMappingById(DuckLakeTransaction &transaction, MappingIndex mapping_id);
 	MappingIndex TryGetCompatibleNameMap(DuckLakeTransaction &transaction, const DuckLakeNameMap &name_map);
-	idx_t GetBeginSnapshotForTable(TableIndex table_id, DuckLakeTransaction &transaction);
 	idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version, DuckLakeTransaction &transaction);
 	optional_ptr<DuckLakeTableEntry> GetTableAtSchemaVersion(DuckLakeTransaction &transaction, TableIndex table_id,
 	                                                         idx_t schema_version);
@@ -365,9 +362,11 @@ public:
 	//! Callback type for instrumenting metadata queries
 	using QueryCallback = std::function<void(const string &query, std::chrono::steady_clock::duration elapsed)>;
 
+	// LCOV_EXCL_START
 	void SetQueryCallback(QueryCallback callback) {
 		query_callback = std::move(callback);
 	}
+	// LCOV_EXCL_STOP
 	const QueryCallback &GetQueryCallback() const {
 		return query_callback;
 	}

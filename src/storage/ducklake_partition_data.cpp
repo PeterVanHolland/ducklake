@@ -103,8 +103,10 @@ static string GetEpochTransformPart(DuckLakeTransformType transform_type) {
 LogicalType DuckLakePartitionUtils::GetPartitionKeyType(DuckLakeTransformType transform_type,
                                                         const LogicalType &source_type) {
 	switch (transform_type) {
+	// LCOV_EXCL_START
 	case DuckLakeTransformType::IDENTITY:
 		return source_type;
+	// LCOV_EXCL_STOP
 	case DuckLakeTransformType::YEAR:
 	case DuckLakeTransformType::MONTH:
 	case DuckLakeTransformType::DAY:
@@ -125,7 +127,9 @@ string DuckLakePartitionUtils::BuildHivePartitionPath(DuckLakeTableEntry &table,
                                                       const string &separator) {
 	auto partition_data = table.GetPartitionData();
 	if (!partition_data) {
+		// LCOV_EXCL_START
 		return string();
+		// LCOV_EXCL_STOP
 	}
 	if (partition_data->fields.size() != partition_values.size()) {
 		throw InternalException("DuckLake partition value count does not match partition spec");

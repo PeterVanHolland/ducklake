@@ -66,6 +66,8 @@ public:
 	}
 	//! Whether the transaction changed the type of a column of this table
 	bool ChangedColumnType();
+	//! Whether this transaction added the field with ADD COLUMN
+	bool AddedColumn(FieldIndex field_index);
 	optional_ptr<DuckLakePartition> GetPartitionData() {
 		return partition_data.get();
 	}
@@ -151,6 +153,9 @@ public:
 	TableFunction GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) override;
 	TableFunction GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data,
 	                              const EntryLookupInfo &lookup_info) override;
+	//! The scan of an entry looked up by id, which this transaction may have renamed since
+	TableFunction GetScanFunctionById(ClientContext &context, unique_ptr<FunctionData> &bind_data,
+	                                  const EntryLookupInfo &lookup_info);
 
 	TableStorageInfo GetStorageInfo(ClientContext &context) override;
 

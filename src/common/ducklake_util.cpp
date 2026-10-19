@@ -25,6 +25,9 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "storage/ducklake_catalog.hpp"
+#include "storage/ducklake_scan.hpp"
+#include "duckdb/catalog/catalog_entry/copy_function_catalog_entry.hpp"
+#include "duckdb/parser/parsed_data/copy_info.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/common/types/interval.hpp"
@@ -150,8 +153,10 @@ string ToSQLString(DuckLakeMetadataManager &metadata_manager, const Value &value
 		return EscapeVarcharForSQL(value.ToString());
 	case LogicalTypeId::VARIANT: {
 		if (!use_native_type) {
+			// LCOV_EXCL_START
 			throw InternalException("VARIANT values must be encoded as Parquet Variant blobs before being "
 			                        "inlined in this catalog type");
+			// LCOV_EXCL_STOP
 		}
 		return value.ToSQLString();
 	}
@@ -191,7 +196,6 @@ string ToByteaHexLiteral(const string &raw_bytes) {
 }
 
 string DuckLakeUtil::ValueToSQL(DuckLakeMetadataManager &metadata_manager, ClientContext &context, const Value &val) {
-	// FIXME: this should be upstreamed
 	if (val.IsNull()) {
 		return val.ToString();
 	}
@@ -396,9 +400,59 @@ void DuckLakeUtil::ValidateCanEnableInlining(const ColumnList &columns, bool pre
 	}
 }
 
+string DuckLakeUtil::ReplacePlaceholders(const string &sql, const vector<pair<string, string>> &replacements) {
+	string result;
+	result.reserve(sql.size());
+	idx_t pos = 0;
+	while (pos < sql.size()) {
+		auto next = sql.find_first_of("'\"{", pos);
+		if (next == string::npos) {
+			result.append(sql, pos, string::npos);
+			break;
+		}
+		result.append(sql, pos, next - pos);
+		pos = next;
+		auto c = sql[pos];
+		if (c == '{') {
+			bool replaced = false;
+			for (auto &replacement : replacements) {
+				if (sql.compare(pos, replacement.first.size(), replacement.first) == 0) {
+					result += replacement.second;
+					pos += replacement.first.size();
+					replaced = true;
+					break;
+				}
+			}
+			if (!replaced) {
+				result += c;
+				pos++;
+			}
+			continue;
+		}
+		// copy the quoted text up to its closing quote, a doubled quote does not close it
+		idx_t end = pos + 1;
+		while (end < sql.size()) {
+			if (sql[end] == c) {
+				if (end + 1 < sql.size() && sql[end + 1] == c) {
+					end += 2;
+					continue;
+				}
+				break;
+			}
+			end++;
+		}
+		end = MinValue<idx_t>(end + 1, sql.size());
+		result.append(sql, pos, end - pos);
+		pos = end;
+	}
+	return result;
+}
+
 string DuckLakeUtil::ReplaceSkippingQuotes(const string &sql, const string &from, const string &to) {
 	if (from.empty()) {
+		// LCOV_EXCL_START
 		return sql;
+		// LCOV_EXCL_STOP
 	}
 
 	auto tokens = Parser::Tokenize(sql);
@@ -425,7 +479,9 @@ string DuckLakeUtil::ReplaceSkippingQuotes(const string &sql, const string &from
 
 	while (pos < sql.size()) {
 		while (range_idx < no_replace_ranges.size() && pos >= no_replace_ranges[range_idx].second) {
+			// LCOV_EXCL_START
 			range_idx++;
+			// LCOV_EXCL_STOP
 		}
 
 		// If inside a quoted range, copy verbatim to its end
@@ -576,7 +632,9 @@ void DuckLakeUtil::CopyExtensionSettings(ClientContext &from, ClientContext &to)
 	for (auto &entry : db_config.GetExtensionSettings()) {
 		auto &option = entry.second;
 		if (!option.setting_index.IsValid()) {
+			// LCOV_EXCL_START
 			continue;
+			// LCOV_EXCL_STOP
 		}
 		auto setting_index = option.setting_index.GetIndex();
 		// these change the types read from the metadata and data files
@@ -633,6 +691,19 @@ static string ParseUnsignedInteger(ClientContext &, const string &, const Value 
 	return to_string(val.DefaultCastAs(LogicalType::UBIGINT).GetValue<idx_t>());
 }
 
+static string ParseCompressionLevel(ClientContext &context, const string &, const Value &val) {
+	auto level = val.DefaultCastAs(LogicalType::BIGINT);
+	// the Parquet writer checks the level, which inserts pass to it only for ZSTD
+	CopyInfo info;
+	info.format = "parquet";
+	info.options["compression"].emplace_back("zstd");
+	info.options["compression_level"].push_back(level);
+	CopyFunctionBindInput bind_input(info);
+	auto &copy_fun = DuckLakeFunctions::GetCopyFunction(context, "parquet");
+	copy_fun.function.copy_to_bind(context, bind_input, {Identifier("i")}, {LogicalType::INTEGER});
+	return level.ToString();
+}
+
 static string ParseRowGroupSize(ClientContext &, const string &, const Value &val) {
 	auto row_group_size = val.DefaultCastAs(LogicalType::UBIGINT).GetValue<idx_t>();
 	if (row_group_size == 0) {
@@ -642,15 +713,18 @@ static string ParseRowGroupSize(ClientContext &, const string &, const Value &va
 }
 
 static string ParseRowGroupSizeBytes(ClientContext &, const string &, const Value &val) {
-	auto row_group_size_bytes = DBConfig::ParseMemoryLimit(val.ToString());
+	auto row_group_size_bytes = DBConfig::ParseMemoryLimitOrMaximum(val.ToString());
 	if (row_group_size_bytes == 0) {
 		throw NotImplementedException("Row group size bytes cannot be 0");
+	}
+	if (row_group_size_bytes == NumericLimits<idx_t>::Maximum()) {
+		throw InvalidInputException("Row group size bytes must be a finite size, not \"%s\"", val.ToString());
 	}
 	return to_string(row_group_size_bytes);
 }
 
 static string ParseMemorySize(ClientContext &, const string &, const Value &val) {
-	return to_string(DBConfig::ParseMemoryLimit(val.ToString()));
+	return to_string(DBConfig::ParseMemoryLimitOrMaximum(val.ToString()));
 }
 
 static string ParseBooleanLiteral(ClientContext &, const string &, const Value &val) {
@@ -680,13 +754,6 @@ static string ParseBoolean(ClientContext &context, const string &, const Value &
 	return DuckLakeUtil::BoolLiteral(val.CastAs(context, LogicalType::BOOLEAN).GetValue<bool>());
 }
 
-static string ParseAutoCompact(ClientContext &context, const string &option, const Value &val) {
-	if (val.IsNull()) {
-		throw BinderException("The %s option can't be null.", option.c_str());
-	}
-	return ParseBoolean(context, option, val);
-}
-
 //! resolved against the table by the caller
 static string ParseSkippedStatsColumns(ClientContext &, const string &, const Value &) {
 	return string();
@@ -696,7 +763,7 @@ static const unordered_map<string, config_option_parser_t> &ConfigOptionParsers(
 	static const unordered_map<string, config_option_parser_t> parsers {
 	    {"parquet_compression", ParseParquetCompression},
 	    {"parquet_version", ParseParquetVersion},
-	    {"parquet_compression_level", ParseUnsignedInteger},
+	    {"parquet_compression_level", ParseCompressionLevel},
 	    {"data_inlining_row_limit", ParseUnsignedInteger},
 	    {"parquet_row_group_size", ParseRowGroupSize},
 	    {"parquet_row_group_size_bytes", ParseRowGroupSizeBytes},
@@ -706,7 +773,7 @@ static const unordered_map<string, config_option_parser_t> &ConfigOptionParsers(
 	    {"rewrite_delete_threshold", ParseDeleteThreshold},
 	    {"delete_older_than", ParseInterval},
 	    {"expire_older_than", ParseInterval},
-	    {"auto_compact", ParseAutoCompact},
+	    {"auto_compact", ParseBoolean},
 	    {"per_thread_output", ParseBoolean},
 	    {"write_deletion_vectors", ParseBoolean},
 	    {"sort_on_insert", ParseBoolean},
@@ -723,6 +790,10 @@ void DuckLakeUtil::ValidateConfigOptionName(const string &option) {
 
 string DuckLakeUtil::ParseConfigOptionValue(ClientContext &context, const string &option, const Value &val) {
 	ValidateConfigOptionName(option);
+	// a NULL list of columns clears skip_stats_columns
+	if (val.IsNull() && option != "skip_stats_columns") {
+		throw BinderException("The %s option can't be null.", option.c_str());
+	}
 	return ConfigOptionParsers().at(option)(context, option, val);
 }
 

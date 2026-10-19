@@ -20,6 +20,12 @@
   ],
   "skip_tests": [
     {
+      "reason": "Only DuckDB catalogs drop the empty inlined data table that an ALTER supersedes",
+      "paths": [
+        "test/sql/alter/alter_drops_empty_inlined_tables.test"
+      ]
+    },
+    {
       "reason": "Bespoke test starts and stops its own quack server",
       "paths": [
         "test/sql/quack/quack_basic.test"
@@ -45,11 +51,12 @@
         "test/sql/concurrent/postgres_concurrent_attach_new.test",
         "test/sql/concurrent/postgres_concurrent_attach_new_migrate.test",
         "test/sql/migration/postgres_dev_migration_failure.test",
-        "test/sql/migration/postgres_concurrent_dev_attach.test",
+        "test/sql/migration/postgres_dev1_migration_skips_present_ddl.test",
         "test/sql/benchmark/postgres_catalog.test",
         "test/sql/issues/issue_843_postgres_legacy_inlined_types.test",
         "test/sql/data_inlining/inlined_superseded_drop_failure_postgres.test",
-        "test/sql/compaction/compaction_idle_metadata_transaction.test"
+        "test/sql/compaction/compaction_idle_metadata_transaction.test",
+        "test/sql/compaction/postgres_expire_snapshots_time_zone.test"
       ]
     },
     {
@@ -71,6 +78,7 @@
       "paths": [
         "test/sql/delete/delete_legacy_missing_mapping_after_rename_add_files.test",
         "test/sql/rewrite_data_files/test_rewrite_many_non_candidate_files.test",
+        "test/sql/stats/nan_column_stats_missing_max.test",
         "test/sql/stats/nan_column_stats_missing_min.test",
         "test/sql/stats/numeric_stats_one_bound.test"
       ]
@@ -91,12 +99,6 @@
       "reason": "Uses the S3 test server",
       "paths": [
         "test/sql/delete/delete_metadata.test"
-      ]
-    },
-    {
-      "reason": "mode skip in the test itself",
-      "paths": [
-        "test/sql/general/prepared_statement.test"
       ]
     },
     {
@@ -183,6 +185,12 @@
       "reason": "The commit batch of a quack catalog is sent through quack_query_by_name, so the number of column inserts cannot be counted",
       "paths": [
         "test/sql/issues/issue_1146_column_insert_batches.test"
+      ]
+    },
+    {
+      "reason": "A quack catalog commits each statement, so its commits keep sending inlined rows as SQL text",
+      "paths": [
+        "test/sql/data_inlining/inlined_commit_append.test"
       ]
     }
   ]

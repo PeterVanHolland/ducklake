@@ -61,7 +61,7 @@ struct DuckLakeColumnStats {
 	bool has_min = false;
 	bool has_max = false;
 	bool any_valid = true;
-	//! Invalidated bounds must never be reseeded
+	//! The table has rows without bounds, new values only set them once the live values are known to be NULL
 	bool bounds_unknown = false;
 	bool has_contains_nan = false;
 	bool min_is_exact = false;
@@ -96,6 +96,8 @@ public:
 	void ClearBounds();
 	//! Rewrite FLOAT bounds as the DOUBLE values they widen to
 	void WidenFloatBounds();
+	//! Rewrite bounds of the source type as the values they cast to, dropping the bounds that do not cast
+	void CastBoundsFrom(const LogicalType &source);
 	void CopyMinFrom(const DuckLakeColumnStats &other);
 	void CopyMaxFrom(const DuckLakeColumnStats &other);
 	static bool BoundsSurviveTypePromotion(const LogicalType &source, const LogicalType &target);

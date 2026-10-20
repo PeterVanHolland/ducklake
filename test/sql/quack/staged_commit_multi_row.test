@@ -183,3 +183,51 @@ query I
 SELECT count(*) FROM ducklake_list_files('s1', 's')
 ----
 3
+
+# a transaction that began before its metadata database was replaced commits on the session it began on
+statement ok
+CREATE TABLE dl.u(i INTEGER)
+
+statement ok con1
+BEGIN
+
+query I con1
+SELECT count(*) FROM ducklake_list_files('s1', 's')
+----
+3
+
+statement ok con1
+INSERT INTO s1.s VALUES (1000)
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS s3 (METADATA_CATALOG 'shared_metadata', DATA_PATH '{DATA_PATH}/staged_commit_multi_row', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok con1
+COMMIT
+
+statement ok
+CALL disable_logging()
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'QueryLog' AND message LIKE '%shared_metadata%ducklake_commit(%'
+----
+1
+
+statement ok
+INSERT INTO s3.u SELECT range FROM range(10)
+
+statement ok
+DELETE FROM s3.s WHERE i = 3
+
+query III
+SELECT (SELECT count(*) FROM s3.s), (SELECT sum(i) FROM s3.s), (SELECT count(*) FROM s3.u)
+----
+28	1431	10
+
+query I
+SELECT count(*) FROM ducklake_list_files('s3', 'u')
+----
+1

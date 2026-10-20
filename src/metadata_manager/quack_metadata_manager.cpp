@@ -138,7 +138,7 @@ void QuackMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tra
 	}
 	auto &catalog = transaction.GetCatalog();
 	catalog.EnsureCommitInfoProvided(flush_transaction.GetCommitInfo());
-	auto staged_tables = DuckLakeStagedTableState::Get(catalog);
+	auto staged_tables = DuckLakeStagedTableState::Get(transaction);
 	unique_ptr<QueryResult> result;
 	{
 		lock_guard<mutex> guard(staged_tables->lock);

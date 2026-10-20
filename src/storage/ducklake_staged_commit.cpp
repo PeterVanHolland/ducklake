@@ -209,14 +209,18 @@ struct DuckLakeStagedTableSessions : public ObjectCacheEntry {
 	}
 };
 
-shared_ptr<DuckLakeStagedTableState> DuckLakeStagedTableState::Get(DuckLakeCatalog &catalog) {
+shared_ptr<DuckLakeStagedTableState> DuckLakeStagedTableState::Get(DuckLakeTransaction &transaction) {
+	auto &catalog = transaction.GetCatalog();
 	auto &db = catalog.GetDatabase();
-	auto metadata_database = DatabaseManager::Get(db).GetDatabase(Identifier(catalog.MetadataDatabaseName()));
-	if (!metadata_database) {
+	// quack_query_by_name runs on the metadata database pinned by the metadata transaction
+	auto &context = *transaction.GetConnection().context;
+	auto pinned = DatabaseManager::Get(context).GetDatabase(context, Identifier(catalog.MetadataDatabaseName()));
+	if (!pinned) {
 		// LCOV_EXCL_START
 		return make_shared_ptr<DuckLakeStagedTableState>();
 		// LCOV_EXCL_STOP
 	}
+	auto metadata_database = pinned->shared_from_this();
 	auto registry =
 	    db.GetObjectCache().GetOrCreate<DuckLakeStagedTableSessions>(DuckLakeStagedTableSessions::ObjectType());
 	lock_guard<mutex> guard(registry->lock);

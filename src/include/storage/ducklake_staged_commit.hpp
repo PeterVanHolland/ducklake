@@ -22,7 +22,6 @@ namespace duckdb {
 
 class ClientContext;
 class DataChunk;
-class DuckLakeCatalog;
 class DuckLakeMetadataManager;
 class DuckLakeTransaction;
 class Value;
@@ -88,8 +87,8 @@ private:
 //! The staged tables in the Quack session of a metadata database, used under its lock until the batch ran
 class DuckLakeStagedTableState {
 public:
-	//! Shared by every DuckLake on the metadata database, since they use the same session
-	static shared_ptr<DuckLakeStagedTableState> Get(DuckLakeCatalog &catalog);
+	//! Shared by every DuckLake on the metadata database the transaction uses, since they use the same session
+	static shared_ptr<DuckLakeStagedTableState> Get(DuckLakeTransaction &transaction);
 	//! Creates the tables on first use and empties the ones an earlier batch can have filled
 	string SetupSql(const set<DuckLakeStagedTableType> &tables_to_fill);
 	//! After a failed batch the next one sets up every table again

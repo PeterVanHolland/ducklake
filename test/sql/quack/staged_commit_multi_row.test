@@ -63,6 +63,12 @@ FROM duckdb_logs WHERE type = 'QueryLog' AND message LIKE '%ducklake_commit(%'
 ----
 1	1	1	0	4	1
 
+# the staged tables hold every row of the commit until the next commit empties them
+query III
+SELECT * FROM quack_query_by_name('__ducklake_metadata_dl', 'SELECT (SELECT count(*) FROM ducklake_staged_data_file), (SELECT count(*) FROM ducklake_staged_data_file_column_stats), (SELECT count(*) FROM ducklake_staged_data_file_partition)')
+----
+3	6	3
+
 # a commit of other staged tables empties the ones the previous commit filled
 statement ok
 CALL truncate_duckdb_logs()

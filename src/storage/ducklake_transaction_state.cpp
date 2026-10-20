@@ -2630,7 +2630,7 @@ SnapshotAndStats DuckLakeTransactionState::CheckForConflicts(DuckLakeSnapshot tr
 	SnapshotAndStats snapshot_and_stats;
 	// get all changes made to the system after the current snapshot was started
 	auto changes_made = DuckLakeMetadataManager::GetSnapshotAndStatsAndChanges(
-	    snapshot_and_stats, context.conflict_query_executor, context.supports_v1_1_metadata);
+	    snapshot_and_stats, context.conflict_query_executor, context.snapshot_and_stats_query);
 	// parse changes made by other transactions
 	auto other_changes = SnapshotChangeInformation::ParseChangesMade(changes_made.changes_made);
 

@@ -25,6 +25,17 @@ Transaction &DuckLakeTransactionManager::StartTransaction(ClientContext &context
 	return result;
 }
 
+shared_ptr<DuckLakeTransaction> DuckLakeTransactionManager::RemoveTransaction(Transaction &transaction) {
+	lock_guard<mutex> l(transaction_lock);
+	auto entry = transactions.find(transaction);
+	if (entry == transactions.end()) {
+		return nullptr;
+	}
+	auto result = std::move(entry->second);
+	transactions.erase(entry);
+	return result;
+}
+
 ErrorData DuckLakeTransactionManager::CommitTransaction(ClientContext &context, Transaction &transaction) {
 	auto &ducklake_transaction = transaction.Cast<DuckLakeTransaction>();
 	ErrorData error;
@@ -32,21 +43,16 @@ ErrorData DuckLakeTransactionManager::CommitTransaction(ClientContext &context, 
 		ducklake_transaction.Commit();
 	} catch (std::exception &ex) {
 		error = ErrorData(ex);
+	} catch (...) {
+		RemoveTransaction(transaction);
+		throw;
 	}
-	// a transaction whose commit failed is not rolled back afterwards, so it is done either way
-	// it is destroyed after the lock is released, closing its connection can roll back other transactions
-	shared_ptr<DuckLakeTransaction> finished_transaction;
-	{
+	if (error.HasError() && ducklake_transaction.CommitOutcomeUnknown()) {
 		lock_guard<mutex> l(transaction_lock);
-		if (error.HasError() && ducklake_transaction.CommitOutcomeUnknown()) {
-			ducklake_transaction.GetWrittenFiles(in_doubt_files);
-		}
-		auto entry = transactions.find(transaction);
-		if (entry != transactions.end()) {
-			finished_transaction = std::move(entry->second);
-			transactions.erase(entry);
-		}
+		ducklake_transaction.GetWrittenFiles(in_doubt_files);
 	}
+	// the caller does not roll back a failed commit, so it is released here without removing its files
+	RemoveTransaction(transaction);
 	return error;
 }
 
@@ -60,9 +66,14 @@ void DuckLakeTransactionManager::GetWrittenFiles(vector<string> &result) {
 
 void DuckLakeTransactionManager::RollbackTransaction(Transaction &transaction) {
 	auto &ducklake_transaction = transaction.Cast<DuckLakeTransaction>();
-	ducklake_transaction.Rollback();
-	lock_guard<mutex> l(transaction_lock);
-	transactions.erase(transaction);
+	try {
+		ducklake_transaction.Rollback();
+	} catch (...) {
+		// the caller counts it as rolled back either way
+		RemoveTransaction(transaction);
+		throw;
+	}
+	RemoveTransaction(transaction);
 }
 
 } // namespace duckdb

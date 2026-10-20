@@ -136,10 +136,17 @@ void QuackMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tra
 		flush_transaction.RunCommitLoop(transaction_snapshot, transaction_changes, retry_config);
 		return;
 	}
-	transaction.GetCatalog().EnsureCommitInfoProvided(flush_transaction.GetCommitInfo());
-	DuckLakeStagedCommit staged;
-	string batch = staged.Build(flush_transaction, transaction_snapshot, retry_config);
-	auto result = Query(batch);
+	auto &catalog = transaction.GetCatalog();
+	catalog.EnsureCommitInfoProvided(flush_transaction.GetCommitInfo());
+	auto staged_tables = DuckLakeStagedTableState::Get(catalog);
+	unique_ptr<QueryResult> result;
+	{
+		lock_guard<mutex> guard(staged_tables->lock);
+		DuckLakeStagedCommit staged;
+		string batch = staged.Build(flush_transaction, transaction_snapshot, retry_config, *staged_tables);
+		result = Query(batch);
+		staged_tables->BatchFinished(result && !result->HasError());
+	}
 	if (!result) {
 		throw IOException("Failed to invoke server-side ducklake_commit: empty result");
 	}

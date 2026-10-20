@@ -3,7 +3,10 @@
 #include "common/ducklake_data_file.hpp"
 #include "common/ducklake_util.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/database_manager.hpp"
+#include "duckdb/storage/object_cache.hpp"
 #include "storage/ducklake_catalog.hpp"
 #include "storage/ducklake_metadata_info.hpp"
 #include "storage/ducklake_metadata_manager.hpp"
@@ -164,6 +167,103 @@ string DuckLakeStagedTable::TruncateAllSql() {
 	return sql;
 }
 
+DuckLakeStagedRows::DuckLakeStagedRows() : rows(DuckLakeStagedTable::AllTypes().size()) {
+}
+
+void DuckLakeStagedRows::Add(DuckLakeStagedTableType type, string tuple) {
+	rows[static_cast<idx_t>(type)].push_back(std::move(tuple));
+}
+
+string DuckLakeStagedRows::InsertSql() const {
+	string sql;
+	for (auto type : DuckLakeStagedTable::AllTypes()) {
+		sql += DuckLakeMetadataManager::InsertValuesIntoSql(DuckLakeStagedTable::BaseName(type),
+		                                                    rows[static_cast<idx_t>(type)]);
+	}
+	return sql;
+}
+
+set<DuckLakeStagedTableType> DuckLakeStagedRows::FilledTables() const {
+	set<DuckLakeStagedTableType> result;
+	for (auto type : DuckLakeStagedTable::AllTypes()) {
+		if (!rows[static_cast<idx_t>(type)].empty()) {
+			result.insert(type);
+		}
+	}
+	return result;
+}
+
+//! The staged table states of a database instance, one per metadata database
+struct DuckLakeStagedTableSessions : public ObjectCacheEntry {
+	mutex lock;
+	vector<pair<weak_ptr<AttachedDatabase>, shared_ptr<DuckLakeStagedTableState>>> sessions;
+
+	static string ObjectType() {
+		return "ducklake_staged_table_sessions";
+	}
+	string GetObjectType() override {
+		return ObjectType();
+	}
+	optional_idx GetEstimatedCacheMemory() const override {
+		return optional_idx();
+	}
+};
+
+shared_ptr<DuckLakeStagedTableState> DuckLakeStagedTableState::Get(DuckLakeCatalog &catalog) {
+	auto &db = catalog.GetDatabase();
+	auto metadata_database = DatabaseManager::Get(db).GetDatabase(Identifier(catalog.MetadataDatabaseName()));
+	if (!metadata_database) {
+		// LCOV_EXCL_START
+		return make_shared_ptr<DuckLakeStagedTableState>();
+		// LCOV_EXCL_STOP
+	}
+	auto registry =
+	    db.GetObjectCache().GetOrCreate<DuckLakeStagedTableSessions>(DuckLakeStagedTableSessions::ObjectType());
+	lock_guard<mutex> guard(registry->lock);
+	auto &sessions = registry->sessions;
+	shared_ptr<DuckLakeStagedTableState> result;
+	for (idx_t i = 0; i < sessions.size();) {
+		// a replaced or detached metadata database ended its session
+		auto attached = sessions[i].first.lock();
+		if (!attached) {
+			sessions.erase(sessions.begin() + static_cast<int64_t>(i));
+			continue;
+		}
+		if (attached.get() == metadata_database.get()) {
+			result = sessions[i].second;
+		}
+		i++;
+	}
+	if (!result) {
+		result = make_shared_ptr<DuckLakeStagedTableState>();
+		sessions.emplace_back(metadata_database, result);
+	}
+	return result;
+}
+
+string DuckLakeStagedTableState::SetupSql(const set<DuckLakeStagedTableType> &tables_to_fill) {
+	string sql;
+	if (!created) {
+		sql = DuckLakeStagedTable::CreateAllSql() + DuckLakeStagedTable::TruncateAllSql();
+	} else {
+		for (auto type : filled) {
+			sql += StringUtil::Format("TRUNCATE %s;", DuckLakeStagedTable::BaseName(type));
+		}
+	}
+	// the statements run one by one on the server, so a batch that fails midway can leave rows in any of them
+	filled.insert(tables_to_fill.begin(), tables_to_fill.end());
+	batch_tables = tables_to_fill;
+	return sql;
+}
+
+void DuckLakeStagedTableState::BatchFinished(bool success) {
+	created = success;
+	if (success) {
+		filled = std::move(batch_tables);
+	}
+	batch_tables.clear();
+}
+
 const char *DuckLakeStagedTable::DeleteFileSourceToString(DeleteFileSource source) {
 	return source == DeleteFileSource::FLUSH ? "FLUSH" : "REGULAR";
 }
@@ -172,34 +272,35 @@ DeleteFileSource DuckLakeStagedTable::DeleteFileSourceFromString(const string &s
 	return source == "FLUSH" ? DeleteFileSource::FLUSH : DeleteFileSource::REGULAR;
 }
 
-void DuckLakeStagedCommit::EmitDataFileRow(string &sql, const DuckLakeDataFile &file, idx_t local_file_id,
+void DuckLakeStagedCommit::EmitDataFileRow(DuckLakeStagedRows &rows, const DuckLakeDataFile &file, idx_t local_file_id,
                                            TableIndex table_id, idx_t file_order,
                                            const string &compaction_id_literal) const {
-	sql += StringUtil::Format(
-	    "INSERT INTO %s VALUES "
-	    "(%llu, %llu, %llu, %s, false, 'parquet', %llu, %llu, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);",
-	    DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::DATA_FILE), local_file_id, table_id.index, file_order,
-	    SQLString(file.file_name), file.row_count, file.file_size_bytes,
-	    DuckLakeUtil::OptionalIdxOrNull(file.footer_size), DuckLakeUtil::OptionalIdxOrNull(file.flush_row_id_start),
-	    DuckLakeUtil::OptionalIdxOrNull(file.partition_id), DuckLakeUtil::EncryptionKeyLiteral(file.encryption_key),
-	    DuckLakeUtil::MappingIdOrNull(file.mapping_id), DuckLakeUtil::OptionalIdxOrNull(file.max_partial_file_snapshot),
-	    DuckLakeUtil::OptionalIdxOrNull(file.begin_snapshot), compaction_id_literal,
-	    DuckLakeUtil::OptionalIdxOrNull(file.row_group_count), DuckLakeUtil::BoolLiteral(file.created_by_ducklake));
+	rows.Add(
+	    DuckLakeStagedTableType::DATA_FILE,
+	    StringUtil::Format(
+	        "(%llu, %llu, %llu, %s, false, 'parquet', %llu, %llu, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+	        local_file_id, table_id.index, file_order, SQLString(file.file_name), file.row_count, file.file_size_bytes,
+	        DuckLakeUtil::OptionalIdxOrNull(file.footer_size), DuckLakeUtil::OptionalIdxOrNull(file.flush_row_id_start),
+	        DuckLakeUtil::OptionalIdxOrNull(file.partition_id), DuckLakeUtil::EncryptionKeyLiteral(file.encryption_key),
+	        DuckLakeUtil::MappingIdOrNull(file.mapping_id),
+	        DuckLakeUtil::OptionalIdxOrNull(file.max_partial_file_snapshot),
+	        DuckLakeUtil::OptionalIdxOrNull(file.begin_snapshot), compaction_id_literal,
+	        DuckLakeUtil::OptionalIdxOrNull(file.row_group_count),
+	        DuckLakeUtil::BoolLiteral(file.created_by_ducklake)));
 	for (auto &stat : file.column_stats) {
-		sql += StringUtil::Format("INSERT INTO %s VALUES (%llu, %llu, %llu, %s);",
-		                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::DATA_FILE_COLUMN_STATS),
-		                          local_file_id, table_id.index, stat.first.index, EmitColumnStatsValues(stat.second));
+		rows.Add(DuckLakeStagedTableType::DATA_FILE_COLUMN_STATS,
+		         StringUtil::Format("(%llu, %llu, %llu, %s)", local_file_id, table_id.index, stat.first.index,
+		                            EmitColumnStatsValues(stat.second)));
 	}
 	for (auto &part : file.partition_values) {
-		sql += StringUtil::Format("INSERT INTO %s VALUES (%llu, %llu, %s);",
-		                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::DATA_FILE_PARTITION),
-		                          local_file_id, part.partition_column_idx,
-		                          DuckLakeUtil::PartitionValueLiteral(part.partition_value));
+		rows.Add(DuckLakeStagedTableType::DATA_FILE_PARTITION,
+		         StringUtil::Format("(%llu, %llu, %s)", local_file_id, part.partition_column_idx,
+		                            DuckLakeUtil::PartitionValueLiteral(part.partition_value)));
 	}
 }
 
-void DuckLakeStagedCommit::EmitDeleteFileRow(string &sql, const DuckLakeDeleteFile &file, TableIndex table_id,
-                                             optional_ptr<const string> data_file_path,
+void DuckLakeStagedCommit::EmitDeleteFileRow(DuckLakeStagedRows &rows, const DuckLakeDeleteFile &file,
+                                             TableIndex table_id, optional_ptr<const string> data_file_path,
                                              optional_idx attached_local_file_id) const {
 	string data_file_path_literal = "NULL";
 	string data_file_id = "NULL";
@@ -222,15 +323,18 @@ void DuckLakeStagedCommit::EmitDeleteFileRow(string &sql, const DuckLakeDeleteFi
 			// LCOV_EXCL_STOP
 		}
 	}
-	sql += StringUtil::Format(
-	    "INSERT INTO %s VALUES (%llu, %s, %s, %s, %s, %llu, %llu, %llu, %s, %s, %s, %s, %s, %s, %s, %s, %s);",
-	    DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::DELETE_FILE), table_id.index, data_file_path_literal,
-	    data_file_id, SQLString(file.file_name), SQLString(DeleteFileFormatToString(file.format)), file.delete_count,
-	    file.file_size_bytes, file.footer_size, DuckLakeUtil::EncryptionKeyLiteral(file.encryption_key),
-	    DuckLakeUtil::OptionalIdxOrNull(file.begin_snapshot), DuckLakeUtil::OptionalIdxOrNull(file.max_snapshot),
-	    SQLString(DuckLakeStagedTable::DeleteFileSourceToString(file.source)),
-	    DuckLakeUtil::BoolLiteral(overwrites_existing_delete), overwrite_id, overwrite_path,
-	    DuckLakeUtil::OptionalIdxOrNull(attached_local_file_id), DuckLakeUtil::OptionalIdxOrNull(file.row_group_count));
+	rows.Add(DuckLakeStagedTableType::DELETE_FILE,
+	         StringUtil::Format("(%llu, %s, %s, %s, %s, %llu, %llu, %llu, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+	                            table_id.index, data_file_path_literal, data_file_id, SQLString(file.file_name),
+	                            SQLString(DeleteFileFormatToString(file.format)), file.delete_count,
+	                            file.file_size_bytes, file.footer_size,
+	                            DuckLakeUtil::EncryptionKeyLiteral(file.encryption_key),
+	                            DuckLakeUtil::OptionalIdxOrNull(file.begin_snapshot),
+	                            DuckLakeUtil::OptionalIdxOrNull(file.max_snapshot),
+	                            SQLString(DuckLakeStagedTable::DeleteFileSourceToString(file.source)),
+	                            DuckLakeUtil::BoolLiteral(overwrites_existing_delete), overwrite_id, overwrite_path,
+	                            DuckLakeUtil::OptionalIdxOrNull(attached_local_file_id),
+	                            DuckLakeUtil::OptionalIdxOrNull(file.row_group_count)));
 }
 
 string DuckLakeStagedCommit::EmitColumnStatsValues(const DuckLakeColumnStats &s) {
@@ -257,48 +361,44 @@ string DuckLakeStagedCommit::EmitColumnStatsValues(const DuckLakeColumnStats &s)
 	    extra_stats, DuckLakeUtil::BoolLiteral(s.min_is_exact), DuckLakeUtil::BoolLiteral(s.max_is_exact));
 }
 
-void DuckLakeStagedCommit::EmitInlinedColumnStatsRow(string &sql, TableIndex table_id, FieldIndex column_id,
-                                                     const DuckLakeColumnStats &s) const {
-	sql += StringUtil::Format("INSERT INTO %s VALUES (%llu, %llu, %s);",
-	                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::INLINED_COLUMN_STATS),
-	                          table_id.index, column_id.index, EmitColumnStatsValues(s));
+void DuckLakeStagedCommit::EmitInlinedColumnStatsRow(DuckLakeStagedRows &rows, TableIndex table_id,
+                                                     FieldIndex column_id, const DuckLakeColumnStats &s) const {
+	rows.Add(DuckLakeStagedTableType::INLINED_COLUMN_STATS,
+	         StringUtil::Format("(%llu, %llu, %s)", table_id.index, column_id.index, EmitColumnStatsValues(s)));
 }
 
-string DuckLakeStagedCommit::EmitCommitHeader(const DuckLakeSnapshotCommit &h, const DuckLakeSnapshot &snap,
-                                              const string &data_path, const string &separator) const {
+void DuckLakeStagedCommit::EmitCommitHeader(DuckLakeStagedRows &rows, const DuckLakeSnapshotCommit &h,
+                                            const DuckLakeSnapshot &snap, const string &data_path,
+                                            const string &separator) const {
 	bool has_snapshot = snap.snapshot_id != DConstants::INVALID_INDEX;
 	string snap_id = has_snapshot ? std::to_string(snap.snapshot_id) : "NULL";
 	string next_cat = has_snapshot ? std::to_string(snap.next_catalog_id) : "NULL";
 	string next_file = has_snapshot ? std::to_string(snap.next_file_id) : "NULL";
-	return StringUtil::Format("INSERT INTO %s VALUES (%s, %s, %s, %s, %s, %s, %s, %s);",
-	                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::COMMIT_HEADER),
-	                          h.author.ToSQLString(), h.commit_message.ToSQLString(), h.commit_extra_info.ToSQLString(),
-	                          snap_id, SQLString::ToString(data_path), SQLString::ToString(separator), next_cat,
-	                          next_file);
+	rows.Add(DuckLakeStagedTableType::COMMIT_HEADER,
+	         StringUtil::Format("(%s, %s, %s, %s, %s, %s, %s, %s)", h.author.ToSQLString(),
+	                            h.commit_message.ToSQLString(), h.commit_extra_info.ToSQLString(), snap_id,
+	                            SQLString::ToString(data_path), SQLString::ToString(separator), next_cat, next_file));
 }
 
-string DuckLakeStagedCommit::EmitDataFiles(const LocalTableChanges &local_changes, idx_t &local_file_id) const {
-	string sql;
+void DuckLakeStagedCommit::EmitDataFiles(DuckLakeStagedRows &rows, const LocalTableChanges &local_changes,
+                                         idx_t &local_file_id) const {
 	for (auto &entry : local_changes.Changes()) {
 		auto table_id = entry.first;
 		auto &table_changes = entry.second;
 		idx_t file_order = 0;
 		for (auto &file : table_changes.new_data_files) {
-			EmitDataFileRow(sql, file, local_file_id, table_id, file_order, "NULL");
+			EmitDataFileRow(rows, file, local_file_id, table_id, file_order, "NULL");
 			for (auto &del : file.delete_files) {
-				EmitDeleteFileRow(sql, del, table_id, nullptr, local_file_id);
+				EmitDeleteFileRow(rows, del, table_id, nullptr, local_file_id);
 			}
 			local_file_id++;
 			file_order++;
 		}
 	}
-	return sql;
 }
 
-string DuckLakeStagedCommit::EmitInlinedData(const LocalTableChanges &local_changes,
-                                             DuckLakeTransaction &transaction) const {
-	string sql;
-
+void DuckLakeStagedCommit::EmitInlinedData(DuckLakeStagedRows &rows, const LocalTableChanges &local_changes,
+                                           DuckLakeTransaction &transaction) const {
 	for (auto &entry : local_changes.Changes()) {
 		auto table_id = entry.first;
 		auto &table_changes = entry.second;
@@ -307,14 +407,11 @@ string DuckLakeStagedCommit::EmitInlinedData(const LocalTableChanges &local_chan
 		}
 		auto &inlined = *table_changes.new_inlined_data;
 		const bool has_preserved = inlined.HasPreservedRowIds();
-		sql += StringUtil::Format("INSERT INTO %s VALUES (%llu, %s);",
-		                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::INLINED_DATA), table_id.index,
-		                          DuckLakeUtil::BoolLiteral(has_preserved));
-		auto rows = DuckLakeUtil::InlinedDataToSQL(transaction, *inlined.data);
-		vector<string> staged_rows;
-		staged_rows.reserve(rows.size());
-		for (idx_t row_order = 0; row_order < rows.size(); row_order++) {
-			string tuple = "(" + rows[row_order] + ")";
+		rows.Add(DuckLakeStagedTableType::INLINED_DATA,
+		         StringUtil::Format("(%llu, %s)", table_id.index, DuckLakeUtil::BoolLiteral(has_preserved)));
+		auto inlined_rows = DuckLakeUtil::InlinedDataToSQL(transaction, *inlined.data);
+		for (idx_t row_order = 0; row_order < inlined_rows.size(); row_order++) {
+			string tuple = "(" + inlined_rows[row_order] + ")";
 			string preserved_row_id = "NULL";
 			if (has_preserved) {
 				auto rid = inlined.row_ids[row_order];
@@ -322,37 +419,32 @@ string DuckLakeStagedCommit::EmitInlinedData(const LocalTableChanges &local_chan
 					preserved_row_id = std::to_string(rid);
 				}
 			}
-			staged_rows.push_back(StringUtil::Format("(%llu, %llu, %s, %s)", table_id.index, row_order,
-			                                         preserved_row_id, SQLString(tuple)));
+			rows.Add(DuckLakeStagedTableType::INLINED_ROW,
+			         StringUtil::Format("(%llu, %llu, %s, %s)", table_id.index, row_order, preserved_row_id,
+			                            SQLString(tuple)));
 		}
-		sql += DuckLakeMetadataManager::InsertValuesIntoSql(
-		    DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::INLINED_ROW), staged_rows);
 		for (auto &stat : inlined.column_stats) {
-			EmitInlinedColumnStatsRow(sql, table_id, stat.first, stat.second);
+			EmitInlinedColumnStatsRow(rows, table_id, stat.first, stat.second);
 		}
 	}
-	return sql;
 }
 
-string DuckLakeStagedCommit::EmitInlinedDeletes(const LocalTableChanges &local_changes) const {
-	vector<string> staged_deletes;
+void DuckLakeStagedCommit::EmitInlinedDeletes(DuckLakeStagedRows &rows, const LocalTableChanges &local_changes) const {
 	for (auto &entry : local_changes.Changes()) {
 		auto table_id = entry.first;
 		auto &table_changes = entry.second;
 		for (auto &deletes_entry : table_changes.new_inlined_data_deletes) {
 			auto inlined_table_name = SQLString(deletes_entry.first);
 			for (auto &row_id : deletes_entry.second->rows) {
-				staged_deletes.push_back(
-				    StringUtil::Format("(%llu, %s, %llu)", table_id.index, inlined_table_name, row_id));
+				rows.Add(DuckLakeStagedTableType::INLINED_DELETE,
+				         StringUtil::Format("(%llu, %s, %llu)", table_id.index, inlined_table_name, row_id));
 			}
 		}
 	}
-	return DuckLakeMetadataManager::InsertValuesIntoSql(
-	    DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::INLINED_DELETE), staged_deletes);
 }
 
-string DuckLakeStagedCommit::EmitInlinedFileDeletes(const LocalTableChanges &local_changes) const {
-	vector<string> staged_deletes;
+void DuckLakeStagedCommit::EmitInlinedFileDeletes(DuckLakeStagedRows &rows,
+                                                  const LocalTableChanges &local_changes) const {
 	for (auto &entry : local_changes.Changes()) {
 		auto table_id = entry.first;
 		auto &table_changes = entry.second;
@@ -362,31 +454,28 @@ string DuckLakeStagedCommit::EmitInlinedFileDeletes(const LocalTableChanges &loc
 		for (auto &file_entry : table_changes.new_inlined_file_deletes->file_deletes) {
 			auto file_id = file_entry.first;
 			for (auto &row_id : file_entry.second) {
-				staged_deletes.push_back(StringUtil::Format("(%llu, %llu, %llu)", table_id.index, file_id, row_id));
+				rows.Add(DuckLakeStagedTableType::INLINED_FILE_DELETE,
+				         StringUtil::Format("(%llu, %llu, %llu)", table_id.index, file_id, row_id));
 			}
 		}
 	}
-	return DuckLakeMetadataManager::InsertValuesIntoSql(
-	    DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::INLINED_FILE_DELETE), staged_deletes);
 }
 
-string DuckLakeStagedCommit::EmitDeleteFiles(const LocalTableChanges &local_changes) const {
-	string sql;
+void DuckLakeStagedCommit::EmitDeleteFiles(DuckLakeStagedRows &rows, const LocalTableChanges &local_changes) const {
 	for (auto &entry : local_changes.Changes()) {
 		auto table_id = entry.first;
 		auto &table_changes = entry.second;
 		for (auto &delete_entry : table_changes.new_delete_files) {
 			auto &data_file_path = delete_entry.first;
 			for (auto &file : delete_entry.second) {
-				EmitDeleteFileRow(sql, file, table_id, data_file_path, optional_idx());
+				EmitDeleteFileRow(rows, file, table_id, data_file_path, optional_idx());
 			}
 		}
 	}
-	return sql;
 }
 
-string DuckLakeStagedCommit::EmitCompactions(const LocalTableChanges &local_changes, idx_t &local_file_id) const {
-	string sql;
+void DuckLakeStagedCommit::EmitCompactions(DuckLakeStagedRows &rows, const LocalTableChanges &local_changes,
+                                           idx_t &local_file_id) const {
 	idx_t compaction_id = 0;
 	for (auto &entry : local_changes.Changes()) {
 		auto table_id = entry.first;
@@ -394,16 +483,16 @@ string DuckLakeStagedCommit::EmitCompactions(const LocalTableChanges &local_chan
 		for (auto &compaction : table_changes.compactions) {
 			idx_t output_order = 0;
 			for (auto &written_file : compaction.written_files) {
-				EmitDataFileRow(sql, written_file, local_file_id, table_id, output_order,
+				EmitDataFileRow(rows, written_file, local_file_id, table_id, output_order,
 				                std::to_string(compaction_id));
 				local_file_id++;
 				output_order++;
 			}
 
-			sql += StringUtil::Format("INSERT INTO %s VALUES (%llu, %llu, %s, %s);",
-			                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::COMPACTION), compaction_id,
-			                          table_id.index, SQLString(CompactionTypeToString(compaction.type)),
-			                          DuckLakeUtil::OptionalIdxOrNull(compaction.row_id_start));
+			rows.Add(DuckLakeStagedTableType::COMPACTION,
+			         StringUtil::Format("(%llu, %llu, %s, %s)", compaction_id, table_id.index,
+			                            SQLString(CompactionTypeToString(compaction.type)),
+			                            DuckLakeUtil::OptionalIdxOrNull(compaction.row_id_start)));
 
 			idx_t source_order = 0;
 			for (auto &source : compaction.source_files) {
@@ -418,94 +507,82 @@ string DuckLakeStagedCommit::EmitCompactions(const LocalTableChanges &local_chan
 					last_row_count = std::to_string(last.row_count);
 					last_end_snap = DuckLakeUtil::OptionalIdxOrNull(last.end_snapshot);
 				}
-				sql += StringUtil::Format(
-				    "INSERT INTO %s VALUES (%llu, %llu, %llu, %s, %llu, %llu, %s, %llu, %s, %s, %s, %s);",
-				    DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::COMPACTION_SOURCE), compaction_id,
-				    source_order, source.file.id.index, SQLString::ToString(source.file.data.path),
-				    source.file.row_count, source.file.begin_snapshot,
-				    DuckLakeUtil::OptionalIdxOrNull(source.max_partial_file_snapshot),
-				    static_cast<idx_t>(source.inlined_file_deletions.size()), last_id, last_path, last_row_count,
-				    last_end_snap);
+				rows.Add(DuckLakeStagedTableType::COMPACTION_SOURCE,
+				         StringUtil::Format("(%llu, %llu, %llu, %s, %llu, %llu, %s, %llu, %s, %s, %s, %s)",
+				                            compaction_id, source_order, source.file.id.index,
+				                            SQLString::ToString(source.file.data.path), source.file.row_count,
+				                            source.file.begin_snapshot,
+				                            DuckLakeUtil::OptionalIdxOrNull(source.max_partial_file_snapshot),
+				                            static_cast<idx_t>(source.inlined_file_deletions.size()), last_id,
+				                            last_path, last_row_count, last_end_snap));
 				source_order++;
 			}
 			compaction_id++;
 		}
 	}
-	return sql;
 }
 
-string DuckLakeStagedCommit::EmitNameMaps(const DuckLakeNameMapSet &name_maps) const {
-	string sql;
+void DuckLakeStagedCommit::EmitNameMaps(DuckLakeStagedRows &rows, const DuckLakeNameMapSet &name_maps) const {
 	for (auto &entry : name_maps.name_maps) {
 		auto &map = *entry.second;
-		sql += StringUtil::Format("INSERT INTO %s VALUES (%llu, %llu);",
-		                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::NAME_MAP), map.id.index,
-		                          map.table_id.index);
+		rows.Add(DuckLakeStagedTableType::NAME_MAP,
+		         StringUtil::Format("(%llu, %llu)", map.id.index, map.table_id.index));
 		for (auto &col : map.FlattenColumns()) {
 			auto parent = col.parent_column.IsValid() ? std::to_string(col.parent_column.GetIndex()) : "NULL";
-			sql += StringUtil::Format("INSERT INTO %s VALUES (%llu, %llu, %s, %s, %llu, %s);",
-			                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::NAME_MAP_ENTRY),
-			                          map.id.index, col.column_id, parent, SQLString(col.source_name),
-			                          col.target_field_id.index, DuckLakeUtil::BoolLiteral(col.hive_partition));
+			rows.Add(DuckLakeStagedTableType::NAME_MAP_ENTRY,
+			         StringUtil::Format("(%llu, %llu, %s, %s, %llu, %s)", map.id.index, col.column_id, parent,
+			                            SQLString(col.source_name), col.target_field_id.index,
+			                            DuckLakeUtil::BoolLiteral(col.hive_partition)));
 		}
 	}
-	return sql;
 }
 
-string DuckLakeStagedCommit::EmitFlushedInlinedTables(const vector<FlushedInlinedTableInfo> &flushed) const {
-	string sql;
+void DuckLakeStagedCommit::EmitFlushedInlinedTables(DuckLakeStagedRows &rows,
+                                                    const vector<FlushedInlinedTableInfo> &flushed) const {
 	for (auto &entry : flushed) {
 		// LCOV_EXCL_START
-		sql += StringUtil::Format("INSERT INTO %s VALUES (%s, %llu, %llu);",
-		                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::FLUSHED_INLINED),
-		                          SQLString(entry.inlined_table.table_name), entry.inlined_table.schema_version,
-		                          entry.flush_snapshot_id);
+		rows.Add(DuckLakeStagedTableType::FLUSHED_INLINED,
+		         StringUtil::Format("(%s, %llu, %llu)", SQLString(entry.inlined_table.table_name),
+		                            entry.inlined_table.schema_version, entry.flush_snapshot_id));
 		// LCOV_EXCL_STOP
 	}
-	return sql;
 }
 
-string DuckLakeStagedCommit::EmitDroppedFiles(DuckLakeTransaction &transaction) const {
-	string sql;
+void DuckLakeStagedCommit::EmitDroppedFiles(DuckLakeStagedRows &rows, DuckLakeTransaction &transaction) const {
 	for (auto &entry : transaction.GetDroppedFiles()) {
-		sql += StringUtil::Format("INSERT INTO %s VALUES (%s, %llu);",
-		                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::DROPPED_FILE),
-		                          SQLString(entry.first), entry.second.index);
+		rows.Add(DuckLakeStagedTableType::DROPPED_FILE,
+		         StringUtil::Format("(%s, %llu)", SQLString(entry.first), entry.second.index));
 	}
 	for (auto &table_id : transaction.GetTablesDeletedFrom()) {
-		sql += StringUtil::Format("INSERT INTO %s VALUES (%llu);",
-		                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::TABLES_DELETED_FROM),
-		                          table_id.index);
+		rows.Add(DuckLakeStagedTableType::TABLES_DELETED_FROM, StringUtil::Format("(%llu)", table_id.index));
 	}
 	for (auto &table_id : transaction.GetTablesDeleteAttempted()) {
-		sql += StringUtil::Format("INSERT INTO %s VALUES (%llu);",
-		                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::TABLES_DELETE_ATTEMPTED),
-		                          table_id.index);
+		rows.Add(DuckLakeStagedTableType::TABLES_DELETE_ATTEMPTED, StringUtil::Format("(%llu)", table_id.index));
 	}
-	return sql;
 }
 
 string DuckLakeStagedCommit::Build(DuckLakeTransaction &transaction, const DuckLakeSnapshot &transaction_snapshot,
-                                   const DuckLakeRetryConfig &retry_config) const {
+                                   const DuckLakeRetryConfig &retry_config,
+                                   DuckLakeStagedTableState &staged_tables) const {
 	auto &ducklake_catalog = transaction.GetCatalog();
 	auto &local_changes = transaction.GetLocalChanges();
 
-	string batch;
-	batch += DuckLakeStagedTable::CreateAllSql();
-	batch += DuckLakeStagedTable::TruncateAllSql();
-	batch += EmitCommitHeader(transaction.GetCommitInfo(), transaction_snapshot, ducklake_catalog.DataPath(),
-	                          ducklake_catalog.Separator());
+	DuckLakeStagedRows rows;
+	EmitCommitHeader(rows, transaction.GetCommitInfo(), transaction_snapshot, ducklake_catalog.DataPath(),
+	                 ducklake_catalog.Separator());
 	idx_t local_file_id = 0;
-	batch += EmitDataFiles(local_changes, local_file_id);
-	batch += EmitCompactions(local_changes, local_file_id);
-	batch += EmitInlinedData(local_changes, transaction);
-	batch += EmitInlinedDeletes(local_changes);
-	batch += EmitInlinedFileDeletes(local_changes);
-	batch += EmitDeleteFiles(local_changes);
-	batch += EmitDroppedFiles(transaction);
-	batch += EmitFlushedInlinedTables(transaction.GetFlushedInlinedTables());
-	batch += EmitNameMaps(transaction.GetNewNameMaps());
+	EmitDataFiles(rows, local_changes, local_file_id);
+	EmitCompactions(rows, local_changes, local_file_id);
+	EmitInlinedData(rows, local_changes, transaction);
+	EmitInlinedDeletes(rows, local_changes);
+	EmitInlinedFileDeletes(rows, local_changes);
+	EmitDeleteFiles(rows, local_changes);
+	EmitDroppedFiles(rows, transaction);
+	EmitFlushedInlinedTables(rows, transaction.GetFlushedInlinedTables());
+	EmitNameMaps(rows, transaction.GetNewNameMaps());
 
+	string batch = staged_tables.SetupSql(rows.FilledTables());
+	batch += rows.InsertSql();
 	int64_t schema_version_param = transaction_snapshot.snapshot_id != DConstants::INVALID_INDEX
 	                                   ? static_cast<int64_t>(transaction_snapshot.schema_version)
 	                                   : -1;

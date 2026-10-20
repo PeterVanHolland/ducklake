@@ -217,7 +217,8 @@ shared_ptr<DuckLakeStagedTableState> DuckLakeStagedTableState::Get(DuckLakeTrans
 	auto pinned = DatabaseManager::Get(context).GetDatabase(context, Identifier(catalog.MetadataDatabaseName()));
 	if (!pinned) {
 		// LCOV_EXCL_START
-		return make_shared_ptr<DuckLakeStagedTableState>();
+		throw InvalidInputException("Failed to find the metadata database \"%s\" of the DuckLake commit",
+		                            catalog.MetadataDatabaseName());
 		// LCOV_EXCL_STOP
 	}
 	auto metadata_database = pinned->shared_from_this();

@@ -21,9 +21,6 @@ public:
 	}
 
 	bool TypeIsNativelySupported(const LogicalType &type) override;
-	bool SupportsAppender() const override {
-		return false;
-	}
 	bool DroppedTablesStayReadable() const override {
 		return false;
 	}
@@ -32,6 +29,7 @@ public:
 		return 2000;
 	}
 	bool IsRetryableCommitError(const string &message) const override;
+	string CommitErrorHint(const string &message) const override;
 	void RenameInlinedColumns(const map<string, vector<pair<string, string>>> &renames) override;
 	case_insensitive_set_t GetLegacyNamedInlinedTables() override;
 

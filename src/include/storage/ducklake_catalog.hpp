@@ -163,6 +163,9 @@ public:
 	const string &DataPath() const {
 		return options.data_path;
 	}
+	const case_insensitive_map_t<Value> &MetadataParameters() const {
+		return options.metadata_parameters;
+	}
 	const string &MetadataType() const {
 		return metadata_type;
 	}
@@ -185,6 +188,8 @@ public:
 	//! Pending table options are not consulted
 	bool AutoCompactEnabled(SchemaIndex schema_id = SchemaIndex(), TableIndex table_id = TableIndex()) const;
 	bool AutoCompactEnabled(DuckLakeTableEntry &table) const;
+	//! Throws when the catalog is attached at a snapshot or in read-only mode
+	void VerifyWritable() const;
 	idx_t GetTargetFileSize(ClientContext &context, SchemaIndex schema_id, TableIndex table_id,
 	                        optional_ptr<const map<string, string>> table_options = nullptr) const;
 	idx_t GetTargetFileSize(ClientContext &context, DuckLakeTableEntry &table) const;

@@ -24,9 +24,22 @@ ALTER TABLE dl.t SET PARTITIONED BY (p)
 statement ok
 CREATE TABLE dl.other(i INTEGER)
 
+# inserts into g are inlined, the first one creates its inlined table and commits client-side
+statement ok
+CREATE TABLE dl.g(i INTEGER)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'g')
+
+statement ok
+INSERT INTO dl.g VALUES (1)
+
 # the first server-side commit creates the staged tables
 statement ok
 INSERT INTO dl.t VALUES (0, -1)
+
+statement ok
+CALL truncate_duckdb_logs()
 
 statement ok
 CALL enable_logging('QueryLog', storage = 'memory')
@@ -50,46 +63,53 @@ FROM duckdb_logs WHERE type = 'QueryLog' AND message LIKE '%ducklake_commit(%'
 ----
 1	1	1	0	4	1
 
-query II
-SELECT count(*), sum(i) FROM dl.t
-----
-31	434
-
 # a commit of other staged tables empties the ones the previous commit filled
 statement ok
-DELETE FROM dl.t WHERE i < 3
+CALL truncate_duckdb_logs()
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+INSERT INTO dl.g VALUES (2)
+
+statement ok
+CALL disable_logging()
 
 query II
-SELECT count(*), sum(i) FROM dl.t
+SELECT count(*), sum(len(string_split(message, 'TRUNCATE ducklake_staged_data_file;')) - 1)
+FROM duckdb_logs WHERE type = 'QueryLog' AND message LIKE '%ducklake_commit(%'
 ----
-27	432
+1	1
 
 statement ok
 INSERT INTO dl.other VALUES (1)
 
-query II
-SELECT (SELECT count(*) FROM dl.t), (SELECT count(*) FROM dl.other)
+query III
+SELECT (SELECT count(*) FROM dl.t), (SELECT sum(i) FROM dl.t), (SELECT count(*) FROM dl.g)
 ----
-27	1
+31	434	2
 
-statement ok
-CREATE TABLE dl.d AS SELECT range i FROM range(4)
+query I
+SELECT count(*) FROM ducklake_list_files('dl', 't')
+----
+4
 
+# a failed commit leaves its staged rows, which the next commit removes after a commit of other staged tables
 statement ok
 CREATE TABLE dl.f(i INTEGER)
 
 statement ok
 SET VARIABLE f_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'f')
 
-# a failed commit leaves its staged rows, which the next commit removes after a commit of other staged tables
 statement ok
-DELETE FROM dl.d WHERE i = 0
+CALL truncate_duckdb_logs()
 
 statement ok
 CALL enable_logging('QueryLog', storage = 'memory')
 
 statement ok
-DELETE FROM dl.d WHERE i = 1
+INSERT INTO dl.g VALUES (3)
 
 statement ok
 CALL disable_logging()
@@ -116,18 +136,13 @@ another transaction has dropped it
 statement ok con1
 INSERT INTO dl.other VALUES (2)
 
-query II
-SELECT count(*), sum(i) FROM dl.other
+query III
+SELECT (SELECT count(*) FROM dl.other), (SELECT sum(i) FROM dl.other), (SELECT count(*) FROM dl.g)
 ----
-2	3
+2	3	3
 
 query I
 SELECT count(*) FROM ducklake_list_files('dl', 'other')
-----
-2
-
-query I
-SELECT count(*) FROM dl.d
 ----
 2
 
@@ -155,29 +170,32 @@ statement ok
 INSERT INTO s1.s SELECT range FROM range(10, 20)
 
 statement ok
-DELETE FROM s2.s WHERE i = 0
+INSERT INTO s2.g VALUES (4)
 
 statement ok
 INSERT INTO s1.s SELECT range FROM range(20, 30)
 
 statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
 CALL enable_logging('QueryLog', storage = 'memory')
 
 statement ok
-DELETE FROM s2.s WHERE i = 1
+INSERT INTO s2.g VALUES (5)
 
 statement ok
 CALL disable_logging()
 
 query I
-SELECT count(*) FROM duckdb_logs WHERE type = 'QueryLog' AND message LIKE '%ducklake_commit(%'
+SELECT count(*) FROM duckdb_logs WHERE type = 'QueryLog' AND message LIKE '%shared_metadata%ducklake_commit(%'
 ----
 1
 
-query II
-SELECT count(*), sum(i) FROM s1.s
+query III
+SELECT (SELECT count(*) FROM s1.s), (SELECT sum(i) FROM s1.s), (SELECT count(*) FROM s1.g)
 ----
-28	434
+30	435	5
 
 query I
 SELECT count(*) FROM ducklake_list_files('s1', 's')
@@ -203,6 +221,9 @@ statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS s3 (METADATA_CATALOG 'shared_metadata', DATA_PATH '{DATA_PATH}/staged_commit_multi_row', DATA_INLINING_ROW_LIMIT 0)
 
 statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
 CALL enable_logging('QueryLog', storage = 'memory')
 
 statement ok con1
@@ -220,12 +241,12 @@ statement ok
 INSERT INTO s3.u SELECT range FROM range(10)
 
 statement ok
-DELETE FROM s3.s WHERE i = 3
+INSERT INTO s3.g VALUES (6)
 
-query III
-SELECT (SELECT count(*) FROM s3.s), (SELECT sum(i) FROM s3.s), (SELECT count(*) FROM s3.u)
+query IIII
+SELECT (SELECT count(*) FROM s3.s), (SELECT sum(i) FROM s3.s), (SELECT count(*) FROM s3.u), (SELECT count(*) FROM s3.g)
 ----
-28	1431	10
+31	1435	10	6
 
 query I
 SELECT count(*) FROM ducklake_list_files('s3', 'u')

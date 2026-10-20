@@ -1,0 +1,185 @@
+# name: test/sql/quack/staged_commit_multi_row.test
+# description: a server-side commit on a Quack catalog stages one INSERT per staged table and sets up its tables once
+# group: [quack]
+
+require ducklake
+
+require parquet
+
+require-env DUCKLAKE_CONNECTION quack:localhost:19999
+
+require quack
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/staged_commit_multi_row', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t(p INTEGER, i INTEGER)
+
+statement ok
+ALTER TABLE dl.t SET PARTITIONED BY (p)
+
+statement ok
+CREATE TABLE dl.other(i INTEGER)
+
+# the first server-side commit creates the staged tables
+statement ok
+INSERT INTO dl.t VALUES (0, -1)
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+# three files, each with stats of two columns and a partition value
+statement ok
+INSERT INTO dl.t SELECT range % 3, range FROM range(30)
+
+statement ok
+CALL disable_logging()
+
+query IIIIII
+SELECT
+	sum(len(string_split(message, 'INSERT INTO ducklake_staged_data_file VALUES')) - 1),
+	sum(len(string_split(message, 'INSERT INTO ducklake_staged_data_file_column_stats VALUES')) - 1),
+	sum(len(string_split(message, 'INSERT INTO ducklake_staged_data_file_partition VALUES')) - 1),
+	sum(len(string_split(message, 'CREATE TEMPORARY TABLE')) - 1),
+	sum(len(string_split(message, 'TRUNCATE')) - 1),
+	count(*)
+FROM duckdb_logs WHERE type = 'QueryLog' AND message LIKE '%ducklake_commit(%'
+----
+1	1	1	0	4	1
+
+query II
+SELECT count(*), sum(i) FROM dl.t
+----
+31	434
+
+# a commit of other staged tables empties the ones the previous commit filled
+statement ok
+DELETE FROM dl.t WHERE i < 3
+
+query II
+SELECT count(*), sum(i) FROM dl.t
+----
+27	432
+
+statement ok
+INSERT INTO dl.other VALUES (1)
+
+query II
+SELECT (SELECT count(*) FROM dl.t), (SELECT count(*) FROM dl.other)
+----
+27	1
+
+statement ok
+CREATE TABLE dl.d AS SELECT range i FROM range(4)
+
+statement ok
+CREATE TABLE dl.f(i INTEGER)
+
+statement ok
+SET VARIABLE f_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'f')
+
+# a failed commit leaves its staged rows, which the next commit removes after a commit of other staged tables
+statement ok
+DELETE FROM dl.d WHERE i = 0
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+DELETE FROM dl.d WHERE i = 1
+
+statement ok
+CALL disable_logging()
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'QueryLog' AND message LIKE '%ducklake_commit(%'
+----
+1
+
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO dl.f VALUES (100)
+
+statement ok con2
+DROP TABLE dl.f
+
+statement error con1
+COMMIT
+----
+another transaction has dropped it
+
+statement ok con1
+INSERT INTO dl.other VALUES (2)
+
+query II
+SELECT count(*), sum(i) FROM dl.other
+----
+2	3
+
+query I
+SELECT count(*) FROM ducklake_list_files('dl', 'other')
+----
+2
+
+query I
+SELECT count(*) FROM dl.d
+----
+2
+
+# the next commit did not add the staged file of the failed commit to the dropped table
+query I
+SELECT count(*) FROM __ducklake_metadata_dl.ducklake_data_file WHERE table_id = getvariable('f_id')
+----
+0
+
+# DuckLakes on one metadata catalog share its Quack session and its staged tables
+statement ok
+CREATE TABLE dl.s(i INTEGER)
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS s1 (METADATA_CATALOG 'shared_metadata', DATA_PATH '{DATA_PATH}/staged_commit_multi_row', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+INSERT INTO s1.s SELECT range FROM range(10)
+
+# replaces the metadata database of s1, which starts a new session without staged tables
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS s2 (METADATA_CATALOG 'shared_metadata', DATA_PATH '{DATA_PATH}/staged_commit_multi_row', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+INSERT INTO s1.s SELECT range FROM range(10, 20)
+
+statement ok
+DELETE FROM s2.s WHERE i = 0
+
+statement ok
+INSERT INTO s1.s SELECT range FROM range(20, 30)
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+DELETE FROM s2.s WHERE i = 1
+
+statement ok
+CALL disable_logging()
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'QueryLog' AND message LIKE '%ducklake_commit(%'
+----
+1
+
+query II
+SELECT count(*), sum(i) FROM s1.s
+----
+28	434
+
+query I
+SELECT count(*) FROM ducklake_list_files('s1', 's')
+----
+3

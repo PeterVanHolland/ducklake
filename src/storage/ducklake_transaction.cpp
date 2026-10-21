@@ -851,7 +851,10 @@ void DuckLakeTransaction::Rollback() {
 		} catch (std::exception &) {
 			// nothing references the written files, so they are removed also when the rollback fails
 			connection.reset();
-			state->CleanupFiles();
+			try {
+				state->CleanupFiles();
+			} catch (std::exception &) { // NOLINT
+			}
 			throw;
 		}
 		connection.reset();

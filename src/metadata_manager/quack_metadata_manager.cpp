@@ -143,7 +143,10 @@ void QuackMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tra
 		batch = staged.Build(flush_transaction, transaction_snapshot, retry_config);
 	} catch (std::exception &) {
 		// the server never sees this commit, so its files are only removed here
-		flush_transaction.CleanupFiles();
+		try {
+			flush_transaction.CleanupFiles();
+		} catch (std::exception &) { // NOLINT
+		}
 		throw;
 	}
 	auto result = Query(batch);

@@ -342,6 +342,8 @@ public:
 	void RunCommitLoop(DuckLakeSnapshot transaction_snapshot, const TransactionChangeInformation &transaction_changes,
 	                   const DuckLakeRetryConfig &retry_config);
 	void ApplyServerSideCommit(idx_t schema_version);
+	//! Removes the files that this transaction wrote
+	void CleanupFiles();
 	//! Post-commit cleanup of empty inlined-data tables superseded by later schema versions.
 	void DropEmptySupersededInlinedTablesClientSide();
 	void ReportPostCommitError(const string &message);

@@ -811,11 +811,20 @@ bool DuckLakeUtil::TryGetLiteralValue(const ParsedExpression &expr, Value &resul
 	return true;
 }
 
+bool DuckLakeUtil::TryReadTextAs(const Value &text, const LogicalType &type, Value &result) {
+	auto typed_value = text.DefaultTryCastAs(type);
+	if (!typed_value || typed_value->ToString() != text.ToString()) {
+		return false;
+	}
+	result = std::move(*typed_value);
+	return true;
+}
+
 unique_ptr<ParsedExpression> DuckLakeUtil::LiteralDefaultExpression(const Value &text, const LogicalType &type) {
 	// keep the text when the column type would print it differently, as for a rounded value or a time zone
-	auto typed_value = text.DefaultTryCastAs(type);
-	if (typed_value && typed_value->ToString() == text.ToString()) {
-		return ConstantExpression::FromValue(*typed_value);
+	Value typed_value;
+	if (TryReadTextAs(text, type, typed_value)) {
+		return ConstantExpression::FromValue(typed_value);
 	}
 	return ConstantExpression::FromValue(text);
 }

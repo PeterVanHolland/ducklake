@@ -35,6 +35,7 @@ struct DuckLakeAddDataFilesData : public TableFunctionData {
 static unique_ptr<FunctionData> DuckLakeAddDataFilesBind(ClientContext &context, TableFunctionBindInput &input,
                                                          vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto &catalog = DuckLakeBaseMetadataFunction::GetCatalog(context, input);
+	catalog.VerifyWritable();
 	if (input.inputs[1].IsNull()) {
 		throw InvalidInputException("Table name cannot be NULL");
 	}

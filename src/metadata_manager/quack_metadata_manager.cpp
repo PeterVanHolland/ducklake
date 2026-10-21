@@ -136,17 +136,26 @@ void QuackMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tra
 		flush_transaction.RunCommitLoop(transaction_snapshot, transaction_changes, retry_config);
 		return;
 	}
-	auto &catalog = transaction.GetCatalog();
-	catalog.EnsureCommitInfoProvided(flush_transaction.GetCommitInfo());
-	auto staged_tables = DuckLakeStagedTableState::Get(transaction);
-	unique_ptr<QueryResult> result;
-	{
-		lock_guard<mutex> guard(staged_tables->lock);
+	shared_ptr<DuckLakeStagedTableState> staged_tables;
+	unique_lock<mutex> staged_guard;
+	string batch;
+	try {
+		transaction.GetCatalog().EnsureCommitInfoProvided(flush_transaction.GetCommitInfo());
+		staged_tables = DuckLakeStagedTableState::Get(transaction);
+		staged_guard = unique_lock<mutex>(staged_tables->lock);
 		DuckLakeStagedCommit staged;
-		string batch = staged.Build(flush_transaction, transaction_snapshot, retry_config, *staged_tables);
-		result = Query(batch);
-		staged_tables->BatchFinished(result && !result->HasError());
+		batch = staged.Build(flush_transaction, transaction_snapshot, retry_config, *staged_tables);
+	} catch (std::exception &) {
+		// the server never sees this commit, so its files are only removed here
+		try {
+			flush_transaction.CleanupFiles();
+		} catch (std::exception &) { // NOLINT
+		}
+		throw;
 	}
+	auto result = Query(batch);
+	staged_tables->BatchFinished(result && !result->HasError());
+	staged_guard.unlock();
 	if (!result) {
 		throw IOException("Failed to invoke server-side ducklake_commit: empty result");
 	}

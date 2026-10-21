@@ -840,8 +840,18 @@ void DuckLakeTransaction::Rollback() {
 	UndoConfigOptions();
 	if (connection) {
 		// rollback any changes made to the metadata catalog
-		if (connection->HasActiveTransaction()) {
-			connection->Rollback();
+		try {
+			if (connection->HasActiveTransaction()) {
+				connection->Rollback();
+			}
+		} catch (std::exception &) {
+			// nothing references the written files, so they are removed also when the rollback fails
+			connection.reset();
+			try {
+				state->CleanupFiles();
+			} catch (std::exception &) { // NOLINT
+			}
+			throw;
 		}
 		connection.reset();
 	}
@@ -1453,6 +1463,10 @@ void DuckLakeTransaction::FlushChanges() {
 		}
 	}
 	forget_columns_with_values();
+}
+
+void DuckLakeTransaction::CleanupFiles() {
+	state->CleanupFiles();
 }
 
 void DuckLakeTransaction::ApplyServerSideCommit(idx_t schema_version) {

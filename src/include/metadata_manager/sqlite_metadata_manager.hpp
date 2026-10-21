@@ -28,6 +28,10 @@ public:
 		// the default SQLITE_MAX_COLUMN
 		return 2000;
 	}
+	vector<string> SystemColumnNames() const override {
+		// the names of the row id, which the sqlite extension deletes and updates rows by
+		return {"rowid", "oid", "_rowid_"};
+	}
 	bool IsRetryableCommitError(const string &message) const override;
 	string CommitErrorHint(const string &message) const override;
 	void RenameInlinedColumns(const map<string, vector<pair<string, string>>> &renames) override;

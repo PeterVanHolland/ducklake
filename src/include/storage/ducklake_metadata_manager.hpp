@@ -259,6 +259,10 @@ public:
 	virtual idx_t MaxColumnCount() const {
 		return NumericLimits<idx_t>::Maximum();
 	}
+	//! Names of the system columns that the tables of this backend have
+	virtual vector<string> SystemColumnNames() const {
+		return {};
+	}
 
 	//! Why the rows of a table with the given columns cannot be inlined, empty when they can
 	string GetInliningObstacle(const ColumnList &columns);

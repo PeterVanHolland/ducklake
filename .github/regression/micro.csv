@@ -18,6 +18,7 @@ benchmark/micro/read/file_pruning_many_files.benchmark
 benchmark/micro/read/big_lake_cold_listing.benchmark
 benchmark/micro/read/big_lake_cold_inlined_reads.benchmark
 benchmark/micro/read/inlined_large_values.benchmark
+benchmark/micro/read/big_lake_filtered_reads.benchmark
 benchmark/micro/read/sorted_probes.benchmark
 benchmark/micro/write/insert_commits_inlined.benchmark
 benchmark/micro/write/update_inlined_transaction.benchmark
@@ -74,4 +75,6 @@ benchmark/micro/read/load_nested_catalog.benchmark
 benchmark/micro/write/create_tables_quoted_columns.benchmark
 benchmark/micro/read/snapshots_listing_limit.benchmark
 benchmark/micro/read/snapshots_listing_changes.benchmark
+benchmark/micro/read/catalog_load_schema_history.benchmark
 benchmark/micro/maintenance/migrate_v10_inlined_tables.benchmark
+benchmark/micro/write/add_column_many_files.benchmark

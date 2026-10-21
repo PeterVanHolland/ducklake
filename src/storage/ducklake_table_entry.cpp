@@ -1459,6 +1459,23 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(ClientContext &context, DuckLakeTransaction &transaction,
                                                    AlterTableInfo &info) {
+	auto result = AlterEntry(context, transaction, info);
+	if (!result || !transaction.HasTransactionInlinedData(GetTableId())) {
+		return result;
+	}
+	// the inlined rows of the transaction are committed with the altered columns
+	auto &columns = result->Cast<DuckLakeTableEntry>().GetColumns();
+	auto obstacle = transaction.GetMetadataManager().GetInliningObstacle(columns);
+	if (!obstacle.empty()) {
+		throw NotImplementedException(
+		    "ALTER on a table with transaction-local inlined data is not supported when %s, commit the rows first",
+		    obstacle);
+	}
+	return result;
+}
+
+unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterEntry(ClientContext &context, DuckLakeTransaction &transaction,
+                                                        AlterTableInfo &info) {
 	if (transaction.HasTransactionInlinedData(GetTableId())) {
 		if (info.alter_table_type != AlterTableType::ADD_COLUMN &&
 		    info.alter_table_type != AlterTableType::REMOVE_COLUMN &&

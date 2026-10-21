@@ -106,7 +106,11 @@ void LocalTableChanges::CleanupFiles(DatabaseInstance &db) {
 		vector<string> written_files;
 		table_changes.AddWrittenFiles(written_files, written_files, false);
 		for (auto &file_name : written_files) {
-			fs.TryRemoveFile(file_name);
+			// a file that cannot be removed is left to orphan cleanup, so the error of the caller is kept
+			try {
+				fs.TryRemoveFile(file_name);
+			} catch (std::exception &) { // NOLINT
+			}
 		}
 		table_changes.new_data_files.clear();
 		table_changes.new_delete_files.clear();
@@ -847,10 +851,7 @@ void DuckLakeTransaction::Rollback() {
 		} catch (std::exception &) {
 			// nothing references the written files, so they are removed also when the rollback fails
 			connection.reset();
-			try {
-				state->CleanupFiles();
-			} catch (std::exception &) { // NOLINT
-			}
+			state->CleanupFiles();
 			throw;
 		}
 		connection.reset();

@@ -4,6 +4,7 @@
 #include "storage/ducklake_deletion_vector.hpp"
 #include "storage/ducklake_puffin.hpp"
 #include "common/parquet_file_scanner.hpp"
+#include "duckdb/common/multi_file/multi_file_reader.hpp"
 #include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/map.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
@@ -288,15 +289,18 @@ void DuckLakeDeleteFilter::Initialize(const DuckLakeInlinedDataDeletes &inlined_
 	delete_data->snapshot_ids = std::move(merged_snapshot_ids);
 }
 
-//! The rows of a deleted data file that a DuckDB 1.4 rewrite moved to a file beginning at the deletion, where they
-//! keep their older snapshot, were not deleted
-static void ExcludeMovedRows(ClientContext &context, const DuckLakeDeleteScanEntry &delete_scan, bool rows_to_scan[]) {
-	auto deletion_snapshot = NumericCast<int64_t>(delete_scan.snapshot_id.GetIndex());
-	unordered_set<int64_t> moved_rows;
-	for (auto &successor : delete_scan.successor_files) {
-		ParquetFileScanner scanner(context, successor, true);
-		auto row_id_column = scanner.FindColumn(delete_scan.row_id_column);
-		auto snapshot_column = scanner.FindColumn(delete_scan.snapshot_id_column);
+//! The row ids of the rows that DuckDB 1.4 rewrites moved to the files beginning at a deletion, where they keep their
+//! older snapshot
+static const unordered_set<int64_t> &GetMovedRows(ClientContext &context, DuckLakeMovedRows &moved_rows,
+                                                  int64_t deletion_snapshot) {
+	lock_guard<mutex> guard(moved_rows.lock);
+	if (moved_rows.loaded) {
+		return moved_rows.row_ids;
+	}
+	for (auto &file : moved_rows.files) {
+		ParquetFileScanner scanner(context, file, true);
+		auto row_id_column = scanner.FindColumnByFieldId(MultiFileReader::ROW_ID_FIELD_ID);
+		auto snapshot_column = scanner.FindColumnByFieldId(MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID);
 		if (!row_id_column.IsValid() || !snapshot_column.IsValid()) {
 			continue;
 		}
@@ -309,11 +313,19 @@ static void ExcludeMovedRows(ClientContext &context, const DuckLakeDeleteScanEnt
 			for (idx_t i = 0; i < chunk.size(); i++) {
 				if (row_ids[i].IsValid() && snapshot_ids[i].IsValid() &&
 				    snapshot_ids[i].GetValue() < deletion_snapshot) {
-					moved_rows.insert(row_ids[i].GetValue());
+					moved_rows.row_ids.insert(row_ids[i].GetValue());
 				}
 			}
 		}
 	}
+	moved_rows.loaded = true;
+	return moved_rows.row_ids;
+}
+
+//! The rows of a deleted data file that were moved to a file beginning at the deletion were not deleted
+static void ExcludeMovedRows(ClientContext &context, const DuckLakeDeleteScanEntry &delete_scan, bool rows_to_scan[]) {
+	auto &moved_rows =
+	    GetMovedRows(context, *delete_scan.moved_rows, NumericCast<int64_t>(delete_scan.snapshot_id.GetIndex()));
 	if (moved_rows.empty()) {
 		return;
 	}
@@ -329,7 +341,7 @@ static void ExcludeMovedRows(ClientContext &context, const DuckLakeDeleteScanEnt
 	}
 	// the rows of the deleted file carry their own row ids
 	ParquetFileScanner scanner(context, delete_scan.file, true);
-	auto row_id_column = scanner.FindColumn(delete_scan.row_id_column);
+	auto row_id_column = scanner.FindColumnByFieldId(MultiFileReader::ROW_ID_FIELD_ID);
 	if (!row_id_column.IsValid()) {
 		// LCOV_EXCL_START
 		return;
@@ -390,7 +402,7 @@ void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDele
 		for (idx_t i = 0; i < delete_scan.row_count; i++) {
 			position_to_snapshot[i] = snapshot_id;
 		}
-		if (!delete_scan.successor_files.empty()) {
+		if (delete_scan.moved_rows) {
 			ExcludeMovedRows(context, delete_scan, rows_to_scan.get());
 		}
 	} else {

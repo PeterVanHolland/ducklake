@@ -1,6 +1,8 @@
 #include "common/parquet_file_scanner.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
 #include "duckdb/common/multi_file/multi_file_reader.hpp"
+#include "duckdb/common/multi_file/multi_file_states.hpp"
+#include "storage/ducklake_multi_file_reader.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 
@@ -68,6 +70,17 @@ const vector<Identifier> &ParquetFileScanner::GetNames() const {
 optional_idx ParquetFileScanner::FindColumn(const string &name) const {
 	auto index = StringUtil::CIFind(return_names, Identifier(name));
 	return index == DConstants::INVALID_INDEX ? optional_idx() : optional_idx(index);
+}
+
+optional_idx ParquetFileScanner::FindColumnByFieldId(int32_t field_id) const {
+	// the bound columns have no field ids, the columns of the file that was bound on do
+	auto &multi_file_data = bind_data->Cast<MultiFileBindData>();
+	if (!multi_file_data.initial_reader) {
+		// LCOV_EXCL_START
+		return optional_idx();
+		// LCOV_EXCL_STOP
+	}
+	return DuckLakeMultiFileReader::FindColumnByFieldId(multi_file_data.initial_reader->GetColumns(), field_id);
 }
 
 void ParquetFileScanner::SetFilters(unique_ptr<TableFilterSet> filters_p) {

@@ -29,6 +29,8 @@ public:
 
 	//! Find a column by name, returns invalid index if not found
 	optional_idx FindColumn(const string &name) const;
+	//! Find a column by its field id, returns invalid index if not found
+	optional_idx FindColumnByFieldId(int32_t field_id) const;
 
 	//! Set filters to push down to the scan
 	void SetFilters(unique_ptr<TableFilterSet> filters);

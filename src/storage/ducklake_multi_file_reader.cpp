@@ -43,7 +43,8 @@ static bool ColumnsHaveFieldIds(const vector<MultiFileColumnDefinition> &columns
 	return !columns.empty();
 }
 
-static optional_idx FindColumnByFieldId(const vector<MultiFileColumnDefinition> &columns, int32_t field_id) {
+optional_idx DuckLakeMultiFileReader::FindColumnByFieldId(const vector<MultiFileColumnDefinition> &columns,
+                                                          int32_t field_id) {
 	for (idx_t col_idx = 0; col_idx < columns.size(); col_idx++) {
 		auto &identifier = columns[col_idx].identifier;
 		if (identifier.type().id() == LogicalTypeId::INTEGER && !identifier.IsNull() &&

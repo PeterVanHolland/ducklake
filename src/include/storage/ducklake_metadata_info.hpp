@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/mutex.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
@@ -421,6 +422,15 @@ struct DuckLakeFileListEntry {
 	shared_ptr<DuckLakeCommittedInlinedRows> inlined_rows;
 };
 
+//! The files that begin where data files were deleted, to which DuckDB 1.4 rewrites moved rows that keep their older
+//! snapshot, and the row ids of those rows once read
+struct DuckLakeMovedRows {
+	vector<DuckLakeFileData> files;
+	mutex lock;
+	bool loaded = false;
+	unordered_set<int64_t> row_ids;
+};
+
 struct DuckLakeDeleteScanEntry {
 	DuckLakeFileData file;
 	DuckLakeFileData delete_file;
@@ -441,12 +451,8 @@ struct DuckLakeDeleteScanEntry {
 	DataFileIndex file_id;
 	//! Inlined file deletions {row_id -> snapshot_id}
 	unordered_map<idx_t, idx_t> inlined_file_deletions;
-	//! For a data file deletion, the files with embedded row ids that begin at snapshot_id: a DuckDB 1.4 rewrite
-	//! moved rows there, keeping their older snapshot
-	vector<DuckLakeFileData> successor_files;
-	//! The names of the embedded row id and snapshot id columns
-	string row_id_column;
-	string snapshot_id_column;
+	//! For a data file deletion, the rows that a DuckDB 1.4 rewrite moved to files beginning at snapshot_id
+	shared_ptr<DuckLakeMovedRows> moved_rows;
 };
 
 struct DuckLakeFileListExtendedEntry {

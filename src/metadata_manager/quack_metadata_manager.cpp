@@ -67,12 +67,21 @@ string QuackMetadataManager::MetadataExistsQuery() const {
 }
 
 bool QuackMetadataManager::InlinedDeletionTableExists(const string &table_name) {
-	auto query = StringUtil::Format("SELECT 1 FROM duckdb_tables() WHERE database_name = current_database() "
-	                                "AND schema_name = {METADATA_SCHEMA_NAME_LITERAL} AND table_name = %s",
-	                                SQLString::ToString(table_name));
-	auto result = Query(query);
-	result->ThrowIfError("Failed to probe for DuckLake inlined-deletion table: ");
-	return result->Fetch() != nullptr;
+	// duckdb_tables() builds a row for every table on the server, so one listing serves every table of the snapshot
+	// keyed by the newest snapshot of the transaction, which a catalog attached at an older snapshot can read too
+	auto tables = transaction.GetCatalog().GetInlinedDeletionTables(transaction.GetNewestVisibleSnapshotId(), [&]() {
+		string query = "SELECT table_name FROM duckdb_tables() WHERE database_name = current_database() "
+		               "AND schema_name = {METADATA_SCHEMA_NAME_LITERAL} AND starts_with(table_name, "
+		               "'ducklake_inlined_delete_')";
+		auto result = Query(query);
+		result->ThrowIfError("Failed to probe for DuckLake inlined-deletion table: ");
+		unordered_set<string> listed;
+		for (auto &row : *result) {
+			listed.insert(row.GetValue<string>(0));
+		}
+		return listed;
+	});
+	return tables->count(table_name) > 0;
 }
 
 void QuackMetadataManager::ClearCache() {
@@ -111,6 +120,16 @@ static bool RequiresClientSideCommit(DuckLakeTransaction &transaction) {
 	       !transaction.GetFlushedInlinedFileDeletions().empty() || transaction.GetLocalChanges().HasDatedNewDeletes();
 }
 
+//! Whether the commit writes inlined file deletions, which create the deletion table of a table on first use
+static bool HasNewInlinedFileDeletes(DuckLakeTransaction &transaction) {
+	for (auto &entry : transaction.GetLocalChanges().Changes()) {
+		if (entry.second.new_inlined_file_deletes) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool QuackMetadataManager::CanSkipSnapshotFetch(const TransactionChangeInformation &changes) const {
 	if (RequiresClientSideCommit(transaction)) {
 		return false;
@@ -126,9 +145,19 @@ void QuackMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tra
 		flush_transaction.RunCommitLoop(transaction_snapshot, transaction_changes, retry_config);
 		return;
 	}
-	transaction.GetCatalog().EnsureCommitInfoProvided(flush_transaction.GetCommitInfo());
-	DuckLakeStagedCommit staged;
-	string batch = staged.Build(flush_transaction, transaction_snapshot, retry_config);
+	string batch;
+	try {
+		transaction.GetCatalog().EnsureCommitInfoProvided(flush_transaction.GetCommitInfo());
+		DuckLakeStagedCommit staged;
+		batch = staged.Build(flush_transaction, transaction_snapshot, retry_config);
+	} catch (std::exception &) {
+		// the server never sees this commit, so its files are only removed here
+		try {
+			flush_transaction.CleanupFiles();
+		} catch (std::exception &) { // NOLINT
+		}
+		throw;
+	}
 	auto result = Query(batch);
 	if (!result) {
 		throw IOException("Failed to invoke server-side ducklake_commit: empty result");
@@ -147,9 +176,10 @@ void QuackMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tra
 		flush_transaction.DropEmptySupersededInlinedTablesClientSide();
 		// LCOV_EXCL_STOP
 	}
-	// We got clear the cache, if this creates inlined tables (e.g., `ducklake_inlined_data_<id>_<v>` or
-	// `ducklake_inlined_delete_<id>`)
-	ClearCache();
+	// reloading the remote catalog costs a scan of every table on the server, so only after a table can be new
+	if (HasNewInlinedFileDeletes(flush_transaction)) {
+		ClearCache();
+	}
 }
 
 bool QuackMetadataManager::MetadataExists() {

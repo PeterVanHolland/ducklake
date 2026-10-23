@@ -689,6 +689,13 @@ DuckLakeTableEntry::BuildPartitionData(DuckLakeTransaction &transaction, const C
 	for (idx_t expr_idx = 0; expr_idx < partition_keys.size(); expr_idx++) {
 		auto &expr = *partition_keys[expr_idx];
 		auto partition_field = GetPartitionField(transaction.GetCatalog(), columns, field_data, expr);
+		auto context = transaction.context.lock();
+		if (context) {
+			// a spec that writes cannot bind would make every later insert fail
+			auto &partition_column = *field_data.GetByFieldIndex(partition_field.field_id);
+			DuckLakePartitionUtils::VerifyTransformSupportsType(*context, partition_field, partition_column.Name(),
+			                                                    partition_column.Type());
+		}
 		// Reject duplicate keys: same (field_id, transform). (year(ts), month(ts)) is fine, (a, a) is not.
 		for (auto &existing : partition_data->fields) {
 			if (existing.field_id == partition_field.field_id && existing.transform == partition_field.transform) {
@@ -1140,6 +1147,13 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterColumnType(DuckLakeTransaction
 	if (!partition) {
 		return std::move(result);
 	}
+	auto context = transaction.context.lock();
+	if (context) {
+		for (auto &field : partition->fields) {
+			auto &new_field = *result->GetFieldId(field.field_id);
+			DuckLakePartitionUtils::VerifyTransformSupportsType(*context, field, new_field.Name(), new_field.Type());
+		}
+	}
 	for (auto &field : partition->fields) {
 		if (field.transform.type != DuckLakeTransformType::BUCKET) {
 			continue;
@@ -1189,6 +1203,15 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 		}
 		throw CatalogException("Failed to add field - field \"%s\" already exists in column \"%s\"",
 		                       info.new_field.Name().GetIdentifierName(), info.column_path.back().GetIdentifierName());
+	}
+
+	// existing rows read the initial value of the field, which only a literal default gives
+	// nested types reject any default when the field id is built
+	Value literal_default;
+	if (info.new_field.HasDefaultValue() && !DuckLakeTypes::IsNested(info.new_field.Type()) &&
+	    !DuckLakeUtil::TryGetLiteralValue(info.new_field.DefaultValue(), literal_default)) {
+		throw NotImplementedException("We cannot add a struct field with a non-literal default value. Use a literal "
+		                              "default, or add the field without a default and UPDATE the existing rows");
 	}
 
 	// generate a new field id for the column
@@ -1305,6 +1328,13 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	                                     SetDefaultLocalChange::SetDefault(field_id.GetFieldIndex(), new_column));
 }
 
+static bool SortFieldsMatch(optional_ptr<DuckLakeSort> current_sort, const DuckLakeSort &requested_sort) {
+	if (!current_sort) {
+		return requested_sort.fields.empty();
+	}
+	return current_sort->fields == requested_sort.fields;
+}
+
 unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(DuckLakeTransaction &transaction, const ColumnList &columns,
                                                            const vector<OrderByNode> &orders) {
 	if (orders.empty()) {
@@ -1321,7 +1351,9 @@ unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(DuckLakeTransaction &
 		sort_field.dialect = "duckdb";
 		sort_field.sort_direction =
 		    order_node.type == OrderType::DESCENDING ? OrderType::DESCENDING : OrderType::ASCENDING;
-		sort_field.null_order = order_node.null_order;
+		// Store the null order the catalog reads back, so a re-issued clause compares equal.
+		sort_field.null_order = order_node.null_order == OrderByNullType::NULLS_FIRST ? OrderByNullType::NULLS_FIRST
+		                                                                              : OrderByNullType::NULLS_LAST;
 		sort_data->fields.push_back(sort_field);
 	}
 	return sort_data;
@@ -1342,7 +1374,14 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	auto create_info = GetInfo();
 	auto &table_info = create_info->Cast<CreateTableInfo>();
 
+	if (info.orders.empty() && !GetSortData()) {
+		// RESET SORTED BY on a table that has no sort data
+		return nullptr;
+	}
 	auto sort_data = BuildSortData(transaction, GetColumns(), info.orders);
+	if (sort_data && SortFieldsMatch(GetSortData(), *sort_data)) {
+		return nullptr;
+	}
 	return make_uniq<DuckLakeTableEntry>(*this, table_info, std::move(sort_data));
 }
 
@@ -1434,6 +1473,23 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(ClientContext &context, DuckLakeTransaction &transaction,
                                                    AlterTableInfo &info) {
+	auto result = AlterEntry(context, transaction, info);
+	if (!result || !transaction.HasTransactionInlinedData(GetTableId())) {
+		return result;
+	}
+	// the inlined rows of the transaction are committed with the altered columns
+	auto &columns = result->Cast<DuckLakeTableEntry>().GetColumns();
+	auto obstacle = transaction.GetMetadataManager().GetInliningObstacle(columns);
+	if (!obstacle.empty()) {
+		throw NotImplementedException(
+		    "ALTER on a table with transaction-local inlined data is not supported when %s, commit the rows first",
+		    obstacle);
+	}
+	return result;
+}
+
+unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterEntry(ClientContext &context, DuckLakeTransaction &transaction,
+                                                        AlterTableInfo &info) {
 	if (transaction.HasTransactionInlinedData(GetTableId())) {
 		if (info.alter_table_type != AlterTableType::ADD_COLUMN &&
 		    info.alter_table_type != AlterTableType::REMOVE_COLUMN &&

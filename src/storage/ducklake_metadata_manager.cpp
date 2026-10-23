@@ -2114,8 +2114,7 @@ string DuckLakeMetadataManager::StaleBoundSql(const string &bound, LogicalTypeId
 
 string DuckLakeMetadataManager::GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
                                                                const string &metadata_table_prefix) {
-	auto stale_bounds = req.stale_bounds_type != LogicalTypeId::INVALID &&
-	                    (req.referenced_stats.count("min_value") > 0 || req.referenced_stats.count("max_value") > 0);
+	auto stale_bounds = req.ChecksStaleBounds();
 	string select_list = "data_file_id";
 	for (const auto &stat : req.referenced_stats) {
 		if (stat == "value_count" || stat == "null_count") {

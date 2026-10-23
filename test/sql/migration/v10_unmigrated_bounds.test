@@ -83,7 +83,7 @@ statement ok
 CREATE TABLE config_lake.r (f FLOAT)
 
 statement ok
-INSERT INTO config_lake.r VALUES (0.1)
+INSERT INTO config_lake.r VALUES (0.1), (NULL)
 
 statement ok
 ALTER TABLE config_lake.r ALTER COLUMN f TYPE DOUBLE

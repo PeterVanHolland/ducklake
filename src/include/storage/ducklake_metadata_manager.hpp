@@ -88,6 +88,11 @@ struct CTERequirement {
 	CTERequirement(idx_t col_idx, unordered_set<string> stats)
 	    : column_field_index(col_idx), referenced_stats(std::move(stats)) {
 	}
+
+	bool ChecksStaleBounds() const {
+		return stale_bounds_type != LogicalTypeId::INVALID &&
+		       (referenced_stats.count("min_value") > 0 || referenced_stats.count("max_value") > 0);
+	}
 };
 
 struct FilterSQLResult {

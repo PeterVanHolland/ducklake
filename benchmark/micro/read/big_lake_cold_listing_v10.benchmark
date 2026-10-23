@@ -1,0 +1,39 @@
+# name: benchmark/micro/read/big_lake_cold_listing_v10.benchmark
+# description: The cold listing of big_lake_cold_listing.benchmark on a v1.0 catalog
+# group: [read]
+
+name Big Lake Cold Listing v1.0
+group micro
+subgroup read
+
+require ducklake
+
+require parquet
+
+argument lake big_lake_v10
+
+argument ducklake_version 1.0
+
+argument work big_lake_listing_v10_work
+
+include benchmark/micro/fixtures/big_lake.benchmark.in
+
+# Three cold attaches, which load the columns and the table stats of a v1.0 catalog
+run
+SELECT count(*), sum(estimated_size), sum(column_count) FROM duckdb_tables() WHERE database_name = 'lake';
+DETACH lake;
+@attach ${work} AS lake
+SELECT count(*), sum(estimated_size), sum(column_count) FROM duckdb_tables() WHERE database_name = 'lake';
+DETACH lake;
+@attach ${work} AS lake
+SELECT count(*), sum(estimated_size), sum(column_count) FROM duckdb_tables() WHERE database_name = 'lake';
+
+# Re-attaching gives every run cold schema and stats caches
+cleanup
+DETACH lake;
+@attach ${work} AS lake
+
+result_query III
+SELECT * FROM __answer
+----
+2110	34800	20220

@@ -2,12 +2,16 @@
 # description: Read-only lake with ~4096 small files with disjoint id, timestamp and string ranges
 # group: [fixtures]
 
-cache_file many_files_ready.marker
+argument lake many_files
+
+argument ducklake_version 1.1
+
+cache_file ${lake}_ready.marker
 
 # events holds disjoint id/ts/s ranges per 2048-row file
 load
-@create many_files
-@attach many_files AS lake (DATA_PATH '${BENCHMARK_DIR}/many_files_data')
+@create ${lake}
+@attach ${lake} AS lake (DATA_PATH '${BENCHMARK_DIR}/${lake}_data', DUCKLAKE_VERSION '${ducklake_version}')
 CREATE TABLE lake.events (id BIGINT, ts TIMESTAMP, grp INTEGER, val DOUBLE, s VARCHAR);
 CALL lake.set_option('parquet_row_group_size', 2048, table_name => 'events');
 SET ducklake_target_file_size = '4KB';
@@ -19,9 +23,9 @@ SELECT CASE WHEN (SELECT count(*) FROM ducklake_list_files('lake', 'events')) < 
 THEN error('events must consist of ~4096 small files') END;
 CALL ducklake_delete_orphaned_files('lake', cleanup_all => true);
 DETACH lake;
-@seal many_files
-COPY (SELECT 1) TO '${BENCHMARK_DIR}/many_files_ready.marker' (FORMAT CSV);
-@attach many_files AS lake (READ_ONLY)
+@seal ${lake}
+COPY (SELECT 1) TO '${BENCHMARK_DIR}/${lake}_ready.marker' (FORMAT CSV);
+@attach ${lake} AS lake (READ_ONLY)
 
 reload
-@attach many_files AS lake (READ_ONLY)
+@attach ${lake} AS lake (READ_ONLY)

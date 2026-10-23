@@ -22,7 +22,7 @@ statement ok
 DETACH lake
 
 statement ok
-ATTACH 'ducklake:{TEST_DIR}/v11_unrepaired_bounds.db' AS lake (DATA_PATH 'data/old_ducklake/migrate_bounds/', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 0)
+ATTACH 'ducklake:{TEST_DIR}/v11_unrepaired_bounds.db' AS lake (DATA_PATH 'data/old_ducklake/migrate_bounds/', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta')
 
 query I
 SELECT value FROM meta.ducklake_metadata WHERE key = 'version'
@@ -94,38 +94,6 @@ tf	1	true
 ts	1	true
 tz	1	true
 
-# bounds that a v1.1 writer stores for added files and after a retype stay
-statement ok
-COPY (SELECT TIMESTAMPTZ '2020-01-01 12:34:56.123456+00' AS t) TO '{TEST_DIR}/v11_unrepaired_bounds_tz.parquet'
-
-statement ok
-CREATE TABLE lake.tz2 (t TIMESTAMPTZ)
-
-statement ok
-CALL ducklake_add_data_files('lake', 'tz2', '{TEST_DIR}/v11_unrepaired_bounds_tz.parquet')
-
-statement ok
-INSERT INTO lake.r VALUES (0.5)
-
-statement ok
-DETACH lake
-
-statement ok
-ATTACH 'ducklake:{TEST_DIR}/v11_unrepaired_bounds.db' AS lake (DATA_PATH 'data/old_ducklake/migrate_bounds/', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta')
-
-query III
-SELECT tbl.table_name, stats.min_value IS NOT NULL, stats.max_value IS NOT NULL
-FROM meta.ducklake_file_column_stats stats JOIN meta.ducklake_table tbl USING (table_id)
-WHERE stats.min_is_exact IS NOT NULL ORDER BY tbl.table_name
-----
-r	true	true
-tz2	true	true
-
-query I
-SELECT max(f) FROM lake.r
-----
-0.5
-
 # the same rows on the metadata catalog of the test config
 test-env DUCKLAKE_CONNECTION {TEST_DIR}/v11_unrepaired_bounds_config.db
 
@@ -169,11 +137,65 @@ statement ok
 UPDATE config_meta.ducklake_table_column_stats SET min_value = '0.1', max_value = '0.1'
 WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'r')
 
+# bounds that a v1.1 writer stores for an added file
+statement ok
+COPY (SELECT TIMESTAMPTZ '2020-01-01 12:34:56.123456+00' AS t) TO '{DATA_PATH}/v11_unrepaired_bounds_tz.parquet'
+
+statement ok
+CREATE TABLE config_lake.tz (t TIMESTAMPTZ)
+
+statement ok
+CALL ducklake_add_data_files('config_lake', 'tz', '{DATA_PATH}/v11_unrepaired_bounds_tz.parquet')
+
+# two files of the stale bounds compacted into one, after which only the table bounds are stale
+statement ok
+COPY (SELECT TIMESTAMP_NS '2020-01-01 12:34:56.123456789' AS t) TO '{DATA_PATH}/v11_unrepaired_bounds_c1.parquet'
+
+statement ok
+COPY (SELECT TIMESTAMP_NS '2020-01-01 12:34:56.123456789' AS t) TO '{DATA_PATH}/v11_unrepaired_bounds_c2.parquet'
+
+statement ok
+CREATE TABLE config_lake.compacted (t TIMESTAMP)
+
+statement ok
+CALL ducklake_add_data_files('config_lake', 'compacted', '{DATA_PATH}/v11_unrepaired_bounds_c*.parquet')
+
+statement ok
+UPDATE config_meta.ducklake_file_column_stats SET min_value = '2020-01-01 12:34:56.123456789', max_value = '2020-01-01 12:34:56.123456789', min_is_exact = NULL, max_is_exact = NULL
+WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'compacted')
+
+statement ok
+UPDATE config_meta.ducklake_table_column_stats SET min_value = '2020-01-01 12:34:56.123456789', max_value = '2020-01-01 12:34:56.123456789'
+WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'compacted')
+
+statement ok
+CALL ducklake_merge_adjacent_files('config_lake', 'compacted')
+
+statement ok
+CALL ducklake_expire_snapshots('config_lake', older_than => now())
+
+query I
+SELECT count(*) FROM config_meta.ducklake_file_column_stats
+WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'compacted') AND min_is_exact IS NULL
+----
+0
+
 statement ok
 DETACH config_lake
 
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS config_lake (DATA_PATH '{DATA_PATH}/v11_unrepaired_bounds_files', METADATA_CATALOG 'config_meta')
+
+query II
+SELECT (SELECT count(*) FROM config_lake.compacted WHERE t = TIMESTAMP '2020-01-01 12:34:56.123457'), (SELECT max(t) FROM config_lake.compacted)
+----
+2	2020-01-01 12:34:56.123457
+
+query II
+SELECT (SELECT count(*) FROM config_lake.tz WHERE t = TIMESTAMPTZ '2020-01-01 12:34:56.123456+00'), (SELECT count(*) FROM config_meta.ducklake_file_column_stats
+	WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'tz') AND min_value IS NOT NULL)
+----
+1	1
 
 query IIII
 SELECT (SELECT count(*) FROM config_lake.ts WHERE t = TIMESTAMP '2020-01-01 12:34:56.123457'), (SELECT max(t) FROM config_lake.ts), (SELECT count(*) FROM config_lake.r WHERE f = 0.10000000149011612), (SELECT min(f) FROM config_lake.r)
@@ -182,7 +204,7 @@ SELECT (SELECT count(*) FROM config_lake.ts WHERE t = TIMESTAMP '2020-01-01 12:3
 
 query II
 SELECT tbl.table_name, stats.min_value FROM config_meta.ducklake_file_column_stats stats
-JOIN config_meta.ducklake_table tbl USING (table_id) ORDER BY tbl.table_name
+JOIN config_meta.ducklake_table tbl USING (table_id) WHERE tbl.table_name IN ('r', 'ts') ORDER BY tbl.table_name
 ----
 r	NULL
 ts	NULL

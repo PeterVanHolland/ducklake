@@ -562,6 +562,38 @@ static string FinerTimestampBoundSql(const string &bound) {
 	                          bound);
 }
 
+//! Table bounds that do not cover the bounds of the live files, as merged from bounds of another type
+static string TableBoundsMissFilesSql() {
+	auto added_files = string(R"(EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column_mapping AS mapping WHERE mapping.table_id = table_stats.table_id
+))");
+	auto retyped = string(R"(EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS col
+	WHERE col.table_id = table_stats.table_id AND col.column_id = table_stats.column_id AND col.column_type <> 'float64'
+))");
+	vector<string> checks;
+	for (auto id : {LogicalTypeId::DOUBLE, LogicalTypeId::TIMESTAMP, LogicalTypeId::TIMESTAMP_MS,
+	                LogicalTypeId::TIMESTAMP_SEC, LogicalTypeId::TIMESTAMP_TZ}) {
+		auto type = LogicalType(id).ToString();
+		// only added files and retypes to DOUBLE gave the tables such bounds
+		auto source = id == LogicalTypeId::DOUBLE ? "(" + added_files + " OR " + retyped + ")" : added_files;
+		checks.push_back(StringUtil::Format(R"((%s AND EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS col
+	WHERE col.table_id = table_stats.table_id AND col.column_id = table_stats.column_id AND col.end_snapshot IS NULL
+	AND col.column_type = %s
+) AND EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_file_column_stats AS live
+	JOIN {METADATA_CATALOG}.ducklake_data_file AS live_file ON live_file.data_file_id = live.data_file_id
+	WHERE live.table_id = table_stats.table_id AND live.column_id = table_stats.column_id
+	AND live_file.end_snapshot IS NULL AND (TRY_CAST(live.min_value AS %s) < TRY_CAST(table_stats.min_value AS %s)
+		OR TRY_CAST(live.max_value AS %s) > TRY_CAST(table_stats.max_value AS %s))
+)))",
+		                                    source, SQLString::ToString(DuckLakeTypes::ToString(LogicalType(id))), type,
+		                                    type, type, type));
+	}
+	return "(" + StringUtil::Join(checks, " OR ") + ")";
+}
+
 void DuckLakeMetadataManager::MigrateRetypedBounds(bool legacy_rows) {
 	// older versions stored the bounds of added files in the type of the file and kept the bounds of a file across a
 	// type change, while the column history does not show the type of every file, so those bounds become unknown
@@ -599,23 +631,26 @@ void DuckLakeMetadataManager::MigrateRetypedBounds(bool legacy_rows) {
 	auto file_rows = legacy_rows ? string(" AND stats.min_is_exact IS NULL AND stats.max_is_exact IS NULL") : string();
 	string query;
 	if (legacy_rows) {
-		auto probe = Query(StringUtil::Format("SELECT 1 FROM {METADATA_CATALOG}.ducklake_file_column_stats AS stats "
-		                                      "WHERE ((%s) OR (%s) OR (%s))%s LIMIT 1",
-		                                      float_bounds, timestamp_bounds, timestamptz_bounds, file_rows));
+		auto probe = Query(StringUtil::Format(
+		    "SELECT 1 FROM {METADATA_CATALOG}.ducklake_file_column_stats AS stats WHERE ((%s) OR (%s) OR (%s))%s UNION "
+		    "ALL SELECT 1 FROM {METADATA_CATALOG}.ducklake_table_column_stats AS table_stats WHERE %s LIMIT 1",
+		    float_bounds, timestamp_bounds, timestamptz_bounds, file_rows, TableBoundsMissFilesSql()));
 		probe->ThrowIfError("Failed to look for the bounds of retyped columns: ");
 		auto found = probe->Fetch();
 		if (!found || found->size() == 0) {
 			return;
 		}
-		// the table bounds of the columns with such files, before their bounds are cleared
+		// the table bounds of the columns with such files before their bounds are cleared, and those that compacted
+		// files show
 		query += StringUtil::Format(R"(
 UPDATE {METADATA_CATALOG}.ducklake_table_column_stats AS table_stats SET min_value = NULL, max_value = NULL
-WHERE (table_stats.min_value IS NOT NULL OR table_stats.max_value IS NOT NULL) AND EXISTS (
+WHERE (table_stats.min_value IS NOT NULL OR table_stats.max_value IS NOT NULL) AND (EXISTS (
 	SELECT 1 FROM {METADATA_CATALOG}.ducklake_file_column_stats AS stats
 	WHERE stats.table_id = table_stats.table_id AND stats.column_id = table_stats.column_id%s
 	AND ((%s) OR (%s) OR (%s))
-);)",
-		                            file_rows, float_bounds, timestamp_bounds, timestamptz_bounds);
+) OR %s);)",
+		                            file_rows, float_bounds, timestamp_bounds, timestamptz_bounds,
+		                            TableBoundsMissFilesSql());
 	}
 	query +=
 	    StringUtil::Format(R"(

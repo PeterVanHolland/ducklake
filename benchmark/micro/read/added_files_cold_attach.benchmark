@@ -14,7 +14,8 @@ cache_file added_files_cold_attach_ready.marker
 
 # One single-row file per partition, added with ducklake_add_data_files
 load
-COPY (SELECT i AS part, i * 0.5 AS val, TIMESTAMP '2024-01-01' + INTERVAL (i) SECOND AS ts FROM range(4096) t(i))
+COPY (SELECT i::BIGINT AS part, (i * 0.5)::DOUBLE AS val, TIMESTAMP '2024-01-01' + INTERVAL (i) SECOND AS ts
+FROM range(4096) t(i))
 TO '${BENCHMARK_DIR}/added_files_cold_attach_source' (FORMAT PARQUET, PARTITION_BY (part), WRITE_PARTITION_COLUMNS true, OVERWRITE);
 @create added_files_cold_attach
 @attach added_files_cold_attach AS lake (DATA_PATH '${BENCHMARK_DIR}/added_files_cold_attach_files')
@@ -30,18 +31,15 @@ reload
 
 # Every writable attach of a v1.1 catalog with added files looks for the bounds that a migration left
 run
-SELECT count(*), sum(column_count) FROM duckdb_tables() WHERE database_name = 'lake';
 DETACH lake;
 @attach added_files_cold_attach AS lake
 SELECT count(*), sum(column_count) FROM duckdb_tables() WHERE database_name = 'lake';
 DETACH lake;
 @attach added_files_cold_attach AS lake
 SELECT count(*), sum(column_count) FROM duckdb_tables() WHERE database_name = 'lake';
-
-# Reattaching gives every run a cold catalog
-cleanup
 DETACH lake;
 @attach added_files_cold_attach AS lake
+SELECT count(*), sum(column_count) FROM duckdb_tables() WHERE database_name = 'lake';
 
 result_query II
 SELECT * FROM __answer

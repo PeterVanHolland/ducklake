@@ -82,8 +82,8 @@ struct DuckLakeInlinedColNames {
 struct CTERequirement {
 	idx_t column_field_index;
 	unordered_set<string> referenced_stats;
-	//! Older versions may have stored bounds of this column that do not hold
-	bool may_have_stale_bounds = false;
+	//! The type of a column whose bounds older versions may have stored for another type
+	LogicalTypeId stale_bounds_type = LogicalTypeId::INVALID;
 
 	CTERequirement(idx_t col_idx, unordered_set<string> stats)
 	    : column_field_index(col_idx), referenced_stats(std::move(stats)) {

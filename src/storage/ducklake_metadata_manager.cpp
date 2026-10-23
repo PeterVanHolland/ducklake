@@ -500,9 +500,8 @@ bool DuckLakeMetadataManager::HasV1_1Additions() {
 	return !Query(probe)->HasError();
 }
 
-//! The row of a struct field that DuckDB 1.5.6 dropped the defaults from in a later rename
+//! The defaults of a struct field cannot change, so a later row of the field without them lost them in a rename
 static string RenamedFieldOriginalSql() {
-	// the defaults of a struct field cannot change, so a later row of the field without them lost them in a rename
 	return R"(renamed.parent_column IS NOT NULL AND renamed.initial_default IS NULL
 AND original.table_id = renamed.table_id AND original.column_id = renamed.column_id
 AND original.initial_default IS NOT NULL AND original.begin_snapshot < renamed.begin_snapshot
@@ -2073,6 +2072,8 @@ FilterSQLResult DuckLakeMetadataManager::ConvertFilterPushdownToSQL(const Filter
 
 string DuckLakeMetadataManager::GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
                                                                const string &metadata_table_prefix) {
+	auto stale_bounds = req.stale_bounds_type != LogicalTypeId::INVALID &&
+	                    (req.referenced_stats.count("min_value") > 0 || req.referenced_stats.count("max_value") > 0);
 	string select_list = "data_file_id";
 	for (const auto &stat : req.referenced_stats) {
 		if (stat == "value_count" || stat == "null_count") {
@@ -2081,24 +2082,29 @@ string DuckLakeMetadataManager::GenerateFileColumnStatsCTEBody(const CTERequirem
 			    ", CASE WHEN value_count = 0 AND null_count = 0 THEN NULL ELSE %s END AS %s", stat, stat);
 			continue;
 		}
-		if (req.may_have_stale_bounds && (stat == "min_value" || stat == "max_value")) {
-			// the bounds of added files and of files from before a retype to DOUBLE
-			auto stale_files = StringUtil::Format(
-			    "SELECT data_file_id FROM %s.ducklake_data_file WHERE table_id = %d AND (mapping_id IS NOT NULL OR "
-			    "begin_snapshot <= %s)",
-			    metadata_table_prefix, table_id.index,
-			    DoubleRetypeSnapshotSql(metadata_table_prefix, to_string(table_id.index),
-			                            to_string(req.column_field_index)));
-			select_list += StringUtil::Format(", CASE WHEN data_file_id IN (%s) THEN NULL ELSE %s END AS %s",
-			                                  stale_files, stat, stat);
+		if (stale_bounds && (stat == "min_value" || stat == "max_value")) {
+			select_list += StringUtil::Format(", CASE WHEN stale_bounds THEN NULL ELSE %s END AS %s", stat, stat);
 			continue;
 		}
 		select_list += ", " + stat;
 	}
+	auto stats_table = StringUtil::Format("%s.ducklake_file_column_stats\n  WHERE column_id = %d AND table_id = %d",
+	                                      metadata_table_prefix, req.column_field_index, table_id.index);
+	if (stale_bounds) {
+		// the bounds of added files and of files from before a retype to DOUBLE
+		string stale_files = "mapping_id IS NOT NULL";
+		if (req.stale_bounds_type == LogicalTypeId::DOUBLE) {
+			stale_files +=
+			    " OR begin_snapshot <= " + DoubleRetypeSnapshotSql(metadata_table_prefix, to_string(table_id.index),
+			                                                       to_string(req.column_field_index));
+		}
+		stats_table = StringUtil::Format("(SELECT *, data_file_id IN (SELECT data_file_id FROM %s.ducklake_data_file "
+		                                 "WHERE table_id = %d AND (%s)) AS stale_bounds FROM %s) AS stats",
+		                                 metadata_table_prefix, table_id.index, stale_files, stats_table);
+	}
 	return StringUtil::Format("  SELECT %s\n"
-	                          "  FROM %s.ducklake_file_column_stats\n"
-	                          "  WHERE column_id = %d AND table_id = %d\n",
-	                          select_list, metadata_table_prefix, req.column_field_index, table_id.index);
+	                          "  FROM %s\n",
+	                          select_list, stats_table);
 }
 
 string DuckLakeMetadataManager::GenerateStatsJoinList(const map<idx_t, CTERequirement> &requirements) {
@@ -2359,7 +2365,9 @@ string DuckLakeMetadataManager::GenerateFileListQuery(DuckLakeTableEntry &table,
 	if (!transaction.GetCatalog().SupportsV1_1Metadata()) {
 		for (auto &entry : filter_result.required_ctes) {
 			auto field = table.GetFieldData().GetByFieldIndex(FieldIndex(entry.first));
-			entry.second.may_have_stale_bounds = field && MayHaveStaleBounds(field->Type());
+			if (field && MayHaveStaleBounds(field->Type())) {
+				entry.second.stale_bounds_type = field->Type().id();
+			}
 		}
 	}
 	string query = GenerateCTESectionFromRequirements(filter_result.required_ctes, table_id, metadata_table_prefix);

@@ -109,7 +109,7 @@ test-env DUCKLAKE_CONNECTION {TEST_DIR}/v11_unrepaired_bounds_config.db
 test-env DATA_PATH {TEST_DIR}
 
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS config_lake (DATA_PATH '{DATA_PATH}/v11_unrepaired_bounds_files', METADATA_CATALOG 'config_meta', DATA_INLINING_ROW_LIMIT 0)
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS config_lake (DATA_PATH '{DATA_PATH}/v11_unrepaired_bounds_files', METADATA_CATALOG 'config_meta', DATA_INLINING_ROW_LIMIT 0, DUCKLAKE_VERSION '1.1')
 
 statement ok
 COPY (SELECT TIMESTAMP_NS '2020-01-01 12:34:56.123456789' AS t) TO '{DATA_PATH}/v11_unrepaired_bounds_ts_ns.parquet'

@@ -15,6 +15,7 @@
 #include "common/ducklake_types.hpp"
 #include "storage/ducklake_schema_entry.hpp"
 #include "storage/ducklake_table_entry.hpp"
+#include "storage/ducklake_insert.hpp"
 #include "duckdb.hpp"
 #include "duckdb/main/appender.hpp"
 #include "metadata_manager/postgres_metadata_manager.hpp"
@@ -2474,6 +2475,11 @@ WHERE data.table_id=%d AND data.begin_snapshot <= {SNAPSHOT_ID} AND (
 				file_entry.snapshot_filter_min = start_snapshot.snapshot_id;
 			}
 		}
+		if (!file_entry.row_id_start.IsValid() && !file_entry.snapshot_filter_min.IsValid()) {
+			// the rewrites of DuckDB 1.4 began the file after the snapshot its moved rows keep, which inserted
+			// them in the file they came from
+			file_entry.snapshot_filter_min = begin_snapshot;
+		}
 		col_idx++;
 		if (!row.IsNull(col_idx)) {
 			file_entry.mapping_id = MappingIndex(row.GetValue<idx_t>(col_idx));
@@ -2483,6 +2489,49 @@ WHERE data.table_id=%d AND data.begin_snapshot <= {SNAPSHOT_ID} AND (
 		files.push_back(std::move(file_entry));
 	}
 	return files;
+}
+
+void DuckLakeMetadataManager::AddDeletionSuccessors(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
+                                                    vector<DuckLakeDeleteScanEntry> &files) {
+	set<idx_t> deletion_snapshots;
+	for (auto &entry : files) {
+		if (entry.file_deleted) {
+			deletion_snapshots.insert(entry.snapshot_id.GetIndex());
+		}
+	}
+	if (deletion_snapshots.empty()) {
+		return;
+	}
+	string snapshot_list;
+	for (auto snapshot_id : deletion_snapshots) {
+		if (!snapshot_list.empty()) {
+			snapshot_list += ", ";
+		}
+		snapshot_list += to_string(snapshot_id);
+	}
+	auto query = StringUtil::Format(R"(
+SELECT data.begin_snapshot, %s
+FROM {METADATA_CATALOG}.ducklake_data_file data
+WHERE data.table_id = %d AND data.row_id_start IS NULL AND data.begin_snapshot IN (%s);
+)",
+	                                GetDataFileSelectList("data"), table.GetTableId().index, snapshot_list);
+	auto result = Query(snapshot, query);
+	result->ThrowIfError("Failed to get the data files that begin at a data file deletion from DuckLake: ");
+	auto &field_data = table.GetFieldData();
+	auto row_id_column = DuckLakeInsert::InternalColumnName(field_data, "_ducklake_internal_row_id");
+	auto snapshot_id_column = DuckLakeInsert::InternalColumnName(field_data, "_ducklake_internal_snapshot_id");
+	for (auto &row : *result) {
+		idx_t col_idx = 0;
+		auto begin_snapshot = row.GetValue<idx_t>(col_idx++);
+		auto successor = ReadDataFile(table, row, col_idx, IsEncrypted());
+		for (auto &entry : files) {
+			if (entry.file_deleted && entry.snapshot_id.GetIndex() == begin_snapshot) {
+				entry.successor_files.push_back(successor);
+				entry.row_id_column = row_id_column;
+				entry.snapshot_id_column = snapshot_id_column;
+			}
+		}
+	}
 }
 
 vector<DuckLakeDeleteScanEntry> DuckLakeMetadataManager::GetTableDeletions(DuckLakeTableEntry &table,
@@ -2668,6 +2717,7 @@ FROM main_results
 
 		files.push_back(std::move(entry));
 	}
+	AddDeletionSuccessors(table, end_snapshot, files);
 	if (!has_inlined_table) {
 		return files;
 	}

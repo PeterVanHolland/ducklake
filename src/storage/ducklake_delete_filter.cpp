@@ -288,6 +288,67 @@ void DuckLakeDeleteFilter::Initialize(const DuckLakeInlinedDataDeletes &inlined_
 	delete_data->snapshot_ids = std::move(merged_snapshot_ids);
 }
 
+//! The rows of a deleted data file that a DuckDB 1.4 rewrite moved to a file beginning at the deletion, where they
+//! keep their older snapshot, were not deleted
+static void ExcludeMovedRows(ClientContext &context, const DuckLakeDeleteScanEntry &delete_scan, bool rows_to_scan[]) {
+	auto deletion_snapshot = NumericCast<int64_t>(delete_scan.snapshot_id.GetIndex());
+	unordered_set<int64_t> moved_rows;
+	for (auto &successor : delete_scan.successor_files) {
+		ParquetFileScanner scanner(context, successor, true);
+		auto row_id_column = scanner.FindColumn(delete_scan.row_id_column);
+		auto snapshot_column = scanner.FindColumn(delete_scan.snapshot_id_column);
+		if (!row_id_column.IsValid() || !snapshot_column.IsValid()) {
+			continue;
+		}
+		scanner.SetColumnIds({row_id_column.GetIndex(), snapshot_column.GetIndex()});
+		DataChunk chunk;
+		chunk.Initialize(context, {LogicalType::BIGINT, LogicalType::BIGINT});
+		while (scanner.Scan(chunk)) {
+			auto row_ids = chunk.data[0].Values<int64_t>();
+			auto snapshot_ids = chunk.data[1].Values<int64_t>();
+			for (idx_t i = 0; i < chunk.size(); i++) {
+				if (row_ids[i].IsValid() && snapshot_ids[i].IsValid() &&
+				    snapshot_ids[i].GetValue() < deletion_snapshot) {
+					moved_rows.insert(row_ids[i].GetValue());
+				}
+			}
+		}
+	}
+	if (moved_rows.empty()) {
+		return;
+	}
+	if (delete_scan.row_id_start.IsValid()) {
+		auto row_id_start = NumericCast<int64_t>(delete_scan.row_id_start.GetIndex());
+		for (auto row_id : moved_rows) {
+			auto position = row_id - row_id_start;
+			if (position >= 0 && NumericCast<idx_t>(position) < delete_scan.row_count) {
+				rows_to_scan[position] = false;
+			}
+		}
+		return;
+	}
+	// the rows of the deleted file carry their own row ids
+	ParquetFileScanner scanner(context, delete_scan.file, true);
+	auto row_id_column = scanner.FindColumn(delete_scan.row_id_column);
+	if (!row_id_column.IsValid()) {
+		// LCOV_EXCL_START
+		return;
+		// LCOV_EXCL_STOP
+	}
+	scanner.SetColumnIds({row_id_column.GetIndex()});
+	DataChunk chunk;
+	chunk.Initialize(context, {LogicalType::BIGINT});
+	idx_t position = 0;
+	while (scanner.Scan(chunk)) {
+		auto row_ids = chunk.data[0].Values<int64_t>();
+		for (idx_t i = 0; i < chunk.size() && position < delete_scan.row_count; i++, position++) {
+			if (row_ids[i].IsValid() && moved_rows.count(row_ids[i].GetValue())) {
+				rows_to_scan[position] = false;
+			}
+		}
+	}
+}
+
 void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDeleteScanEntry &delete_scan) {
 	// Scanning deletes - we need to scan the opposite (i.e. only the rows that were deleted)
 	// rows_to_scan[i] = true means row i was deleted and should be returned
@@ -328,6 +389,9 @@ void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDele
 		auto snapshot_id = delete_scan.snapshot_id.GetIndex();
 		for (idx_t i = 0; i < delete_scan.row_count; i++) {
 			position_to_snapshot[i] = snapshot_id;
+		}
+		if (!delete_scan.successor_files.empty()) {
+			ExcludeMovedRows(context, delete_scan, rows_to_scan.get());
 		}
 	} else {
 		// No delete file and no full file delete

@@ -441,6 +441,12 @@ struct DuckLakeDeleteScanEntry {
 	DataFileIndex file_id;
 	//! Inlined file deletions {row_id -> snapshot_id}
 	unordered_map<idx_t, idx_t> inlined_file_deletions;
+	//! For a data file deletion, the files with embedded row ids that begin at snapshot_id: a DuckDB 1.4 rewrite
+	//! moved rows there, keeping their older snapshot
+	vector<DuckLakeFileData> successor_files;
+	//! The names of the embedded row id and snapshot id columns
+	string row_id_column;
+	string snapshot_id_column;
 };
 
 struct DuckLakeFileListExtendedEntry {

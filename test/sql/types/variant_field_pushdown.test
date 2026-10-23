@@ -279,6 +279,33 @@ SELECT id, v.x::INTEGER FROM dl.d WHERE id NOT IN (4, 5) AND v.x::INTEGER > 7 OR
 statement ok
 ROLLBACK
 
+# nor the inlined rows that a filter on another field removes
+statement ok
+CREATE TABLE dl.e(v VARIANT)
+
+statement ok
+INSERT INTO dl.e VALUES ({'keep': false, 'n': 'bad'}::VARIANT), ({'keep': true, 'n': '42'}::VARIANT)
+
+query I
+SELECT v.n::INTEGER FROM dl.e WHERE v.keep::BOOLEAN
+----
+42
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO dl.e VALUES ({'keep': false, 'n': 'worse'}::VARIANT), ({'keep': true, 'n': '7'}::VARIANT)
+
+query I
+SELECT v.n::INTEGER FROM dl.e WHERE v.keep::BOOLEAN ORDER BY 1
+----
+7
+42
+
+statement ok
+ROLLBACK
+
 # inlined rows next to a data file
 statement ok
 INSERT INTO dl.t VALUES (100002, {'n': 3}::VARIANT, {'key': 'inl', 'n': 3}, {'x': 6}::VARIANT, {'x': 6, 'y': 8})

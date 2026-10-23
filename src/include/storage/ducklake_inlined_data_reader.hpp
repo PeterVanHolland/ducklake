@@ -62,9 +62,9 @@ private:
 	bool TryEvaluateExpression(ClientContext &context, idx_t virtual_col_idx, Vector &input_vector,
 	                           const LogicalType &input_type, Vector &output_vector);
 	void AddFieldExtract(ClientContext &context, idx_t column_idx, const LogicalType &column_type, idx_t scan_idx);
-	//! Apply the filters on field extracts, or those on the other columns
-	idx_t ApplyFilters(ClientContext &context, DataChunk &chunk, SelectionVector &sel, idx_t approved_tuple_count,
-	                   bool on_field_extracts);
+	//! Apply the filters on the columns that are not field extracts
+	idx_t ApplyFilters(ClientContext &context, DataChunk &chunk, SelectionVector &sel, idx_t approved_tuple_count);
+	void ComputeFieldExtract(ClientContext &context, idx_t column_idx, DataChunk &chunk);
 
 	mutex lock;
 	DuckLakeFunctionInfo &read_info;

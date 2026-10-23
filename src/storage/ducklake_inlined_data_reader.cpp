@@ -393,7 +393,7 @@ AsyncResult DuckLakeInlinedDataReader::Scan(ClientContext &context, GlobalTableF
 		if (deletion_filter) {
 			approved_tuple_count = deletion_filter->Filter(file_row_number, approved_tuple_count, sel);
 		}
-		approved_tuple_count = ApplyFilters(context, chunk, sel, approved_tuple_count, false);
+		approved_tuple_count = ApplyFilters(context, chunk, sel, approved_tuple_count);
 		if (approved_tuple_count != chunk.size()) {
 			chunk.Slice(sel, approved_tuple_count);
 			if (!pending_extracts.empty()) {
@@ -402,25 +402,32 @@ AsyncResult DuckLakeInlinedDataReader::Scan(ClientContext &context, GlobalTableF
 		}
 	}
 	if (!pending_extracts.empty()) {
-		for (auto c : pending_extracts) {
-			auto &extract = field_extracts.find(c)->second;
-			Vector field(extract.expression->GetReturnType());
-			extract.executor->ExecuteExpression(scan_chunk, field);
-			Vector result(chunk.data[c].GetType());
-			if (!TryEvaluateExpression(context, c, field, field.GetType(), result)) {
-				if (result.GetType() != field.GetType()) {
-					VectorOperations::Cast(context, field, result, scan_chunk.size());
-				} else {
-					result.Reference(field);
+		// an extract with a filter is applied before the next one is computed
+		unordered_set<idx_t> computed_extracts;
+		if (filters) {
+			for (auto &entry : *filters) {
+				auto &filter = entry.Filter();
+				auto column_id = entry.GetIndex().GetIndex();
+				if (field_extracts.find(column_id) == field_extracts.end() ||
+				    ExpressionFilter::IsRootOptionalFilter(filter)) {
+					continue;
+				}
+				ComputeFieldExtract(context, column_id, chunk);
+				computed_extracts.insert(column_id);
+				SelectionVector sel;
+				auto filter_state = TableFilterState::Initialize(context, filter);
+				idx_t approved_tuple_count = chunk.size();
+				approved_tuple_count = ColumnSegment::FilterSelection(sel, chunk.data[column_id], *filter_state,
+				                                                      chunk.size(), approved_tuple_count);
+				if (approved_tuple_count != chunk.size()) {
+					chunk.Slice(sel, approved_tuple_count);
+					scan_chunk.Slice(sel, approved_tuple_count);
 				}
 			}
-			chunk.data[c].Reference(result);
 		}
-		if (filters) {
-			SelectionVector sel;
-			auto approved_tuple_count = ApplyFilters(context, chunk, sel, chunk.size(), true);
-			if (approved_tuple_count != chunk.size()) {
-				chunk.Slice(sel, approved_tuple_count);
+		for (auto column_id : pending_extracts) {
+			if (computed_extracts.find(column_id) == computed_extracts.end()) {
+				ComputeFieldExtract(context, column_id, chunk);
 			}
 		}
 	}
@@ -429,7 +436,7 @@ AsyncResult DuckLakeInlinedDataReader::Scan(ClientContext &context, GlobalTableF
 }
 
 idx_t DuckLakeInlinedDataReader::ApplyFilters(ClientContext &context, DataChunk &chunk, SelectionVector &sel,
-                                              idx_t approved_tuple_count, bool on_field_extracts) {
+                                              idx_t approved_tuple_count) {
 	if (!filters) {
 		return approved_tuple_count;
 	}
@@ -439,7 +446,8 @@ idx_t DuckLakeInlinedDataReader::ApplyFilters(ClientContext &context, DataChunk 
 			continue;
 		}
 		auto column_id = entry.GetIndex().GetIndex();
-		if ((field_extracts.find(column_id) != field_extracts.end()) != on_field_extracts) {
+		if (field_extracts.find(column_id) != field_extracts.end()) {
+			// filtered after the extract is computed
 			continue;
 		}
 		auto filter_state = TableFilterState::Initialize(context, filter);
@@ -447,6 +455,21 @@ idx_t DuckLakeInlinedDataReader::ApplyFilters(ClientContext &context, DataChunk 
 		                                                      approved_tuple_count);
 	}
 	return approved_tuple_count;
+}
+
+void DuckLakeInlinedDataReader::ComputeFieldExtract(ClientContext &context, idx_t column_idx, DataChunk &chunk) {
+	auto &extract = field_extracts.find(column_idx)->second;
+	Vector field(extract.expression->GetReturnType());
+	extract.executor->ExecuteExpression(scan_chunk, field);
+	Vector result(chunk.data[column_idx].GetType());
+	if (!TryEvaluateExpression(context, column_idx, field, field.GetType(), result)) {
+		if (result.GetType() != field.GetType()) {
+			VectorOperations::Cast(context, field, result, scan_chunk.size());
+		} else {
+			result.Reference(field);
+		}
+	}
+	chunk.data[column_idx].Reference(result);
 }
 
 void DuckLakeInlinedDataReader::AddVirtualColumn(column_t virtual_column_id) {

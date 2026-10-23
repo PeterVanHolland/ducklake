@@ -562,6 +562,15 @@ static string FinerTimestampBoundSql(const string &bound) {
 	                          bound);
 }
 
+//! Whether the column had another type than DOUBLE
+static string HadNonDoubleTypeSql(const string &alias) {
+	return StringUtil::Format(R"(EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS original
+	WHERE original.table_id = %s.table_id AND original.column_id = %s.column_id AND original.column_type <> 'float64'
+))",
+	                          alias, alias);
+}
+
 //! A column of a table with added files or retyped to DOUBLE, whose bounds can be of another type
 static string StaleBoundColumnSql(const string &alias) {
 	return StringUtil::Format(R"(EXISTS (
@@ -569,12 +578,9 @@ static string StaleBoundColumnSql(const string &alias) {
 	WHERE col.table_id = %s.table_id AND col.column_id = %s.column_id AND ((col.column_type IN ('float64', 'timestamp',
 		'timestamp_ms', 'timestamp_s', 'timestamptz')
 		AND col.table_id IN (SELECT mapping.table_id FROM {METADATA_CATALOG}.ducklake_column_mapping AS mapping))
-	OR (col.column_type = 'float64' AND EXISTS (
-		SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS original
-		WHERE original.table_id = col.table_id AND original.column_id = col.column_id
-		AND original.column_type <> 'float64')))
+	OR (col.column_type = 'float64' AND %s))
 ))",
-	                          alias, alias);
+	                          alias, alias, HadNonDoubleTypeSql("col"));
 }
 
 //! Table bounds that do not cover the bounds of the live files, as merged from bounds of another type
@@ -610,10 +616,7 @@ void DuckLakeMetadataManager::MigrateRetypedBounds(bool legacy_rows) {
 ))",
 		                          types);
 	};
-	auto retyped = string(R"(EXISTS (
-	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS col
-	WHERE col.table_id = stats.table_id AND col.column_id = stats.column_id AND col.column_type <> 'float64'
-))");
+	auto retyped = HadNonDoubleTypeSql("stats");
 	auto added_file = string(R"(EXISTS (
 	SELECT 1 FROM {METADATA_CATALOG}.ducklake_data_file AS added
 	WHERE added.data_file_id = stats.data_file_id AND added.mapping_id IS NOT NULL
@@ -637,8 +640,7 @@ void DuckLakeMetadataManager::MigrateRetypedBounds(bool legacy_rows) {
 	auto file_rows = legacy_rows ? string(" AND stats.min_is_exact IS NULL AND stats.max_is_exact IS NULL") : string();
 	string query;
 	if (legacy_rows) {
-		// the table bounds of the columns with such files before their bounds are cleared, and those that compacted
-		// files show
+		// table bounds of columns with such files, before they are cleared, or that miss the bounds of live files
 		query += StringUtil::Format(R"(
 UPDATE {METADATA_CATALOG}.ducklake_table_column_stats AS table_stats SET min_value = NULL, max_value = NULL
 WHERE (table_stats.min_value IS NOT NULL OR table_stats.max_value IS NOT NULL) AND (EXISTS (
@@ -697,18 +699,13 @@ LIMIT 1)");
 	if (!found || found->size() == 0) {
 		return;
 	}
-	// DuckDB v2.0.0 migrated catalogs to v1.1 without MigrateRetypedBounds, only added files and retyped columns can
-	// hold such bounds
-	auto candidates = Query(R"(
+	// only added files and retyped columns can hold such bounds
+	auto candidates = Query(StringUtil::Format(R"(
 SELECT 1 FROM {METADATA_CATALOG}.ducklake_column_mapping
 UNION ALL
-SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS retyped
-WHERE retyped.column_type = 'float64' AND EXISTS (
-	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS original
-	WHERE original.table_id = retyped.table_id AND original.column_id = retyped.column_id
-	AND original.column_type <> 'float64'
-)
-LIMIT 1)");
+SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS retyped WHERE retyped.column_type = 'float64' AND %s
+LIMIT 1)",
+	                                           HadNonDoubleTypeSql("retyped")));
 	candidates->ThrowIfError("Failed to look for the bounds of retyped columns: ");
 	found = candidates->Fetch();
 	if (!found || found->size() == 0) {

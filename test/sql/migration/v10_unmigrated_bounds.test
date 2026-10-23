@@ -105,11 +105,65 @@ statement ok
 UPDATE config_meta.ducklake_table_column_stats SET min_value = '0.1', max_value = '0.1'
 WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'r')
 
+# a FLOAT bound merged with a later DOUBLE bound that is still below the FLOAT value, a FLOAT bound that PostgreSQL
+# prints in scientific notation, and an added file with a value below the range of FLOAT
+statement ok
+CREATE TABLE config_lake.merged (f FLOAT)
+
+statement ok
+INSERT INTO config_lake.merged VALUES (0.1)
+
+statement ok
+ALTER TABLE config_lake.merged ALTER COLUMN f TYPE DOUBLE
+
+statement ok
+INSERT INTO config_lake.merged VALUES (0.1000000001)
+
+statement ok
+CREATE TABLE config_lake.large (f FLOAT)
+
+statement ok
+INSERT INTO config_lake.large VALUES (1000000.1)
+
+statement ok
+ALTER TABLE config_lake.large ALTER COLUMN f TYPE DOUBLE
+
+statement ok
+UPDATE config_meta.ducklake_file_column_stats SET min_value = '0.1', max_value = '0.1'
+WHERE data_file_id = (SELECT min(data_file_id) FROM config_meta.ducklake_data_file
+	WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'merged'))
+
+statement ok
+UPDATE config_meta.ducklake_table_column_stats SET min_value = '0.1', max_value = '0.1000000001'
+WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'merged')
+
+statement ok
+UPDATE config_meta.ducklake_file_column_stats SET min_value = '1000000.1', max_value = '1000000.1'
+WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'large')
+
+statement ok
+UPDATE config_meta.ducklake_table_column_stats SET min_value = '1000000.1', max_value = '1000000.1'
+WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'large')
+
+statement ok
+COPY (SELECT 1e-50::DOUBLE AS f) TO '{DATA_PATH}/v10_unmigrated_bounds_tiny.parquet'
+
+statement ok
+CREATE TABLE config_lake.tiny (f DOUBLE)
+
+statement ok
+CALL ducklake_add_data_files('config_lake', 'tiny', '{DATA_PATH}/v10_unmigrated_bounds_tiny.parquet')
+
 statement ok
 DETACH config_lake
 
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS config_lake (DATA_PATH '{DATA_PATH}/v10_unmigrated_bounds_files', METADATA_CATALOG 'config_meta')
+
+query IIII
+SELECT (SELECT count(*) FROM config_lake.merged WHERE f = 0.10000000149011612), (SELECT max(f) FROM config_lake.merged), (SELECT count(*) FROM config_lake.large WHERE f = 1000000.125), (SELECT count(*) FROM config_lake.tiny WHERE f = 1e-50)
+----
+1	0.10000000149011612	1	1
 
 query IIII
 SELECT (SELECT count(*) FROM config_lake.ts WHERE t = TIMESTAMP '2020-01-01 12:34:56.123457'), (SELECT max(t) FROM config_lake.ts), (SELECT count(*) FROM config_lake.r WHERE f = 0.10000000149011612), (SELECT min(f) FROM config_lake.r)

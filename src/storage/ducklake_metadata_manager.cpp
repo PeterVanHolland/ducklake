@@ -1512,31 +1512,43 @@ static string DoubleRetypeSnapshotSql(const string &prefix, const string &table_
 	    prefix, table_id, column_id, prefix, table_id, column_id);
 }
 
-//! Without the v1.1 metadata, the table bounds of columns with such files may not hold
 static string TableColumnBoundSql(const string &bound, bool v1_1_metadata) {
 	if (v1_1_metadata) {
 		return bound;
 	}
-	string table_id = "ducklake_table_column_stats.table_id";
-	string column_id = "ducklake_table_column_stats.column_id";
+	return StringUtil::Format("CASE WHEN stale_bounds.stale_column_id IS NULL THEN %s END AS %s", bound, bound);
+}
+
+//! Without the v1.1 metadata, the columns whose table bounds may have been merged from such files
+static string StaleTableBoundsJoin(bool v1_1_metadata) {
+	if (v1_1_metadata) {
+		return string();
+	}
 	vector<string> type_names;
 	for (auto &id : STALE_BOUND_TYPES) {
 		type_names.push_back(SQLString::ToString(DuckLakeTypes::ToString(LogicalType(id))));
 	}
 	// a column mapping marks a table with added files
-	auto added_files = StringUtil::Format(
-	    "EXISTS (SELECT 1 FROM {METADATA_CATALOG}.ducklake_column_mapping AS mapping WHERE mapping.table_id = %s) AND "
-	    "EXISTS (SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS bound_col WHERE bound_col.table_id = %s AND "
-	    "bound_col.column_id = %s AND bound_col.column_type IN (%s))",
-	    table_id, table_id, column_id, StringUtil::Join(type_names, ", "));
-	return StringUtil::Format("CASE WHEN (%s) OR %s IS NOT NULL THEN NULL ELSE %s END AS %s", added_files,
-	                          DoubleRetypeSnapshotSql("{METADATA_CATALOG}", table_id, column_id), bound, bound);
+	return StringUtil::Format(R"(LEFT JOIN (
+    SELECT DISTINCT col.table_id AS stale_table_id, col.column_id AS stale_column_id
+    FROM {METADATA_CATALOG}.ducklake_column AS col
+    WHERE (col.column_type IN (%s)
+        AND col.table_id IN (SELECT mapping.table_id FROM {METADATA_CATALOG}.ducklake_column_mapping AS mapping))
+    OR (col.column_type = 'float64' AND EXISTS (
+        SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS original
+        WHERE original.table_id = col.table_id AND original.column_id = col.column_id
+        AND original.column_type <> 'float64'))
+) AS stale_bounds ON stale_bounds.stale_table_id = ducklake_table_column_stats.table_id
+    AND stale_bounds.stale_column_id = ducklake_table_column_stats.column_id
+)",
+	                          StringUtil::Join(type_names, ", "));
 }
 
-static string TableStatsQuery(const string &select_list, bool include_column_stats) {
+static string TableStatsQuery(const string &select_list, bool include_column_stats,
+                              const string &column_stats_join = string()) {
 	auto query = "\nSELECT " + select_list + "\nFROM {METADATA_CATALOG}.ducklake_table_stats\n";
 	if (include_column_stats) {
-		query += "LEFT JOIN {METADATA_CATALOG}.ducklake_table_column_stats USING (table_id)\n";
+		query += "LEFT JOIN {METADATA_CATALOG}.ducklake_table_column_stats USING (table_id)\n" + column_stats_join;
 	}
 	if (include_column_stats) {
 		query += "ORDER BY table_id ASC\n";
@@ -1552,7 +1564,7 @@ string DuckLakeMetadataManager::GlobalTableStatsQuery(bool include_exactness) {
 	if (include_exactness) {
 		select_list += ", min_is_exact, max_is_exact";
 	}
-	return TableStatsQuery(select_list, true);
+	return TableStatsQuery(select_list, true, StaleTableBoundsJoin(include_exactness));
 }
 
 vector<DuckLakeGlobalStatsInfo> DuckLakeMetadataManager::ParseGlobalTableStats(QueryResult &result) {
@@ -4883,7 +4895,8 @@ SELECT
 FROM {METADATA_CATALOG}.ducklake_table_stats
 LEFT JOIN {METADATA_CATALOG}.ducklake_table_column_stats
     USING (table_id)
-ORDER BY table_id ASC NULLS FIRST;
+)" + StaleTableBoundsJoin(include_exactness) +
+	       R"(ORDER BY table_id ASC NULLS FIRST;
 	)";
 }
 

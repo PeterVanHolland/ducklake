@@ -2508,13 +2508,16 @@ void DuckLakeMetadataManager::AddDeletionSuccessors(DuckLakeTableEntry &table, D
 		}
 		snapshot_list += to_string(snapshot_id);
 	}
-	// a rewrite of DuckDB 1.4 wrote the file after the snapshot it begins at
+	// a rewrite of DuckDB 1.4 wrote the file after the snapshot it begins at, which may have expired since
 	auto query = StringUtil::Format(R"(
 SELECT data.begin_snapshot, %s
 FROM {METADATA_CATALOG}.ducklake_data_file data
-JOIN {METADATA_CATALOG}.ducklake_snapshot snap ON snap.snapshot_id = data.begin_snapshot
 WHERE data.table_id = %d AND data.row_id_start IS NULL AND data.begin_snapshot IN (%s)
-  AND data.data_file_id >= snap.next_file_id;
+  AND data.data_file_id >= COALESCE((
+	SELECT MAX(snap.next_file_id)
+	FROM {METADATA_CATALOG}.ducklake_snapshot snap
+	WHERE snap.snapshot_id <= data.begin_snapshot
+  ), 0);
 )",
 	                                GetDataFileSelectList("data"), table.GetTableId().index, snapshot_list);
 	auto result = Query(snapshot, query);

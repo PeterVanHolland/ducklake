@@ -331,6 +331,15 @@ static void ExcludeMovedRows(ClientContext &context, const DuckLakeDeleteScanEnt
 	}
 	if (delete_scan.row_id_start.IsValid()) {
 		auto row_id_start = NumericCast<int64_t>(delete_scan.row_id_start.GetIndex());
+		if (moved_rows.size() > delete_scan.row_count) {
+			// the moved rows of all files deleted at this snapshot - probe the rows of this one instead
+			for (idx_t position = 0; position < delete_scan.row_count; position++) {
+				if (moved_rows.count(row_id_start + NumericCast<int64_t>(position))) {
+					rows_to_scan[position] = false;
+				}
+			}
+			return;
+		}
 		for (auto row_id : moved_rows) {
 			auto position = row_id - row_id_start;
 			if (position >= 0 && NumericCast<idx_t>(position) < delete_scan.row_count) {

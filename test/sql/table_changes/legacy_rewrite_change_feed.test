@@ -191,3 +191,13 @@ query II
 SELECT snapshot_id, id FROM ducklake_table_deletions('cur', 'main', 't', 0, getvariable('rewrite_snapshot') - 1) ORDER BY ALL
 ----
 3	0
+
+# the rewritten file is found when the snapshot it begins at has expired
+statement ok
+CALL ducklake_expire_snapshots('lk', versions => [3])
+
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('t', 2, 6) WHERE change_type = 'delete' ORDER BY ALL
+----
+3	0	delete	0
+6	1	delete	1

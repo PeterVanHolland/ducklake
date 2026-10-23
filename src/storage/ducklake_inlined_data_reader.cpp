@@ -141,17 +141,12 @@ static unique_ptr<Expression> GetFieldExtract(ClientContext &context, const Colu
 	unique_ptr<Expression> expr = make_uniq<BoundReferenceExpression>(column_type, scan_idx);
 	reference<const ColumnIndex> current(column_index);
 	while (current.get().IsPushdownExtract()) {
+		// only VARIANT fields are pushed into the scan, and they are extracted by name
 		auto &child = current.get().GetChildIndex(0);
 		vector<unique_ptr<Expression>> arguments;
 		arguments.push_back(std::move(expr));
-		if (child.HasPrimaryIndex()) {
-			auto index = Value::BIGINT(NumericCast<int64_t>(child.GetPrimaryIndex() + 1));
-			arguments.push_back(make_uniq<BoundConstantExpression>(std::move(index)));
-			expr = binder.BindScalarFunction(Identifier::DefaultSchema(), "struct_extract_at", std::move(arguments));
-		} else {
-			arguments.push_back(make_uniq<BoundConstantExpression>(Value(child.GetFieldName())));
-			expr = binder.BindScalarFunction(Identifier::DefaultSchema(), "variant_extract", std::move(arguments));
-		}
+		arguments.push_back(make_uniq<BoundConstantExpression>(Value(child.GetFieldName())));
+		expr = binder.BindScalarFunction(Identifier::DefaultSchema(), "variant_extract", std::move(arguments));
 		current = child;
 	}
 	return BoundCastExpression::AddCastToType(context, std::move(expr), column_index.GetScanType());
@@ -335,9 +330,25 @@ bool DuckLakeInlinedDataReader::TryEvaluateExpression(ClientContext &context, id
 
 AsyncResult DuckLakeInlinedDataReader::Scan(ClientContext &context, GlobalTableFunctionState &global_state,
                                             LocalTableFunctionState &local_state, DataChunk &chunk) {
+	idx_t scan_count;
+	bool deletes_applied = false;
 	if (!virtual_columns.empty()) {
 		scan_chunk.Reset();
 		data->data->Scan(state, scan_chunk);
+		scan_count = scan_chunk.size();
+		// a cast in a field extract must not see deleted rows, so they are removed first
+		SelectionVector kept_sel;
+		idx_t kept_count = scan_count;
+		if (deletion_filter && !field_extracts.empty()) {
+			kept_count = deletion_filter->Filter(file_row_number, scan_count, kept_sel);
+			if (kept_count != scan_count) {
+				scan_chunk.Slice(kept_sel, kept_count);
+			}
+			deletes_applied = true;
+		}
+		auto row_position = [&](idx_t r) {
+			return file_row_number + NumericCast<int64_t>(kept_count != scan_count ? kept_sel.get_index(r) : r);
+		};
 		idx_t source_idx = 0;
 		for (idx_t c = 0; c < virtual_columns.size(); c++) {
 			switch (virtual_columns[c]) {
@@ -370,7 +381,13 @@ AsyncResult DuckLakeInlinedDataReader::Scan(ClientContext &context, GlobalTableF
 					// use preserved row_ids from update inlining
 					auto ordinal_data = FlatVector::GetDataMutable<int64_t>(ordinal_vector);
 					for (idx_t r = 0; r < scan_chunk.size(); r++) {
-						ordinal_data[r] = data->row_ids[file_row_number + r];
+						ordinal_data[r] = data->row_ids[NumericCast<idx_t>(row_position(r))];
+					}
+					FlatVector::SetSize(ordinal_vector, scan_chunk.size());
+				} else if (kept_count != scan_count) {
+					auto ordinal_data = FlatVector::GetDataMutable<int64_t>(ordinal_vector);
+					for (idx_t r = 0; r < scan_chunk.size(); r++) {
+						ordinal_data[r] = row_position(r);
 					}
 					FlatVector::SetSize(ordinal_vector, scan_chunk.size());
 				} else {
@@ -389,15 +406,15 @@ AsyncResult DuckLakeInlinedDataReader::Scan(ClientContext &context, GlobalTableF
 		chunk.SetChildCardinality(scan_chunk.size());
 	} else {
 		data->data->Scan(state, chunk);
+		scan_count = chunk.size();
 	}
-	idx_t scan_count = chunk.size();
 	if (scan_count == 0) {
 		return AsyncResult(SourceResultType::FINISHED);
 	}
-	if (filters || deletion_filter) {
+	if (filters || (deletion_filter && !deletes_applied)) {
 		SelectionVector sel;
-		idx_t approved_tuple_count = scan_count;
-		if (deletion_filter) {
+		idx_t approved_tuple_count = chunk.size();
+		if (deletion_filter && !deletes_applied) {
 			approved_tuple_count = deletion_filter->Filter(file_row_number, approved_tuple_count, sel);
 		}
 		if (filters) {

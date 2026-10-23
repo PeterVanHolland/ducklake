@@ -73,23 +73,20 @@ private:
 	void GetTableInsertions() const;
 	void GetTableDeletions() const;
 	void AddInlinedDataTables(DuckLakeTransaction &transaction) const;
-	void AddFilterToPushdownInfo(FilterPushdownInfo &pushdown_info, const ColumnIndex &column_index,
+	void AddFilterToPushdownInfo(FilterPushdownInfo &pushdown_info, column_t column_id,
 	                             unique_ptr<TableFilter> filter) const;
 	//! Build the node for a table filter on one column - a leaf, or a conjunction of them when it
 	//! constrains several nested fields. nullptr for virtual columns and subjects that have no stats.
-	unique_ptr<DuckLakeFilterNode> GetFilterNode(const ColumnIndex &column_index, unique_ptr<TableFilter> filter) const;
+	unique_ptr<DuckLakeFilterNode> GetFilterNode(column_t column_id, unique_ptr<TableFilter> filter) const;
 	//! Build the node for a filter expression reading one table column, possibly several of its fields
-	unique_ptr<DuckLakeFilterNode> GetColumnFilterNode(const ColumnIndex &column_index, const Expression &expr,
+	unique_ptr<DuckLakeFilterNode> GetColumnFilterNode(column_t column_id, const Expression &expr,
 	                                                   const LogicalType &column_type) const;
 	//! Record the leaves of a node as single-column filters
 	void AddFilterNodeToPushdownInfo(FilterPushdownInfo &pushdown_info, DuckLakeFilterNode &node) const;
 	//! Build a leaf node directly from an expression that constrains a single column
 	unique_ptr<DuckLakeFilterNode> GetExpressionFilterNode(MultiFilePushdownInfo &info, const Expression &expr) const;
-	//! The field a scan column reads: the column, or the field of a pushed-down extract. nullptr without stats.
-	optional_ptr<const DuckLakeFieldId> GetScanField(const ColumnIndex &column_index) const;
 	//! Resolve the field a filter subject reads, descending into nested fields
-	optional_ptr<const DuckLakeFieldId> ResolveFilterField(const Expression &subject,
-	                                                       const ColumnIndex &column_index) const;
+	optional_ptr<const DuckLakeFieldId> ResolveFilterField(const Expression &subject, column_t column_id) const;
 	//! Reduce an expression to per-column filters using the FilterCombiner
 	unique_ptr<DuckLakeFilterNode> CombineFilterNode(ClientContext &context, MultiFilePushdownInfo &info,
 	                                                 const Expression &expr) const;

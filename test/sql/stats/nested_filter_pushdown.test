@@ -68,22 +68,7 @@ SELECT COUNT(*) FROM ducklake.t WHERE st.c IS NULL;
 ----
 300
 
-# the files lack the field, so with a NULL default they are skipped when opened
 query II
 EXPLAIN ANALYZE SELECT COUNT(*) FROM ducklake.t WHERE st.c = 5;
-----
-analyzed_plan	<REGEX>:.*Total Files Skipped: 3.*
-
-# with a default, the field holds it in files that lack it, so nothing may be pruned
-statement ok
-ALTER TABLE ducklake.t ADD COLUMN st.d INTEGER DEFAULT 5;
-
-query I
-SELECT COUNT(*) FROM ducklake.t WHERE st.d = 5;
-----
-300
-
-query II
-EXPLAIN ANALYZE SELECT COUNT(*) FROM ducklake.t WHERE st.d = 5;
 ----
 analyzed_plan	<REGEX>:.*Total Files Read: 3.*

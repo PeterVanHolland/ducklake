@@ -1,5 +1,5 @@
 # name: test/sql/types/variant_field_pushdown.test
-# description: Reading one field of a VARIANT or STRUCT column reads only that field, from files and inlined rows
+# description: Reading one field of a VARIANT column reads only that field, from files and inlined rows
 # group: [types]
 
 require ducklake
@@ -144,15 +144,25 @@ SELECT count(*) FILTER (WHERE s.key = 'key-42'), sum(s.n) FROM dl.t
 ----
 100	4999950003
 
-# a filter on a cast of a field is not compared with the field's stats, where '5' > '12'
+# a filter on a cast of a field is not compared with the column's stats
 statement ok
-CREATE TABLE dl.c(s STRUCT(n INTEGER))
+CREATE TABLE dl.c(v VARIANT)
 
 statement ok
-INSERT INTO dl.c SELECT {'n': i} FROM range(2, 13) t(i)
+INSERT INTO dl.c SELECT {'n': i}::VARIANT FROM range(2, 13) t(i)
 
 query I
-SELECT count(*) FROM dl.c WHERE s.n::VARCHAR = '5'
+SELECT count(*) FROM dl.c WHERE v.n::VARCHAR = '5'
+----
+1
+
+query I
+SELECT count(*) FROM dl.c WHERE v.x IS NULL
+----
+11
+
+query I
+SELECT count(*) FROM dl.c WHERE v.n::INTEGER > 11
 ----
 1
 
@@ -204,6 +214,45 @@ SELECT v.k::VARCHAR, v.n::INTEGER, s.k, s.n FROM dl.inl ORDER BY s.n
 a	1	a	1
 b	2	b	2
 c	3	c	3
+
+# a cast in the extract does not see inlined rows deleted in the transaction
+statement ok
+CREATE TABLE dl.d(id INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO dl.d VALUES (0, {'x': 'oops'}::VARIANT), (1, {'x': '42'}::VARIANT)
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM dl.d WHERE id = 0
+
+query II
+SELECT rowid, v.x::INTEGER FROM dl.d
+----
+1	42
+
+statement ok
+INSERT INTO dl.d VALUES (2, {'x': 'bad'}::VARIANT), (3, {'x': '7'}::VARIANT)
+
+statement ok
+DELETE FROM dl.d WHERE id = 2
+
+query III
+SELECT id, rowid, v.x::INTEGER FROM dl.d ORDER BY id
+----
+1	1	42
+3	1000000000000000001	7
+
+statement ok
+COMMIT
+
+query II
+SELECT id, v.x::INTEGER FROM dl.d ORDER BY id
+----
+1	42
+3	7
 
 # inlined rows next to a data file
 statement ok

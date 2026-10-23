@@ -1,0 +1,49 @@
+# name: benchmark/micro/read/added_files_cold_attach.benchmark
+# description: Attach a lake with 4096 added DOUBLE and TIMESTAMP files and list its tables, three times
+# group: [read]
+
+name Added Files Cold Attach
+group micro
+subgroup read
+
+require ducklake
+
+require parquet
+
+cache_file added_files_cold_attach_ready.marker
+
+# One single-row file per partition, added with ducklake_add_data_files
+load
+COPY (SELECT i AS part, i * 0.5 AS val, TIMESTAMP '2024-01-01' + INTERVAL (i) SECOND AS ts FROM range(4096) t(i))
+TO '${BENCHMARK_DIR}/added_files_cold_attach_source' (FORMAT PARQUET, PARTITION_BY (part), WRITE_PARTITION_COLUMNS true, OVERWRITE);
+@create added_files_cold_attach
+@attach added_files_cold_attach AS lake (DATA_PATH '${BENCHMARK_DIR}/added_files_cold_attach_files')
+CREATE TABLE lake.added (part BIGINT, val DOUBLE, ts TIMESTAMP);
+CALL ducklake_add_data_files('lake', 'added', '${BENCHMARK_DIR}/added_files_cold_attach_source/**/*.parquet');
+DETACH lake;
+@seal added_files_cold_attach
+COPY (SELECT 1) TO '${BENCHMARK_DIR}/added_files_cold_attach_ready.marker' (FORMAT CSV);
+@attach added_files_cold_attach AS lake
+
+reload
+@attach added_files_cold_attach AS lake
+
+# Every writable attach of a v1.1 catalog with added files looks for the bounds that a migration left
+run
+SELECT count(*), sum(column_count) FROM duckdb_tables() WHERE database_name = 'lake';
+DETACH lake;
+@attach added_files_cold_attach AS lake
+SELECT count(*), sum(column_count) FROM duckdb_tables() WHERE database_name = 'lake';
+DETACH lake;
+@attach added_files_cold_attach AS lake
+SELECT count(*), sum(column_count) FROM duckdb_tables() WHERE database_name = 'lake';
+
+# Reattaching gives every run a cold catalog
+cleanup
+DETACH lake;
+@attach added_files_cold_attach AS lake
+
+result_query II
+SELECT * FROM __answer
+----
+1	3

@@ -1110,18 +1110,17 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFiel
 	return make_uniq<DuckLakeFieldId>(std::move(column_data), source_id.Name(), target);
 }
 
-static bool SortReferencesColumn(const DuckLakeSort &sort_data, const Identifier &column_name) {
-	bool references = false;
-	for (auto &order : DuckLakeCompactor::ParseSortOrders(sort_data)) {
-		ParsedExpressionIterator::VisitExpression<ColumnRefExpression>(
-		    *order.expression, [&](const ColumnRefExpression &colref) {
-			    if (!colref.IsQualified() &&
-			        StringUtil::CIEquals(colref.GetColumnName().GetIdentifierName(), column_name.GetIdentifierName())) {
-				    references = true;
-			    }
-		    });
+//! Bind sort keys as writes do, returning the error when they do not bind
+static string GetSortBindError(ClientContext &context, SchemaCatalogEntry &schema, const ColumnList &columns,
+                               const Identifier &table_name, const vector<OrderByNode> &orders) {
+	try {
+		auto binder = Binder::CreateBinder(context);
+		DuckLakeCompactor::BindSortOrders(*binder, schema, columns, table_name, TableIndex(0), orders);
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		return error.RawMessage();
 	}
-	return references;
+	return string();
 }
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
@@ -1144,17 +1143,16 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 	ValidateAddedFieldsCanSkipStats(field_id, *new_field_id);
 	col.SetType(new_field_id->Type());
 	auto sort_data = GetSortData();
-	if (sort_data && SortReferencesColumn(*sort_data, col.Name())) {
-		// writes sort by the expressions of the sort keys, which have to bind on the new type too
-		try {
-			auto binder = Binder::CreateBinder(context);
-			DuckLakeCompactor::BindSortOrders(*binder, ParentSchema(), table_info.columns, name, TableIndex(0),
-			                                  DuckLakeCompactor::ParseSortOrders(*sort_data));
-		} catch (std::exception &ex) {
-			ErrorData error(ex);
-			throw BinderException("Cannot change the type of column \"%s\" to %s: a sort key of the table cannot "
-			                      "be computed for it (%s). Use RESET SORTED BY first",
-			                      col.Name().GetIdentifierName(), info.target_type, error.RawMessage());
+	if (sort_data) {
+		// writes sort by the expressions of the sort keys, so a type change must not keep them from binding
+		auto orders = DuckLakeCompactor::ParseSortOrders(*sort_data);
+		if (GetSortBindError(context, ParentSchema(), GetColumns(), name, orders).empty()) {
+			auto error = GetSortBindError(context, ParentSchema(), table_info.columns, name, orders);
+			if (!error.empty()) {
+				throw BinderException("Cannot change the type of column \"%s\" to %s: a sort key of the table cannot "
+				                      "be computed for it (%s). Use RESET SORTED BY first",
+				                      col.Name().GetIdentifierName(), info.target_type, error);
+			}
 		}
 	}
 	auto new_default = new_field_id->GetDefault();

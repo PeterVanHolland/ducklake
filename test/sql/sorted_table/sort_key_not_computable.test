@@ -93,3 +93,33 @@ query II
 SELECT n, s FROM lake.u
 ----
 66	x
+
+# also for a sort key that refers to the column by position or as a method receiver
+statement ok
+CREATE TABLE lake.p (n INTEGER) SORTED BY (chr(#1))
+
+statement error
+ALTER TABLE lake.p ALTER COLUMN n TYPE BIGINT
+----
+sort key
+
+statement ok
+CREATE TABLE lake.m (n INTEGER) SORTED BY (n.chr())
+
+statement error
+ALTER TABLE lake.m ALTER COLUMN n TYPE BIGINT
+----
+sort key
+
+# a sort key that no longer binds for another reason does not hold up the type change of a column
+statement ok
+CREATE MACRO lake.q_key(x) AS x
+
+statement ok
+CREATE TABLE lake.q (n INTEGER, s VARCHAR) SORTED BY (q_key(s))
+
+statement ok
+DROP MACRO lake.q_key
+
+statement ok
+ALTER TABLE lake.q ALTER COLUMN n TYPE BIGINT

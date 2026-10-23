@@ -10,6 +10,7 @@
 #include "storage/ducklake_schema_entry.hpp"
 #include "storage/ducklake_table_entry.hpp"
 #include "storage/ducklake_insert.hpp"
+#include "common/ducklake_types.hpp"
 #include "storage/ducklake_multi_file_reader.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
@@ -507,6 +508,23 @@ WHERE del.begin_snapshot <= {SNAPSHOT_ID}
 //===--------------------------------------------------------------------===//
 // Function
 //===--------------------------------------------------------------------===//
+//! The reason the rows of an inlined table cannot be written to Parquet, or an empty string
+static string GetFlushObstacle(DuckLakeCatalog &catalog, DuckLakeTransaction &transaction,
+                               DuckLakeTableEntry &table_entry, const DuckLakeInlinedTableInfo &inlined_table) {
+	auto table = catalog.GetTableAtSchemaVersion(transaction, table_entry.GetTableId(), inlined_table.schema_version);
+	if (!table) {
+		return string();
+	}
+	for (auto &col : table->GetColumns().Logical()) {
+		if (DuckLakeTypes::HasNestedVariant(col.Type())) {
+			return StringUtil::Format("column \"%s\" of type %s has a VARIANT inside, which cannot be written to "
+			                          "Parquet yet",
+			                          col.Name().GetIdentifierName(), col.Type());
+		}
+	}
+	return string();
+}
+
 static unique_ptr<LogicalOperator> FlushInlinedDataBind(ClientContext &context, TableFunctionBindInput &input,
                                                         TableIndex bind_index, vector<Identifier> &return_names) {
 	auto &ducklake_catalog = DuckLakeBaseMetadataFunction::GetCatalog(context, input);
@@ -522,6 +540,15 @@ static unique_ptr<LogicalOperator> FlushInlinedDataBind(ClientContext &context, 
 			continue;
 		}
 		for (auto &inlined_table : table_entry.GetInlinedDataTables(transaction, transaction.GetSnapshot())) {
+			auto flush_obstacle = GetFlushObstacle(ducklake_catalog, transaction, table_entry, inlined_table);
+			if (!flush_obstacle.empty()) {
+				if (table.empty()) {
+					// the rows stay inlined, so that they do not keep the other tables from being flushed
+					continue;
+				}
+				throw NotImplementedException("Cannot flush the inlined data of table \"%s\": %s",
+				                              table_entry.name.GetIdentifierName(), flush_obstacle);
+			}
 			DuckLakeDataFlusher flusher(context, ducklake_catalog, transaction, *input.binder, table_entry.GetTableId(),
 			                            inlined_table);
 			flushes.push_back(flusher.GenerateFlushCommand());

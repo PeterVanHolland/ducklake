@@ -117,7 +117,7 @@ statement ok
 ALTER TABLE config_lake.merged ALTER COLUMN f TYPE DOUBLE
 
 statement ok
-INSERT INTO config_lake.merged VALUES (0.1000000001)
+INSERT INTO config_lake.merged VALUES (0.0123456789012), (0.1000000001)
 
 statement ok
 CREATE TABLE config_lake.large (f FLOAT)
@@ -134,7 +134,7 @@ WHERE data_file_id = (SELECT min(data_file_id) FROM config_meta.ducklake_data_fi
 	WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'merged'))
 
 statement ok
-UPDATE config_meta.ducklake_table_column_stats SET min_value = '0.1', max_value = '0.1000000001'
+UPDATE config_meta.ducklake_table_column_stats SET min_value = '0.0123456789012', max_value = '0.1000000001'
 WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'merged')
 
 statement ok

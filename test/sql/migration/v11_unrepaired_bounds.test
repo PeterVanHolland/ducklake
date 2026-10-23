@@ -94,6 +94,15 @@ tf	1	true
 ts	1	true
 tz	1	true
 
+# the checked rows get exactness flags, so the next attach skips them
+query II
+SELECT tbl.table_name, stats.min_is_exact FROM meta.ducklake_file_column_stats stats
+JOIN meta.ducklake_table tbl USING (table_id) WHERE stats.min_value IS NOT NULL ORDER BY stats.data_file_id, stats.column_id
+----
+r	false
+i2f	false
+dc	NULL
+
 # the same rows on the metadata catalog of the test config
 test-env DUCKLAKE_CONNECTION {TEST_DIR}/v11_unrepaired_bounds_config.db
 
@@ -171,7 +180,21 @@ JOIN config_meta.ducklake_table tbl USING (table_id) WHERE tbl.table_name IN ('r
 r	NULL
 ts	NULL
 
-# two files of the stale bounds compacted into one, after which only the table bounds are stale
+# two files of the stale bounds compacted into one, after which only the table bounds are stale, while another table
+# still has a row that 1.0 wrote
+statement ok
+COPY (SELECT 0.25::DOUBLE AS f) TO '{DATA_PATH}/v11_unrepaired_bounds_other.parquet'
+
+statement ok
+CREATE TABLE config_lake.other (f DOUBLE)
+
+statement ok
+CALL ducklake_add_data_files('config_lake', 'other', '{DATA_PATH}/v11_unrepaired_bounds_other.parquet')
+
+statement ok
+UPDATE config_meta.ducklake_file_column_stats SET min_is_exact = NULL, max_is_exact = NULL
+WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'other')
+
 statement ok
 COPY (SELECT TIMESTAMP_NS '2020-01-01 12:34:56.123456789' AS t) TO '{DATA_PATH}/v11_unrepaired_bounds_c1.parquet'
 

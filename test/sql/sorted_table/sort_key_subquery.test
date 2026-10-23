@@ -47,27 +47,22 @@ SELECT i FROM ducklake.t ORDER BY i
 statement ok
 CREATE TABLE ducklake.w (i INTEGER)
 
-statement ok
-ALTER TABLE ducklake.w SET SORTED BY (row_number() OVER ())
-
+# sort keys that no write can evaluate are rejected when they are set
 statement error
-INSERT INTO ducklake.w VALUES (1)
+ALTER TABLE ducklake.w SET SORTED BY (row_number() OVER ())
 ----
 window functions are not allowed in ORDER_BY
 
 statement ok
+INSERT INTO ducklake.w VALUES (1)
+
+statement ok
 CREATE TABLE ducklake.s (i INTEGER)
 
-statement ok
-ALTER TABLE ducklake.s SET SORTED BY (i + (SELECT 0))
-
 statement error
-INSERT INTO ducklake.s VALUES (1)
+ALTER TABLE ducklake.s SET SORTED BY (i + (SELECT 0))
 ----
-Binder Error
-
-statement ok
-ALTER TABLE ducklake.s RESET SORTED BY
+subqueries are not allowed in ORDER_BY
 
 statement ok
 INSERT INTO ducklake.s VALUES (1)

@@ -338,7 +338,7 @@ SELECT id FROM lake.mc
 3
 1
 
-# a subquery in the sort key is rejected when the files are merged
+# a subquery in the sort key is rejected when it is set
 statement ok
 CREATE TABLE lake.sq (id BIGINT, v BIGINT, other BIGINT)
 
@@ -351,8 +351,23 @@ INSERT INTO lake.sq VALUES (3, 20, 0)
 statement ok
 ALTER TABLE lake.sq RENAME COLUMN other TO other2
 
-statement ok
+statement error
 ALTER TABLE lake.sq SET SORTED BY ((SELECT v))
+----
+subqueries are not allowed in ORDER_BY
+
+# and when the files are merged, for a macro that expands to one since the sort key was set
+statement ok
+CREATE MACRO lake.sq_key(x) AS x
+
+statement ok
+ALTER TABLE lake.sq SET SORTED BY (sq_key(v))
+
+statement ok
+DROP MACRO lake.sq_key
+
+statement ok
+CREATE MACRO lake.sq_key(x) AS (SELECT x)
 
 statement error
 SELECT files_processed, files_created FROM ducklake_merge_adjacent_files('lake', 'sq')
@@ -378,7 +393,16 @@ statement ok
 ALTER TABLE lake.nq ALTER COLUMN v TYPE BIGINT
 
 statement ok
-ALTER TABLE lake.nq SET SORTED BY (((SELECT v) = ANY (SELECT 10)), id)
+CREATE MACRO lake.nq_key(x) AS x = 10
+
+statement ok
+ALTER TABLE lake.nq SET SORTED BY (nq_key(v), id)
+
+statement ok
+DROP MACRO lake.nq_key
+
+statement ok
+CREATE MACRO lake.nq_key(x) AS ((SELECT x) = ANY (SELECT 10))
 
 statement error
 SELECT files_processed, files_created FROM ducklake_merge_adjacent_files('lake', 'nq')
@@ -403,7 +427,16 @@ statement ok
 ALTER TABLE lake.uq DROP COLUMN a
 
 statement ok
-ALTER TABLE lake.uq SET SORTED BY (v + (SELECT 0))
+CREATE MACRO lake.uq_key(x) AS x
+
+statement ok
+ALTER TABLE lake.uq SET SORTED BY (uq_key(v))
+
+statement ok
+DROP MACRO lake.uq_key
+
+statement ok
+CREATE MACRO lake.uq_key(x) AS x + (SELECT 0)
 
 statement error
 SELECT files_processed, files_created FROM ducklake_merge_adjacent_files('lake', 'uq')

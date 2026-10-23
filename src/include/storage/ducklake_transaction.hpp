@@ -106,6 +106,7 @@ public:
 	void Clear();
 	bool HasChanges() const;
 	LocalTableChangeIterationHelper Changes() const;
+	//! Removes the written files without throwing, so the error of the caller is kept
 	void CleanupFiles(DatabaseInstance &db);
 	void CleanupFiles(ClientContext &context, TableIndex table_id);
 	void GetWrittenFiles(vector<string> &result) const;
@@ -344,7 +345,7 @@ public:
 	void RunCommitLoop(DuckLakeSnapshot transaction_snapshot, const TransactionChangeInformation &transaction_changes,
 	                   const DuckLakeRetryConfig &retry_config);
 	void ApplyServerSideCommit(idx_t schema_version);
-	//! Removes the files that this transaction wrote
+	//! Removes the files that this transaction wrote, without throwing
 	void CleanupFiles();
 	//! Post-commit cleanup of empty inlined-data tables superseded by later schema versions.
 	void DropEmptySupersededInlinedTablesClientSide();

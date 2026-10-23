@@ -1469,6 +1469,50 @@ bool DuckLakeMetadataManager::ResultHasColumn(QueryResult &result, const string 
 	return false;
 }
 
+//! Types of which DuckDB 1.5.6 stored the bounds of an added file in the type of the file
+static const LogicalTypeId STALE_BOUND_TYPES[] = {LogicalTypeId::DOUBLE, LogicalTypeId::TIMESTAMP,
+                                                  LogicalTypeId::TIMESTAMP_MS, LogicalTypeId::TIMESTAMP_SEC,
+                                                  LogicalTypeId::TIMESTAMP_TZ};
+
+static bool MayHaveStaleBounds(const LogicalType &type) {
+	for (auto &id : STALE_BOUND_TYPES) {
+		if (type.id() == id) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! The snapshot that retyped a column to DOUBLE, DuckDB 1.5.6 kept the bounds of the files up to it
+static string DoubleRetypeSnapshotSql(const string &prefix, const string &table_id, const string &column_id) {
+	return StringUtil::Format(
+	    "(SELECT MIN(retyped.begin_snapshot) FROM %s.ducklake_column AS retyped WHERE retyped.table_id = %s AND "
+	    "retyped.column_id = %s AND retyped.column_type = 'float64' AND EXISTS (SELECT 1 FROM %s.ducklake_column AS "
+	    "original WHERE original.table_id = %s AND original.column_id = %s AND original.column_type <> 'float64'))",
+	    prefix, table_id, column_id, prefix, table_id, column_id);
+}
+
+//! Without the v1.1 metadata, the table bounds of columns with such files may not hold
+static string TableColumnBoundSql(const string &bound, bool v1_1_metadata) {
+	if (v1_1_metadata) {
+		return bound;
+	}
+	string table_id = "ducklake_table_column_stats.table_id";
+	string column_id = "ducklake_table_column_stats.column_id";
+	vector<string> type_names;
+	for (auto &id : STALE_BOUND_TYPES) {
+		type_names.push_back(SQLString::ToString(DuckLakeTypes::ToString(LogicalType(id))));
+	}
+	// a column mapping marks a table with added files
+	auto added_files = StringUtil::Format(
+	    "EXISTS (SELECT 1 FROM {METADATA_CATALOG}.ducklake_column_mapping AS mapping WHERE mapping.table_id = %s) AND "
+	    "EXISTS (SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS bound_col WHERE bound_col.table_id = %s AND "
+	    "bound_col.column_id = %s AND bound_col.column_type IN (%s))",
+	    table_id, table_id, column_id, StringUtil::Join(type_names, ", "));
+	return StringUtil::Format("CASE WHEN (%s) OR %s IS NOT NULL THEN NULL ELSE %s END AS %s", added_files,
+	                          DoubleRetypeSnapshotSql("{METADATA_CATALOG}", table_id, column_id), bound, bound);
+}
+
 static string TableStatsQuery(const string &select_list, bool include_column_stats) {
 	auto query = "\nSELECT " + select_list + "\nFROM {METADATA_CATALOG}.ducklake_table_stats\n";
 	if (include_column_stats) {
@@ -1481,9 +1525,10 @@ static string TableStatsQuery(const string &select_list, bool include_column_sta
 }
 
 string DuckLakeMetadataManager::GlobalTableStatsQuery(bool include_exactness) {
-	string select_list =
-	    "table_id, column_id, record_count, next_row_id, file_size_bytes, contains_null, contains_nan, min_value, "
-	    "max_value, extra_stats";
+	auto select_list =
+	    "table_id, column_id, record_count, next_row_id, file_size_bytes, contains_null, contains_nan, " +
+	    TableColumnBoundSql("min_value", include_exactness) + ", " +
+	    TableColumnBoundSql("max_value", include_exactness) + ", extra_stats";
 	if (include_exactness) {
 		select_list += ", min_is_exact, max_is_exact";
 	}
@@ -2015,6 +2060,18 @@ string DuckLakeMetadataManager::GenerateFileColumnStatsCTEBody(const CTERequirem
 			    ", CASE WHEN value_count = 0 AND null_count = 0 THEN NULL ELSE %s END AS %s", stat, stat);
 			continue;
 		}
+		if (req.may_have_stale_bounds && (stat == "min_value" || stat == "max_value")) {
+			// the bounds of added files and of files from before a retype to DOUBLE
+			auto stale_files = StringUtil::Format(
+			    "SELECT data_file_id FROM %s.ducklake_data_file WHERE table_id = %d AND (mapping_id IS NOT NULL OR "
+			    "begin_snapshot <= %s)",
+			    metadata_table_prefix, table_id.index,
+			    DoubleRetypeSnapshotSql(metadata_table_prefix, to_string(table_id.index),
+			                            to_string(req.column_field_index)));
+			select_list += StringUtil::Format(", CASE WHEN data_file_id IN (%s) THEN NULL ELSE %s END AS %s",
+			                                  stale_files, stat, stat);
+			continue;
+		}
 		select_list += ", " + stat;
 	}
 	return StringUtil::Format("  SELECT %s\n"
@@ -2277,6 +2334,12 @@ string DuckLakeMetadataManager::GenerateFileListQuery(DuckLakeTableEntry &table,
 		entry->second.referenced_stats.insert("min_value");
 		entry->second.referenced_stats.insert("max_value");
 		entry->second.referenced_stats.insert("contains_nan");
+	}
+	if (!transaction.GetCatalog().SupportsV1_1Metadata()) {
+		for (auto &entry : filter_result.required_ctes) {
+			auto field = table.GetFieldData().GetByFieldIndex(FieldIndex(entry.first));
+			entry.second.may_have_stale_bounds = field && MayHaveStaleBounds(field->Type());
+		}
 	}
 	string query = GenerateCTESectionFromRequirements(filter_result.required_ctes, table_id, metadata_table_prefix);
 	// one join per column serves both the filter conditions and the runtime stats below
@@ -4762,8 +4825,8 @@ SELECT
     file_size_bytes,
     contains_null,
     contains_nan,
-    min_value,
-    max_value,
+    )" + TableColumnBoundSql("min_value", include_exactness) +
+	       ",\n    " + TableColumnBoundSql("max_value", include_exactness) + R"(,
     extra_stats)" +
 	       stats_arm_columns + R"(
 FROM {METADATA_CATALOG}.ducklake_table_stats

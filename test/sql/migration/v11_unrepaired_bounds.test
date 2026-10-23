@@ -147,6 +147,30 @@ CREATE TABLE config_lake.tz (t TIMESTAMPTZ)
 statement ok
 CALL ducklake_add_data_files('config_lake', 'tz', '{DATA_PATH}/v11_unrepaired_bounds_tz.parquet')
 
+statement ok
+DETACH config_lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS config_lake (DATA_PATH '{DATA_PATH}/v11_unrepaired_bounds_files', METADATA_CATALOG 'config_meta')
+
+query II
+SELECT (SELECT count(*) FROM config_lake.tz WHERE t = TIMESTAMPTZ '2020-01-01 12:34:56.123456+00'), (SELECT count(*) FROM config_meta.ducklake_file_column_stats
+	WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'tz') AND min_value IS NOT NULL)
+----
+1	1
+
+query IIII
+SELECT (SELECT count(*) FROM config_lake.ts WHERE t = TIMESTAMP '2020-01-01 12:34:56.123457'), (SELECT max(t) FROM config_lake.ts), (SELECT count(*) FROM config_lake.r WHERE f = 0.10000000149011612), (SELECT min(f) FROM config_lake.r)
+----
+1	2020-01-01 12:34:56.123457	1	0.10000000149011612
+
+query II
+SELECT tbl.table_name, stats.min_value FROM config_meta.ducklake_file_column_stats stats
+JOIN config_meta.ducklake_table tbl USING (table_id) WHERE tbl.table_name IN ('r', 'ts') ORDER BY tbl.table_name
+----
+r	NULL
+ts	NULL
+
 # two files of the stale bounds compacted into one, after which only the table bounds are stale
 statement ok
 COPY (SELECT TIMESTAMP_NS '2020-01-01 12:34:56.123456789' AS t) TO '{DATA_PATH}/v11_unrepaired_bounds_c1.parquet'
@@ -190,21 +214,3 @@ query II
 SELECT (SELECT count(*) FROM config_lake.compacted WHERE t = TIMESTAMP '2020-01-01 12:34:56.123457'), (SELECT max(t) FROM config_lake.compacted)
 ----
 2	2020-01-01 12:34:56.123457
-
-query II
-SELECT (SELECT count(*) FROM config_lake.tz WHERE t = TIMESTAMPTZ '2020-01-01 12:34:56.123456+00'), (SELECT count(*) FROM config_meta.ducklake_file_column_stats
-	WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'tz') AND min_value IS NOT NULL)
-----
-1	1
-
-query IIII
-SELECT (SELECT count(*) FROM config_lake.ts WHERE t = TIMESTAMP '2020-01-01 12:34:56.123457'), (SELECT max(t) FROM config_lake.ts), (SELECT count(*) FROM config_lake.r WHERE f = 0.10000000149011612), (SELECT min(f) FROM config_lake.r)
-----
-1	2020-01-01 12:34:56.123457	1	0.10000000149011612
-
-query II
-SELECT tbl.table_name, stats.min_value FROM config_meta.ducklake_file_column_stats stats
-JOIN config_meta.ducklake_table tbl USING (table_id) WHERE tbl.table_name IN ('r', 'ts') ORDER BY tbl.table_name
-----
-r	NULL
-ts	NULL

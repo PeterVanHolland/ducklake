@@ -242,9 +242,15 @@ public:
 
 	virtual void ClearCache() {
 	}
+	//! Whether a table that a commit creates is only found once the cache is cleared
+	virtual bool NewTablesRequireCacheClear() const {
+		return true;
+	}
 
 	void MarkPendingCacheClear() {
-		pending_cache_clear = true;
+		if (NewTablesRequireCacheClear()) {
+			pending_cache_clear = true;
+		}
 	}
 	bool TakePendingCacheClear() {
 		bool pending = pending_cache_clear;

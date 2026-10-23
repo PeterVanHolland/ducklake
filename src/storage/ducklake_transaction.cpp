@@ -2421,6 +2421,26 @@ string DuckLakeTransaction::GenerateUUID() const {
 	return GenerateUUIDv7();
 }
 
+DuckLakeViewEntry &DuckLakeTransaction::GetTransactionView(DuckLakeViewEntry &view) {
+	if (catalog_version == 0 || view.IsTransactionLocal()) {
+		return view;
+	}
+	lock_guard<mutex> guard(transaction_views_lock);
+	if (transaction_views_version != catalog_version) {
+		// a later schema change can change the binding again
+		for (auto &entry : transaction_views) {
+			outdated_transaction_views.push_back(std::move(entry.second));
+		}
+		transaction_views.clear();
+		transaction_views_version = catalog_version;
+	}
+	auto &copy = transaction_views[&view];
+	if (!copy) {
+		copy = view.CopyUnbound();
+	}
+	return *copy;
+}
+
 idx_t DuckLakeTransaction::GetCatalogVersion() {
 	if (catalog_version > 0) {
 		return catalog_version;

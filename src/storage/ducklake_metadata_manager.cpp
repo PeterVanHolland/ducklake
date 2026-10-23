@@ -500,6 +500,20 @@ bool DuckLakeMetadataManager::HasV1_1Additions() {
 	return !Query(probe)->HasError();
 }
 
+//! The row of a struct field that DuckDB 1.5.6 dropped the defaults from in a later rename
+static string RenamedFieldOriginalSql() {
+	// the defaults of a struct field cannot change, so a later row of the field without them lost them in a rename
+	return R"(renamed.parent_column IS NOT NULL AND renamed.initial_default IS NULL
+AND original.table_id = renamed.table_id AND original.column_id = renamed.column_id
+AND original.initial_default IS NOT NULL AND original.begin_snapshot < renamed.begin_snapshot
+AND NOT EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column later
+	WHERE later.table_id = original.table_id AND later.column_id = original.column_id
+	AND later.initial_default IS NOT NULL AND later.begin_snapshot > original.begin_snapshot
+	AND later.begin_snapshot < renamed.begin_snapshot
+))";
+}
+
 void DuckLakeMetadataManager::MigrateInlinedSchemaVersions() {
 	// the commit of an inlined table is only known while the snapshot before that commit exists
 	auto result = Execute(R"(
@@ -526,22 +540,13 @@ AND NOT EXISTS (
 }
 
 void DuckLakeMetadataManager::MigrateRenamedFieldDefaults() {
-	// the defaults of a struct field cannot change, so a later row of the field without them lost them in a rename
 	auto result = Execute(R"(
 UPDATE {METADATA_CATALOG}.ducklake_column AS renamed
 SET initial_default = original.initial_default, default_value = original.default_value,
 	default_value_type = original.default_value_type, default_value_dialect = original.default_value_dialect
 FROM {METADATA_CATALOG}.ducklake_column AS original
-WHERE renamed.parent_column IS NOT NULL AND renamed.initial_default IS NULL
-AND original.table_id = renamed.table_id AND original.column_id = renamed.column_id
-AND original.initial_default IS NOT NULL AND original.begin_snapshot < renamed.begin_snapshot
-AND NOT EXISTS (
-	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column later
-	WHERE later.table_id = original.table_id AND later.column_id = original.column_id
-	AND later.initial_default IS NOT NULL AND later.begin_snapshot > original.begin_snapshot
-	AND later.begin_snapshot < renamed.begin_snapshot
-);
-)");
+WHERE )" + RenamedFieldOriginalSql() +
+	                      ";");
 	result->ThrowIfError("Failed to restore the defaults of renamed struct fields while migrating to v1.1: ");
 }
 
@@ -1141,6 +1146,22 @@ WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_s
 	    {"value", "value"},
 	};
 
+	string column_source = "{METADATA_CATALOG}.ducklake_column";
+	if (!supports_v1_1_metadata) {
+		// the defaults that the v1.1 migration restores
+		string restored;
+		for (auto field : {"initial_default", "default_value", "default_value_type", "default_value_dialect"}) {
+			restored +=
+			    StringUtil::Format(", CASE WHEN original.column_id IS NULL THEN renamed.%s ELSE original.%s END AS %s",
+			                       field, field, field);
+		}
+		column_source = "(SELECT renamed.* EXCLUDE (initial_default, default_value, default_value_type, "
+		                "default_value_dialect)" +
+		                restored +
+		                " FROM {METADATA_CATALOG}.ducklake_column AS renamed LEFT JOIN "
+		                "{METADATA_CATALOG}.ducklake_column AS original ON " +
+		                RenamedFieldOriginalSql() + ") AS restored";
+	}
 	// load the table information
 	result = query_executor(snapshot,
 	                        StringUtil::Format(R"(
@@ -1167,14 +1188,14 @@ SELECT schema_id, tbl.table_id, table_uuid::VARCHAR, table_name,
 FROM {METADATA_CATALOG}.ducklake_table tbl
 LEFT JOIN (
 	SELECT *
-	FROM {METADATA_CATALOG}.ducklake_column
+	FROM %s
 	WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
 ) col USING (table_id)
 WHERE {SNAPSHOT_ID} >= tbl.begin_snapshot AND ({SNAPSHOT_ID} < tbl.end_snapshot OR tbl.end_snapshot IS NULL)
 ORDER BY table_id ASC, parent_column ASC NULLS FIRST, column_order ASC
 )",
 	                                           ListAggregation(TAG_FIELDS), ListAggregation(INLINED_DATA_TABLES_FIELDS),
-	                                           ListAggregation(TAG_FIELDS)));
+	                                           ListAggregation(TAG_FIELDS), column_source));
 	result->ThrowIfError("Failed to get table information from DuckLake: ");
 	const idx_t COLUMN_INDEX_START = 8;
 	auto &tables = catalog.tables;

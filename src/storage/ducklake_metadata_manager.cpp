@@ -4858,6 +4858,7 @@ unique_ptr<DuckLakeSnapshot> DuckLakeMetadataManager::GetSnapshot(BoundAtClause 
                                                                   idx_t newest_snapshot_id) {
 	auto &unit = at_clause.Unit();
 	auto &val = at_clause.GetValue();
+	DuckLakeTableFunctionUtil::VerifySnapshotIdentifier(val);
 	unique_ptr<QueryResult> result;
 	const string timestamp_order = bound == SnapshotBound::LOWER_BOUND ? "ASC" : "DESC";
 	const string timestamp_condition = bound == SnapshotBound::LOWER_BOUND ? ">" : "<";

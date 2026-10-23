@@ -562,7 +562,7 @@ static string FinerTimestampBoundSql(const string &bound) {
 	                          bound);
 }
 
-void DuckLakeMetadataManager::MigrateRetypedBounds() {
+void DuckLakeMetadataManager::MigrateRetypedBounds(bool legacy_rows) {
 	// older versions stored the bounds of added files in the type of the file and kept the bounds of a file across a
 	// type change, while the column history does not show the type of every file, so those bounds become unknown
 	auto column_has_type = [](const string &types) {
@@ -587,37 +587,86 @@ void DuckLakeMetadataManager::MigrateRetypedBounds() {
 	auto float_column = column_has_type("'float64'");
 	auto timestamp_column = column_has_type("'timestamp', 'timestamp_ms', 'timestamp_s'");
 	auto timestamptz_column = column_has_type("'timestamptz'");
+	auto float_bounds = StringUtil::Format("%s AND (%s OR %s) AND (%s OR %s)", float_column, retyped, added_file,
+	                                       FloatBoundSql("stats.min_value"), FloatBoundSql("stats.max_value"));
+	auto timestamp_bounds =
+	    StringUtil::Format("%s AND %s AND (%s OR %s)", timestamp_column, added_file,
+	                       FinerTimestampBoundSql("stats.min_value"), FinerTimestampBoundSql("stats.max_value"));
+	// the release dropped the nanoseconds of these bounds
+	auto timestamptz_bounds = StringUtil::Format(
+	    "%s AND %s AND (stats.min_value IS NOT NULL OR stats.max_value IS NOT NULL)", timestamptz_column, added_file);
+	// a 1.1 catalog only keeps such bounds in the rows that 1.0 wrote, which have no exactness flags
+	auto file_rows = legacy_rows ? string(" AND stats.min_is_exact IS NULL AND stats.max_is_exact IS NULL") : string();
 	string query;
+	if (legacy_rows) {
+		auto probe = Query(StringUtil::Format("SELECT 1 FROM {METADATA_CATALOG}.ducklake_file_column_stats AS stats "
+		                                      "WHERE ((%s) OR (%s) OR (%s))%s LIMIT 1",
+		                                      float_bounds, timestamp_bounds, timestamptz_bounds, file_rows));
+		probe->ThrowIfError("Failed to look for the bounds of retyped columns: ");
+		auto found = probe->Fetch();
+		if (!found || found->size() == 0) {
+			return;
+		}
+		// the table bounds of the columns with such files, before their bounds are cleared
+		query += StringUtil::Format(R"(
+UPDATE {METADATA_CATALOG}.ducklake_table_column_stats AS table_stats SET min_value = NULL, max_value = NULL
+WHERE (table_stats.min_value IS NOT NULL OR table_stats.max_value IS NOT NULL) AND EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_file_column_stats AS stats
+	WHERE stats.table_id = table_stats.table_id AND stats.column_id = table_stats.column_id%s
+	AND ((%s) OR (%s) OR (%s))
+);)",
+		                            file_rows, float_bounds, timestamp_bounds, timestamptz_bounds);
+	}
 	query +=
 	    StringUtil::Format(R"(
 UPDATE {METADATA_CATALOG}.ducklake_file_column_stats AS stats
 SET min_value = CASE WHEN %s THEN NULL ELSE stats.min_value END,
 	max_value = CASE WHEN %s THEN NULL ELSE stats.max_value END
-WHERE %s AND (%s OR %s) AND (%s OR %s);)",
-	                       FloatBoundSql("stats.min_value"), FloatBoundSql("stats.max_value"), float_column, retyped,
-	                       added_file, FloatBoundSql("stats.min_value"), FloatBoundSql("stats.max_value"));
+WHERE %s%s;)",
+	                       FloatBoundSql("stats.min_value"), FloatBoundSql("stats.max_value"), float_bounds, file_rows);
 	query += StringUtil::Format(R"(
 UPDATE {METADATA_CATALOG}.ducklake_file_column_stats AS stats
 SET min_value = CASE WHEN %s THEN NULL ELSE stats.min_value END,
 	max_value = CASE WHEN %s THEN NULL ELSE stats.max_value END
-WHERE %s AND %s AND (%s OR %s);)",
+WHERE %s%s;)",
 	                            FinerTimestampBoundSql("stats.min_value"), FinerTimestampBoundSql("stats.max_value"),
-	                            timestamp_column, added_file, FinerTimestampBoundSql("stats.min_value"),
-	                            FinerTimestampBoundSql("stats.max_value"));
-	// the release dropped the nanoseconds of these bounds
+	                            timestamp_bounds, file_rows);
 	query += StringUtil::Format(R"(
 UPDATE {METADATA_CATALOG}.ducklake_file_column_stats AS stats SET min_value = NULL, max_value = NULL
-WHERE %s AND %s AND (stats.min_value IS NOT NULL OR stats.max_value IS NOT NULL);)",
-	                            timestamptz_column, added_file);
-	// table bounds merged from those files can hide a larger value
-	query += StringUtil::Format(R"(
+WHERE %s%s;)",
+	                            timestamptz_bounds, file_rows);
+	if (!legacy_rows) {
+		// table bounds merged from those files can hide a larger value
+		query += StringUtil::Format(R"(
 UPDATE {METADATA_CATALOG}.ducklake_table_column_stats AS stats SET min_value = NULL, max_value = NULL
 WHERE (stats.min_value IS NOT NULL OR stats.max_value IS NOT NULL)
 AND ((%s AND (%s OR %s)) OR ((%s OR %s) AND %s));)",
-	                            float_column, retyped, table_has_added_file, timestamp_column, timestamptz_column,
-	                            table_has_added_file);
+		                            float_column, retyped, table_has_added_file, timestamp_column, timestamptz_column,
+		                            table_has_added_file);
+	}
 	auto result = Execute(query);
 	result->ThrowIfError("Failed to clear the bounds of retyped columns while migrating to v1.1: ");
+}
+
+void DuckLakeMetadataManager::RepairV10Bounds() {
+	// DuckDB v2.0.0 migrated catalogs to v1.1 without MigrateRetypedBounds, only added files and retyped columns can
+	// hold such bounds
+	auto candidates = Query(R"(
+SELECT 1 FROM {METADATA_CATALOG}.ducklake_column_mapping
+UNION ALL
+SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS retyped
+WHERE retyped.column_type = 'float64' AND EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS original
+	WHERE original.table_id = retyped.table_id AND original.column_id = retyped.column_id
+	AND original.column_type <> 'float64'
+)
+LIMIT 1)");
+	candidates->ThrowIfError("Failed to look for the bounds of retyped columns: ");
+	auto found = candidates->Fetch();
+	if (!found || found->size() == 0) {
+		return;
+	}
+	MigrateRetypedBounds(true);
 }
 
 void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {

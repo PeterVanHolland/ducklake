@@ -329,9 +329,7 @@ unique_ptr<LogicalOperator> DuckLakeDataFlusher::GenerateFlushCommand() {
 	    copy);
 
 	copy->table_index = binder.GenerateTableIndex();
-	copy->batch_size = DEFAULT_ROW_GROUP_SIZE;
 	// a row group of large inlined values is held in memory, so it stays within part of the memory limit
-	copy->batch_size_bytes = DuckLakeInsert::GetRowGroupSizeBytes(copy_input);
 	if (!copy->batch_size_bytes.IsValid()) {
 		copy->batch_size_bytes = BufferManager::GetBufferManager(context).GetMaxMemory() / 8;
 	}

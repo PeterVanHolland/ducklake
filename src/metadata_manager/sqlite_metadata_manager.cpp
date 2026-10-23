@@ -112,13 +112,24 @@ string SQLiteMetadataManager::GenerateFileColumnStatsCTEBody(const CTERequiremen
 	// TEXT values, so parallel scans on the shared connection read them without converting
 	string native_list = "CAST(data_file_id AS TEXT) AS data_file_id";
 	string select_list = "data_file_id::BIGINT AS data_file_id";
+	// SQLite only finds the files whose bounds may not hold, the bounds are checked here
+	auto native_req = req;
+	native_req.stale_bounds_type = LogicalTypeId::INVALID;
+	if (req.stale_bounds_type != LogicalTypeId::INVALID) {
+		native_list += ", CAST(" + StaleBoundFileSql("main", table_id, req) + " AS TEXT) AS stale_file";
+	}
 	for (const auto &stat : req.referenced_stats) {
 		native_list += StringUtil::Format(", CAST(%s AS TEXT) AS %s", stat, stat);
-		select_list += StringUtil::Format(", %s::%s AS %s", stat, StatsColumnType(stat), stat);
+		auto value = StringUtil::Format("%s::%s", stat, StatsColumnType(stat));
+		if (req.stale_bounds_type != LogicalTypeId::INVALID && (stat == "min_value" || stat == "max_value")) {
+			value = StringUtil::Format("CASE WHEN stale_file::BOOLEAN AND %s THEN NULL ELSE %s END",
+			                           StaleBoundSql(value, req.stale_bounds_type), value);
+		}
+		select_list += StringUtil::Format(", %s AS %s", value, stat);
 	}
 	auto native_query =
 	    StringUtil::Format("SELECT %s FROM (%s)", native_list,
-	                       DuckLakeMetadataManager::GenerateFileColumnStatsCTEBody(req, table_id, "main"));
+	                       DuckLakeMetadataManager::GenerateFileColumnStatsCTEBody(native_req, table_id, "main"));
 	return StringUtil::Format("  SELECT %s\n"
 	                          "  FROM sqlite_query({METADATA_CATALOG_NAME_LITERAL}, %s)\n",
 	                          select_list, SQLString(native_query));

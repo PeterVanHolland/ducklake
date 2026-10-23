@@ -616,6 +616,10 @@ protected:
 
 	virtual string GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
 	                                              const string &metadata_table_prefix);
+	//! Whether DuckDB 1.5.6 may have stored a bound of a column of this type that does not hold
+	virtual string StaleBoundSql(const string &bound, LogicalTypeId type);
+	//! Whether DuckDB 1.5.6 may have stored the bounds of a file for another type
+	static string StaleBoundFileSql(const string &prefix, TableIndex table_id, const CTERequirement &req);
 	//! The snapshot placeholders of the query are replaced later, unless an override does it
 	virtual string GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                                     const FilterPushdownInfo *filter_info,

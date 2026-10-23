@@ -4,7 +4,7 @@
 
 include benchmark/micro/fixtures/big_lake.benchmark.in
 
-# Three cold attaches; the estimated sizes come from the table stats of every table
+# Three cold attaches, the estimated sizes come from the table stats of every table
 run
 SELECT count(*), sum(estimated_size), sum(column_count) FROM duckdb_tables() WHERE database_name = 'lake';
 DETACH lake;

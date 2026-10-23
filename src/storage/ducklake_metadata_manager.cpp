@@ -556,6 +556,13 @@ static string FloatBoundSql(const string &bound) {
 	                          bound, bound, bound, bound);
 }
 
+//! Whether the column had another type than DOUBLE
+static string HadNonDoubleTypeSql(const string &prefix, const string &table_id, const string &column_id) {
+	return StringUtil::Format("EXISTS (SELECT 1 FROM %s.ducklake_column AS original WHERE original.table_id = %s AND "
+	                          "original.column_id = %s AND original.column_type <> 'float64')",
+	                          prefix, table_id, column_id);
+}
+
 //! A timestamp bound with more fractional digits than the column type keeps
 static string FinerTimestampBoundSql(const string &bound) {
 	return StringUtil::Format("length(regexp_extract(%s, '\\.([0-9]+)', 1)) > (SELECT min(CASE column_type WHEN "
@@ -576,10 +583,7 @@ void DuckLakeMetadataManager::MigrateRetypedBounds() {
 ))",
 		                          types);
 	};
-	auto retyped = string(R"(EXISTS (
-	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS col
-	WHERE col.table_id = stats.table_id AND col.column_id = stats.column_id AND col.column_type <> 'float64'
-))");
+	auto retyped = HadNonDoubleTypeSql("{METADATA_CATALOG}", "stats.table_id", "stats.column_id");
 	auto added_file = string(R"(EXISTS (
 	SELECT 1 FROM {METADATA_CATALOG}.ducklake_data_file AS added
 	WHERE added.data_file_id = stats.data_file_id AND added.mapping_id IS NOT NULL
@@ -1147,7 +1151,7 @@ WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_s
 
 	string column_source = "{METADATA_CATALOG}.ducklake_column";
 	if (!supports_v1_1_metadata) {
-		// the defaults that the v1.1 migration restores
+		// the defaults that renamed struct fields lost
 		string restored;
 		for (auto field : {"initial_default", "default_value", "default_value_type", "default_value_dialect"}) {
 			restored +=
@@ -1503,13 +1507,12 @@ static bool MayHaveStaleBounds(const LogicalType &type) {
 	return false;
 }
 
-//! The snapshot that retyped a column to DOUBLE, DuckDB 1.5.6 kept the bounds of the files up to it
+//! The snapshot that retyped a column to DOUBLE
 static string DoubleRetypeSnapshotSql(const string &prefix, const string &table_id, const string &column_id) {
 	return StringUtil::Format(
-	    "(SELECT MIN(retyped.begin_snapshot) FROM %s.ducklake_column AS retyped WHERE retyped.table_id = %s AND "
-	    "retyped.column_id = %s AND retyped.column_type = 'float64' AND EXISTS (SELECT 1 FROM %s.ducklake_column AS "
-	    "original WHERE original.table_id = %s AND original.column_id = %s AND original.column_type <> 'float64'))",
-	    prefix, table_id, column_id, prefix, table_id, column_id);
+	    "(SELECT MIN(retyped.begin_snapshot) FROM %s.ducklake_column AS retyped WHERE "
+	    "retyped.table_id = %s AND retyped.column_id = %s AND retyped.column_type = 'float64' AND %s)",
+	    prefix, table_id, column_id, HadNonDoubleTypeSql(prefix, table_id, column_id));
 }
 
 static string TableColumnBoundSql(const string &bound, bool v1_1_metadata) {
@@ -1534,14 +1537,12 @@ static string StaleTableBoundsJoin(bool v1_1_metadata) {
     FROM {METADATA_CATALOG}.ducklake_column AS col
     WHERE (col.column_type IN (%s)
         AND col.table_id IN (SELECT mapping.table_id FROM {METADATA_CATALOG}.ducklake_column_mapping AS mapping))
-    OR (col.column_type = 'float64' AND EXISTS (
-        SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS original
-        WHERE original.table_id = col.table_id AND original.column_id = col.column_id
-        AND original.column_type <> 'float64'))
+    OR (col.column_type = 'float64' AND %s)
 ) AS stale_bounds ON stale_bounds.stale_table_id = ducklake_table_column_stats.table_id
     AND stale_bounds.stale_column_id = ducklake_table_column_stats.column_id
 )",
-	                          StringUtil::Join(type_names, ", "));
+	                          StringUtil::Join(type_names, ", "),
+	                          HadNonDoubleTypeSql("{METADATA_CATALOG}", "col.table_id", "col.column_id"));
 }
 
 static string TableStatsQuery(const string &select_list, bool include_column_stats,

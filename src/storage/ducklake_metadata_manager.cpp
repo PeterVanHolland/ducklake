@@ -2040,14 +2040,20 @@ string DuckLakeMetadataManager::GenerateCTESectionFromRequirements(const map<idx
 		return "";
 	}
 
+	// a single stats join is planned well either way
+	auto cte_keyword = requirements.size() > 1 && MaterializeStatsCTEs() ? " AS MATERIALIZED (\n" : " AS (\n";
 	vector<string> ctes;
 	for (const auto &entry : requirements) {
 		const auto &req = entry.second;
-		// each CTE is referenced by exactly one join, so there is nothing for a materialization hint to buy
-		ctes.push_back(StatsCteName(req.column_field_index) + " AS (\n" +
+		ctes.push_back(StatsCteName(req.column_field_index) + cte_keyword +
 		               GenerateFileColumnStatsCTEBody(req, table_id, metadata_table_prefix) + ")");
 	}
 	return "WITH " + StringUtil::Join(ctes, ",\n") + "\n";
+}
+
+bool DuckLakeMetadataManager::MaterializeStatsCTEs() const {
+	// each CTE is referenced by exactly one join, which DuckDB plans well when it inlines the CTE
+	return false;
 }
 
 //! Whether equal values can hash to other buckets, as for NaNs and for zeros inside nested values

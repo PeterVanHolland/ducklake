@@ -1439,23 +1439,8 @@ ORDER BY sort.table_id ASC, sort.sort_id ASC, sort_expr.sort_key_index ASC
 	return catalog;
 }
 
-//! How a catalog without the v1.1 metadata may have stored table bounds that do not hold
-enum class StaleTableBounds : uint8_t { NONE = 0, FLOAT_PRINTED = 1, UNKNOWN = 2 };
-
-//! A FLOAT print of a value that reads differently as DOUBLE, as FloatBoundSql checks it
-static bool IsStaleFloatBound(const string &bound) {
-	auto as_float = Value(bound).DefaultTryCastAs(LogicalType::FLOAT);
-	auto as_double = Value(bound).DefaultTryCastAs(LogicalType::DOUBLE);
-	if (!as_float || !as_double) {
-		return false;
-	}
-	auto value = as_double->GetValue<double>();
-	return as_float->ToString() == bound && !Value::IsNan(value) &&
-	       static_cast<double>(as_float->GetValue<float>()) != value;
-}
-
 static void TransformGlobalStatsRow(const QueryResultRow &row, vector<DuckLakeGlobalStatsInfo> &global_stats,
-                                    idx_t from_column = 0, bool has_exactness = false, bool has_stale_bounds = false) {
+                                    idx_t from_column = 0, bool has_exactness = false) {
 	auto table_id = TableIndex(row.GetValue<uint64_t>(0 + from_column));
 
 	if (global_stats.empty() || global_stats.back().table_id != table_id) {
@@ -1490,16 +1475,6 @@ static void TransformGlobalStatsRow(const QueryResultRow &row, vector<DuckLakeGl
 	if (has_exactness) {
 		column_stats.min_is_exact = OptBoolFalse(row, COLUMN_STATS_START + 5);
 		column_stats.max_is_exact = OptBoolFalse(row, COLUMN_STATS_START + 6);
-	}
-	auto stale_index = COLUMN_STATS_START + (has_exactness ? 7 : 5);
-	if (has_stale_bounds && !row.IsNull(stale_index)) {
-		auto stale = StaleTableBounds(row.GetValue<int32_t>(stale_index));
-		if (stale == StaleTableBounds::UNKNOWN || (column_stats.has_min && IsStaleFloatBound(column_stats.min_val))) {
-			column_stats.has_min = false;
-		}
-		if (stale == StaleTableBounds::UNKNOWN || (column_stats.has_max && IsStaleFloatBound(column_stats.max_val))) {
-			column_stats.has_max = false;
-		}
 	}
 
 	stats_entry.column_stats.push_back(std::move(column_stats));
@@ -1537,31 +1512,25 @@ static string DoubleRetypeSnapshotSql(const string &prefix, const string &table_
 	    prefix, table_id, column_id, prefix, table_id, column_id);
 }
 
-//! On a catalog without the v1.1 metadata, how the table bounds of a column may not hold
-static string StaleTableBoundsSql() {
+//! Without the v1.1 metadata, the table bounds of columns with such files may not hold
+static string TableColumnBoundSql(const string &bound, bool v1_1_metadata) {
+	if (v1_1_metadata) {
+		return bound;
+	}
 	string table_id = "ducklake_table_column_stats.table_id";
 	string column_id = "ducklake_table_column_stats.column_id";
-	auto had_type = [&](const vector<LogicalTypeId> &types) {
-		vector<string> names;
-		for (auto &id : types) {
-			names.push_back(SQLString::ToString(DuckLakeTypes::ToString(LogicalType(id))));
-		}
-		return StringUtil::Format(
-		    "EXISTS (SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS bound_col WHERE "
-		    "bound_col.table_id = %s AND bound_col.column_id = %s AND bound_col.column_type IN (%s))",
-		    table_id, column_id, StringUtil::Join(names, ", "));
-	};
+	vector<string> type_names;
+	for (auto &id : STALE_BOUND_TYPES) {
+		type_names.push_back(SQLString::ToString(DuckLakeTypes::ToString(LogicalType(id))));
+	}
 	// a column mapping marks a table with added files
 	auto added_files = StringUtil::Format(
-	    "EXISTS (SELECT 1 FROM {METADATA_CATALOG}.ducklake_column_mapping AS mapping WHERE mapping.table_id = %s)",
-	    table_id);
-	auto timestamps = had_type({LogicalTypeId::TIMESTAMP, LogicalTypeId::TIMESTAMP_MS, LogicalTypeId::TIMESTAMP_SEC,
-	                            LogicalTypeId::TIMESTAMP_TZ});
-	return StringUtil::Format(
-	    "CASE WHEN %s AND %s THEN %d WHEN (%s OR %s IS NOT NULL) AND %s THEN %d END AS stale_bounds", added_files,
-	    timestamps, static_cast<int32_t>(StaleTableBounds::UNKNOWN), added_files,
-	    DoubleRetypeSnapshotSql("{METADATA_CATALOG}", table_id, column_id), had_type({LogicalTypeId::DOUBLE}),
-	    static_cast<int32_t>(StaleTableBounds::FLOAT_PRINTED));
+	    "EXISTS (SELECT 1 FROM {METADATA_CATALOG}.ducklake_column_mapping AS mapping WHERE mapping.table_id = %s) AND "
+	    "EXISTS (SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS bound_col WHERE bound_col.table_id = %s AND "
+	    "bound_col.column_id = %s AND bound_col.column_type IN (%s))",
+	    table_id, table_id, column_id, StringUtil::Join(type_names, ", "));
+	return StringUtil::Format("CASE WHEN (%s) OR %s IS NOT NULL THEN NULL ELSE %s END AS %s", added_files,
+	                          DoubleRetypeSnapshotSql("{METADATA_CATALOG}", table_id, column_id), bound, bound);
 }
 
 static string TableStatsQuery(const string &select_list, bool include_column_stats) {
@@ -1576,13 +1545,12 @@ static string TableStatsQuery(const string &select_list, bool include_column_sta
 }
 
 string DuckLakeMetadataManager::GlobalTableStatsQuery(bool include_exactness) {
-	string select_list =
-	    "table_id, column_id, record_count, next_row_id, file_size_bytes, contains_null, contains_nan, min_value, "
-	    "max_value, extra_stats";
+	auto select_list =
+	    "table_id, column_id, record_count, next_row_id, file_size_bytes, contains_null, contains_nan, " +
+	    TableColumnBoundSql("min_value", include_exactness) + ", " +
+	    TableColumnBoundSql("max_value", include_exactness) + ", extra_stats";
 	if (include_exactness) {
 		select_list += ", min_is_exact, max_is_exact";
-	} else {
-		select_list += ", " + StaleTableBoundsSql();
 	}
 	return TableStatsQuery(select_list, true);
 }
@@ -1591,9 +1559,8 @@ vector<DuckLakeGlobalStatsInfo> DuckLakeMetadataManager::ParseGlobalTableStats(Q
 	result.ThrowIfError("Failed to get global stats information from DuckLake: ");
 	vector<DuckLakeGlobalStatsInfo> global_stats;
 	bool has_exactness = ResultHasColumn(result, "min_is_exact");
-	bool has_stale_bounds = ResultHasColumn(result, "stale_bounds");
 	for (auto &row : result) {
-		TransformGlobalStatsRow(row, global_stats, 0, has_exactness, has_stale_bounds);
+		TransformGlobalStatsRow(row, global_stats, 0, has_exactness);
 	}
 	return global_stats;
 }
@@ -4868,9 +4835,6 @@ string DuckLakeMetadataManager::SnapshotAndStatsAndChangesQuery(bool include_exa
 	if (include_exactness) {
 		snapshot_arm_padding = ",\n    NULL AS min_is_exact,\n    NULL AS max_is_exact";
 		stats_arm_columns = ",\n    min_is_exact,\n    max_is_exact";
-	} else {
-		snapshot_arm_padding = ",\n    NULL AS stale_bounds";
-		stats_arm_columns = ",\n    " + StaleTableBoundsSql();
 	}
 	return R"(
 SELECT
@@ -4912,8 +4876,8 @@ SELECT
     file_size_bytes,
     contains_null,
     contains_nan,
-    min_value,
-    max_value,
+    )" + TableColumnBoundSql("min_value", include_exactness) +
+	       ",\n    " + TableColumnBoundSql("max_value", include_exactness) + R"(,
     extra_stats)" +
 	       stats_arm_columns + R"(
 FROM {METADATA_CATALOG}.ducklake_table_stats
@@ -4927,7 +4891,6 @@ SnapshotChangeInfo DuckLakeMetadataManager::ParseSnapshotAndStatsAndChanges(Quer
                                                                             SnapshotAndStats &current_snapshot) {
 	SnapshotChangeInfo change_info;
 	bool has_exactness = ResultHasColumn(result, "min_is_exact");
-	bool has_stale_bounds = ResultHasColumn(result, "stale_bounds");
 	bool first_row = true;
 	for (auto &row : result) {
 		if (first_row) {
@@ -4937,7 +4900,7 @@ SnapshotChangeInfo DuckLakeMetadataManager::ParseSnapshotAndStatsAndChanges(Quer
 			current_snapshot.snapshot.next_file_id = row.GetValue<idx_t>(3);
 			change_info.changes_made = row.GetValue<string>(4);
 		} else {
-			TransformGlobalStatsRow(row, current_snapshot.stats, 5, has_exactness, has_stale_bounds);
+			TransformGlobalStatsRow(row, current_snapshot.stats, 5, has_exactness);
 		}
 		first_row = false;
 	}

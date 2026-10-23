@@ -234,12 +234,12 @@ string PostgresMetadataManager::StaleBoundSql(const string &bound, LogicalTypeId
 	if (type != LogicalTypeId::DOUBLE) {
 		return DuckLakeMetadataManager::StaleBoundSql(bound, type);
 	}
-	// the FLOAT print of a value that reads differently as DOUBLE, only cast numbers in the range of REAL
-	return StringUtil::Format(
-	    "(CASE WHEN %s ~ '^[-+]?([0-9]+\\.?[0-9]*|\\.[0-9]+)([eE][-+]?[0-9]+)?$' THEN CASE WHEN "
-	    "abs(%s::double precision) <= 3.4028234663852886e38 THEN %s::real::text = %s AND %s::real::double precision "
-	    "<> %s::double precision END END)",
-	    bound, bound, bound, bound, bound, bound);
+	// the check of FloatBoundSql on numbers, since PostgreSQL prints a REAL in another format
+	auto number = bound + "::double precision";
+	return StringUtil::Format("(CASE WHEN %s ~ '^[-+]?([0-9]+\\.?[0-9]*|\\.[0-9]+)([eE][-+]?[0-9]+)?$' THEN CASE WHEN "
+	                          "abs(%s) BETWEEN 7.1e-46 AND 3.4028235e38 THEN %s = %s::real::text::double precision AND "
+	                          "%s::real::double precision <> %s END END)",
+	                          bound, number, number, number, number, number);
 }
 
 PostgresMetadataManager::PostgresMetadataManager(DuckLakeTransaction &transaction)

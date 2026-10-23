@@ -14,7 +14,7 @@ DETACH lake;
 @attach ${work} AS lake
 SELECT count(*), sum(estimated_size), sum(column_count) FROM duckdb_tables() WHERE database_name = 'lake';
 
-# Re-attaching gives every run cold schema and stats caches
+# Reattaching gives every run cold schema and stats caches
 cleanup
 DETACH lake;
 @attach ${work} AS lake

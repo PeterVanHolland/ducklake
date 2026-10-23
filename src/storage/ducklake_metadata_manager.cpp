@@ -687,6 +687,16 @@ AND ((%s AND (%s OR %s)) OR ((%s OR %s) AND %s));)",
 }
 
 void DuckLakeMetadataManager::RepairV10Bounds() {
+	// only catalogs migrated from 1.0 have rows without exactness flags
+	auto legacy = Query(R"(
+SELECT 1 FROM {METADATA_CATALOG}.ducklake_file_column_stats
+WHERE min_is_exact IS NULL AND max_is_exact IS NULL AND (min_value IS NOT NULL OR max_value IS NOT NULL)
+LIMIT 1)");
+	legacy->ThrowIfError("Failed to look for the bounds of retyped columns: ");
+	auto found = legacy->Fetch();
+	if (!found || found->size() == 0) {
+		return;
+	}
 	// DuckDB v2.0.0 migrated catalogs to v1.1 without MigrateRetypedBounds, only added files and retyped columns can
 	// hold such bounds
 	auto candidates = Query(R"(
@@ -700,7 +710,7 @@ WHERE retyped.column_type = 'float64' AND EXISTS (
 )
 LIMIT 1)");
 	candidates->ThrowIfError("Failed to look for the bounds of retyped columns: ");
-	auto found = candidates->Fetch();
+	found = candidates->Fetch();
 	if (!found || found->size() == 0) {
 		return;
 	}

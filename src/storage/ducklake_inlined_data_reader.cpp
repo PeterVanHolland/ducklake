@@ -330,47 +330,29 @@ bool DuckLakeInlinedDataReader::TryEvaluateExpression(ClientContext &context, id
 
 AsyncResult DuckLakeInlinedDataReader::Scan(ClientContext &context, GlobalTableFunctionState &global_state,
                                             LocalTableFunctionState &local_state, DataChunk &chunk) {
-	idx_t scan_count;
-	bool deletes_applied = false;
+	// field extracts are computed last, so that a cast in them only sees the rows that pass the other filters
+	vector<idx_t> pending_extracts;
 	if (!virtual_columns.empty()) {
 		scan_chunk.Reset();
 		data->data->Scan(state, scan_chunk);
-		scan_count = scan_chunk.size();
-		// a cast in a field extract must not see deleted rows, so they are removed first
-		SelectionVector kept_sel;
-		idx_t kept_count = scan_count;
-		if (deletion_filter && !field_extracts.empty()) {
-			kept_count = deletion_filter->Filter(file_row_number, scan_count, kept_sel);
-			if (kept_count != scan_count) {
-				scan_chunk.Slice(kept_sel, kept_count);
-			}
-			deletes_applied = true;
-		}
-		auto row_position = [&](idx_t r) {
-			return file_row_number + NumericCast<int64_t>(kept_count != scan_count ? kept_sel.get_index(r) : r);
-		};
 		idx_t source_idx = 0;
 		for (idx_t c = 0; c < virtual_columns.size(); c++) {
 			switch (virtual_columns[c]) {
 			case InlinedVirtualColumn::NONE: {
 				auto column_id = source_idx++;
-				reference<Vector> source(scan_chunk.data[column_id]);
-				unique_ptr<Vector> field;
-				auto extract_entry = field_extracts.find(c);
-				if (extract_entry != field_extracts.end()) {
-					auto &extract = extract_entry->second;
-					field = make_uniq<Vector>(extract.expression->GetReturnType());
-					extract.executor->ExecuteExpression(scan_chunk, *field);
-					source = *field;
-				}
-				if (TryEvaluateExpression(context, c, source, source.get().GetType(), chunk.data[c])) {
+				if (field_extracts.find(c) != field_extracts.end()) {
+					pending_extracts.push_back(c);
 					break;
 				}
-				if (chunk.data[c].GetType() != source.get().GetType()) {
+				if (TryEvaluateExpression(context, c, scan_chunk.data[column_id], scan_chunk.data[column_id].GetType(),
+				                          chunk.data[c])) {
+					break;
+				}
+				if (chunk.data[c].GetType() != scan_chunk.data[column_id].GetType()) {
 					// type was changed, we gotta cast the data
-					VectorOperations::Cast(context, source, chunk.data[c], scan_chunk.size());
+					VectorOperations::Cast(context, scan_chunk.data[column_id], chunk.data[c], scan_chunk.size());
 				} else {
-					chunk.data[c].Reference(source);
+					chunk.data[c].Reference(scan_chunk.data[column_id]);
 				}
 				break;
 			}
@@ -381,13 +363,7 @@ AsyncResult DuckLakeInlinedDataReader::Scan(ClientContext &context, GlobalTableF
 					// use preserved row_ids from update inlining
 					auto ordinal_data = FlatVector::GetDataMutable<int64_t>(ordinal_vector);
 					for (idx_t r = 0; r < scan_chunk.size(); r++) {
-						ordinal_data[r] = data->row_ids[NumericCast<idx_t>(row_position(r))];
-					}
-					FlatVector::SetSize(ordinal_vector, scan_chunk.size());
-				} else if (kept_count != scan_count) {
-					auto ordinal_data = FlatVector::GetDataMutable<int64_t>(ordinal_vector);
-					for (idx_t r = 0; r < scan_chunk.size(); r++) {
-						ordinal_data[r] = row_position(r);
+						ordinal_data[r] = data->row_ids[file_row_number + r];
 					}
 					FlatVector::SetSize(ordinal_vector, scan_chunk.size());
 				} else {
@@ -406,35 +382,71 @@ AsyncResult DuckLakeInlinedDataReader::Scan(ClientContext &context, GlobalTableF
 		chunk.SetChildCardinality(scan_chunk.size());
 	} else {
 		data->data->Scan(state, chunk);
-		scan_count = chunk.size();
 	}
+	idx_t scan_count = chunk.size();
 	if (scan_count == 0) {
 		return AsyncResult(SourceResultType::FINISHED);
 	}
-	if (filters || (deletion_filter && !deletes_applied)) {
+	if (filters || deletion_filter) {
 		SelectionVector sel;
-		idx_t approved_tuple_count = chunk.size();
-		if (deletion_filter && !deletes_applied) {
+		idx_t approved_tuple_count = scan_count;
+		if (deletion_filter) {
 			approved_tuple_count = deletion_filter->Filter(file_row_number, approved_tuple_count, sel);
 		}
-		if (filters) {
-			for (auto &entry : *filters) {
-				auto &filter = entry.Filter();
-				if (ExpressionFilter::IsRootOptionalFilter(filter)) {
-					continue;
-				}
-				auto column_id = entry.GetIndex().GetIndex();
-				auto filter_state = TableFilterState::Initialize(context, filter);
-				approved_tuple_count = ColumnSegment::FilterSelection(sel, chunk.data[column_id], *filter_state,
-				                                                      chunk.size(), approved_tuple_count);
-			}
-		}
+		approved_tuple_count = ApplyFilters(context, chunk, sel, approved_tuple_count, false);
 		if (approved_tuple_count != chunk.size()) {
 			chunk.Slice(sel, approved_tuple_count);
+			if (!pending_extracts.empty()) {
+				scan_chunk.Slice(sel, approved_tuple_count);
+			}
+		}
+	}
+	if (!pending_extracts.empty()) {
+		for (auto c : pending_extracts) {
+			auto &extract = field_extracts.find(c)->second;
+			Vector field(extract.expression->GetReturnType());
+			extract.executor->ExecuteExpression(scan_chunk, field);
+			Vector result(chunk.data[c].GetType());
+			if (!TryEvaluateExpression(context, c, field, field.GetType(), result)) {
+				if (result.GetType() != field.GetType()) {
+					VectorOperations::Cast(context, field, result, scan_chunk.size());
+				} else {
+					result.Reference(field);
+				}
+			}
+			chunk.data[c].Reference(result);
+		}
+		if (filters) {
+			SelectionVector sel;
+			auto approved_tuple_count = ApplyFilters(context, chunk, sel, chunk.size(), true);
+			if (approved_tuple_count != chunk.size()) {
+				chunk.Slice(sel, approved_tuple_count);
+			}
 		}
 	}
 	file_row_number += NumericCast<int64_t>(scan_count);
 	return AsyncResult(SourceResultType::HAVE_MORE_OUTPUT);
+}
+
+idx_t DuckLakeInlinedDataReader::ApplyFilters(ClientContext &context, DataChunk &chunk, SelectionVector &sel,
+                                              idx_t approved_tuple_count, bool on_field_extracts) {
+	if (!filters) {
+		return approved_tuple_count;
+	}
+	for (auto &entry : *filters) {
+		auto &filter = entry.Filter();
+		if (ExpressionFilter::IsRootOptionalFilter(filter)) {
+			continue;
+		}
+		auto column_id = entry.GetIndex().GetIndex();
+		if ((field_extracts.find(column_id) != field_extracts.end()) != on_field_extracts) {
+			continue;
+		}
+		auto filter_state = TableFilterState::Initialize(context, filter);
+		approved_tuple_count = ColumnSegment::FilterSelection(sel, chunk.data[column_id], *filter_state, chunk.size(),
+		                                                      approved_tuple_count);
+	}
+	return approved_tuple_count;
 }
 
 void DuckLakeInlinedDataReader::AddVirtualColumn(column_t virtual_column_id) {

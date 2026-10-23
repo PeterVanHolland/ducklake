@@ -329,7 +329,15 @@ static void ExcludeMovedRows(ClientContext &context, const DuckLakeDeleteScanEnt
 	if (moved_rows.empty()) {
 		return;
 	}
-	if (delete_scan.row_id_start.IsValid()) {
+	// embedded row ids take precedence, as in scans: the flushes of DuckDB 1.4 also set row_id_start
+	ParquetFileScanner scanner(context, delete_scan.file, true);
+	auto row_id_column = scanner.FindColumnByFieldId(MultiFileReader::ROW_ID_FIELD_ID);
+	if (!row_id_column.IsValid()) {
+		if (!delete_scan.row_id_start.IsValid()) {
+			// LCOV_EXCL_START
+			return;
+			// LCOV_EXCL_STOP
+		}
 		auto row_id_start = NumericCast<int64_t>(delete_scan.row_id_start.GetIndex());
 		if (moved_rows.size() > delete_scan.row_count) {
 			// the moved rows of all files deleted at this snapshot - probe the rows of this one instead
@@ -347,14 +355,6 @@ static void ExcludeMovedRows(ClientContext &context, const DuckLakeDeleteScanEnt
 			}
 		}
 		return;
-	}
-	// the rows of the deleted file carry their own row ids
-	ParquetFileScanner scanner(context, delete_scan.file, true);
-	auto row_id_column = scanner.FindColumnByFieldId(MultiFileReader::ROW_ID_FIELD_ID);
-	if (!row_id_column.IsValid()) {
-		// LCOV_EXCL_START
-		return;
-		// LCOV_EXCL_STOP
 	}
 	scanner.SetColumnIds({row_id_column.GetIndex()});
 	DataChunk chunk;

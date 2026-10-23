@@ -2508,29 +2508,66 @@ void DuckLakeMetadataManager::AddDeletionSuccessors(DuckLakeTableEntry &table, D
 		}
 		snapshot_list += to_string(snapshot_id);
 	}
-	// a rewrite of DuckDB 1.4 wrote the file after the snapshot it begins at, which may have expired since
 	auto query = StringUtil::Format(R"(
-SELECT data.begin_snapshot, %s
+SELECT data.begin_snapshot, data.data_file_id, %s
 FROM {METADATA_CATALOG}.ducklake_data_file data
-WHERE data.table_id = %d AND data.row_id_start IS NULL AND data.begin_snapshot IN (%s)
-  AND data.data_file_id >= COALESCE((
-	SELECT MAX(snap.next_file_id)
-	FROM {METADATA_CATALOG}.ducklake_snapshot snap
-	WHERE snap.snapshot_id <= data.begin_snapshot
-  ), 0);
+WHERE data.table_id = %d AND data.row_id_start IS NULL AND data.begin_snapshot IN (%s);
 )",
 	                                GetDataFileSelectList("data"), table.GetTableId().index, snapshot_list);
 	auto result = Query(snapshot, query);
 	result->ThrowIfError("Failed to get the data files that begin at a data file deletion from DuckLake: ");
-	unordered_map<idx_t, shared_ptr<DuckLakeMovedRows>> moved_rows;
+	unordered_map<idx_t, vector<pair<idx_t, DuckLakeFileData>>> candidates;
 	for (auto &row : *result) {
 		idx_t col_idx = 0;
 		auto begin_snapshot = row.GetValue<idx_t>(col_idx++);
-		auto &entry = moved_rows[begin_snapshot];
-		if (!entry) {
-			entry = make_shared_ptr<DuckLakeMovedRows>();
+		auto data_file_id = row.GetValue<idx_t>(col_idx++);
+		candidates[begin_snapshot].emplace_back(data_file_id, ReadDataFile(table, row, col_idx, IsEncrypted()));
+	}
+	if (candidates.empty()) {
+		return;
+	}
+	// a rewrite of DuckDB 1.4 wrote the file after the snapshot it begins at
+	string candidate_list;
+	for (auto &entry : candidates) {
+		if (!candidate_list.empty()) {
+			candidate_list += ", ";
 		}
-		entry->files.push_back(ReadDataFile(table, row, col_idx, IsEncrypted()));
+		candidate_list += to_string(entry.first);
+	}
+	unordered_map<idx_t, idx_t> next_file_ids;
+	auto bound_result = Query(snapshot, StringUtil::Format(R"(
+SELECT snapshot_id, next_file_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id IN (%s);
+)",
+	                                                       candidate_list));
+	bound_result->ThrowIfError("Failed to get the next file ids of snapshots from DuckLake: ");
+	for (auto &row : *bound_result) {
+		next_file_ids[row.GetValue<idx_t>(0)] = row.GetValue<idx_t>(1);
+	}
+	unordered_map<idx_t, shared_ptr<DuckLakeMovedRows>> moved_rows;
+	for (auto &entry : candidates) {
+		auto next_file_id = next_file_ids.find(entry.first);
+		if (next_file_id == next_file_ids.end()) {
+			// the snapshot has expired - the latest one before it bounds its files
+			auto expired_result = Query(snapshot, StringUtil::Format(R"(
+SELECT next_file_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id < %d ORDER BY snapshot_id DESC LIMIT 1;
+)",
+			                                                         entry.first));
+			expired_result->ThrowIfError("Failed to get the next file id of a snapshot from DuckLake: ");
+			next_file_id = next_file_ids.emplace(entry.first, 0).first;
+			for (auto &row : *expired_result) {
+				next_file_id->second = row.GetValue<idx_t>(0);
+			}
+		}
+		for (auto &candidate : entry.second) {
+			if (candidate.first < next_file_id->second) {
+				continue;
+			}
+			auto &moved = moved_rows[entry.first];
+			if (!moved) {
+				moved = make_shared_ptr<DuckLakeMovedRows>();
+			}
+			moved->files.push_back(std::move(candidate.second));
+		}
 	}
 	for (auto &entry : files) {
 		if (!entry.file_deleted) {

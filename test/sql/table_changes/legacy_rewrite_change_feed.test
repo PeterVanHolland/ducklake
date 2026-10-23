@@ -13,6 +13,7 @@ require parquet
 # x inserts 0-2 and deletes 0 in one transaction at 20, and is rewritten at 21
 # y inserts 0-2 at 23, deletes 0 at 24, is rewritten at 25 and adds a column _ducklake_internal_row_id at 26
 # w inserts 0-4 at 28 and 5-9 at 29, deletes 0 and 5 at 30, and is rewritten at 31
+# z inlines 0-4 at 33, flushes them at 34, deletes 0 at 35 and is rewritten at 36
 unzip data/old_ducklake/legacy_rewrite.db.gz {TEST_DIR}/legacy_rewrite_change_feed.db
 
 statement ok
@@ -133,6 +134,17 @@ query I
 SELECT count(*) FROM lk.table_changes('w', 28, 31) WHERE change_type = 'insert'
 ----
 10
+
+# a flush of DuckDB 1.4 wrote row ids and a row_id_start that disagrees with them
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('z', 35, 36) ORDER BY ALL
+----
+35	0	delete	0
+
+query I
+SELECT count(*) FROM lk.table_changes('z', 33, 36) WHERE change_type = 'insert'
+----
+5
 
 # reads and time travel are unchanged
 query II

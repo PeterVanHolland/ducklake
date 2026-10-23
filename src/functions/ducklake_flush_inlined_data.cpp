@@ -542,12 +542,12 @@ static unique_ptr<LogicalOperator> FlushInlinedDataBind(ClientContext &context, 
 		for (auto &inlined_table : table_entry.GetInlinedDataTables(transaction, transaction.GetSnapshot())) {
 			auto flush_obstacle = GetFlushObstacle(ducklake_catalog, transaction, table_entry, inlined_table);
 			if (!flush_obstacle.empty()) {
-				if (table.empty()) {
-					// the rows stay inlined, so that they do not keep the other tables from being flushed
-					continue;
+				if (!table.empty() && transaction.GetMetadataManager().InlinedTableHasRows(inlined_table.table_name)) {
+					throw NotImplementedException("Cannot flush the inlined data of table \"%s\": %s",
+					                              table_entry.name.GetIdentifierName(), flush_obstacle);
 				}
-				throw NotImplementedException("Cannot flush the inlined data of table \"%s\": %s",
-				                              table_entry.name.GetIdentifierName(), flush_obstacle);
+				// the rows stay inlined, so that they do not keep the other tables from being flushed
+				continue;
 			}
 			DuckLakeDataFlusher flusher(context, ducklake_catalog, transaction, *input.binder, table_entry.GetTableId(),
 			                            inlined_table);

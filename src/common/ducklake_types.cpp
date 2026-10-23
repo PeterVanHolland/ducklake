@@ -203,6 +203,15 @@ bool DuckLakeTypes::HasNestedVariant(const LogicalType &type) {
 	       TypeVisitor::Contains(type, [](const LogicalType &t) { return t.id() == LogicalTypeId::VARIANT; });
 }
 
+bool DuckLakeTypes::HasNestedVariant(const ColumnList &columns) {
+	for (auto &col : columns.Logical()) {
+		if (HasNestedVariant(col.Type())) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void DuckLakeTypes::CheckSupportedTypes(const ColumnList &columns, DuckLakeVersion version) {
 	for (auto &col : columns.Logical()) {
 		CheckSupportedType(col.Type(), version);

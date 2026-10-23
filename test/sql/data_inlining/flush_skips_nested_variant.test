@@ -88,3 +88,47 @@ query I
 SELECT count(*) FROM ducklake_list_files('lake', 's')
 ----
 1
+
+# a checkpoint leaves the files of the earlier schema versions in their own schema when merging them
+statement ok
+CREATE TABLE lake.c (i INTEGER)
+
+statement ok
+INSERT INTO lake.c VALUES (1)
+
+statement ok
+ALTER TABLE lake.c ADD COLUMN j INTEGER
+
+statement ok
+INSERT INTO lake.c VALUES (2, 20)
+
+statement ok
+ALTER TABLE lake.c ADD COLUMN v VARIANT[]
+
+statement ok
+INSERT INTO lake.c VALUES (3, 30, [3::VARIANT])
+
+statement ok
+CHECKPOINT lake
+
+query III
+SELECT i, j, v FROM lake.c ORDER BY i
+----
+1	NULL	NULL
+2	20	NULL
+3	30	[3]
+
+# an empty inlined table of a schema with a nested VARIANT does not stop the flush of a table
+statement ok
+CREATE TABLE lake.e (i INTEGER)
+
+statement ok
+INSERT INTO lake.e VALUES (1)
+
+statement ok
+ALTER TABLE lake.e ADD COLUMN v VARIANT[]
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('lake', table_name => 'e')
+----
+main	e	1

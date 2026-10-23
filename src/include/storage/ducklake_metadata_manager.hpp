@@ -475,6 +475,8 @@ public:
 	string DropInlinedTableIfEmpty(TableIndex table_id, const DuckLakeTableEntry &table);
 	//! A query that returns a row if the inlined data table holds any row
 	static string InlinedTableHasRowsQuery(const string &table_name);
+	//! Whether an inlined data table holds any rows, including deleted ones
+	bool InlinedTableHasRows(const string &table_name);
 	static string DropInlinedTableSql(idx_t table_id, idx_t schema_version, const string &table_name);
 	virtual string GetInlinedTableQueries(DuckLakeSnapshot commit_snapshot, const DuckLakeTableInfo &table,
 	                                      vector<string> &inlined_tables, string &inlined_table_queries);

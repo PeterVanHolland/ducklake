@@ -162,11 +162,16 @@ DETACH config_lake
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS config_lake (DATA_PATH '{DATA_PATH}/v11_unrepaired_bounds_files', METADATA_CATALOG 'config_meta')
 
-query II
-SELECT (SELECT count(*) FROM config_lake.tz WHERE t = TIMESTAMPTZ '2020-01-01 12:34:56.123456+00'), (SELECT count(*) FROM config_meta.ducklake_file_column_stats
-	WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'tz') AND min_value IS NOT NULL)
+query I
+SELECT count(*) FROM config_lake.tz WHERE t = TIMESTAMPTZ '2020-01-01 12:34:56.123456+00'
 ----
-1	1
+1
+
+query I
+SELECT count(*) FROM config_meta.ducklake_file_column_stats
+WHERE table_id = (SELECT table_id FROM config_meta.ducklake_table WHERE table_name = 'tz') AND min_value IS NOT NULL
+----
+1
 
 query IIII
 SELECT (SELECT count(*) FROM config_lake.ts WHERE t = TIMESTAMP '2020-01-01 12:34:56.123457'), (SELECT max(t) FROM config_lake.ts), (SELECT count(*) FROM config_lake.r WHERE f = 0.10000000149011612), (SELECT min(f) FROM config_lake.r)

@@ -1110,7 +1110,22 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFiel
 	return make_uniq<DuckLakeFieldId>(std::move(column_data), source_id.Name(), target);
 }
 
-unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &transaction, ChangeColumnTypeInfo &info) {
+static bool SortReferencesColumn(const DuckLakeSort &sort_data, const Identifier &column_name) {
+	bool references = false;
+	for (auto &order : DuckLakeCompactor::ParseSortOrders(sort_data)) {
+		ParsedExpressionIterator::VisitExpression<ColumnRefExpression>(
+		    *order.expression, [&](const ColumnRefExpression &colref) {
+			    if (!colref.IsQualified() &&
+			        StringUtil::CIEquals(colref.GetColumnName().GetIdentifierName(), column_name.GetIdentifierName())) {
+				    references = true;
+			    }
+		    });
+	}
+	return references;
+}
+
+unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
+                                                        ChangeColumnTypeInfo &info) {
 	if (info.column_path.size() > 1) {
 		throw NotImplementedException("Changing the type of a nested field is not yet supported");
 	}
@@ -1128,6 +1143,20 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	auto new_field_id = TypePromotion(field_id, info.target_type, *change_info, optional_idx());
 	ValidateAddedFieldsCanSkipStats(field_id, *new_field_id);
 	col.SetType(new_field_id->Type());
+	auto sort_data = GetSortData();
+	if (sort_data && SortReferencesColumn(*sort_data, col.Name())) {
+		// writes sort by the expressions of the sort keys, which have to bind on the new type too
+		try {
+			auto binder = Binder::CreateBinder(context);
+			DuckLakeCompactor::BindSortOrders(*binder, ParentSchema(), table_info.columns, name, TableIndex(0),
+			                                  DuckLakeCompactor::ParseSortOrders(*sort_data));
+		} catch (std::exception &ex) {
+			ErrorData error(ex);
+			throw BinderException("Cannot change the type of column \"%s\" to %s: a sort key of the table cannot "
+			                      "be computed for it (%s). Use RESET SORTED BY first",
+			                      col.Name().GetIdentifierName(), info.target_type, error.RawMessage());
+		}
+	}
 	auto new_default = new_field_id->GetDefault();
 	if (new_default) {
 		col.SetDefaultValue(std::move(new_default));
@@ -1335,12 +1364,16 @@ static bool SortFieldsMatch(optional_ptr<DuckLakeSort> current_sort, const DuckL
 	return current_sort->fields == requested_sort.fields;
 }
 
-unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(DuckLakeTransaction &transaction, const ColumnList &columns,
+unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(ClientContext &context, DuckLakeTransaction &transaction,
+                                                           SchemaCatalogEntry &schema, const Identifier &table_name,
+                                                           const ColumnList &columns,
                                                            const vector<OrderByNode> &orders) {
 	if (orders.empty()) {
 		return nullptr;
 	}
-	ValidateSortExpressionColumns(columns, orders);
+	// bind the sort keys as writes do, so that a sort key no write can evaluate is not stored
+	auto binder = Binder::CreateBinder(context);
+	DuckLakeCompactor::BindSortOrders(*binder, schema, columns, table_name, TableIndex(0), orders);
 	auto sort_data = make_uniq<DuckLakeSort>();
 	sort_data->sort_id = transaction.GetLocalCatalogId();
 	for (idx_t order_node_idx = 0; order_node_idx < orders.size(); order_node_idx++) {
@@ -1359,7 +1392,9 @@ unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(DuckLakeTransaction &
 	return sort_data;
 }
 
-unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(DuckLakeTransaction &transaction, const ColumnList &columns,
+unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(ClientContext &context, DuckLakeTransaction &transaction,
+                                                           SchemaCatalogEntry &schema, const Identifier &table_name,
+                                                           const ColumnList &columns,
                                                            const vector<unique_ptr<ParsedExpression>> &sort_keys) {
 	// SORTED BY gives bare exprs; wrap each ASC/ORDER_DEFAULT (matches ALTER TABLE ... SET SORTED BY).
 	vector<OrderByNode> orders;
@@ -1367,10 +1402,11 @@ unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(DuckLakeTransaction &
 	for (auto &expr : sort_keys) {
 		orders.emplace_back(OrderType::ASCENDING, OrderByNullType::ORDER_DEFAULT, expr->Copy());
 	}
-	return BuildSortData(transaction, columns, orders);
+	return BuildSortData(context, transaction, schema, table_name, columns, orders);
 }
 
-unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &transaction, SetSortedByInfo &info) {
+unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
+                                                        SetSortedByInfo &info) {
 	auto create_info = GetInfo();
 	auto &table_info = create_info->Cast<CreateTableInfo>();
 
@@ -1378,7 +1414,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 		// RESET SORTED BY on a table that has no sort data
 		return nullptr;
 	}
-	auto sort_data = BuildSortData(transaction, GetColumns(), info.orders);
+	auto sort_data = BuildSortData(context, transaction, ParentSchema(), name, GetColumns(), info.orders);
 	if (sort_data && SortFieldsMatch(GetSortData(), *sort_data)) {
 		return nullptr;
 	}
@@ -1521,7 +1557,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterEntry(ClientContext &context, 
 	case AlterTableType::REMOVE_COLUMN:
 		return AlterTable(transaction, info.Cast<RemoveColumnInfo>());
 	case AlterTableType::ALTER_COLUMN_TYPE:
-		return AlterTable(transaction, info.Cast<ChangeColumnTypeInfo>());
+		return AlterTable(context, transaction, info.Cast<ChangeColumnTypeInfo>());
 	case AlterTableType::ADD_FIELD:
 		return AlterTable(transaction, info.Cast<AddFieldInfo>());
 	case AlterTableType::REMOVE_FIELD:
@@ -1531,7 +1567,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterEntry(ClientContext &context, 
 	case AlterTableType::SET_DEFAULT:
 		return AlterTable(transaction, info.Cast<SetDefaultInfo>());
 	case AlterTableType::SET_SORTED_BY:
-		return AlterTable(transaction, info.Cast<SetSortedByInfo>());
+		return AlterTable(context, transaction, info.Cast<SetSortedByInfo>());
 	case AlterTableType::SET_TABLE_OPTIONS:
 		return AlterTable(context, transaction, info.Cast<SetTableOptionsInfo>());
 	case AlterTableType::RESET_TABLE_OPTIONS:

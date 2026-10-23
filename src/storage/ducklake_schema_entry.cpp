@@ -138,8 +138,9 @@ DuckLakeSchemaEntry::CreateTableExtended(CatalogTransaction transaction, BoundCr
 	if (prebuilt_sort_data) {
 		table_entry->SetSortData(std::move(prebuilt_sort_data));
 	} else if (!base_info.sort_keys.empty()) {
-		table_entry->SetSortData(
-		    DuckLakeTableEntry::BuildSortData(duck_transaction, table_entry->GetColumns(), base_info.sort_keys));
+		table_entry->SetSortData(DuckLakeTableEntry::BuildSortData(transaction.GetContext(), duck_transaction, *this,
+		                                                           base_info.GetTableName(), table_entry->GetColumns(),
+		                                                           base_info.sort_keys));
 	}
 	if (!prebuilt_table_options.empty()) {
 		table_entry->SetTableOptions(std::move(prebuilt_table_options));

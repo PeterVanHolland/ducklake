@@ -844,7 +844,8 @@ PhysicalOperator &DuckLakeCatalog::PlanCreateTableAs(ClientContext &context, Phy
 		partition_data =
 		    DuckLakeTableEntry::BuildPartitionData(duck_transaction, columns, *field_data, create_info.partition_keys);
 	}
-	auto sort_data = DuckLakeTableEntry::BuildSortData(duck_transaction, columns, create_info.sort_keys);
+	auto sort_data = DuckLakeTableEntry::BuildSortData(context, duck_transaction, op.schema, create_info.GetTableName(),
+	                                                   columns, create_info.sort_keys);
 	auto table_options =
 	    DuckLakeTableEntry::ParseTableOptions(context, *this, create_info.options, columns, *field_data,
 	                                          partition_data.get(), create_info.GetTableName().GetIdentifierName());

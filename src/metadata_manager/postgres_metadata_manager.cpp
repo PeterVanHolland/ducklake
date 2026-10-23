@@ -230,6 +230,19 @@ string PostgresMetadataManager::CastStatsToTarget(const string &stats, const Log
 	return string();
 }
 
+string PostgresMetadataManager::StaleBoundSql(const string &bound, LogicalTypeId type) {
+	if (type != LogicalTypeId::DOUBLE) {
+		return DuckLakeMetadataManager::StaleBoundSql(bound, type);
+	}
+	// FloatBoundSql without the REAL to text cast, whose output depends on extra_float_digits
+	auto number = bound + "::double precision";
+	return StringUtil::Format(
+	    "(CASE WHEN %s ~ '^[-+]?([0-9]+\\.?[0-9]*|\\.[0-9]+)([eE][-+]?[0-9]+)?$' THEN CASE WHEN abs(%s) BETWEEN "
+	    "7.1e-46 AND 3.4028235e38 THEN length(trim('0' FROM regexp_replace(regexp_replace(%s, '[eE].*$', ''), "
+	    "'[^0-9]', '', 'g'))) <= 9 AND %s::real::double precision <> %s END END)",
+	    bound, number, bound, number, number);
+}
+
 PostgresMetadataManager::PostgresMetadataManager(DuckLakeTransaction &transaction)
     : DuckLakeMetadataManager(transaction) {
 }

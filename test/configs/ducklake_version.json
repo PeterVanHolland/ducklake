@@ -115,6 +115,14 @@
         "test/sql/delete/deletion_vector_replaced_twice.test",
         "test/sql/rewrite_data_files/rewrite_deletion_vectors.test"
       ]
+    },
+    {
+      "reason": "A catalog pinned to 1.0 does not use the table bounds of DOUBLE and timestamp columns of tables with added files or of columns retyped to DOUBLE, since DuckDB 1.5.6 may have stored them for another type",
+      "paths": [
+        "test/sql/add_files/add_files_complex_nested_stats_mre.test",
+        "test/sql/stats/alter_type_stats_reseed.test",
+        "test/sql/stats/null_first_bounds_other_catalog.test"
+      ]
     }
   ]
 }

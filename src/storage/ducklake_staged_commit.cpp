@@ -300,7 +300,7 @@ void DuckLakeStagedCommit::EmitDataFileRow(DuckLakeStagedRows &rows, const DuckL
 	for (auto &part : file.partition_values) {
 		rows.Add(DuckLakeStagedTableType::DATA_FILE_PARTITION,
 		         StringUtil::Format("(%llu, %llu, %s)", local_file_id, part.partition_column_idx,
-		                            DuckLakeUtil::PartitionValueLiteral(part.partition_value)));
+		                            DuckLakeUtil::TextLiteralOrNull(part.partition_value)));
 	}
 }
 
@@ -380,8 +380,9 @@ void DuckLakeStagedCommit::EmitCommitHeader(DuckLakeStagedRows &rows, const Duck
 	string next_cat = has_snapshot ? std::to_string(snap.next_catalog_id) : "NULL";
 	string next_file = has_snapshot ? std::to_string(snap.next_file_id) : "NULL";
 	rows.Add(DuckLakeStagedTableType::COMMIT_HEADER,
-	         StringUtil::Format("(%s, %s, %s, %s, %s, %s, %s, %s)", h.author.ToSQLString(),
-	                            h.commit_message.ToSQLString(), h.commit_extra_info.ToSQLString(), snap_id,
+	         StringUtil::Format("(%s, %s, %s, %s, %s, %s, %s, %s)", DuckLakeUtil::TextLiteralOrNull(h.author),
+	                            DuckLakeUtil::TextLiteralOrNull(h.commit_message),
+	                            DuckLakeUtil::TextLiteralOrNull(h.commit_extra_info), snap_id,
 	                            SQLString::ToString(data_path), SQLString::ToString(separator), next_cat, next_file));
 }
 

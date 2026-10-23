@@ -1,0 +1,90 @@
+# name: test/sql/data_inlining/flush_skips_nested_variant.test
+# description: Inlined rows with a VARIANT inside a LIST, STRUCT or MAP stay inlined, and the other tables still flush
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/flush_skips_nested_variant', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.t (c VARIANT[])
+
+statement ok
+CREATE TABLE lake.other (i INTEGER)
+
+statement ok
+INSERT INTO lake.t VALUES ([1::VARIANT, 'x'::VARIANT])
+
+statement ok
+INSERT INTO lake.other VALUES (1)
+
+# the Parquet writer cannot write a VARIANT below the root yet
+query III
+SELECT * FROM ducklake_flush_inlined_data('lake')
+----
+main	other	1
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 'other')
+----
+1
+
+query I
+SELECT c FROM lake.t
+----
+[1, x]
+
+statement ok
+INSERT INTO lake.other VALUES (2)
+
+statement ok
+CHECKPOINT lake
+
+statement ok
+SET VARIABLE other_files = (SELECT list(data_file) FROM ducklake_list_files('lake', 'other'))
+
+query I
+SELECT count(*) FROM read_parquet(getvariable('other_files'))
+----
+2
+
+statement error
+CALL ducklake_flush_inlined_data('lake', table_name => 't')
+----
+cannot be written to Parquet
+
+# an inlined table of an earlier schema version still flushes
+statement ok
+CREATE TABLE lake.s (i INTEGER)
+
+statement ok
+INSERT INTO lake.s VALUES (1)
+
+statement ok
+ALTER TABLE lake.s ADD COLUMN v STRUCT(x VARIANT)
+
+statement ok
+INSERT INTO lake.s VALUES (2, {'x': 1::VARIANT})
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('lake')
+----
+main	s	1
+
+query II
+SELECT i, v FROM lake.s ORDER BY i
+----
+1	NULL
+2	{'x': 1}
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 's')
+----
+1

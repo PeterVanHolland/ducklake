@@ -43,6 +43,7 @@ public:
 
 	bool MetadataExists() override;
 	bool InlinedDeletionTableExists(const string &table_name) override;
+	case_insensitive_set_t GetLegacyNamedInlinedTables() override;
 
 protected:
 	string MetadataExistsQuery() const override;

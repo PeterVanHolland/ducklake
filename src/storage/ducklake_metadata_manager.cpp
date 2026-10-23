@@ -632,7 +632,40 @@ void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	ExecuteMigration(V1_1MigrationQuery(has_additions), from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");
 }
 
-void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed) {
+case_insensitive_set_t DuckLakeMetadataManager::GetLegacyNamedInlinedTables() {
+	// the catalog knows the column names, probing every inlined table is slow
+	auto &context = *transaction.GetConnection().context;
+	auto &ducklake_catalog = transaction.GetCatalog();
+	auto &catalog = Catalog::GetCatalog(context, Identifier(ducklake_catalog.MetadataDatabaseName()));
+	auto &schema = catalog.GetSchema(context, ducklake_catalog.MetadataSchemaName());
+	auto legacy_row_id = DuckLakeInlinedColNames(false).row_id;
+	case_insensitive_set_t legacy_tables;
+	schema.Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
+		auto &name = entry.name.GetIdentifierName();
+		if (entry.type != CatalogType::TABLE_ENTRY || !StringUtil::StartsWith(name, "ducklake_inlined_data_")) {
+			return;
+		}
+		auto &columns = entry.Cast<TableCatalogEntry>().GetColumns();
+		if (columns.LogicalColumnCount() > 0 &&
+		    StringUtil::CIEquals(columns.GetColumn(LogicalIndex(0)).Name().GetIdentifierName(), legacy_row_id)) {
+			legacy_tables.insert(name);
+		}
+	});
+	return legacy_tables;
+}
+
+void DuckLakeMetadataManager::RepairLegacyInlinedTables() {
+	auto legacy_tables = GetLegacyNamedInlinedTables();
+	if (legacy_tables.empty()) {
+		return;
+	}
+	// a v1.0 session can also leave out schema versions, added first since the rename ends the repair
+	MigrateInlinedSchemaVersions();
+	MigrateInlinedColumnNames(false, &legacy_tables);
+}
+
+void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed,
+                                                        optional_ptr<const case_insensitive_set_t> legacy_tables) {
 	auto tables = Query(R"(
 SELECT idt.table_name AS inlined_table_name, tbl.table_name AS user_table_name
 FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
@@ -648,6 +681,9 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 	string renamed_probe;
 	for (auto &row : *tables) {
 		auto table_name = row.GetValue<string>(0);
+		if (legacy_tables && !legacy_tables->count(table_name)) {
+			continue;
+		}
 		auto user_table_name = row.IsNull(1) ? table_name : row.GetValue<string>(1);
 		if (!renamed_probe.empty()) {
 			renamed_probe += " UNION ALL ";
@@ -691,6 +727,11 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 				break;
 			}
 			if (user_columns.count(entry.second)) {
+				if (legacy_tables) {
+					// the attach of a v1.1 catalog does not fail for a table it cannot rename
+					table_renames.clear();
+					break;
+				}
 				throw InvalidInputException(
 				    "Failed to rename inlined-data metadata columns while migrating to v1.1: table \"%s\" has a "
 				    "column \"%s\" colliding with the renamed metadata column. Rename the column and call "
@@ -700,6 +741,9 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 			table_renames.push_back(entry);
 		}
 		if (unexpected_layout) {
+			if (legacy_tables) {
+				continue;
+			}
 			throw InvalidInputException(
 			    "Failed to rename inlined-data metadata columns of \"%s\" while migrating to v1.1: the table has "
 			    "an unexpected column layout",

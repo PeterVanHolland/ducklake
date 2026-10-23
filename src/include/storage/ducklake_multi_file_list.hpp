@@ -124,7 +124,7 @@ private:
 	shared_ptr<DuckLakeInlinedData> transaction_local_data;
 	//! Inlined data tables
 	mutable vector<DuckLakeInlinedTableInfo> inlined_data_tables;
-	//! The field ids a scan reads, set before its file list is read, with the snapshot id column under its own id
+	//! The field ids a scan reads, set before its file list is read
 	mutable unique_ptr<unordered_set<int32_t>> scan_field_ids;
 	//! The set of delete scans, only used when scanning deleted tuples using ducklake_table_deletions
 	mutable vector<DuckLakeDeleteScanEntry> delete_scans;

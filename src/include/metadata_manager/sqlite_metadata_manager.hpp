@@ -21,6 +21,9 @@ public:
 	}
 
 	bool TypeIsNativelySupported(const LogicalType &type) override;
+	bool ReadsInlinedDataInPages() const override {
+		return false;
+	}
 	bool DroppedTablesStayReadable() const override {
 		return false;
 	}

@@ -671,9 +671,6 @@ void DuckLakeMultiFileList::SetScanColumns(const vector<MultiFileColumnDefinitio
 	scan_field_ids = make_uniq<unordered_set<int32_t>>();
 	for (auto &column_id : column_ids) {
 		auto index = column_id.GetPrimaryIndex();
-		if (index == DuckLakeMultiFileReader::COLUMN_IDENTIFIER_SNAPSHOT_ID) {
-			scan_field_ids->insert(MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID);
-		}
 		if (index >= global_columns.size()) {
 			continue;
 		}
@@ -708,10 +705,12 @@ vector<DuckLakeFileListEntry> DuckLakeMultiFileList::ReadCommittedFiles(
 				continue;
 			}
 			if (scan_field_ids) {
+				// the inlined data reader orders the rows by their row id and begin snapshot
 				columns.erase(std::remove_if(columns.begin(), columns.end(),
 				                             [&](const MultiFileColumnDefinition &col) {
 					                             auto field_id = IntegerValue::Get(col.identifier);
 					                             return field_id != MultiFileReader::ROW_ID_FIELD_ID &&
+					                                    field_id != MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID &&
 					                                    scan_field_ids->count(field_id) == 0;
 				                             }),
 				              columns.end());

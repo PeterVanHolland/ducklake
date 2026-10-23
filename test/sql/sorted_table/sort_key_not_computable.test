@@ -1,0 +1,95 @@
+# name: test/sql/sorted_table/sort_key_not_computable.test
+# description: A sort key that no write can evaluate is rejected when it is set, instead of failing every later write
+# group: [sorted_table]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/sort_key_not_computable', DATA_INLINING_ROW_LIMIT 5)
+
+statement ok
+CREATE TABLE lake.t (id INTEGER, s VARCHAR)
+
+statement ok
+INSERT INTO lake.t VALUES (1, 'a')
+
+statement ok
+CREATE TABLE lake.other (x INTEGER)
+
+statement ok
+INSERT INTO lake.other VALUES (1)
+
+statement error
+ALTER TABLE lake.t SET SORTED BY ((SELECT 1))
+----
+subqueries are not allowed
+
+statement error
+ALTER TABLE lake.t SET SORTED BY (sum(id))
+----
+aggregate functions are not allowed
+
+statement error
+ALTER TABLE lake.t SET SORTED BY (row_number() OVER ())
+----
+window functions are not allowed
+
+statement error
+ALTER TABLE lake.t SET SORTED BY (id + 'x')
+----
+Could not choose a best candidate function
+
+statement error
+CREATE TABLE lake.c (a INTEGER) SORTED BY ((SELECT 1))
+----
+subqueries are not allowed
+
+statement error
+CREATE TABLE lake.c SORTED BY (sum(a)) AS SELECT 1 AS a
+----
+aggregate functions are not allowed
+
+# the rejected sorts left nothing behind, so writes and the catalog-wide maintenance work
+statement ok
+INSERT INTO lake.t SELECT range, 'r' FROM range(10, 20)
+
+statement ok
+CHECKPOINT lake
+
+query I
+SELECT count(*) FROM lake.t
+----
+11
+
+# expressions that writes can evaluate are still accepted
+statement ok
+ALTER TABLE lake.t SET SORTED BY (lower(s) DESC, id + 1)
+
+statement ok
+INSERT INTO lake.t VALUES (2, 'B')
+
+# a type change that leaves the sort key unable to be computed is rejected too
+statement ok
+CREATE TABLE lake.u (n INTEGER, s VARCHAR)
+
+statement ok
+ALTER TABLE lake.u SET SORTED BY (chr(n))
+
+statement error
+ALTER TABLE lake.u ALTER COLUMN n TYPE BIGINT
+----
+sort key
+
+statement ok
+INSERT INTO lake.u VALUES (66, 'x')
+
+query II
+SELECT n, s FROM lake.u
+----
+66	x

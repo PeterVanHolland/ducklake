@@ -115,7 +115,7 @@ SELECT count(*) FROM local_booleans WHERE v = 1
 ----
 1
 
-# Inlined bounds merged in the transaction of the retype
+# Inlined bounds merged with a file of the retyping transaction
 statement ok
 CREATE TABLE inlined_booleans (v BOOLEAN)
 
@@ -124,6 +124,9 @@ CALL ducklake.set_option('data_inlining_row_limit', 10, table_name => 'inlined_b
 
 statement ok
 INSERT INTO inlined_booleans VALUES (true)
+
+statement ok
+CALL ducklake.set_option('data_inlining_row_limit', 0, table_name => 'inlined_booleans')
 
 statement ok
 BEGIN

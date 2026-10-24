@@ -306,6 +306,8 @@ public:
 	virtual unique_ptr<QueryResult> Execute(string &query);
 	//! Runs the statements in a transaction of their own, rolled back when one of them fails
 	virtual unique_ptr<QueryResult> ExecuteInTransaction(string &query);
+	//! Runs statements that drop metadata tables atomically, failing where the drop would wait for their readers
+	virtual unique_ptr<QueryResult> ExecuteDropInTransaction(string &query);
 
 	virtual unique_ptr<QueryResult> Query(DuckLakeSnapshot snapshot, string &query);
 	virtual unique_ptr<QueryResult> Query(string &query);

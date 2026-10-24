@@ -1492,7 +1492,7 @@ void DuckLakeTransaction::DropEmptySupersededInlinedTablesClientSide() {
 		return metadata_manager->Query(q);
 	};
 	context.execute_in_transaction = [&](string q) {
-		return metadata_manager->ExecuteInTransaction(q);
+		return metadata_manager->ExecuteDropInTransaction(q);
 	};
 	context.invalidate_schema_cache = [&](idx_t schema_version) {
 		ducklake_catalog.InvalidateSchemaCache(schema_version);
@@ -1573,7 +1573,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		return metadata_manager->Query(q);
 	};
 	context.execute_in_transaction = [&](string q) {
-		return metadata_manager->ExecuteInTransaction(q);
+		return metadata_manager->ExecuteDropInTransaction(q);
 	};
 	context.query_metadata_with_snapshot = [&](DuckLakeSnapshot s, string q) {
 		return metadata_manager->Query(s, q);

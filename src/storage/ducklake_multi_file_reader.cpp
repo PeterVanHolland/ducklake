@@ -43,7 +43,8 @@ static bool ColumnsHaveFieldIds(const vector<MultiFileColumnDefinition> &columns
 	return !columns.empty();
 }
 
-static optional_idx FindColumnByFieldId(const vector<MultiFileColumnDefinition> &columns, int32_t field_id) {
+optional_idx DuckLakeMultiFileReader::FindColumnByFieldId(const vector<MultiFileColumnDefinition> &columns,
+                                                          int32_t field_id) {
 	for (idx_t col_idx = 0; col_idx < columns.size(); col_idx++) {
 		auto &identifier = columns[col_idx].identifier;
 		if (identifier.type().id() == LogicalTypeId::INTEGER && !identifier.IsNull() &&
@@ -387,6 +388,14 @@ ReaderInitializeType DuckLakeMultiFileReader::InitializeReader(MultiFileReaderDa
 		auto &reader = *reader_data.reader;
 		auto snapshot_col = FindColumnByFieldId(reader.columns, LAST_UPDATED_SEQUENCE_NUMBER_ID);
 		if (!snapshot_col.IsValid()) {
+			// without the column, every row has the snapshot of the file
+			auto &snapshot_id = file_entry.snapshot_id;
+			auto &filter_min = file_entry.snapshot_filter_min;
+			auto &filter_max = file_entry.snapshot_filter_max;
+			if (snapshot_id.IsValid() && (!filter_min.IsValid() || filter_min.GetIndex() <= snapshot_id.GetIndex()) &&
+			    (!filter_max.IsValid() || snapshot_id.GetIndex() <= filter_max.GetIndex())) {
+				return result;
+			}
 			throw InvalidInputException("Snapshot filter was specified but snapshot column was not present in file");
 		}
 		idx_t snapshot_col_id = snapshot_col.GetIndex();

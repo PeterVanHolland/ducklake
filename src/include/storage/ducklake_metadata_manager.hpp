@@ -687,6 +687,9 @@ private:
 	                              bool is_encrypted);
 	DuckLakeFileData ReadDeleteFile(DuckLakeTableEntry &table, const QueryResultRow &row, idx_t &col_idx,
 	                                bool is_encrypted);
+	//! Add the files that begin where a data file was deleted, to which a DuckDB 1.4 rewrite moved its rows
+	void AddDeletionSuccessors(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
+	                           vector<DuckLakeDeleteScanEntry> &files);
 
 	bool IsEncrypted() const;
 

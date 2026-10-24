@@ -1,4 +1,5 @@
 #include "storage/ducklake_metadata_manager.hpp"
+#include "storage/ducklake_transaction_changes.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/path.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
@@ -1544,6 +1545,30 @@ vector<DuckLakeGlobalStatsInfo> DuckLakeMetadataManager::GetGlobalTableStats(Duc
 	auto global_stats = ParseGlobalTableStats(*result);
 	FillMissingTableSizes(global_stats, [&](string query) { return Query(snapshot, query); });
 	return global_stats;
+}
+
+bool DuckLakeMetadataManager::GetTablesChangedSince(idx_t snapshot_id, DuckLakeSnapshot snapshot,
+                                                    set<TableIndex> &result) {
+	auto changes = Query(snapshot, StringUtil::Format(R"(
+SELECT changes_made
+FROM {METADATA_CATALOG}.ducklake_snapshot_changes
+WHERE snapshot_id > %d AND snapshot_id <= {SNAPSHOT_ID}
+)",
+	                                                  snapshot_id));
+	changes->ThrowIfError("Failed to get the tables changed since a snapshot from DuckLake: ");
+	for (auto &row : *changes) {
+		if (row.IsNull(0)) {
+			return false;
+		}
+		auto info = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(0));
+		for (auto tables :
+		     {&info.altered_tables, &info.dropped_tables, &info.inserted_tables, &info.tables_deleted_from,
+		      &info.tables_compacted, &info.tables_merge_adjacent, &info.tables_rewrite_delete,
+		      &info.tables_inserted_inlined, &info.tables_deleted_inlined, &info.tables_flushed_inlined}) {
+			result.insert(tables->begin(), tables->end());
+		}
+	}
+	return true;
 }
 
 map<TableIndex, idx_t> DuckLakeMetadataManager::GetTableRecordCounts(DuckLakeSnapshot snapshot) {

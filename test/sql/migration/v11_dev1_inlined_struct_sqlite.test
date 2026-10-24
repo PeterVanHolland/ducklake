@@ -1,0 +1,45 @@
+# name: test/sql/migration/v11_dev1_inlined_struct_sqlite.test
+# description: the migration from 1.1-dev1 rewrites the STRUCT literals that dev builds inlined into a SQLite catalog
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+require sqlite_scanner
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/v11_dev1_inlined_struct.sqlite' AS lake (DATA_PATH '{TEST_DIR}/v11_dev1_inlined_struct_files/', METADATA_CATALOG 'meta', DUCKLAKE_VERSION '1.1', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.t (s STRUCT(d DATE, v VARCHAR))
+
+statement ok
+INSERT INTO lake.t VALUES ({'d': DATE '2020-01-01', 'v': 'it''s'})
+
+# simulate the text and the version of a dev build
+statement ok
+UPDATE meta.ducklake_inlined_data_1_1 SET s = $${'d': CAST('2020-01-01' AS DATE), 'v': 'it''s'}$$
+
+statement ok
+UPDATE meta.ducklake_metadata SET value = '1.1-dev1' WHERE key = 'version'
+
+statement ok
+DETACH lake
+
+statement ok
+CALL enable_logging(level => 'debug')
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/v11_dev1_inlined_struct.sqlite' AS lake (DATA_PATH '{TEST_DIR}/v11_dev1_inlined_struct_files/', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+# the catalog has every v1.1 addition, so the migration rewrites the literal without its DDL
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'DuckLakeMetadata' AND contains(message, 'ADD COLUMN')
+----
+0
+
+query II
+SELECT s.d, s.v = 'it''s' FROM lake.t
+----
+2020-01-01	true

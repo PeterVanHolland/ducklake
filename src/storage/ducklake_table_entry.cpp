@@ -1087,6 +1087,9 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFiel
 		// added files can hold finer timestamps than the bounds kept at the coarser unit
 		result.refined_timestamp_fields.push_back(source_id.GetFieldIndex());
 	}
+	if (source_type.id() == LogicalTypeId::BOOLEAN) {
+		result.boolean_to_number_fields.push_back(source_id.GetFieldIndex());
+	}
 
 	// re-create with the new type
 	auto column_data = source_id.GetColumnData().Copy();

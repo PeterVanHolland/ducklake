@@ -37,6 +37,8 @@ struct ColumnChangeInfo {
 	vector<FieldIndex> dropped_fields;
 	//! Fields retyped to a finer timestamp unit
 	vector<FieldIndex> refined_timestamp_fields;
+	//! Fields retyped from BOOLEAN, which only widens to numbers
+	vector<FieldIndex> boolean_to_number_fields;
 
 	void DropField(const DuckLakeFieldId &field_id);
 };

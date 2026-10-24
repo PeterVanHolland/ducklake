@@ -1596,8 +1596,13 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		return metadata_manager->WriteNewInlinedData(snapshot, new_data, new_tables, new_inlined_data_tables_result,
 		                                             inlined_inserts);
 	};
+	// a commit reads the stats of the tables it changes in one query, not of the whole lake
+	auto commit_tables = transaction_changes.GetChangedTables();
+	for (auto &entry : state->local_changes.Changes()) {
+		commit_tables.push_back(entry.first);
+	}
 	context.get_table_stats = [&](TableIndex table_id) {
-		return ducklake_catalog.GetTableStats(*this, table_id);
+		return ducklake_catalog.GetTableStats(*this, GetSnapshot(), table_id, &commit_tables);
 	};
 	context.column_holds_values = [&](TableIndex table_id, FieldIndex column_id, idx_t snapshot_id) {
 		return ducklake_catalog.ColumnHoldsValues(table_id, column_id, snapshot_id);

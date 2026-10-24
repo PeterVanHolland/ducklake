@@ -196,10 +196,13 @@ public:
 	                                                        DuckLakeFieldData &field_data,
 	                                                        const vector<unique_ptr<ParsedExpression>> &partition_keys);
 	//! Build a DuckLakeSort from a vector of OrderByNode (allocates a transaction-local id).
-	static unique_ptr<DuckLakeSort> BuildSortData(DuckLakeTransaction &transaction, const ColumnList &columns,
-	                                              const vector<OrderByNode> &orders);
+	static unique_ptr<DuckLakeSort> BuildSortData(ClientContext &context, DuckLakeTransaction &transaction,
+	                                              SchemaCatalogEntry &schema, const Identifier &table_name,
+	                                              const ColumnList &columns, const vector<OrderByNode> &orders);
 	//! Build a DuckLakeSort from bare SORTED BY expressions (wraps each ASC/ORDER_DEFAULT).
-	static unique_ptr<DuckLakeSort> BuildSortData(DuckLakeTransaction &transaction, const ColumnList &columns,
+	static unique_ptr<DuckLakeSort> BuildSortData(ClientContext &context, DuckLakeTransaction &transaction,
+	                                              SchemaCatalogEntry &schema, const Identifier &table_name,
+	                                              const ColumnList &columns,
 	                                              const vector<unique_ptr<ParsedExpression>> &sort_keys);
 
 private:
@@ -212,13 +215,18 @@ private:
 	unique_ptr<CatalogEntry> AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
 	                                    RenameColumnInfo &info);
 	unique_ptr<CatalogEntry> AlterTable(ClientContext &context, DuckLakeTransaction &transaction, AddColumnInfo &info);
-	unique_ptr<CatalogEntry> AlterTable(DuckLakeTransaction &transaction, RemoveColumnInfo &info);
-	unique_ptr<CatalogEntry> AlterTable(DuckLakeTransaction &transaction, ChangeColumnTypeInfo &info);
+	unique_ptr<CatalogEntry> AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
+	                                    RemoveColumnInfo &info);
+	unique_ptr<CatalogEntry> AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
+	                                    ChangeColumnTypeInfo &info);
 	unique_ptr<CatalogEntry> AlterTable(DuckLakeTransaction &transaction, AddFieldInfo &info);
 	unique_ptr<CatalogEntry> AlterTable(DuckLakeTransaction &transaction, RemoveFieldInfo &info);
 	unique_ptr<CatalogEntry> AlterTable(DuckLakeTransaction &transaction, RenameFieldInfo &info);
 	unique_ptr<CatalogEntry> AlterTable(DuckLakeTransaction &transaction, SetDefaultInfo &info);
-	unique_ptr<CatalogEntry> AlterTable(DuckLakeTransaction &transaction, SetSortedByInfo &info);
+	unique_ptr<CatalogEntry> AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
+	                                    SetSortedByInfo &info);
+	//! Refuse an ALTER after which a sort key that binds now would no longer bind
+	void CheckSortStillBinds(ClientContext &context, DuckLakeTableEntry &altered);
 	unique_ptr<CatalogEntry> AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
 	                                    SetTableOptionsInfo &info);
 	unique_ptr<CatalogEntry> AlterTable(ClientContext &context, DuckLakeTransaction &transaction,

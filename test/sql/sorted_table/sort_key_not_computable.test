@@ -168,3 +168,48 @@ ALTER TABLE lake.f ADD COLUMN s.c INTEGER
 
 statement ok
 INSERT INTO lake.f VALUES ({'a': 1, 'b': 2, 'c': 3})
+
+statement ok
+CREATE TABLE lake.r2 (a INTEGER) SORTED BY (r2.a.chr())
+
+statement error
+ALTER TABLE lake.r2 RENAME TO renamed
+----
+sort key
+
+statement ok
+ALTER TABLE lake.u RENAME TO u2
+
+statement ok
+INSERT INTO lake.u2 VALUES (67, 'y')
+
+# a refused ALTER leaves the rows inlined in the transaction as they were
+statement ok
+SET default_transaction_invalidation_policy='SYNTACTIC_ERRORS_DO_NOT_INVALIDATE'
+
+statement ok
+CREATE TABLE lake.l (a INTEGER, b INTEGER) SORTED BY (l.struct_insert(c := 0), #2)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO lake.l VALUES (1, 2)
+
+statement error
+ALTER TABLE lake.l ADD COLUMN c INTEGER DEFAULT 99
+----
+sort key
+
+statement error
+ALTER TABLE lake.l DROP COLUMN b
+----
+sort key
+
+statement ok
+COMMIT
+
+query II
+SELECT * FROM lake.l
+----
+1	2

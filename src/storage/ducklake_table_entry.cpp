@@ -842,6 +842,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 
 	RequireNextColumnId(transaction);
 	auto new_entry = make_uniq<DuckLakeTableEntry>(*this, table_info, LocalChangeType::ADD_COLUMN);
+	CheckSortStillBinds(context, *new_entry);
 
 	if (transaction.HasTransactionInlinedData(GetTableId())) {
 		auto &new_table = new_entry->Cast<DuckLakeTableEntry>();
@@ -868,7 +869,8 @@ void ColumnChangeInfo::DropField(const DuckLakeFieldId &field_id) {
 	}
 }
 
-unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &transaction, RemoveColumnInfo &info) {
+unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
+                                                        RemoveColumnInfo &info) {
 	auto create_info = GetInfo();
 	auto &table_info = create_info->Cast<CreateTableInfo>();
 	auto removed_index = GetColumnIndex(info.removed_column, info.if_column_exists);
@@ -905,10 +907,6 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 			    });
 		}
 	}
-	if (transaction.HasTransactionInlinedData(GetTableId())) {
-		transaction.RemoveColumnFromLocalInlinedData(GetTableId(), removed_index, field_id);
-	}
-
 	for (idx_t c_idx = 0; c_idx < table_info.constraints.size(); c_idx++) {
 		auto &constraint = table_info.constraints[c_idx];
 		if (constraint->type == ConstraintType::NOT_NULL) {
@@ -939,8 +937,13 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	auto change_info = make_uniq<ColumnChangeInfo>();
 	change_info->DropField(field_id);
 
-	return make_uniq<DuckLakeTableEntry>(*this, table_info, LocalChange::RemoveColumn(field_id.GetFieldIndex()),
-	                                     std::move(change_info));
+	auto new_entry = make_uniq<DuckLakeTableEntry>(
+	    *this, table_info, LocalChange::RemoveColumn(field_id.GetFieldIndex()), std::move(change_info));
+	CheckSortStillBinds(context, *new_entry);
+	if (transaction.HasTransactionInlinedData(GetTableId())) {
+		transaction.RemoveColumnFromLocalInlinedData(GetTableId(), removed_index, field_id);
+	}
+	return std::move(new_entry);
 }
 
 static void ExtractDefaultValue(const DuckLakeColumnData &col_data, DuckLakeColumnInfo &info) {
@@ -1492,19 +1495,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 	return nullptr;
 }
 
-void DuckLakeTableEntry::CheckSortStillBinds(ClientContext &context, AlterTableType type, DuckLakeTableEntry &altered) {
-	switch (type) {
-	case AlterTableType::ADD_COLUMN:
-	case AlterTableType::REMOVE_COLUMN:
-	case AlterTableType::RENAME_COLUMN:
-	case AlterTableType::ALTER_COLUMN_TYPE:
-	case AlterTableType::ADD_FIELD:
-	case AlterTableType::REMOVE_FIELD:
-	case AlterTableType::RENAME_FIELD:
-		break;
-	default:
-		return;
-	}
+void DuckLakeTableEntry::CheckSortStillBinds(ClientContext &context, DuckLakeTableEntry &altered) {
 	auto sort_data = GetSortData();
 	auto altered_sort_data = altered.GetSortData();
 	if (!sort_data || !altered_sort_data) {
@@ -1524,12 +1515,27 @@ void DuckLakeTableEntry::CheckSortStillBinds(ClientContext &context, AlterTableT
 	}
 }
 
+//! ALTERs that can keep a sort key from binding (ADD and DROP COLUMN check before changing inlined data)
+static bool AlterCanUnbindSort(AlterTableType type) {
+	switch (type) {
+	case AlterTableType::RENAME_TABLE:
+	case AlterTableType::RENAME_COLUMN:
+	case AlterTableType::ALTER_COLUMN_TYPE:
+	case AlterTableType::ADD_FIELD:
+	case AlterTableType::REMOVE_FIELD:
+	case AlterTableType::RENAME_FIELD:
+		return true;
+	default:
+		return false;
+	}
+}
+
 unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(ClientContext &context, DuckLakeTransaction &transaction,
                                                    AlterTableInfo &info) {
 	auto result = AlterEntry(context, transaction, info);
-	if (result) {
-		// writes sort by the sort keys, so an ALTER of the columns must not keep them from binding
-		CheckSortStillBinds(context, info.alter_table_type, result->Cast<DuckLakeTableEntry>());
+	if (result && AlterCanUnbindSort(info.alter_table_type)) {
+		// writes sort by the sort keys, so an ALTER of the table must not keep them from binding
+		CheckSortStillBinds(context, result->Cast<DuckLakeTableEntry>());
 	}
 	if (!result || !transaction.HasTransactionInlinedData(GetTableId())) {
 		return result;
@@ -1576,7 +1582,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterEntry(ClientContext &context, 
 	case AlterTableType::ADD_COLUMN:
 		return AlterTable(context, transaction, info.Cast<AddColumnInfo>());
 	case AlterTableType::REMOVE_COLUMN:
-		return AlterTable(transaction, info.Cast<RemoveColumnInfo>());
+		return AlterTable(context, transaction, info.Cast<RemoveColumnInfo>());
 	case AlterTableType::ALTER_COLUMN_TYPE:
 		return AlterTable(context, transaction, info.Cast<ChangeColumnTypeInfo>());
 	case AlterTableType::ADD_FIELD:

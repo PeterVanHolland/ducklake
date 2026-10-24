@@ -108,7 +108,7 @@ public:
 	LocalTableChangeIterationHelper Changes() const;
 	void CleanupFiles(DatabaseInstance &db);
 	void CleanupFiles(ClientContext &context, TableIndex table_id);
-	void GetWrittenFiles(vector<string> &result) const;
+	void GetWrittenFiles(vector<string> &result, bool include_added_files) const;
 	bool HasTransactionLocalInserts(TableIndex table_id) const;
 	bool HasTransactionInlinedData(TableIndex table_id) const;
 	vector<DuckLakeDataFile> GetTransactionLocalFiles(TableIndex table_id) const;
@@ -360,6 +360,8 @@ public:
 	                            TransactionChangeInformation &changes);
 
 private:
+	//! Syncs the files of the transaction, and rolls it back when that fails
+	void SyncWrittenFiles();
 	void FlushChanges();
 	void BeginMetadataTransaction();
 	void FlushNameMapCacheInvalidations();

@@ -87,6 +87,17 @@ void SQLiteMetadataManager::RenameInlinedColumns(const map<string, vector<pair<s
 	result->ThrowIfError("Failed to rename inlined-data metadata columns while migrating to v1.1: ");
 }
 
+//! Reads the range of the change log through sqlite_query, since sqlite_scan pushes no filter into SQLite
+string SQLiteMetadataManager::GetChangesSinceQuery(idx_t snapshot_id, DuckLakeSnapshot snapshot) const {
+	auto native_query =
+	    StringUtil::Format("SELECT CAST(snapshot_id AS TEXT) AS snapshot_id, changes_made FROM "
+	                       "main.ducklake_snapshot_changes WHERE snapshot_id > %d AND snapshot_id <= %d",
+	                       snapshot_id, snapshot.snapshot_id);
+	return StringUtil::Format("SELECT snapshot_id::BIGINT AS snapshot_id, changes_made FROM "
+	                          "sqlite_query({METADATA_CATALOG_NAME_LITERAL}, %s)",
+	                          SQLString(native_query));
+}
+
 //! The declared type of a stats column, since sqlite_query returns every value as VARCHAR
 static string StatsColumnType(const string &stat) {
 	if (stat == "value_count" || stat == "null_count" || stat == "column_size_bytes") {

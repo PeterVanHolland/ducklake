@@ -39,6 +39,7 @@ public:
 	string GetColumnTypeInternal(const LogicalType &type) override;
 	string GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
 	                                      const string &metadata_table_prefix) override;
+	string GetChangesSinceQuery(idx_t snapshot_id, DuckLakeSnapshot snapshot) const override;
 };
 
 } // namespace duckdb

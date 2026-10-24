@@ -16,10 +16,10 @@ ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lk (DATA_PATH '{DATA_PATH}/read_after
 loop i 0 6
 
 statement ok
-CREATE TABLE lk.t${i}(i INTEGER)
+CREATE TABLE lk.t{i}(i INTEGER)
 
 statement ok
-INSERT INTO lk.t${i} VALUES (${i})
+INSERT INTO lk.t{i} VALUES ({i})
 
 endloop
 
@@ -54,13 +54,49 @@ statement ok
 CALL disable_logging()
 
 # only the stats of the changed table are read again
-query II
+query III
 SELECT count(*) FILTER (WHERE NOT regexp_matches(message, 'WHERE\s+table_id\s+IN\s+\(')),
+	count(*) FILTER (WHERE regexp_matches(message, 'WHERE\s+table_id\s+IN\s+\(')),
 	coalesce(bool_and(regexp_extract(message, 'table_id\s+IN\s+\(([0-9, ]+)\)', 1) = (SELECT table_id::VARCHAR FROM __ducklake_metadata_lk.ducklake_table WHERE table_name = 't2' AND end_snapshot IS NULL)), true)
 FROM duckdb_logs
 WHERE type = 'QueryLog' AND regexp_matches(message, 'SELECT\s+table_id,\s*column_id,\s*record_count')
 ----
-0	true
+0	1	true
+
+# the tables changed by one commit are read together, also after a lookup of an unchanged table
+statement ok con2
+BEGIN
+
+statement ok con2
+INSERT INTO lk.t3 VALUES (30)
+
+statement ok con2
+INSERT INTO lk.t4 VALUES (40)
+
+statement ok con2
+COMMIT
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+query III
+SELECT (SELECT count(*) FROM lk.t5), (SELECT count(*) FROM lk.t3), (SELECT count(*) FROM lk.t4)
+----
+1	2	2
+
+statement ok
+CALL disable_logging()
+
+query II
+SELECT count(*) FILTER (WHERE NOT regexp_matches(message, 'WHERE\s+table_id\s+IN\s+\(')),
+	count(*) FILTER (WHERE regexp_matches(message, 'WHERE\s+table_id\s+IN\s+\('))
+FROM duckdb_logs
+WHERE type = 'QueryLog' AND regexp_matches(message, 'SELECT\s+table_id,\s*column_id,\s*record_count')
+----
+0	1
 
 # a commit that changes most tables reads the stats of every table again
 statement ok con2
@@ -69,7 +105,7 @@ BEGIN
 loop i 0 4
 
 statement ok con2
-INSERT INTO lk.t${i} VALUES (100)
+INSERT INTO lk.t{i} VALUES (100)
 
 endloop
 
@@ -107,7 +143,7 @@ INSERT INTO lk.t3 VALUES (300)
 query III
 SELECT (SELECT count(*) FROM lk.t3), (SELECT count(*) FROM lk.t4), (SELECT count(*) FROM lk.t5)
 ----
-3	1	1
+4	2	1
 
 # reads after several commits since the last full load
 statement ok con2
@@ -119,7 +155,7 @@ INSERT INTO lk.t5 VALUES (500, 5)
 query IIII
 SELECT (SELECT count(*) FROM lk.t3), (SELECT count(*) FROM lk.t4), (SELECT count(*) FROM lk.t5), (SELECT max(i) FROM lk.t5)
 ----
-3	2	2	500
+4	3	2	500
 
 # a snapshot without its changes, as when an older release expired them with the snapshot, is not trusted
 query I

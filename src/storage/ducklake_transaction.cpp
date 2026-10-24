@@ -828,6 +828,17 @@ void DuckLakeTransaction::Commit() {
 		UndoConfigOptions();
 		throw;
 	}
+	if (rewrote_config_options) {
+		// the retried commit wrote its options last, also where another transaction set them meanwhile
+		for (auto &change : config_option_undo) {
+			if (change.reset) {
+				ducklake_catalog.ResetConfigOption(change.option);
+			} else {
+				ducklake_catalog.SetConfigOption(change.option);
+			}
+		}
+		rewrote_config_options = false;
+	}
 	FlushNameMapCacheInvalidations();
 	connection.reset();
 	state->local_changes.Clear();
@@ -1567,6 +1578,9 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		connection->BeginTransaction();
 		snapshot.reset();
 	};
+	context.rewrite_before_retry = [&]() {
+		RewriteConfigOptions();
+	};
 	context.query_metadata = [&](string q) {
 		return metadata_manager->Query(q);
 	};
@@ -1701,6 +1715,21 @@ void DuckLakeTransaction::SetConfigOption(const DuckLakeConfigOption &option) {
 void DuckLakeTransaction::ResetConfigOption(const DuckLakeConfigOption &option) {
 	if (metadata_manager->ResetConfigOption(option)) {
 		config_option_undo.push_back(ducklake_catalog.ResetConfigOption(option));
+	}
+}
+
+void DuckLakeTransaction::RewriteConfigOptions() {
+	if (metadata_manager->CommitsEachStatement()) {
+		// the option writes were committed when they were made, the rollback kept them
+		return;
+	}
+	for (auto &change : config_option_undo) {
+		if (change.reset) {
+			metadata_manager->ResetConfigOption(change.option);
+		} else {
+			metadata_manager->SetConfigOption(change.option);
+		}
+		rewrote_config_options = true;
 	}
 }
 

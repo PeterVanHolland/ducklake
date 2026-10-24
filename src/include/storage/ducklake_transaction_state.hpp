@@ -59,6 +59,9 @@ struct DuckLakeCommitContext {
 	//! Resets per-attempt state before a retry.
 	std::function<void()> prepare_retry = []() {
 	};
+	//! Writes again what the transaction wrote to the metadata before its commit, in a retried attempt.
+	std::function<void()> rewrite_before_retry = []() {
+	};
 	// LCOV_EXCL_STOP
 	//! Runs a metadata-DB query during post-commit cleanup.
 	std::function<unique_ptr<QueryResult>(string)> query_metadata;

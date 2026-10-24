@@ -622,6 +622,8 @@ protected:
 	enum class StatsCastType : uint8_t { ORDERING, MIN, MAX };
 
 	virtual string GetLatestSnapshotQuery() const;
+	//! The changes of the snapshots after snapshot_id up to snapshot
+	virtual string GetChangesSinceQuery(idx_t snapshot_id, DuckLakeSnapshot snapshot) const;
 
 	virtual string GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
 	                                              const string &metadata_table_prefix);

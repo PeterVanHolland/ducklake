@@ -120,3 +120,23 @@ query IIII
 SELECT (SELECT count(*) FROM lk.t3), (SELECT count(*) FROM lk.t4), (SELECT count(*) FROM lk.t5), (SELECT max(i) FROM lk.t5)
 ----
 3	2	2	500
+
+# a snapshot without its changes, as when an older release expired them with the snapshot, is not trusted
+query I
+SELECT count(*) FROM lk.t1
+----
+2
+
+statement ok con2
+INSERT INTO lk.t1 VALUES (700)
+
+statement ok con2
+INSERT INTO lk.t0 VALUES (800)
+
+statement ok
+DELETE FROM __ducklake_metadata_lk.ducklake_snapshot_changes WHERE snapshot_id = (SELECT max(snapshot_id) - 1 FROM __ducklake_metadata_lk.ducklake_snapshot_changes)
+
+query II
+SELECT (SELECT count(*) FROM lk.t1 WHERE i = 700), (SELECT count(*) FROM lk.t0 WHERE i = 800)
+----
+1	1

@@ -1132,41 +1132,44 @@ bool DuckLakeCatalog::TryGetUnchangedTableStats(DuckLakeTransaction &transaction
                                                 shared_ptr<DuckLakeTableStatsCacheEntry> &result,
                                                 vector<TableIndex> &load_tables) {
 	DuckLakeSnapshot base;
-	idx_t changes_snapshot_id;
-	set<TableIndex> changed_tables;
-	bool changed_loaded;
+	bool table_changed;
 	{
-		lock_guard<mutex> guard(stats_load_lock);
+		unique_lock<mutex> guard(stats_load_lock);
 		if (!has_stats_load_snapshot) {
 			return false;
 		}
 		base = stats_load_snapshot;
-		changes_snapshot_id = stats_changes_snapshot_id;
-		changed_tables = stats_changed_tables;
-		changed_loaded = stats_changed_tables_loaded;
-	}
-	// a commit that changes the schema or many tables reads the stats of every table again
-	if (base.snapshot_id >= snapshot.snapshot_id || base.schema_version != snapshot.schema_version ||
-	    changes_snapshot_id > snapshot.snapshot_id) {
-		return false;
-	}
-	if (changes_snapshot_id < snapshot.snapshot_id) {
-		// only the commits after the snapshot whose changes are known are read
-		if (!transaction.GetMetadataManager().GetTablesChangedSince(changes_snapshot_id, snapshot, changed_tables)) {
+		// a commit that changes the schema reads the stats of every table again, as does an older snapshot
+		if (base.snapshot_id >= snapshot.snapshot_id || base.schema_version != snapshot.schema_version ||
+		    stats_changes_snapshot_id > snapshot.snapshot_id) {
 			return false;
 		}
-		changed_loaded = false;
-		lock_guard<mutex> guard(stats_load_lock);
-		if (stats_load_snapshot.snapshot_id == base.snapshot_id && stats_changes_snapshot_id < snapshot.snapshot_id) {
+		if (stats_changes_snapshot_id < snapshot.snapshot_id) {
+			// only the commits after the snapshot whose changes are known are read
+			auto changes_snapshot_id = stats_changes_snapshot_id;
+			auto changed_tables = stats_changed_tables;
+			guard.unlock();
+			if (!transaction.GetMetadataManager().GetTablesChangedSince(changes_snapshot_id, snapshot,
+			                                                            changed_tables)) {
+				return false;
+			}
+			guard.lock();
+			if (stats_load_snapshot.snapshot_id != base.snapshot_id ||
+			    stats_changes_snapshot_id != changes_snapshot_id) {
+				// another lookup moved the state meanwhile
+				return false;
+			}
 			stats_changes_snapshot_id = snapshot.snapshot_id;
-			stats_changed_tables = changed_tables;
+			stats_changed_tables = std::move(changed_tables);
 			stats_changed_tables_loaded = false;
 		}
+		// a commit that changed many tables reads the stats of every table again
+		if (stats_changed_tables.size() * 2 > table_count) {
+			return false;
+		}
+		table_changed = stats_changed_tables.find(table_id) != stats_changed_tables.end();
 	}
-	if (changed_tables.size() * 2 > table_count) {
-		return false;
-	}
-	if (changed_tables.find(table_id) == changed_tables.end()) {
+	if (!table_changed) {
 		auto entry =
 		    GetObjectCacheInstance().Get<DuckLakeTableStatsCacheEntry>(StatsCacheKey(base.next_file_id, table_id));
 		if (entry && entry->schema_version == snapshot.schema_version) {
@@ -1174,12 +1177,11 @@ bool DuckLakeCatalog::TryGetUnchangedTableStats(DuckLakeTransaction &transaction
 			return true;
 		}
 	}
-	if (!changed_loaded) {
-		load_tables.assign(changed_tables.begin(), changed_tables.end());
-		lock_guard<mutex> guard(stats_load_lock);
-		if (stats_changes_snapshot_id == snapshot.snapshot_id) {
-			stats_changed_tables_loaded = true;
-		}
+	// the table is read again, with the changed tables when no lookup read them for this snapshot yet
+	lock_guard<mutex> guard(stats_load_lock);
+	if (stats_changes_snapshot_id == snapshot.snapshot_id && !stats_changed_tables_loaded) {
+		stats_changed_tables_loaded = true;
+		load_tables.assign(stats_changed_tables.begin(), stats_changed_tables.end());
 	}
 	return true;
 }

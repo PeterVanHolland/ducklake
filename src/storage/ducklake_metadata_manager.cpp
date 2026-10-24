@@ -1547,20 +1547,23 @@ vector<DuckLakeGlobalStatsInfo> DuckLakeMetadataManager::GetGlobalTableStats(Duc
 	return global_stats;
 }
 
+string DuckLakeMetadataManager::GetChangesSinceQuery(idx_t snapshot_id, DuckLakeSnapshot snapshot) const {
+	return StringUtil::Format("SELECT snapshot_id, changes_made FROM {METADATA_CATALOG}.ducklake_snapshot_changes "
+	                          "WHERE snapshot_id > %d AND snapshot_id <= %d",
+	                          snapshot_id, snapshot.snapshot_id);
+}
+
 bool DuckLakeMetadataManager::GetTablesChangedSince(idx_t snapshot_id, DuckLakeSnapshot snapshot,
                                                     set<TableIndex> &result) {
-	auto changes = Query(snapshot, StringUtil::Format(R"(
-SELECT changes_made
-FROM {METADATA_CATALOG}.ducklake_snapshot_changes
-WHERE snapshot_id > %d AND snapshot_id <= {SNAPSHOT_ID}
-)",
-	                                                  snapshot_id));
+	auto changes = Query(GetChangesSinceQuery(snapshot_id, snapshot));
 	changes->ThrowIfError("Failed to get the tables changed since a snapshot from DuckLake: ");
+	idx_t change_count = 0;
 	for (auto &row : *changes) {
-		if (row.IsNull(0)) {
+		if (row.IsNull(1)) {
 			return false;
 		}
-		auto info = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(0));
+		change_count++;
+		auto info = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(1));
 		for (auto tables :
 		     {&info.altered_tables, &info.dropped_tables, &info.inserted_tables, &info.tables_deleted_from,
 		      &info.tables_compacted, &info.tables_merge_adjacent, &info.tables_rewrite_delete,
@@ -1568,7 +1571,8 @@ WHERE snapshot_id > %d AND snapshot_id <= {SNAPSHOT_ID}
 			result.insert(tables->begin(), tables->end());
 		}
 	}
-	return true;
+	// every snapshot has its changes, unless an older release expired them with the snapshot
+	return change_count == snapshot.snapshot_id - snapshot_id;
 }
 
 map<TableIndex, idx_t> DuckLakeMetadataManager::GetTableRecordCounts(DuckLakeSnapshot snapshot) {

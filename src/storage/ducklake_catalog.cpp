@@ -1056,7 +1056,9 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 	bool load_all = false;
 	shared_ptr<DuckLakeTableStatsCacheEntry> unchanged;
 	vector<TableIndex> changed_tables;
-	if (TryGetUnchangedTableStats(transaction, snapshot, table_id, table_map.size(), unchanged, changed_tables)) {
+	// a commit reads the changes of no further snapshot, its own lookups name the tables it needs
+	if (TryGetUnchangedTableStats(transaction, snapshot, table_id, table_map.size(), !load_tables, unchanged,
+	                              changed_tables)) {
 		if (unchanged) {
 			if (!unchanged->has_stats) {
 				return nullptr;
@@ -1126,7 +1128,7 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 }
 
 bool DuckLakeCatalog::TryGetUnchangedTableStats(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
-                                                TableIndex table_id, idx_t table_count,
+                                                TableIndex table_id, idx_t table_count, bool read_changes,
                                                 shared_ptr<DuckLakeTableStatsCacheEntry> &result,
                                                 vector<TableIndex> &load_tables) {
 	DuckLakeSnapshot base;
@@ -1143,6 +1145,9 @@ bool DuckLakeCatalog::TryGetUnchangedTableStats(DuckLakeTransaction &transaction
 			return false;
 		}
 		if (stats_changes_snapshot_id < snapshot.snapshot_id) {
+			if (!read_changes) {
+				return false;
+			}
 			// only the commits after the snapshot whose changes are known are read
 			auto changes_snapshot_id = stats_changes_snapshot_id;
 			auto changed_tables = stats_changed_tables;

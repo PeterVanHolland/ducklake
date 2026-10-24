@@ -432,8 +432,8 @@ private:
 	void PutCacheEntry(string key, shared_ptr<ObjectCacheEntry> entry);
 	//! The stats of a table from the last full load when no later commit changed it, else the tables to read again
 	bool TryGetUnchangedTableStats(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot, TableIndex table_id,
-	                               idx_t table_count, shared_ptr<DuckLakeTableStatsCacheEntry> &result,
-	                               vector<TableIndex> &load_tables);
+	                               idx_t table_count, bool read_changes,
+	                               shared_ptr<DuckLakeTableStatsCacheEntry> &result, vector<TableIndex> &load_tables);
 	void PutStatsCacheEntries(idx_t next_file_id, vector<pair<TableIndex, shared_ptr<ObjectCacheEntry>>> entries);
 	//! Requires cache_entries_lock
 	void TrackCacheEntry(const string &key, const shared_ptr<ObjectCacheEntry> &entry);

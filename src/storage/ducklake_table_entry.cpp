@@ -1501,17 +1501,24 @@ void DuckLakeTableEntry::CheckSortStillBinds(ClientContext &context, DuckLakeTab
 	if (!sort_data || !altered_sort_data) {
 		return;
 	}
-	// a sort key that already does not bind, e.g. after its macro was dropped, does not hold up the ALTER
-	if (!GetSortBindError(context, ParentSchema(), GetColumns(), name, DuckLakeCompactor::ParseSortOrders(*sort_data))
-	         .empty()) {
-		return;
-	}
-	auto error = GetSortBindError(context, altered.ParentSchema(), altered.GetColumns(), altered.name,
-	                              DuckLakeCompactor::ParseSortOrders(*altered_sort_data));
-	if (!error.empty()) {
-		throw BinderException("Cannot alter table \"%s\": a sort key of the table could no longer be computed (%s). "
-		                      "Use RESET SORTED BY first",
-		                      name.GetIdentifierName(), error);
+	auto orders = DuckLakeCompactor::ParseSortOrders(*sort_data);
+	auto altered_orders = DuckLakeCompactor::ParseSortOrders(*altered_sort_data);
+	for (idx_t i = 0; i < orders.size() && i < altered_orders.size(); i++) {
+		vector<OrderByNode> key;
+		key.push_back(std::move(orders[i]));
+		// a sort key that already does not bind, e.g. after its macro was dropped, does not hold up the ALTER
+		if (!GetSortBindError(context, ParentSchema(), GetColumns(), name, key).empty()) {
+			continue;
+		}
+		vector<OrderByNode> altered_key;
+		altered_key.push_back(std::move(altered_orders[i]));
+		auto error = GetSortBindError(context, altered.ParentSchema(), altered.GetColumns(), altered.name, altered_key);
+		if (!error.empty()) {
+			throw BinderException(
+			    "Cannot alter table \"%s\": a sort key of the table could no longer be computed (%s). "
+			    "Use RESET SORTED BY first",
+			    name.GetIdentifierName(), error);
+		}
 	}
 }
 

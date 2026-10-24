@@ -124,6 +124,21 @@ DROP MACRO lake.q_key
 statement ok
 ALTER TABLE lake.q ALTER COLUMN n TYPE BIGINT
 
+# but the other sort keys are still checked
+statement ok
+CREATE MACRO lake.v_key(x) AS x
+
+statement ok
+CREATE TABLE lake.v (n INTEGER) SORTED BY (v_key(n), chr(n))
+
+statement ok
+DROP MACRO lake.v_key
+
+statement error
+ALTER TABLE lake.v ALTER COLUMN n TYPE BIGINT
+----
+sort key
+
 # the other ALTERs of the columns are checked the same way
 statement ok
 CREATE TABLE lake.d (a INTEGER, b INTEGER) SORTED BY (chr(#2))
@@ -213,3 +228,25 @@ query II
 SELECT * FROM lake.l
 ----
 1	2
+
+statement ok
+CREATE TABLE lake.keep (a INTEGER)
+
+statement ok
+INSERT INTO lake.keep VALUES (42)
+
+statement ok
+BEGIN
+
+statement error
+CREATE OR REPLACE TABLE lake.keep (a INTEGER) SORTED BY (sum(a))
+----
+aggregate functions are not allowed
+
+statement ok
+COMMIT
+
+query I
+SELECT * FROM lake.keep
+----
+42

@@ -47,6 +47,10 @@ ErrorData DuckLakeTransactionManager::CommitTransaction(ClientContext &context, 
 		RemoveTransaction(transaction);
 		throw;
 	}
+	if (error.HasError() && ducklake_transaction.CommitOutcomeUnknown()) {
+		lock_guard<mutex> l(transaction_lock);
+		ducklake_transaction.GetWrittenFiles(in_doubt_files);
+	}
 	// the caller does not roll back a failed commit, so it is released here without removing its files
 	RemoveTransaction(transaction);
 	return error;
@@ -54,6 +58,7 @@ ErrorData DuckLakeTransactionManager::CommitTransaction(ClientContext &context, 
 
 void DuckLakeTransactionManager::GetWrittenFiles(vector<string> &result) {
 	lock_guard<mutex> l(transaction_lock);
+	result.insert(result.end(), in_doubt_files.begin(), in_doubt_files.end());
 	for (auto &entry : transactions) {
 		entry.second->GetWrittenFiles(result);
 	}

@@ -224,6 +224,8 @@ private:
 	unique_ptr<CatalogEntry> AlterTable(DuckLakeTransaction &transaction, SetDefaultInfo &info);
 	unique_ptr<CatalogEntry> AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
 	                                    SetSortedByInfo &info);
+	//! Refuse an ALTER of the columns after which a sort key that binds now would no longer bind
+	void CheckSortStillBinds(ClientContext &context, AlterTableType type, DuckLakeTableEntry &altered);
 	unique_ptr<CatalogEntry> AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
 	                                    SetTableOptionsInfo &info);
 	unique_ptr<CatalogEntry> AlterTable(ClientContext &context, DuckLakeTransaction &transaction,

@@ -123,3 +123,48 @@ DROP MACRO lake.q_key
 
 statement ok
 ALTER TABLE lake.q ALTER COLUMN n TYPE BIGINT
+
+# the other ALTERs of the columns are checked the same way
+statement ok
+CREATE TABLE lake.d (a INTEGER, b INTEGER) SORTED BY (chr(#2))
+
+statement error
+ALTER TABLE lake.d DROP COLUMN b
+----
+sort key
+
+statement ok
+CREATE TABLE lake.r (n INTEGER) SORTED BY (n.chr())
+
+statement error
+ALTER TABLE lake.r RENAME COLUMN n TO m
+----
+sort key
+
+statement ok
+CREATE TABLE lake.f (s STRUCT(a INTEGER, b INTEGER)) SORTED BY (struct_extract(s, 'a'))
+
+statement error
+ALTER TABLE lake.f DROP COLUMN s.a
+----
+sort key
+
+statement error
+ALTER TABLE lake.f RENAME COLUMN s.a TO c
+----
+sort key
+
+statement ok
+CREATE TABLE lake.g (s STRUCT(b INTEGER)) SORTED BY (struct_insert(s, a := 0))
+
+statement error
+ALTER TABLE lake.g ADD COLUMN s.a INTEGER
+----
+sort key
+
+# ALTERs that keep the sort keys computable still work
+statement ok
+ALTER TABLE lake.f ADD COLUMN s.c INTEGER
+
+statement ok
+INSERT INTO lake.f VALUES ({'a': 1, 'b': 2, 'c': 3})

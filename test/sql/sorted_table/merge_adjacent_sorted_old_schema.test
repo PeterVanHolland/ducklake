@@ -476,7 +476,7 @@ SELECT id FROM lake.r
 3
 1
 
-# a positional sort key whose column was dropped reports the error of the latest table
+# dropping the column of a positional sort key is refused, as the key would be out of range
 statement ok
 CREATE TABLE lake.o (id BIGINT, v BIGINT)
 
@@ -489,10 +489,19 @@ INSERT INTO lake.o VALUES (3, 20)
 statement ok
 ALTER TABLE lake.o SET SORTED BY (#2)
 
-statement ok
-ALTER TABLE lake.o DROP COLUMN v
-
 statement error
-SELECT files_processed, files_created FROM ducklake_merge_adjacent_files('lake', 'o')
+ALTER TABLE lake.o DROP COLUMN v
 ----
 Positional reference 2 out of range
+
+query II
+SELECT files_processed, files_created FROM ducklake_merge_adjacent_files('lake', 'o')
+----
+2	1
+
+query I
+SELECT id FROM lake.o
+----
+2
+3
+1

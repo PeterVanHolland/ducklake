@@ -1142,19 +1142,6 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 	auto new_field_id = TypePromotion(field_id, info.target_type, *change_info, optional_idx());
 	ValidateAddedFieldsCanSkipStats(field_id, *new_field_id);
 	col.SetType(new_field_id->Type());
-	auto sort_data = GetSortData();
-	if (sort_data) {
-		// writes sort by the expressions of the sort keys, so a type change must not keep them from binding
-		auto orders = DuckLakeCompactor::ParseSortOrders(*sort_data);
-		if (GetSortBindError(context, ParentSchema(), GetColumns(), name, orders).empty()) {
-			auto error = GetSortBindError(context, ParentSchema(), table_info.columns, name, orders);
-			if (!error.empty()) {
-				throw BinderException("Cannot change the type of column \"%s\" to %s: a sort key of the table cannot "
-				                      "be computed for it (%s). Use RESET SORTED BY first",
-				                      col.Name().GetIdentifierName(), info.target_type, error);
-			}
-		}
-	}
 	auto new_default = new_field_id->GetDefault();
 	if (new_default) {
 		col.SetDefaultValue(std::move(new_default));
@@ -1505,9 +1492,45 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 	return nullptr;
 }
 
+void DuckLakeTableEntry::CheckSortStillBinds(ClientContext &context, AlterTableType type, DuckLakeTableEntry &altered) {
+	switch (type) {
+	case AlterTableType::ADD_COLUMN:
+	case AlterTableType::REMOVE_COLUMN:
+	case AlterTableType::RENAME_COLUMN:
+	case AlterTableType::ALTER_COLUMN_TYPE:
+	case AlterTableType::ADD_FIELD:
+	case AlterTableType::REMOVE_FIELD:
+	case AlterTableType::RENAME_FIELD:
+		break;
+	default:
+		return;
+	}
+	auto sort_data = GetSortData();
+	auto altered_sort_data = altered.GetSortData();
+	if (!sort_data || !altered_sort_data) {
+		return;
+	}
+	// a sort key that already does not bind, e.g. after its macro was dropped, does not hold up the ALTER
+	if (!GetSortBindError(context, ParentSchema(), GetColumns(), name, DuckLakeCompactor::ParseSortOrders(*sort_data))
+	         .empty()) {
+		return;
+	}
+	auto error = GetSortBindError(context, altered.ParentSchema(), altered.GetColumns(), altered.name,
+	                              DuckLakeCompactor::ParseSortOrders(*altered_sort_data));
+	if (!error.empty()) {
+		throw BinderException("Cannot alter table \"%s\": a sort key of the table could no longer be computed (%s). "
+		                      "Use RESET SORTED BY first",
+		                      name.GetIdentifierName(), error);
+	}
+}
+
 unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(ClientContext &context, DuckLakeTransaction &transaction,
                                                    AlterTableInfo &info) {
 	auto result = AlterEntry(context, transaction, info);
+	if (result) {
+		// writes sort by the sort keys, so an ALTER of the columns must not keep them from binding
+		CheckSortStillBinds(context, info.alter_table_type, result->Cast<DuckLakeTableEntry>());
+	}
 	if (!result || !transaction.HasTransactionInlinedData(GetTableId())) {
 		return result;
 	}

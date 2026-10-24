@@ -1,0 +1,130 @@
+# name: test/sql/data_inlining/inlined_old_schema_version_catalogs.test
+# description: Catalogs of old schema versions are reused across reads and reloaded after an invalidation
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/inlined_old_schema_version_catalogs.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/inlined_old_schema_version_catalogs', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.t(a INT)
+
+statement ok
+INSERT INTO lake.t VALUES (1), (2)
+
+# the rows of t stay inlined at two old schema versions
+statement ok
+ALTER TABLE lake.t ADD COLUMN b INT
+
+statement ok
+INSERT INTO lake.t VALUES (3, 30)
+
+# p and q share one schema version
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE lake.p(a INT)
+
+statement ok
+CREATE TABLE lake.q(a INT)
+
+statement ok
+COMMIT
+
+statement ok
+INSERT INTO lake.p VALUES (4)
+
+statement ok
+INSERT INTO lake.q VALUES (5)
+
+statement ok
+CREATE TABLE lake.other(i INT)
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/inlined_old_schema_version_catalogs')
+
+statement ok
+CALL enable_logging('DuckLakeMetadata')
+
+loop i 0 3
+
+query I
+SELECT sum(a) FROM lake.t
+----
+6
+
+endloop
+
+statement ok
+COMMENT ON TABLE lake.other IS 'x'
+
+query I
+SELECT sum(a) FROM lake.t
+----
+6
+
+statement ok
+COMMENT ON TABLE lake.other IS 'y'
+
+query I
+SELECT sum(a) FROM lake.t
+----
+6
+
+# each old schema version of t is loaded once, also after changes to another table
+query I
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table tbl%'
+----
+7
+
+statement ok
+SET VARIABLE loads = (SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table tbl%')
+
+# expiring the old snapshots invalidates the schema version p and q share, so q loads it again
+statement ok
+BEGIN
+
+query I
+SELECT sum(a) FROM lake.p
+----
+4
+
+statement ok
+CALL ducklake_expire_snapshots('lake', older_than => now())
+
+query I
+SELECT sum(a) FROM lake.q
+----
+5
+
+query I
+SELECT sum(a) FROM lake.p
+----
+4
+
+statement ok
+COMMIT
+
+query I
+SELECT sum(a) FROM lake.p
+----
+4
+
+statement ok
+CALL disable_logging()
+
+query I
+SELECT count(*) - getvariable('loads') FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table tbl%'
+----
+2

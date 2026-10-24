@@ -250,3 +250,17 @@ query I
 SELECT * FROM lake.keep
 ----
 42
+
+# as for a CHECK constraint, IF NOT EXISTS still reports a sort key that does not bind
+statement error
+CREATE TABLE IF NOT EXISTS lake.keep (a INTEGER) SORTED BY (sum(a))
+----
+aggregate functions are not allowed
+
+statement error
+CREATE TABLE IF NOT EXISTS lake.keep SORTED BY (sum(a)) AS SELECT 1 AS a
+----
+aggregate functions are not allowed
+
+statement ok
+CREATE TABLE IF NOT EXISTS lake.keep (a INTEGER) SORTED BY (a)

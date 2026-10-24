@@ -37,6 +37,7 @@ public:
 	void RenameInlinedColumns(const map<string, vector<pair<string, string>>> &renames) override;
 
 	string GetColumnTypeInternal(const LogicalType &type) override;
+	LogicalType StoredMetadataType(const LogicalType &type) override;
 	string GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
 	                                      const string &metadata_table_prefix) override;
 };

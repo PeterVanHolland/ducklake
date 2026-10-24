@@ -1054,34 +1054,32 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 	// one query for the whole snapshot or for the given tables, caching the tables without stats as well
 	vector<TableIndex> cache_tables;
 	bool load_all = false;
-	if (!load_tables) {
-		shared_ptr<DuckLakeTableStatsCacheEntry> unchanged;
-		vector<TableIndex> changed_tables;
-		if (TryGetUnchangedTableStats(transaction, snapshot, table_id, table_map.size(), unchanged, changed_tables)) {
-			if (unchanged) {
-				if (!unchanged->has_stats) {
-					return nullptr;
-				}
-				auto *raw = unchanged.get();
-				return shared_ptr<DuckLakeTableStats>(std::move(unchanged), &raw->stats);
+	shared_ptr<DuckLakeTableStatsCacheEntry> unchanged;
+	vector<TableIndex> changed_tables;
+	if (TryGetUnchangedTableStats(transaction, snapshot, table_id, table_map.size(), unchanged, changed_tables)) {
+		if (unchanged) {
+			if (!unchanged->has_stats) {
+				return nullptr;
 			}
-			cache_tables.push_back(table_id);
-			for (auto &changed_table : changed_tables) {
-				if (changed_table != table_id && table_map.find(changed_table) != table_map.end()) {
-					cache_tables.push_back(changed_table);
-				}
-			}
-		} else {
-			load_all = true;
-			for (auto &table_entry : table_map) {
-				cache_tables.push_back(table_entry.first);
-			}
+			auto *raw = unchanged.get();
+			return shared_ptr<DuckLakeTableStats>(std::move(unchanged), &raw->stats);
+		}
+		if (load_tables) {
+			changed_tables.insert(changed_tables.end(), load_tables->begin(), load_tables->end());
+		}
+	} else if (!load_tables) {
+		load_all = true;
+		for (auto &table_entry : table_map) {
+			cache_tables.push_back(table_entry.first);
 		}
 	} else {
+		changed_tables = *load_tables;
+	}
+	if (!load_all) {
 		unordered_set<idx_t> seen;
 		cache_tables.push_back(table_id);
 		seen.insert(table_id.index);
-		for (auto &load_table : *load_tables) {
+		for (auto &load_table : changed_tables) {
 			if (table_map.find(load_table) != table_map.end() && seen.insert(load_table.index).second) {
 				cache_tables.push_back(load_table);
 			}

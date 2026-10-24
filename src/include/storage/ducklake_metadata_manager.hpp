@@ -203,7 +203,7 @@ public:
 	//! Check if the inlined data tables of this metadata backend can store the values of the chunk
 	virtual bool CanInlineValues(DataChunk &chunk);
 	//! Check if this metadata manager supports the DuckDB Appender API for fast inserts
-	//! Returns true for DuckDB metadata, false for external databases (Postgres, SQLite)
+	//! Returns true for DuckDB and SQLite metadata, false for Postgres and Quack
 	virtual bool SupportsAppender() const {
 		return true;
 	}
@@ -230,6 +230,10 @@ public:
 	virtual bool IsRetryableCommitError(const string &) const {
 		return false;
 	}
+	//! Advice added to the error of a commit that failed for good
+	virtual string CommitErrorHint(const string &) const {
+		return string();
+	}
 
 	//! Run the commit retry loop with the metadata server handling retries.
 	virtual void FlushChangesServerSide(DuckLakeTransaction &transaction, DuckLakeSnapshot transaction_snapshot,
@@ -238,9 +242,15 @@ public:
 
 	virtual void ClearCache() {
 	}
+	//! Whether a table that a commit creates is only found once the cache is cleared
+	virtual bool NewTablesRequireCacheClear() const {
+		return true;
+	}
 
 	void MarkPendingCacheClear() {
-		pending_cache_clear = true;
+		if (NewTablesRequireCacheClear()) {
+			pending_cache_clear = true;
+		}
 	}
 	bool TakePendingCacheClear() {
 		bool pending = pending_cache_clear;
@@ -254,6 +264,10 @@ public:
 	//! Maximum number of columns of a table supported by this backend
 	virtual idx_t MaxColumnCount() const {
 		return NumericLimits<idx_t>::Maximum();
+	}
+	//! Names of the system columns that the tables of this backend have
+	virtual vector<string> SystemColumnNames() const {
+		return {};
 	}
 
 	//! Why the rows of a table with the given columns cannot be inlined, empty when they can
@@ -402,6 +416,10 @@ public:
 	//! via GetCatalogForSnapshot) since the diff is computed against it.
 	static string WriteNewPartitionKeys(const vector<DuckLakePartitionInfo> &existing_partitions,
 	                                    const vector<DuckLakePartitionInfo> &new_partitions);
+	//! Maps the id of a last new spec that equals the committed spec, which is not written, to the committed id
+	static unordered_map<idx_t, idx_t>
+	GetUnchangedPartitionIds(const vector<DuckLakePartitionInfo> &existing_partitions,
+	                         const vector<DuckLakePartitionInfo> &new_partitions);
 	//! Emits the sort-key diff SQL. Caller supplies the existing sort state (fetched via
 	//! GetCatalogForSnapshot) since the diff is computed against it.
 	static string WriteNewSortKeys(const vector<DuckLakeSortInfo> &existing_sorts,
@@ -415,8 +433,13 @@ public:
 	//! Rewrite the bounds of committed files and tables written while a widened column was FLOAT
 	static string WriteFloatWidenedStats(const map<TableIndex, set<FieldIndex>> &widened_columns,
 	                                     const map<TableIndex, set<FieldIndex>> &cleared_columns, idx_t next_file_id);
+	//! Clear the bounds of added files of the columns retyped to a finer timestamp unit, and of their tables
+	static string WriteRefinedTimestampStats(const map<TableIndex, set<FieldIndex>> &refined_columns,
+	                                         idx_t next_file_id);
 	static string WriteExpiredColumnTags(const vector<DuckLakeDroppedColumn> &dropped_columns);
 	static string WriteNewColumns(const vector<DuckLakeNewColumn> &new_columns);
+	//! Columns added and dropped in the same commit, which begin and end in its snapshot
+	static string WriteDroppedNewColumns(const vector<DuckLakeNewColumn> &columns);
 	static string WriteNewTags(const vector<DuckLakeTagInfo> &new_tags);
 	static string WriteNewTableOptions(const vector<DuckLakeConfigOption> &new_options);
 	static string WriteNewColumnTags(const vector<DuckLakeColumnTagInfo> &new_tags);
@@ -517,9 +540,10 @@ public:
 	static string RefreshTableSizesSql(const set<TableIndex> &table_ids);
 	static SnapshotChangeInfo
 	GetSnapshotAndStatsAndChanges(SnapshotAndStats &current_snapshot,
-	                              const std::function<unique_ptr<QueryResult>(string)> &executor,
-	                              bool include_exactness);
-	static string GetSnapshotAndStatsAndChangesQuery(bool include_exactness);
+	                              const std::function<unique_ptr<QueryResult>(string)> &executor, const string &query);
+	static string SnapshotAndStatsAndChangesQuery(bool include_exactness);
+	//! The query of the conflict check, which must read the latest snapshot and the table stats consistently
+	virtual string GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot snapshot, bool include_exactness) const;
 	static SnapshotChangeInfo ParseSnapshotAndStatsAndChanges(QueryResult &result, SnapshotAndStats &current_snapshot);
 	virtual unique_ptr<DuckLakeSnapshot> GetSnapshot();
 	virtual unique_ptr<DuckLakeSnapshot> GetSnapshot(BoundAtClause &at_clause, SnapshotBound bound,
@@ -570,12 +594,18 @@ public:
 	virtual void MigrateV03(bool allow_failures = false);
 	virtual void MigrateV04();
 	virtual void MigrateV10(bool from_dev1 = false);
+	//! Whether the catalog already has every metadata table and column of v1.1
+	bool HasV1_1Additions();
 	//! Renames inlined metadata columns to the prefixed variants, skipping already renamed tables
 	virtual void MigrateInlinedColumnNames(bool probe_renamed);
+	//! Renames the given (old name, new name) columns of each inlined table
+	virtual void RenameInlinedColumns(const map<string, vector<pair<string, string>>> &renames);
 	//! Adds the schema version rows of inlined tables that older versions registered without one
 	void MigrateInlinedSchemaVersions();
 	//! Restores the defaults that older versions dropped when they renamed a struct field
 	void MigrateRenamedFieldDefaults();
+	//! Clears the bounds that older versions may have stored in the type of a file or of an earlier column type
+	void MigrateRetypedBounds();
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
 	virtual void MigrateInlinedDataTypes() {
 	}
@@ -592,8 +622,8 @@ protected:
 
 	virtual string GetLatestSnapshotQuery() const;
 
-	static string GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
-	                                             const string &metadata_table_prefix);
+	virtual string GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
+	                                              const string &metadata_table_prefix);
 	//! The snapshot placeholders of the query are replaced later, unless an override does it
 	virtual string GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                                     const FilterPushdownInfo *filter_info,
@@ -605,7 +635,7 @@ protected:
 	//! Wrap field selections with list aggregation of struct objects (DBMS-specific)
 	//! For DuckDB: LIST({'key1': val1, 'key2': val2, ...})
 	//! For Postgres: jsonb_agg(jsonb_build_object('key1', val1, 'key2', val2, ...))
-	static string ListAggregation(const vector<pair<string, string>> &fields);
+	static string ListAggregation(const vector<pair<string, string>> &fields, const string &order = string());
 	//! Parse tag list from ListAggregation value
 	static vector<DuckLakeTag> LoadTags(const Value &tag_map);
 	static vector<DuckLakeViewColumnTag> LoadViewColumnTags(const Value &list);
@@ -640,7 +670,7 @@ protected:
 	string GetColumnDefinitions(const vector<DuckLakeColumnInfo> &columns);
 	string GetKnownFilesForCleanupQuery() const;
 
-	//! Optimized data file writing using DuckDB Appender API (only for DuckDB metadata manager)
+	//! Optimized data file writing using DuckDB Appender API (DuckDB and SQLite metadata managers)
 	string WriteNewDataFilesWithAppender(DuckLakeSnapshot &commit_snapshot, const vector<DuckLakeFileInfo> &new_files,
 	                                     const vector<DuckLakeTableInfo> &new_tables,
 	                                     vector<DuckLakeSchemaInfo> &new_schemas_result);
@@ -681,8 +711,8 @@ protected:
 	string GenerateFilterTreeCondition(const DuckLakeFilterNode &node, FilterSQLResult &result,
 	                                   bool splice_into_parent = false);
 	virtual FilterSQLResult ConvertFilterPushdownToSQL(const FilterPushdownInfo &filter_info);
-	static string GenerateCTESectionFromRequirements(const map<idx_t, CTERequirement> &requirements,
-	                                                 TableIndex table_id, const string &metadata_table_prefix);
+	string GenerateCTESectionFromRequirements(const map<idx_t, CTERequirement> &requirements, TableIndex table_id,
+	                                          const string &metadata_table_prefix);
 	//! Join each column's stats CTE once. Leading newline per join, empty when there are none.
 	static string GenerateStatsJoinList(const map<idx_t, CTERequirement> &requirements);
 	virtual bool ValueIsFinite(const Value &val);

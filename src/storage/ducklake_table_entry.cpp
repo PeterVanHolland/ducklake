@@ -618,6 +618,9 @@ DuckLakePartitionField GetPartitionField(const DuckLakeCatalog &ducklake_catalog
 			if (!bucket_value) {
 				throw InvalidInputException("Bucket count must be an integer");
 			}
+			if (bucket_value->IsNull()) {
+				throw InvalidInputException("Bucket count cannot be NULL");
+			}
 			auto bucket_count = bucket_value->GetValue<int64_t>();
 			if (bucket_count <= 0) {
 				throw InvalidInputException("Bucket count must be positive");

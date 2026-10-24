@@ -172,6 +172,8 @@ public:
 	static DuckLakeColumnInfo ConvertColumn(const string &name, const LogicalType &type,
 	                                        const DuckLakeFieldId &field_id);
 	void RequireNextColumnId(DuckLakeTransaction &transaction);
+	//! The column id of the next added column, every column id the table gave out is below it
+	idx_t GetNextColumnId(DuckLakeTransaction &transaction);
 
 	const string &DataPath() const;
 	virtual_column_map_t GetVirtualColumns() const override;

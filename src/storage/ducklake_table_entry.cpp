@@ -827,6 +827,11 @@ void DuckLakeTableEntry::RequireNextColumnId(DuckLakeTransaction &transaction) {
 	next_column_id = metadata_manager.GetNextColumnId(GetTableId());
 }
 
+idx_t DuckLakeTableEntry::GetNextColumnId(DuckLakeTransaction &transaction) {
+	RequireNextColumnId(transaction);
+	return next_column_id.GetIndex();
+}
+
 unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
                                                         AddColumnInfo &info) {
 	DuckLakeUtil::ValidateInlinedSystemColumn(ParentCatalog().Cast<DuckLakeCatalog>(), context,

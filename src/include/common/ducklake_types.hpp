@@ -27,6 +27,9 @@ public:
 	static string ToString(const LogicalType &str);
 	static void CheckSupportedType(const LogicalType &type, DuckLakeVersion version);
 	static void CheckSupportedTypes(const ColumnList &columns, DuckLakeVersion version);
+	//! Whether a VARIANT is nested inside a LIST, STRUCT or MAP, which the Parquet writer cannot write yet
+	static bool HasNestedVariant(const LogicalType &type);
+	static bool HasNestedVariant(const ColumnList &columns);
 
 	//! VARCHAR and BLOB, whose values can be the text NULL
 	static bool IsStringType(const LogicalType &type);

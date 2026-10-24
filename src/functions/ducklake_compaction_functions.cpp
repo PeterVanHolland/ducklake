@@ -13,6 +13,7 @@
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
 #include "duckdb/planner/operator/logical_extension_operator.hpp"
 #include "storage/ducklake_compaction.hpp"
+#include "common/ducklake_types.hpp"
 #include "duckdb/common/multi_file/multi_file_function.hpp"
 #include "storage/ducklake_multi_file_list.hpp"
 #include "duckdb/planner/tableref/bound_at_clause.hpp"
@@ -308,10 +309,15 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 	auto &latest_table = latest_entry ? latest_entry->Cast<DuckLakeTableEntry>() : table;
 	auto &latest_field_data = latest_table.GetFieldData();
 	const idx_t latest_schema_version = snapshot.schema_version;
+	// the Parquet writer cannot write a VARIANT nested in another type yet, not even as NULL
+	const bool latest_has_nested_variant = DuckLakeTypes::HasNestedVariant(latest_table.GetColumns());
 	unordered_map<idx_t, bool> merges_into_latest_schema;
 	auto can_merge_into_latest = [&](idx_t schema_version) -> bool {
 		if (type != CompactionType::MERGE_ADJACENT_TABLES) {
 			// REWRITE_DELETES assumes the source and target schemas match - never merge across schemas
+			return false;
+		}
+		if (latest_has_nested_variant) {
 			return false;
 		}
 		if (schema_version == latest_schema_version) {
@@ -348,6 +354,21 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 		return result;
 	};
 
+	unordered_map<idx_t, bool> nested_variant_schemas;
+	auto writes_nested_variant = [&](idx_t schema_version) -> bool {
+		if (schema_version == latest_schema_version) {
+			return latest_has_nested_variant;
+		}
+		auto cached = nested_variant_schemas.find(schema_version);
+		if (cached != nested_variant_schemas.end()) {
+			return cached->second;
+		}
+		auto version_table = catalog.GetTableAtSchemaVersion(transaction, table_id, schema_version);
+		bool result = version_table && DuckLakeTypes::HasNestedVariant(version_table->GetColumns());
+		nested_variant_schemas[schema_version] = result;
+		return result;
+	};
+
 	// iterate over the files and split into separate compaction groups
 	compaction_map_t<DuckLakeCompactionCandidates> candidates;
 	for (idx_t file_idx = 0; file_idx < files.size(); file_idx++) {
@@ -373,6 +394,9 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 		// construct the compaction group for this file - i.e. the set of candidate files we can compact it with
 		DuckLakeCompactionGroup group;
 		if (!can_merge_into_latest(candidate.schema_version)) {
+			if (writes_nested_variant(candidate.schema_version)) {
+				continue;
+			}
 			// incompatible with the latest schema - keep this file isolated in its own schema_version group
 			group.schema_version = candidate.schema_version;
 		}

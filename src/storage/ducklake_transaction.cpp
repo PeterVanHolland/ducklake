@@ -73,19 +73,27 @@ static void ForEachDeleteFile(TABLE_CHANGES &table_changes, FUNC &&callback) {
 	}
 }
 
+template <class FUNC>
+static void ForEachWrittenFile(const LocalTableDataChanges &table_changes, bool include_added_files, FUNC &&callback) {
+	for (auto &file : table_changes.new_data_files) {
+		if (include_added_files || file.created_by_ducklake) {
+			callback(file.file_name, true);
+		}
+	}
+	ForEachDeleteFile(table_changes, [&](const DuckLakeDeleteFile &file) { callback(file.file_name, false); });
+	for (auto &compaction : table_changes.compactions) {
+		for (auto &file : compaction.written_files) {
+			callback(file.file_name, false);
+		}
+	}
+}
+
 void LocalTableDataChanges::AddWrittenFiles(vector<string> &data_files, vector<string> &other_files,
                                             bool include_added_files) const {
-	for (auto &file : new_data_files) {
-		if (include_added_files || file.created_by_ducklake) {
-			data_files.push_back(file.file_name);
-		}
-	}
-	ForEachDeleteFile(*this, [&](const DuckLakeDeleteFile &file) { other_files.push_back(file.file_name); });
-	for (auto &compaction : compactions) {
-		for (auto &file : compaction.written_files) {
-			other_files.push_back(file.file_name);
-		}
-	}
+	ForEachWrittenFile(*this, include_added_files, [&](const string &file_name, bool is_data_file) {
+		auto &files = is_data_file ? data_files : other_files;
+		files.push_back(file_name);
+	});
 }
 
 void LocalTableChanges::Clear() {
@@ -103,11 +111,13 @@ void LocalTableChanges::CleanupFiles(DatabaseInstance &db) {
 	lock_guard<mutex> guard(lock);
 	for (auto &entry : changes) {
 		auto &table_changes = entry.second;
-		vector<string> written_files;
-		table_changes.AddWrittenFiles(written_files, written_files, false);
-		for (auto &file_name : written_files) {
-			fs.TryRemoveFile(file_name);
-		}
+		ForEachWrittenFile(table_changes, false, [&](const string &file_name, bool) {
+			// a file that cannot be removed is left to orphan cleanup
+			try {
+				fs.TryRemoveFile(file_name);
+			} catch (std::exception &) { // NOLINT
+			}
+		});
 		table_changes.new_data_files.clear();
 		table_changes.new_delete_files.clear();
 		table_changes.compactions.clear();
@@ -847,10 +857,7 @@ void DuckLakeTransaction::Rollback() {
 		} catch (std::exception &) {
 			// nothing references the written files, so they are removed also when the rollback fails
 			connection.reset();
-			try {
-				state->CleanupFiles();
-			} catch (std::exception &) { // NOLINT
-			}
+			state->CleanupFiles();
 			throw;
 		}
 		connection.reset();

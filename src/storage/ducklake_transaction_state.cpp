@@ -2294,8 +2294,6 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 		}
 		batch_queries += DuckLakeMetadataManager::WriteFloatWidenedStats(float_bounds.widened, float_bounds.cleared,
 		                                                                 commit_snapshot.next_file_id);
-		batch_queries += DuckLakeMetadataManager::WriteBooleanToNumberStats(commit_state.boolean_to_number_columns,
-		                                                                    commit_snapshot.next_file_id);
 		batch_queries += DuckLakeMetadataManager::WriteDroppedColumns(result.dropped_columns);
 		// Truly dropped columns - i.e. not re-added under the same field id in this commit, as
 		// happens for RENAME/ALTER - also expire their committed column tags (GH #1310).
@@ -2420,9 +2418,11 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 		auto compacted_tables = local_changes.GetCompactedTables();
 		refreshed_table_sizes.insert(compacted_tables.begin(), compacted_tables.end());
 	}
-	// runs after this commit writes its files and table stats, so it clears those too
+	// these run after this commit writes its files and table stats, so they rewrite those too
 	batch_queries += DuckLakeMetadataManager::WriteRefinedTimestampStats(commit_state.refined_timestamp_columns,
 	                                                                     commit_snapshot.next_file_id);
+	batch_queries += DuckLakeMetadataManager::WriteBooleanToNumberStats(commit_state.boolean_to_number_columns,
+	                                                                    commit_snapshot.next_file_id);
 	batch_queries += DuckLakeMetadataManager::RefreshTableSizesSql(refreshed_table_sizes);
 
 	// delete the flushed inlined rows and inlined file deletions after the deletes of the transaction

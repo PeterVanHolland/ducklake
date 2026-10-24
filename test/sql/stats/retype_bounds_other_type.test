@@ -115,6 +115,33 @@ SELECT count(*) FROM local_booleans WHERE v = 1
 ----
 1
 
+# Inlined bounds merged in the transaction of the retype
+statement ok
+CREATE TABLE inlined_booleans (v BOOLEAN)
+
+statement ok
+CALL ducklake.set_option('data_inlining_row_limit', 10, table_name => 'inlined_booleans')
+
+statement ok
+INSERT INTO inlined_booleans VALUES (true)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO inlined_booleans VALUES (false)
+
+statement ok
+ALTER TABLE inlined_booleans ALTER COLUMN v TYPE INTEGER
+
+statement ok
+COMMIT
+
+query II
+SELECT s.min_value, s.max_value FROM __ducklake_metadata_ducklake.ducklake_table_column_stats s JOIN __ducklake_metadata_ducklake.ducklake_table t USING (table_id) WHERE t.table_name = 'inlined_booleans'
+----
+0	1
+
 # Wide DECIMAL bounds can round differently from stored values
 statement ok
 CREATE TABLE decimals (v DECIMAL(38,0))

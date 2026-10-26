@@ -242,9 +242,15 @@ public:
 
 	virtual void ClearCache() {
 	}
+	//! Whether a table that a commit creates is only found once the cache is cleared
+	virtual bool NewTablesRequireCacheClear() const {
+		return true;
+	}
 
 	void MarkPendingCacheClear() {
-		pending_cache_clear = true;
+		if (NewTablesRequireCacheClear()) {
+			pending_cache_clear = true;
+		}
 	}
 	bool TakePendingCacheClear() {
 		bool pending = pending_cache_clear;
@@ -258,6 +264,10 @@ public:
 	//! Maximum number of columns of a table supported by this backend
 	virtual idx_t MaxColumnCount() const {
 		return NumericLimits<idx_t>::Maximum();
+	}
+	//! Names of the system columns that the tables of this backend have
+	virtual vector<string> SystemColumnNames() const {
+		return {};
 	}
 
 	//! Why the rows of a table with the given columns cannot be inlined, empty when they can
@@ -296,6 +306,8 @@ public:
 	virtual unique_ptr<QueryResult> Execute(string &query);
 	//! Runs the statements in a transaction of their own, rolled back when one of them fails
 	virtual unique_ptr<QueryResult> ExecuteInTransaction(string &query);
+	//! Runs statements that drop metadata tables atomically, failing where the drop would wait for their readers
+	virtual unique_ptr<QueryResult> ExecuteDropInTransaction(string &query);
 
 	virtual unique_ptr<QueryResult> Query(DuckLakeSnapshot snapshot, string &query);
 	virtual unique_ptr<QueryResult> Query(string &query);
@@ -311,6 +323,8 @@ protected:
 	void SubstituteCatalogPlaceholders(string &query) const;
 	void SubstituteCatalogPlaceholders(string &query, const string &metadata_catalog) const;
 	void SubstituteTransactionPlaceholders(DuckLakeSnapshot snapshot, string &query) const;
+	//! The snapshot time of a commit, the current time when its batch runs
+	virtual string SnapshotTimeSql() const;
 
 public:
 	static void SubstituteSnapshotPlaceholders(const DuckLakeSnapshot &snapshot, string &query);
@@ -318,7 +332,8 @@ public:
 	//! Both used by the regular metadata-manager methods and by server-side commit, which runs the
 	//! SQL on a fresh Connection without going through the metadata-manager wrapper.
 	static string LatestSnapshotQuery();
-	static string GlobalTableStatsQuery(bool include_exactness);
+	//! With table ids only those tables' stats are read
+	static string GlobalTableStatsQuery(bool include_exactness, const vector<TableIndex> &table_ids = {});
 	//! Pure parsers for the results of the above queries.
 	static unique_ptr<DuckLakeSnapshot> ParseSnapshot(QueryResult &result,
 	                                                  optional_ptr<string> catalog_version = nullptr);
@@ -338,8 +353,9 @@ public:
 	BuildCatalogForSnapshot(DuckLakeSnapshot snapshot,
 	                        const std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> &query_executor,
 	                        const string &base_data_path, const string &separator, bool supports_v1_1_metadata = false);
-	//! The global stats of every table of the snapshot
-	virtual vector<DuckLakeGlobalStatsInfo> GetGlobalTableStats(DuckLakeSnapshot snapshot);
+	//! The global stats of every table of the snapshot, or of the given tables
+	virtual vector<DuckLakeGlobalStatsInfo> GetGlobalTableStats(DuckLakeSnapshot snapshot,
+	                                                            const vector<TableIndex> &table_ids = {});
 	//! Get the record count of every table that has global stats
 	virtual map<TableIndex, idx_t> GetTableRecordCounts(DuckLakeSnapshot snapshot);
 	virtual vector<DuckLakeFileListEntry> GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
@@ -354,6 +370,8 @@ public:
 	virtual vector<DuckLakeFileListExtendedEntry>
 	GetExtendedFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                         const FilterPushdownInfo *filter_info = nullptr);
+	//! Sets the schema version of the partition spec of the files written with an older spec
+	void SetPartitionSchemaVersions(DuckLakeTableEntry &table, vector<DuckLakeCompactionFileEntry> &files);
 	virtual vector<DuckLakeCompactionFileEntry> GetFilesForCompaction(DuckLakeTableEntry &table, CompactionType type,
 	                                                                  double deletion_threshold,
 	                                                                  DuckLakeSnapshot snapshot,
@@ -406,6 +424,10 @@ public:
 	//! via GetCatalogForSnapshot) since the diff is computed against it.
 	static string WriteNewPartitionKeys(const vector<DuckLakePartitionInfo> &existing_partitions,
 	                                    const vector<DuckLakePartitionInfo> &new_partitions);
+	//! Maps the id of a last new spec that equals the committed spec, which is not written, to the committed id
+	static unordered_map<idx_t, idx_t>
+	GetUnchangedPartitionIds(const vector<DuckLakePartitionInfo> &existing_partitions,
+	                         const vector<DuckLakePartitionInfo> &new_partitions);
 	//! Emits the sort-key diff SQL. Caller supplies the existing sort state (fetched via
 	//! GetCatalogForSnapshot) since the diff is computed against it.
 	static string WriteNewSortKeys(const vector<DuckLakeSortInfo> &existing_sorts,
@@ -416,6 +438,9 @@ public:
 	//! Rewrite the bounds of committed files and tables written while a widened column was FLOAT
 	static string WriteFloatWidenedStats(const map<TableIndex, set<FieldIndex>> &widened_columns,
 	                                     const map<TableIndex, set<FieldIndex>> &cleared_columns, idx_t next_file_id);
+	//! Clear the bounds of added files of the columns retyped to a finer timestamp unit, and of their tables
+	static string WriteRefinedTimestampStats(const map<TableIndex, set<FieldIndex>> &refined_columns,
+	                                         idx_t next_file_id);
 	static string WriteExpiredColumnTags(const vector<DuckLakeDroppedColumn> &dropped_columns);
 	static string WriteNewColumns(const vector<DuckLakeNewColumn> &new_columns);
 	//! Columns added and dropped in the same commit, which begin and end in its snapshot
@@ -604,8 +629,8 @@ protected:
 
 	virtual string GetLatestSnapshotQuery() const;
 
-	static string GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
-	                                             const string &metadata_table_prefix);
+	virtual string GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
+	                                              const string &metadata_table_prefix);
 	//! The snapshot placeholders of the query are replaced later, unless an override does it
 	virtual string GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                                     const FilterPushdownInfo *filter_info,
@@ -693,8 +718,8 @@ protected:
 	string GenerateFilterTreeCondition(const DuckLakeFilterNode &node, FilterSQLResult &result,
 	                                   bool splice_into_parent = false);
 	virtual FilterSQLResult ConvertFilterPushdownToSQL(const FilterPushdownInfo &filter_info);
-	static string GenerateCTESectionFromRequirements(const map<idx_t, CTERequirement> &requirements,
-	                                                 TableIndex table_id, const string &metadata_table_prefix);
+	string GenerateCTESectionFromRequirements(const map<idx_t, CTERequirement> &requirements, TableIndex table_id,
+	                                          const string &metadata_table_prefix);
 	//! Join each column's stats CTE once. Leading newline per join, empty when there are none.
 	static string GenerateStatsJoinList(const map<idx_t, CTERequirement> &requirements);
 	virtual bool ValueIsFinite(const Value &val);

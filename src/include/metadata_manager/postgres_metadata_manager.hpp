@@ -35,6 +35,9 @@ public:
 	idx_t MaxColumnCount() const override {
 		return 1600;
 	}
+	vector<string> SystemColumnNames() const override {
+		return {"tableoid", "xmin", "cmin", "xmax", "cmax", "ctid"};
+	}
 
 	string GetColumnTypeInternal(const LogicalType &type) override;
 	string GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot snapshot, bool include_exactness) const override;
@@ -43,11 +46,20 @@ public:
 	bool IsRetryableCommitError(const string &message) const override;
 
 	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query) override;
+	unique_ptr<QueryResult> ExecuteDropInTransaction(string &query) override;
 
 	void ClearCache() override;
+	//! postgres_scanner looks up a table it has not cached
+	bool NewTablesRequireCacheClear() const override {
+		return false;
+	}
 
 protected:
 	string GetLatestSnapshotQuery() const override;
+	string SnapshotTimeSql() const override {
+		// the server's clock, as NOW() is the start of the metadata transaction
+		return "clock_timestamp()";
+	}
 	string GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                             const FilterPushdownInfo *filter_info,
 	                             const vector<DuckLakeFileListDynamicFilter> &dynamic_filters,

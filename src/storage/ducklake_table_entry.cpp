@@ -689,6 +689,13 @@ DuckLakeTableEntry::BuildPartitionData(DuckLakeTransaction &transaction, const C
 	for (idx_t expr_idx = 0; expr_idx < partition_keys.size(); expr_idx++) {
 		auto &expr = *partition_keys[expr_idx];
 		auto partition_field = GetPartitionField(transaction.GetCatalog(), columns, field_data, expr);
+		auto context = transaction.context.lock();
+		if (context) {
+			// a spec that writes cannot bind would make every later insert fail
+			auto &partition_column = *field_data.GetByFieldIndex(partition_field.field_id);
+			DuckLakePartitionUtils::VerifyTransformSupportsType(*context, partition_field, partition_column.Name(),
+			                                                    partition_column.Type());
+		}
 		// Reject duplicate keys: same (field_id, transform). (year(ts), month(ts)) is fine, (a, a) is not.
 		for (auto &existing : partition_data->fields) {
 			if (existing.field_id == partition_field.field_id && existing.transform == partition_field.transform) {
@@ -721,7 +728,38 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 		}
 	}
 
-	return make_uniq<DuckLakeTableEntry>(*this, table_info, std::move(partition_data));
+	auto result = make_uniq<DuckLakeTableEntry>(*this, table_info, std::move(partition_data));
+	result->starts_partition_spec = BucketTypesChanged(transaction, *result);
+	return std::move(result);
+}
+
+//! Whether a bucket column of the spec hashes its values differently in the two tables
+static bool BucketTypeChanged(const DuckLakePartition &partition, const DuckLakeTableEntry &before,
+                              const DuckLakeTableEntry &after) {
+	for (auto &field : partition.fields) {
+		if (field.transform.type != DuckLakeTransformType::BUCKET) {
+			continue;
+		}
+		auto before_field = before.GetFieldId(field.field_id);
+		if (before_field && DuckLakePartitionUtils::BucketChangesWithType(before_field->Type(),
+		                                                                  after.GetFieldId(field.field_id)->Type())) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool DuckLakeTableEntry::BucketTypesChanged(DuckLakeTransaction &transaction, DuckLakeTableEntry &table) {
+	if (!IsTransactionLocal()) {
+		return false;
+	}
+	auto committed_entry =
+	    ParentCatalog().Cast<DuckLakeCatalog>().GetEntryById(transaction, transaction.GetSnapshot(), GetTableId());
+	if (!committed_entry) {
+		return false;
+	}
+	// the committed files keep the buckets of the committed column types
+	return BucketTypeChanged(*table.partition_data, committed_entry->Cast<DuckLakeTableEntry>(), table);
 }
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
@@ -818,6 +856,11 @@ void DuckLakeTableEntry::RequireNextColumnId(DuckLakeTransaction &transaction) {
 	// columns the column id HAS to be unique globally
 	auto &metadata_manager = transaction.GetMetadataManager();
 	next_column_id = metadata_manager.GetNextColumnId(GetTableId());
+}
+
+idx_t DuckLakeTableEntry::GetNextColumnId(DuckLakeTransaction &transaction) {
+	RequireNextColumnId(transaction);
+	return next_column_id.GetIndex();
 }
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
@@ -966,6 +1009,10 @@ bool TypePromotionIsAllowed(const LogicalType &source, const LogicalType &target
 	return result == target;
 }
 
+static bool IsTimestampWithoutTimeZone(const LogicalType &type) {
+	return LogicalType::TypeIsTimestamp(type) && type.id() != LogicalTypeId::TIMESTAMP_TZ;
+}
+
 bool IsSimpleCast(const ParsedExpression &expr) {
 	if (expr.GetExpressionType() != ExpressionType::OPERATOR_CAST) {
 		return false;
@@ -1072,6 +1119,10 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFiel
 	// we need to drop and recreate the column
 	// drop the field
 	result.DropField(source_id);
+	if (IsTimestampWithoutTimeZone(source_type) && IsTimestampWithoutTimeZone(target)) {
+		// added files can hold finer timestamps than the bounds kept at the coarser unit
+		result.refined_timestamp_fields.push_back(source_id.GetFieldIndex());
+	}
 
 	// re-create with the new type
 	auto column_data = source_id.GetColumnData().Copy();
@@ -1140,19 +1191,18 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterColumnType(DuckLakeTransaction
 	if (!partition) {
 		return std::move(result);
 	}
-	for (auto &field : partition->fields) {
-		if (field.transform.type != DuckLakeTransformType::BUCKET) {
-			continue;
+	auto context = transaction.context.lock();
+	if (context) {
+		for (auto &field : partition->fields) {
+			auto &new_field = *result->GetFieldId(field.field_id);
+			DuckLakePartitionUtils::VerifyTransformSupportsType(*context, field, new_field.Name(), new_field.Type());
 		}
-		auto &old_type = GetFieldId(field.field_id)->Type();
-		auto &new_type = result->GetFieldId(field.field_id)->Type();
-		if (DuckLakePartitionUtils::BucketChangesWithType(old_type, new_type)) {
-			// files written before the change keep the buckets of the old type under the old spec
-			partition->partition_id = transaction.GetLocalCatalogId();
-			partition->local_partition_id = partition->partition_id;
-			result->starts_partition_spec = true;
-			break;
-		}
+	}
+	if (BucketTypeChanged(*partition, *this, *result)) {
+		// files written before the change keep the buckets of the old type under the old spec
+		partition->partition_id = transaction.GetLocalCatalogId();
+		partition->local_partition_id = partition->partition_id;
+		result->starts_partition_spec = true;
 	}
 	return std::move(result);
 }
@@ -1459,6 +1509,23 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(ClientContext &context, DuckLakeTransaction &transaction,
                                                    AlterTableInfo &info) {
+	auto result = AlterEntry(context, transaction, info);
+	if (!result || !transaction.HasTransactionInlinedData(GetTableId())) {
+		return result;
+	}
+	// the inlined rows of the transaction are committed with the altered columns
+	auto &columns = result->Cast<DuckLakeTableEntry>().GetColumns();
+	auto obstacle = transaction.GetMetadataManager().GetInliningObstacle(columns);
+	if (!obstacle.empty()) {
+		throw NotImplementedException(
+		    "ALTER on a table with transaction-local inlined data is not supported when %s, commit the rows first",
+		    obstacle);
+	}
+	return result;
+}
+
+unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterEntry(ClientContext &context, DuckLakeTransaction &transaction,
+                                                        AlterTableInfo &info) {
 	if (transaction.HasTransactionInlinedData(GetTableId())) {
 		if (info.alter_table_type != AlterTableType::ADD_COLUMN &&
 		    info.alter_table_type != AlterTableType::REMOVE_COLUMN &&

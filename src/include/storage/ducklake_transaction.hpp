@@ -339,6 +339,8 @@ public:
 	//! If there are no uncommitted changes, this is the schema version of the snapshot.
 	//! Otherwise, it is an id that is incremented whenever the schema changes (not stored between restarts)
 	idx_t GetCatalogVersion();
+	//! The committed view, or a copy of it with its own binding once this transaction changed the schema
+	DuckLakeViewEntry &GetTransactionView(DuckLakeViewEntry &view);
 
 protected:
 	void SetMetadataManager(unique_ptr<DuckLakeMetadataManager> metadata_manager) {
@@ -349,6 +351,8 @@ public:
 	void RunCommitLoop(DuckLakeSnapshot transaction_snapshot, const TransactionChangeInformation &transaction_changes,
 	                   const DuckLakeRetryConfig &retry_config);
 	void ApplyServerSideCommit(idx_t schema_version);
+	//! Removes the files that this transaction wrote
+	void CleanupFiles();
 	//! Post-commit cleanup of empty inlined-data tables superseded by later schema versions.
 	void DropEmptySupersededInlinedTablesClientSide();
 	void ReportPostCommitError(const string &message);
@@ -369,6 +373,8 @@ private:
 	//! Puts back the config options this transaction replaced in the catalog, or drops its deferred changes
 	void UndoConfigOptions();
 	void DeferConfigOption(const DuckLakeConfigOption &option, bool reset);
+	//! Writes the options of the transaction again, after a failed commit attempt rolled them back
+	void RewriteConfigOptions();
 	static DuckLakePartitionInfo GetNewPartitionKey(DuckLakeCommitState &commit_state, DuckLakeTableEntry &table);
 	static DuckLakeSortInfo GetNewSortKey(DuckLakeCommitState &commit_state, DuckLakeTableEntry &table);
 	static DuckLakeTableInfo GetNewTable(DuckLakeCommitState &commit_state, DuckLakeTableEntry &table);
@@ -421,8 +427,16 @@ private:
 	vector<MappingIndex> pending_name_map_cache_invalidations;
 	//! Option changes of this transaction, with the previous values for a rollback when they are written right away
 	vector<DuckLakeConfigOptionUndo> config_option_undo;
+	//! Whether a retried commit attempt wrote the options again
+	bool rewrote_config_options = false;
 
 	atomic<idx_t> catalog_version;
+	mutex transaction_views_lock;
+	//! The catalog version that the copies in transaction_views were made at
+	idx_t transaction_views_version = 0;
+	unordered_map<const DuckLakeViewEntry *, unique_ptr<DuckLakeViewEntry>> transaction_views;
+	//! Copies of an earlier catalog version, kept alive for the references to them
+	vector<unique_ptr<DuckLakeViewEntry>> outdated_transaction_views;
 };
 
 } // namespace duckdb

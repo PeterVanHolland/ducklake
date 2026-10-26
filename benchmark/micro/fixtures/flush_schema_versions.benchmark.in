@@ -1,0 +1,32 @@
+# name: benchmark/micro/fixtures/flush_schema_versions.benchmark.in
+# description: 150 tables of 11 columns, each created in its own schema version with one inlined row
+# group: [fixtures]
+
+argument lake flush_schema_versions_v2
+
+cache_file ${lake}_ready.marker
+
+load
+@create ${lake}_pristine
+@attach ${lake}_pristine AS lake (DATA_PATH '${BENCHMARK_DIR}/${lake}_files')
+CALL lake.set_option('data_inlining_row_limit', 10);
+@for k in range(150)
+CREATE TABLE lake.t@{k} AS SELECT @{k}::BIGINT AS id, @{k}::BIGINT AS c0, 'v' || @{k} AS c1, @{k}::DECIMAL(18, 4) AS c2, DATE '2026-01-01' + @{k} AS c3, @{k}::DOUBLE AS c4, @{k}::BIGINT AS c5, 'v' || @{k} AS c6, @{k}::DECIMAL(18, 4) AS c7, DATE '2026-01-01' + @{k} AS c8, @{k}::DOUBLE AS c9;
+@end
+SELECT CASE WHEN (SELECT count(DISTINCT schema_version) <> 150 FROM __ducklake_metadata_lake.ducklake_inlined_data_tables)
+OR (SELECT count(*) <> 0 FROM __ducklake_metadata_lake.ducklake_data_file)
+THEN error('unexpected schema versions fixture') END;
+DETACH lake;
+COPY (SELECT count(*) FROM glob('${BENCHMARK_DIR}/${lake}_files/**'))
+TO '${BENCHMARK_DIR}/${lake}_filecount.csv' (FORMAT CSV, HEADER false);
+@seal ${lake}_pristine
+COPY (SELECT 1) TO '${BENCHMARK_DIR}/${lake}_ready.marker' (FORMAT CSV);
+DETACH DATABASE IF EXISTS lake;
+@copy ${lake}_pristine TO ${work}
+@attach ${work} AS lake
+CALL ducklake_delete_orphaned_files('lake', cleanup_all => true);
+SELECT CASE WHEN (SELECT count(*) FROM glob('${BENCHMARK_DIR}/${lake}_files/**'))
+<> (SELECT column0 FROM read_csv('${BENCHMARK_DIR}/${lake}_filecount.csv', header = false))
+THEN error('the fixture files were not restored') END;
+
+include benchmark/micro/fixtures/restore_reload.benchmark.in

@@ -391,6 +391,8 @@ private:
 	DatabaseInstance &db;
 	unique_ptr<DuckLakeMetadataManager> metadata_manager;
 	mutex connection_lock;
+	//! Whether connection is set, read by other transactions without connection_lock
+	atomic<bool> has_metadata_connection {false};
 	bool metadata_transaction_released = false;
 	unique_ptr<Connection> connection;
 	//! Flushes of several tables finalize in parallel while scans check the flushed tables

@@ -515,9 +515,11 @@ vector<DuckLakeInlinedTableInfo> DuckLakeTableEntry::GetInlinedDataTables(DuckLa
 	// another attach can drop superseded inlined tables without bumping the schema version
 	bool may_be_dropped = inlined_data_tables.size() > 1;
 	if (inlined_data_tables.size() == 1) {
-		// the only inlined table can be superseded after an older or pinned snapshot
+		// the only inlined table can be superseded after an older or pinned snapshot, or come from a newer schema
+		// version when another transaction loaded this one after a schema change
 		may_be_dropped = transaction.GetCatalog().CatalogSnapshot() ||
-		                 snapshot.schema_version < transaction.GetSnapshot().schema_version;
+		                 snapshot.schema_version < transaction.GetSnapshot().schema_version ||
+		                 inlined_data_tables[0].schema_version > snapshot.schema_version;
 	}
 	unordered_set<string> registered_tables;
 	if (may_be_dropped) {

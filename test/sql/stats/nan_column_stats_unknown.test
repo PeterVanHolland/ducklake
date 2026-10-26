@@ -1,0 +1,52 @@
+# name: test/sql/stats/nan_column_stats_unknown.test
+# description: a FLOAT or DOUBLE column that may hold NaN has unknown bounds, not an empty range
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/nan_column_stats_unknown')
+
+foreach type FLOAT DOUBLE
+
+statement ok
+COPY (SELECT 1::INTEGER AS id, 14::{type} AS x) TO '{DATA_PATH}/nan_column_stats_unknown_{type}.parquet'
+
+statement ok
+CREATE OR REPLACE TABLE dl.t (id INTEGER, x {type})
+
+# an added file does not say whether it holds NaN
+statement ok
+CALL ducklake_add_data_files('dl', 't', '{DATA_PATH}/nan_column_stats_unknown_{type}.parquet')
+
+query IIII
+SELECT ids.id, t.x, COALESCE(t.x, 0), COALESCE(t.x, 0) > 0
+FROM (VALUES (1), (2)) AS ids(id) LEFT JOIN dl.t AS t USING (id) ORDER BY ids.id
+----
+1	14.0	14.0	true
+2	NULL	0.0	false
+
+query II
+SELECT (stats(COALESCE(t.x, 0))).min IS NULL, (stats(COALESCE(t.x, 0))).max IS NULL
+FROM (VALUES (1), (2)) AS ids(id) LEFT JOIN dl.t AS t USING (id) LIMIT 1
+----
+true	true
+
+# neither does a column added with a default
+statement ok
+ALTER TABLE dl.t ADD COLUMN y {type} DEFAULT 7.5
+
+query II
+SELECT ids.id, COALESCE(t.y, 0) = 7.5
+FROM (VALUES (1), (2)) AS ids(id) LEFT JOIN dl.t AS t USING (id) ORDER BY ids.id
+----
+1	true
+2	false
+
+endloop

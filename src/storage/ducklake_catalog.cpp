@@ -1030,6 +1030,15 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 	return GetTableStats(transaction, transaction.GetSnapshot(), table_id);
 }
 
+static shared_ptr<DuckLakeTableStats> CachedTableStats(shared_ptr<DuckLakeTableStatsCacheEntry> entry) {
+	if (!entry->has_stats) {
+		// cached negative result
+		return nullptr;
+	}
+	auto *raw = entry.get();
+	return shared_ptr<DuckLakeTableStats>(std::move(entry), &raw->stats);
+}
+
 shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransaction &transaction,
                                                               DuckLakeSnapshot snapshot, TableIndex table_id,
                                                               optional_ptr<const vector<TableIndex>> load_tables) {
@@ -1037,12 +1046,7 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 	auto key = StatsCacheKey(snapshot.next_file_id, table_id);
 	auto cached = cache.Get<DuckLakeTableStatsCacheEntry>(key);
 	if (cached && cached->schema_version == snapshot.schema_version) {
-		if (!cached->has_stats) {
-			// cached negative result
-			return nullptr;
-		}
-		auto *raw = cached.get();
-		return shared_ptr<DuckLakeTableStats>(std::move(cached), &raw->stats);
+		return CachedTableStats(std::move(cached));
 	}
 
 	auto schema_entry = GetSchemaCacheEntry(transaction, snapshot);
@@ -1060,11 +1064,7 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 	if (TryGetUnchangedTableStats(transaction, snapshot, table_id, table_map.size(), !load_tables, unchanged,
 	                              changed_tables)) {
 		if (unchanged) {
-			if (!unchanged->has_stats) {
-				return nullptr;
-			}
-			auto *raw = unchanged.get();
-			return shared_ptr<DuckLakeTableStats>(std::move(unchanged), &raw->stats);
+			return CachedTableStats(std::move(unchanged));
 		}
 		if (load_tables) {
 			changed_tables.insert(changed_tables.end(), load_tables->begin(), load_tables->end());
@@ -1120,11 +1120,10 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 			stats_changed_tables_loaded = true;
 		}
 	}
-	if (!requested_entry || !requested_entry->has_stats) {
+	if (!requested_entry) {
 		return nullptr;
 	}
-	auto *raw = requested_entry.get();
-	return shared_ptr<DuckLakeTableStats>(std::move(requested_entry), &raw->stats);
+	return CachedTableStats(std::move(requested_entry));
 }
 
 bool DuckLakeCatalog::TryGetUnchangedTableStats(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,

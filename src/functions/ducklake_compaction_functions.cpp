@@ -667,7 +667,8 @@ DuckLakeCompactor::GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry>
 			return nullptr;
 		}
 		auto action = type == CompactionType::REWRITE_DELETES ? "rewrite the files" : "merge the files";
-		throw DuckLakeTypes::NestedVariantWriteError(action, table.name.GetIdentifierName(), *unwritable_column);
+		auto &table_name = GetLatestTableEntry(catalog, transaction, table).name;
+		throw DuckLakeTypes::NestedVariantWriteError(action, table_name.GetIdentifierName(), *unwritable_column);
 	}
 
 	auto partition_id = source_files[0].file.partition_id;

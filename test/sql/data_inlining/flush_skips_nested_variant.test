@@ -133,9 +133,9 @@ SELECT * FROM ducklake_flush_inlined_data('lake', table_name => 'e')
 ----
 main	e	1
 
-# merging or rewriting the files of such a table by name fails, a catalog-wide call leaves them as they are
+# a merge or rewrite of such a table by name fails, a catalog-wide one skips it
 statement ok
-CREATE TABLE lake.a (i INTEGER, v VARIANT[])
+CREATE TABLE lake.b (i INTEGER, v VARIANT[])
 
 statement ok
 COPY (SELECT range::INTEGER AS i FROM range(1, 3)) TO '{DATA_PATH}/flush_skips_nested_variant_a1.parquet'
@@ -144,10 +144,13 @@ statement ok
 COPY (SELECT 3 AS i) TO '{DATA_PATH}/flush_skips_nested_variant_a2.parquet'
 
 statement ok
-CALL ducklake_add_data_files('lake', 'a', '{DATA_PATH}/flush_skips_nested_variant_a1.parquet', allow_missing => true)
+CALL ducklake_add_data_files('lake', 'b', '{DATA_PATH}/flush_skips_nested_variant_a1.parquet', allow_missing => true)
 
 statement ok
-CALL ducklake_add_data_files('lake', 'a', '{DATA_PATH}/flush_skips_nested_variant_a2.parquet', allow_missing => true)
+CALL ducklake_add_data_files('lake', 'b', '{DATA_PATH}/flush_skips_nested_variant_a2.parquet', allow_missing => true)
+
+statement ok
+ALTER TABLE lake.b RENAME TO a
 
 statement error
 CALL ducklake_merge_adjacent_files('lake', 'a')

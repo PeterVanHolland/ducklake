@@ -22,7 +22,6 @@
 #include "metadata_manager/sqlite_metadata_manager.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database.hpp"
-#include "duckdb/main/database_manager.hpp"
 #include "duckdb/planner/expression.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "storage/ducklake_partition_data.hpp"
@@ -3454,27 +3453,7 @@ string DuckLakeMetadataManager::WriteNewInlinedTables(DuckLakeSnapshot commit_sn
 }
 
 bool DuckLakeMetadataManager::OtherTransactionsMayReadDroppedTables() {
-	auto &catalog = transaction.GetCatalog();
-	// other attaches of the same metadata catalog read it too
-	for (auto &database : DatabaseManager::Get(catalog.GetDatabase()).GetDatabases()) {
-		auto &other = database->GetCatalog();
-		if (other.GetCatalogType() != "ducklake") {
-			continue;
-		}
-		auto &other_catalog = other.Cast<DuckLakeCatalog>();
-		// the type can be spelled differently for the same file, e.g. sqlite and sqlite_scanner
-		bool same_metadata =
-		    other_catalog.MetadataDatabaseName() == catalog.MetadataDatabaseName() ||
-		    (!catalog.MetadataPath().empty() && other_catalog.MetadataPath() == catalog.MetadataPath());
-		if (!same_metadata || !(other_catalog.MetadataSchemaName() == catalog.MetadataSchemaName())) {
-			continue;
-		}
-		auto &manager = database->GetTransactionManager().Cast<DuckLakeTransactionManager>();
-		if (manager.OtherTransactionHasMetadataConnection(transaction)) {
-			return true;
-		}
-	}
-	return false;
+	return transaction.GetCatalog().OtherTransactionHasMetadataConnection(transaction);
 }
 
 string DuckLakeMetadataManager::InlinedTableHasRowsQuery(const string &table_name) {

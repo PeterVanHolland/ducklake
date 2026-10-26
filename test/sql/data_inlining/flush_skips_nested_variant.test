@@ -182,3 +182,39 @@ SELECT i, v FROM lake.a ORDER BY i
 ----
 2	NULL
 3	NULL
+
+# a skipped group does not use up the limit of a catalog-wide merge
+statement ok
+CREATE TABLE lake.m (i INTEGER)
+
+statement ok
+INSERT INTO lake.m SELECT range::INTEGER FROM range(20)
+
+statement ok
+INSERT INTO lake.m SELECT range::INTEGER FROM range(20)
+
+statement ok
+ALTER TABLE lake.m ADD COLUMN v VARIANT[]
+
+statement ok
+COPY (SELECT 1 AS i) TO '{DATA_PATH}/flush_skips_nested_variant_m1.parquet'
+
+statement ok
+COPY (SELECT 2 AS i) TO '{DATA_PATH}/flush_skips_nested_variant_m2.parquet'
+
+statement ok
+CALL ducklake_add_data_files('lake', 'm', '{DATA_PATH}/flush_skips_nested_variant_m1.parquet', allow_missing => true)
+
+statement ok
+CALL ducklake_add_data_files('lake', 'm', '{DATA_PATH}/flush_skips_nested_variant_m2.parquet', allow_missing => true)
+
+query II
+SELECT files_processed, files_created
+FROM ducklake_merge_adjacent_files('lake', max_compacted_files => 1) WHERE table_name = 'm'
+----
+2	1
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 'm')
+----
+3

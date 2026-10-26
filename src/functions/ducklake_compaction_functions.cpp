@@ -438,10 +438,12 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 					compaction_files.push_back(std::move(files[candidate_list[i]]));
 				}
 				auto command = GenerateCompactionCommand(std::move(compaction_files), bind_to_latest);
-				if (command) {
-					compactions.push_back(std::move(command));
-				}
 				start_idx += compaction_file_count - 1;
+				if (!command) {
+					// skipped files do not count towards the limit
+					continue;
+				}
+				compactions.push_back(std::move(command));
 			}
 			compacted_files++;
 			if (compacted_files >= max_files) {

@@ -199,8 +199,7 @@ void DuckLakeTypes::CheckSupportedType(const LogicalType &type, DuckLakeVersion 
 }
 
 bool DuckLakeTypes::HasNestedVariant(const LogicalType &type) {
-	return type.id() != LogicalTypeId::VARIANT &&
-	       TypeVisitor::Contains(type, [](const LogicalType &t) { return t.id() == LogicalTypeId::VARIANT; });
+	return type.id() != LogicalTypeId::VARIANT && TypeVisitor::Contains(type, LogicalTypeId::VARIANT);
 }
 
 optional_ptr<const ColumnDefinition> DuckLakeTypes::GetNestedVariantColumn(const ColumnList &columns) {

@@ -3442,8 +3442,7 @@ string DuckLakeMetadataManager::WriteNewInlinedTables(DuckLakeSnapshot commit_sn
 			continue;
 		}
 		GetInlinedTableQueries(commit_snapshot, *table_ptr, inlined_tables, inlined_table_queries);
-		if (replaced_tables.count(table.id) && DroppedTablesStayReadable() &&
-		    !OtherTransactionsMayReadDroppedTables()) {
+		if (replaced_tables.count(table.id) && DroppedTablesStayReadable()) {
 			auto replaced_entry = catalog.GetEntryById(transaction, transaction.GetSnapshot(), table.id);
 			if (replaced_entry) {
 				drop_queries += DropInlinedTableIfEmpty(table.id, replaced_entry->Cast<DuckLakeTableEntry>());
@@ -3485,6 +3484,10 @@ string DuckLakeMetadataManager::DropInlinedTableIfEmpty(TableIndex table_id, con
 	auto result = Query(query);
 	result->ThrowIfError("Failed to check emptiness of an inlined data table in DuckLake: ");
 	if (result->begin() != result->end()) {
+		return string();
+	}
+	// a transaction that started before the table was emptied can still read its rows
+	if (OtherTransactionsMayReadDroppedTables()) {
 		return string();
 	}
 	// readers of older schema versions skip dropped inlined tables, so the cached versions stay valid

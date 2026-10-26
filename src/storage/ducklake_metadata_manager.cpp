@@ -3462,9 +3462,10 @@ bool DuckLakeMetadataManager::OtherTransactionsMayReadDroppedTables() {
 			continue;
 		}
 		auto &other_catalog = other.Cast<DuckLakeCatalog>();
-		bool same_metadata = other_catalog.MetadataDatabaseName() == catalog.MetadataDatabaseName() ||
-		                     (other_catalog.MetadataType() == catalog.MetadataType() &&
-		                      other_catalog.MetadataPath() == catalog.MetadataPath());
+		// the type can be spelled differently for the same file, e.g. sqlite and sqlite_scanner
+		bool same_metadata =
+		    other_catalog.MetadataDatabaseName() == catalog.MetadataDatabaseName() ||
+		    (!catalog.MetadataPath().empty() && other_catalog.MetadataPath() == catalog.MetadataPath());
 		if (!same_metadata || !(other_catalog.MetadataSchemaName() == catalog.MetadataSchemaName())) {
 			continue;
 		}

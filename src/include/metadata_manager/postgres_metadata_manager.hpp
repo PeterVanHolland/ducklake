@@ -46,6 +46,7 @@ public:
 	bool IsRetryableCommitError(const string &message) const override;
 
 	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query) override;
+	unique_ptr<QueryResult> ExecuteDropInTransaction(string &query) override;
 	string GetChangesSinceQuery(idx_t snapshot_id, DuckLakeSnapshot snapshot) const override;
 
 	void ClearCache() override;
@@ -56,6 +57,10 @@ public:
 
 protected:
 	string GetLatestSnapshotQuery() const override;
+	string SnapshotTimeSql() const override {
+		// the server's clock, as NOW() is the start of the metadata transaction
+		return "clock_timestamp()";
+	}
 	string GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                             const FilterPushdownInfo *filter_info,
 	                             const vector<DuckLakeFileListDynamicFilter> &dynamic_filters,

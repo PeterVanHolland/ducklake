@@ -203,13 +203,20 @@ bool DuckLakeTypes::HasNestedVariant(const LogicalType &type) {
 	       TypeVisitor::Contains(type, [](const LogicalType &t) { return t.id() == LogicalTypeId::VARIANT; });
 }
 
-bool DuckLakeTypes::HasNestedVariant(const ColumnList &columns) {
+optional_ptr<const ColumnDefinition> DuckLakeTypes::GetNestedVariantColumn(const ColumnList &columns) {
 	for (auto &col : columns.Logical()) {
 		if (HasNestedVariant(col.Type())) {
-			return true;
+			return &col;
 		}
 	}
-	return false;
+	return nullptr;
+}
+
+NotImplementedException DuckLakeTypes::NestedVariantWriteError(const string &action, const string &table_name,
+                                                               const ColumnDefinition &column) {
+	return NotImplementedException("Cannot %s of table \"%s\": column \"%s\" of type %s has a VARIANT inside, which "
+	                               "cannot be written to Parquet yet",
+	                               action, table_name, column.Name().GetIdentifierName(), column.Type());
 }
 
 void DuckLakeTypes::CheckSupportedTypes(const ColumnList &columns, DuckLakeVersion version) {

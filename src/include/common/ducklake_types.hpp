@@ -10,6 +10,8 @@
 
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/common/optional_ptr.hpp"
 #include "common/ducklake_version.hpp"
 #include "duckdb/parser/column_list.hpp"
 
@@ -29,7 +31,9 @@ public:
 	static void CheckSupportedTypes(const ColumnList &columns, DuckLakeVersion version);
 	//! Whether a VARIANT is nested inside a LIST, STRUCT or MAP, which the Parquet writer cannot write yet
 	static bool HasNestedVariant(const LogicalType &type);
-	static bool HasNestedVariant(const ColumnList &columns);
+	static optional_ptr<const ColumnDefinition> GetNestedVariantColumn(const ColumnList &columns);
+	static NotImplementedException NestedVariantWriteError(const string &action, const string &table_name,
+	                                                       const ColumnDefinition &column);
 
 	//! VARCHAR and BLOB, whose values can be the text NULL
 	static bool IsStringType(const LogicalType &type);

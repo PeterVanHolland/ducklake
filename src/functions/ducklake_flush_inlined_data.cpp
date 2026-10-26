@@ -507,21 +507,16 @@ WHERE del.begin_snapshot <= {SNAPSHOT_ID}
 //===--------------------------------------------------------------------===//
 // Function
 //===--------------------------------------------------------------------===//
-//! The reason the rows of an inlined table cannot be written to Parquet, or an empty string
-static string GetFlushObstacle(DuckLakeCatalog &catalog, DuckLakeTransaction &transaction,
-                               DuckLakeTableEntry &table_entry, const DuckLakeInlinedTableInfo &inlined_table) {
+//! The column of an inlined table that cannot be written to Parquet
+static optional_ptr<const ColumnDefinition> GetUnwritableColumn(DuckLakeCatalog &catalog,
+                                                                DuckLakeTransaction &transaction,
+                                                                DuckLakeTableEntry &table_entry,
+                                                                const DuckLakeInlinedTableInfo &inlined_table) {
 	auto table = catalog.GetTableAtSchemaVersion(transaction, table_entry.GetTableId(), inlined_table.schema_version);
 	if (!table) {
-		return string();
+		return nullptr;
 	}
-	for (auto &col : table->GetColumns().Logical()) {
-		if (DuckLakeTypes::HasNestedVariant(col.Type())) {
-			return StringUtil::Format("column \"%s\" of type %s has a VARIANT inside, which cannot be written to "
-			                          "Parquet yet",
-			                          col.Name().GetIdentifierName(), col.Type());
-		}
-	}
-	return string();
+	return DuckLakeTypes::GetNestedVariantColumn(table->GetColumns());
 }
 
 static unique_ptr<LogicalOperator> FlushInlinedDataBind(ClientContext &context, TableFunctionBindInput &input,
@@ -539,11 +534,11 @@ static unique_ptr<LogicalOperator> FlushInlinedDataBind(ClientContext &context, 
 			continue;
 		}
 		for (auto &inlined_table : table_entry.GetInlinedDataTables(transaction, transaction.GetSnapshot())) {
-			auto flush_obstacle = GetFlushObstacle(ducklake_catalog, transaction, table_entry, inlined_table);
-			if (!flush_obstacle.empty()) {
+			auto unwritable_column = GetUnwritableColumn(ducklake_catalog, transaction, table_entry, inlined_table);
+			if (unwritable_column) {
 				if (!table.empty() && transaction.GetMetadataManager().InlinedTableHasRows(inlined_table.table_name)) {
-					throw NotImplementedException("Cannot flush the inlined data of table \"%s\": %s",
-					                              table_entry.name.GetIdentifierName(), flush_obstacle);
+					throw DuckLakeTypes::NestedVariantWriteError(
+					    "flush the inlined data", table_entry.name.GetIdentifierName(), *unwritable_column);
 				}
 				// the rows stay inlined, so that they do not keep the other tables from being flushed
 				continue;

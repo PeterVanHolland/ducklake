@@ -25,6 +25,8 @@ public:
 
 	void Checkpoint(ClientContext &context, bool force = false) override;
 	void GetWrittenFiles(vector<string> &result);
+	//! Whether a transaction other than the given one has a metadata connection
+	bool OtherTransactionHasMetadataConnection(DuckLakeTransaction &transaction);
 
 private:
 	//! Takes the transaction out, it is destroyed after the lock as its metadata connection can end one of ours

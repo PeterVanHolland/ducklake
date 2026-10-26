@@ -52,6 +52,24 @@ ErrorData DuckLakeTransactionManager::CommitTransaction(ClientContext &context, 
 	return error;
 }
 
+bool DuckLakeTransactionManager::OtherTransactionHasMetadataConnection(DuckLakeTransaction &transaction) {
+	vector<shared_ptr<DuckLakeTransaction>> others;
+	{
+		lock_guard<mutex> l(transaction_lock);
+		for (auto &entry : transactions) {
+			if (entry.second.get() != &transaction) {
+				others.push_back(entry.second);
+			}
+		}
+	}
+	for (auto &other : others) {
+		if (other->HasMetadataConnection()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void DuckLakeTransactionManager::GetWrittenFiles(vector<string> &result) {
 	lock_guard<mutex> l(transaction_lock);
 	for (auto &entry : transactions) {

@@ -919,6 +919,11 @@ void DuckLakeTransaction::BeginMetadataTransaction() {
 	metadata_transaction_released = false;
 }
 
+bool DuckLakeTransaction::HasMetadataConnection() {
+	lock_guard<mutex> lock(connection_lock);
+	return connection != nullptr;
+}
+
 void DuckLakeTransaction::ReleaseMetadataTransaction() {
 	lock_guard<mutex> lock(connection_lock);
 	if (connection && connection->HasActiveTransaction()) {
@@ -1505,6 +1510,9 @@ void DuckLakeTransaction::DropEmptySupersededInlinedTablesClientSide() {
 	context.execute_in_transaction = [&](string q) {
 		return metadata_manager->ExecuteDropInTransaction(q);
 	};
+	context.others_may_read_dropped_tables = [&]() {
+		return metadata_manager->OtherTransactionsMayReadDroppedTables();
+	};
 	context.invalidate_schema_cache = [&](idx_t schema_version) {
 		ducklake_catalog.InvalidateSchemaCache(schema_version);
 	};
@@ -1588,6 +1596,9 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	};
 	context.execute_in_transaction = [&](string q) {
 		return metadata_manager->ExecuteDropInTransaction(q);
+	};
+	context.others_may_read_dropped_tables = [&]() {
+		return metadata_manager->OtherTransactionsMayReadDroppedTables();
 	};
 	context.query_metadata_with_snapshot = [&](DuckLakeSnapshot s, string q) {
 		return metadata_manager->Query(s, q);

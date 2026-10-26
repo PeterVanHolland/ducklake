@@ -3442,7 +3442,8 @@ string DuckLakeMetadataManager::WriteNewInlinedTables(DuckLakeSnapshot commit_sn
 			continue;
 		}
 		GetInlinedTableQueries(commit_snapshot, *table_ptr, inlined_tables, inlined_table_queries);
-		if (replaced_tables.count(table.id) && DroppedTablesStayReadable()) {
+		if (replaced_tables.count(table.id) && DroppedTablesStayReadable() &&
+		    !OtherTransactionsMayReadDroppedTables()) {
 			auto replaced_entry = catalog.GetEntryById(transaction, transaction.GetSnapshot(), table.id);
 			if (replaced_entry) {
 				drop_queries += DropInlinedTableIfEmpty(table.id, replaced_entry->Cast<DuckLakeTableEntry>());
@@ -3450,6 +3451,10 @@ string DuckLakeMetadataManager::WriteNewInlinedTables(DuckLakeSnapshot commit_sn
 		}
 	}
 	return InsertValuesSql("ducklake_inlined_data_tables", inlined_tables) + inlined_table_queries + drop_queries;
+}
+
+bool DuckLakeMetadataManager::OtherTransactionsMayReadDroppedTables() {
+	return transaction.manager.Cast<DuckLakeTransactionManager>().OtherTransactionHasMetadataConnection(transaction);
 }
 
 string DuckLakeMetadataManager::InlinedTableHasRowsQuery(const string &table_name) {

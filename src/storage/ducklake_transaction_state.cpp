@@ -2623,6 +2623,7 @@ WHERE idt.schema_version < (
 		candidates.push_back({row.GetValue<idx_t>(0), row.GetValue<idx_t>(1), row.GetValue<string>(2)});
 	}
 	bool dropped = false;
+	bool readers_checked = false;
 	unique_ptr<QueryResult> failed_drop;
 	for (auto &candidate : candidates) {
 		auto rows_result =
@@ -2630,6 +2631,13 @@ WHERE idt.schema_version < (
 		rows_result->ThrowIfError("Failed to check emptiness of superseded inlined-data table in DuckLake: ");
 		if (rows_result->begin() != rows_result->end()) {
 			continue;
+		}
+		if (!readers_checked) {
+			readers_checked = true;
+			// a transaction that started before the flush can still read the rows it held, a later flush drops it
+			if (context.others_may_read_dropped_tables()) {
+				break;
+			}
 		}
 		// keep the registration if the drop fails
 		auto res = context.execute_in_transaction(DuckLakeMetadataManager::DropInlinedTableSql(

@@ -208,6 +208,8 @@ public:
 	Connection &GetConnection();
 	//! Releases the metadata transaction until the next metadata access
 	void ReleaseMetadataTransaction();
+	//! Whether the transaction has a metadata connection, whose reads can predate later commits
+	bool HasMetadataConnection();
 
 	//! Keep a schema cache entry alive for as long as this transaction lives. Transaction-local catalog entries hold
 	//! bare references into the cached catalog set, and those references are read again at commit time, so the entry

@@ -1227,8 +1227,8 @@ static string ConfigOptionWriteKey(const DuckLakeConfigOption &option) {
 	return "global " + option.option.key;
 }
 
-static DuckLakeConfigOptionUndo GetConfigOptionUndo(const option_map_t &scope, const DuckLakeConfigOption &option,
-                                                    idx_t &last_write, idx_t &write_count) {
+DuckLakeConfigOptionUndo DuckLakeCatalog::StartConfigOptionWrite(const option_map_t &scope,
+                                                                 const DuckLakeConfigOption &option) {
 	DuckLakeConfigOptionUndo undo;
 	undo.option = option;
 	auto entry = scope.find(option.option.key);
@@ -1236,17 +1236,18 @@ static DuckLakeConfigOptionUndo GetConfigOptionUndo(const option_map_t &scope, c
 	if (undo.was_set) {
 		undo.previous_value = entry->second;
 	}
+	auto &last_write = config_option_writes[ConfigOptionWriteKey(option)];
 	undo.previous_write = last_write;
-	undo.write = ++write_count;
+	undo.write = ++config_option_write_count;
 	last_write = undo.write;
+	config_option_replacements[undo.previous_write] = undo.write;
 	return undo;
 }
 
 DuckLakeConfigOptionUndo DuckLakeCatalog::SetConfigOption(const DuckLakeConfigOption &option) {
 	lock_guard<mutex> guard(config_lock);
 	auto &scope = GetOptionScope(options, option);
-	auto undo = GetConfigOptionUndo(scope, option, config_option_writes[ConfigOptionWriteKey(option)],
-	                                config_option_write_count);
+	auto undo = StartConfigOptionWrite(scope, option);
 	scope[option.option.key] = option.option.value;
 	return undo;
 }
@@ -1254,8 +1255,7 @@ DuckLakeConfigOptionUndo DuckLakeCatalog::SetConfigOption(const DuckLakeConfigOp
 DuckLakeConfigOptionUndo DuckLakeCatalog::ResetConfigOption(const DuckLakeConfigOption &option) {
 	lock_guard<mutex> guard(config_lock);
 	auto &scope = GetOptionScope(options, option);
-	auto undo = GetConfigOptionUndo(scope, option, config_option_writes[ConfigOptionWriteKey(option)],
-	                                config_option_write_count);
+	auto undo = StartConfigOptionWrite(scope, option);
 	undo.reset = true;
 	scope.erase(option.option.key);
 	return undo;
@@ -1263,10 +1263,13 @@ DuckLakeConfigOptionUndo DuckLakeCatalog::ResetConfigOption(const DuckLakeConfig
 
 void DuckLakeCatalog::UndoConfigOption(const DuckLakeConfigOptionUndo &undo) {
 	lock_guard<mutex> guard(config_lock);
+	config_option_replacements.erase(undo.previous_write);
 	auto &last_write = config_option_writes[ConfigOptionWriteKey(undo.option)];
 	if (last_write != undo.write) {
 		// another transaction has written the option since, its value stays until that write is undone too
-		rolled_back_config_option_writes[undo.write] = undo;
+		if (config_option_replacements.count(undo.write)) {
+			rolled_back_config_option_writes[undo.write] = undo;
+		}
 		return;
 	}
 	auto &scope = GetOptionScope(options, undo.option);
@@ -1290,7 +1293,16 @@ void DuckLakeCatalog::UndoConfigOption(const DuckLakeConfigOptionUndo &undo) {
 
 void DuckLakeCatalog::CommitConfigOption(const DuckLakeConfigOptionUndo &undo) {
 	lock_guard<mutex> guard(config_lock);
-	rolled_back_config_option_writes.erase(undo.previous_write);
+	config_option_replacements.erase(undo.previous_write);
+	auto write = undo.previous_write;
+	while (true) {
+		auto entry = rolled_back_config_option_writes.find(write);
+		if (entry == rolled_back_config_option_writes.end()) {
+			return;
+		}
+		write = entry->second.previous_write;
+		rolled_back_config_option_writes.erase(entry);
+	}
 }
 
 template <class SCOPE_MAP, class SCOPE_ID>

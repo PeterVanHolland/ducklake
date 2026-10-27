@@ -23,7 +23,7 @@ statement ok
 DETACH dl
 
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE)
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE, DUCKLAKE_VERSION '1.1')
 
 # a v1.1 table can have a user column with a v1.0 metadata column name
 statement ok
@@ -64,7 +64,7 @@ DETACH dl
 
 # read-only attaches do not rename
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE, READ_ONLY)
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE, DUCKLAKE_VERSION '1.1', READ_ONLY)
 
 statement error
 SELECT * FROM dl.e
@@ -75,7 +75,7 @@ statement ok
 DETACH dl
 
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE, SNAPSHOT_VERSION 1)
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE, DUCKLAKE_VERSION '1.1', SNAPSHOT_VERSION 1)
 
 statement ok
 SELECT row_id FROM dlmeta.ducklake_inlined_data_3_3 LIMIT 0
@@ -85,6 +85,11 @@ DETACH dl
 
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_rename_after_files', METADATA_CATALOG 'dlmeta', DATA_INLINING_ROW_LIMIT 10, AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT value FROM dl.options() WHERE option_name = 'version'
+----
+2.0-dev1
 
 statement ok
 INSERT INTO dl.e VALUES (2);
@@ -127,7 +132,7 @@ statement ok
 CREATE TABLE dl.c(_ducklake_row_id INTEGER);
 
 statement ok
-UPDATE dlmeta.ducklake_metadata SET value = '1.1' WHERE key = 'version'
+UPDATE dlmeta.ducklake_metadata SET value = '2.0-dev1' WHERE key = 'version'
 
 statement ok
 DETACH dl

@@ -289,12 +289,12 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				metadata_manager.MigrateV04();
 				catalog_version = DuckLakeVersion::V1_0;
 			}
+			if (catalog_version >= DuckLakeVersion::V1_1 && options.automatic_migration &&
+			    !catalog.GetAttached().IsReadOnly()) {
+				// a v1.0 session that stayed attached across the migration creates inlined tables with old names
+				metadata_manager.RepairLegacyInlinedTables();
+			}
 			if (catalog_version >= target_version) {
-				if (catalog_version == DuckLakeVersion::V1_1 && options.automatic_migration &&
-				    !catalog.GetAttached().IsReadOnly()) {
-					// a v1.0 session that stayed attached across the migration creates inlined tables with old names
-					metadata_manager.RepairLegacyInlinedTables();
-				}
 				resolved_version = catalog_version;
 				continue;
 			}

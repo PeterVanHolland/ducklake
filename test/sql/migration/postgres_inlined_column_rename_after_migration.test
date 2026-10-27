@@ -1,5 +1,5 @@
 # name: test/sql/migration/postgres_inlined_column_rename_after_migration.test
-# description: AUTOMATIC_MIGRATION renames the legacy inlined tables a v1.0 session that stayed attached creates in a v1.1 catalog
+# description: AUTOMATIC_MIGRATION renames the legacy inlined tables a v1.0 session that stayed attached creates in a migrated catalog
 # group: [migration]
 
 require ducklake
@@ -52,7 +52,7 @@ statement ok
 INSERT INTO dl.t VALUES (3, 4);
 
 statement ok
-UPDATE dlmeta.ducklake_metadata SET value = '1.1' WHERE key = 'version'
+UPDATE dlmeta.ducklake_metadata SET value = '2.0-dev1' WHERE key = 'version'
 
 statement ok
 DETACH dl

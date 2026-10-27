@@ -28,6 +28,12 @@ CREATE TABLE lake.v (i INTEGER)
 statement ok
 CREATE TABLE lake.w (i INTEGER)
 
+statement ok
+CREATE TABLE lake.p (i INTEGER)
+
+statement ok
+CREATE TABLE lake.r (i INTEGER)
+
 # another transaction commits the same value before the rollback
 statement ok a
 BEGIN
@@ -141,3 +147,60 @@ query T
 SELECT DISTINCT compression FROM parquet_metadata('{DATA_PATH}/set_option_rollback_shared_value/main/w/**')
 ----
 SNAPPY
+
+# the first write commits while a later one is pending, then the later one rolls back
+statement ok a
+BEGIN
+
+statement ok a
+CALL lake.set_option('parquet_compression', 'gzip', table_name => 'p')
+
+statement ok b
+BEGIN
+
+statement ok b
+CALL lake.set_option('parquet_compression', 'zstd', table_name => 'p')
+
+statement ok a
+COMMIT
+
+statement ok b
+ROLLBACK
+
+statement ok
+INSERT INTO lake.p VALUES (1)
+
+query T
+SELECT DISTINCT compression FROM parquet_metadata('{DATA_PATH}/set_option_rollback_shared_value/main/p/**')
+----
+GZIP
+
+# a committed reset under a set that rolls back
+statement ok
+CALL lake.set_option('parquet_compression', 'snappy', table_name => 'r')
+
+statement ok a
+BEGIN
+
+statement ok a
+ALTER TABLE lake.r RESET (parquet_compression)
+
+statement ok b
+BEGIN
+
+statement ok b
+CALL lake.set_option('parquet_compression', 'zstd', table_name => 'r')
+
+statement ok a
+COMMIT
+
+statement ok b
+ROLLBACK
+
+statement ok
+INSERT INTO lake.r VALUES (1)
+
+query T
+SELECT DISTINCT compression FROM parquet_metadata('{DATA_PATH}/set_option_rollback_shared_value/main/r/**')
+----
+UNCOMPRESSED

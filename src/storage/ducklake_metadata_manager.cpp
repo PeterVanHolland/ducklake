@@ -2753,22 +2753,49 @@ set<idx_t> DuckLakeMetadataManager::GetTableRewriteSnapshots(TableIndex table_id
                                                              DuckLakeSnapshot snapshot) {
 	auto &catalog = transaction.GetCatalog();
 	set<idx_t> rewrite_snapshots;
-	if (catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id, rewrite_snapshots)) {
+	if (!catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id, rewrite_snapshots)) {
+		// the changes of committed snapshots never change, so the catalog caches them
+		auto result = Query(GetRewriteSnapshotsQuery(catalog.GetFirstUnreadRewriteSnapshot(), snapshot.snapshot_id));
+		result->ThrowIfError("Failed to get rewrite snapshots from DuckLake: ");
+		vector<pair<TableIndex, idx_t>> rewrites;
+		for (auto &row : *result) {
+			auto changes = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(1));
+			for (auto &rewritten_table : changes.tables_rewrite_delete) {
+				rewrites.emplace_back(rewritten_table, row.GetValue<idx_t>(0));
+			}
+		}
+		catalog.CacheRewriteSnapshots(rewrites, snapshot.snapshot_id);
+		catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id, rewrite_snapshots);
+	}
+	if (rewrite_snapshots.empty()) {
 		return rewrite_snapshots;
 	}
-	// the changes of committed snapshots never change, so the catalog caches them
-	auto result = Query(GetRewriteSnapshotsQuery(catalog.GetFirstUnreadRewriteSnapshot(), snapshot.snapshot_id));
-	result->ThrowIfError("Failed to get rewrite snapshots from DuckLake: ");
-	vector<pair<TableIndex, idx_t>> rewrites;
-	for (auto &row : *result) {
-		auto changes = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(1));
-		for (auto &rewritten_table : changes.tables_rewrite_delete) {
-			rewrites.emplace_back(rewritten_table, row.GetValue<idx_t>(0));
+	// expiring the snapshot of a rewrite cleans up the files with the later changes of its rows, and expiring the one
+	// before it cleans up the deletions the rewrite dropped, so such a rewrite is reported like any other change
+	vector<idx_t> snapshot_ids;
+	for (auto snapshot_id : rewrite_snapshots) {
+		snapshot_ids.push_back(snapshot_id);
+		if (snapshot_id > start_snapshot.snapshot_id) {
+			snapshot_ids.push_back(snapshot_id - 1);
 		}
 	}
-	catalog.CacheRewriteSnapshots(rewrites, snapshot.snapshot_id);
-	catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id, rewrite_snapshots);
-	return rewrite_snapshots;
+	auto result = Query(StringUtil::Format(
+	    "SELECT snapshot_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id IN (%s)",
+	    StringUtil::Join(snapshot_ids, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); })));
+	result->ThrowIfError("Failed to get the remaining rewrite snapshots from DuckLake: ");
+	set<idx_t> remaining_snapshots;
+	for (auto &row : *result) {
+		remaining_snapshots.insert(row.GetValue<idx_t>(0));
+	}
+	set<idx_t> unchanged_snapshots;
+	for (auto snapshot_id : rewrite_snapshots) {
+		bool previous_remains =
+		    snapshot_id == start_snapshot.snapshot_id || remaining_snapshots.count(snapshot_id - 1) > 0;
+		if (remaining_snapshots.count(snapshot_id) && previous_remains) {
+			unchanged_snapshots.insert(snapshot_id);
+		}
+	}
+	return unchanged_snapshots;
 }
 
 string DuckLakeMetadataManager::GetRewriteSnapshotsQuery(idx_t first_snapshot, idx_t last_snapshot) const {

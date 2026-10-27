@@ -14,6 +14,7 @@
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "storage/ducklake_metadata_manager.hpp"
+#include "functions/ducklake_table_functions.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
@@ -500,11 +501,15 @@ string DuckLakeUtil::EncryptionKeyLiteral(const string &key) {
 	return "'" + Blob::ToBase64(string_t(key)) + "'";
 }
 
+string DuckLakeUtil::WithBinaryCollation(const string &expression) {
+	return "(" + expression + " COLLATE \"C\")";
+}
+
 const char *DuckLakeUtil::BoolLiteral(bool v) {
 	return v ? "true" : "false";
 }
 
-string DuckLakeUtil::PartitionValueLiteral(const Value &v) {
+string DuckLakeUtil::TextLiteralOrNull(const Value &v) {
 	return v.IsNull() ? string("NULL") : SQLString::ToString(v.ToString());
 }
 
@@ -707,13 +712,9 @@ static string ParseMemorySize(ClientContext &, const string &, const Value &val)
 	return to_string(DBConfig::ParseMemoryLimitOrMaximum(val.ToString()));
 }
 
-static string ParseBooleanLiteral(ClientContext &, const string &, const Value &val) {
-	return DuckLakeUtil::BoolLiteral(val.GetValue<bool>());
-}
-
 static string ParseDeleteThreshold(ClientContext &, const string &, const Value &val) {
 	double threshold = val.GetValue<double>();
-	if (threshold < 0 || threshold > 1) {
+	if (!(threshold >= 0 && threshold <= 1)) {
 		throw BinderException("The rewrite_delete_threshold must be between 0 and 1");
 	}
 	return to_string(threshold);
@@ -726,6 +727,8 @@ static string ParseInterval(ClientContext &, const string &option, const Value &
 		if (!Interval::FromString(interval_value, result)) {
 			throw BinderException("%s is not a valid interval value.", option);
 		}
+		// throws if the interval reaches back before the year 1
+		DuckLakeTableFunctionUtil::FormatTimestampOlderThan(option, interval_value);
 	}
 	return interval_value;
 }
@@ -748,8 +751,8 @@ static const unordered_map<string, config_option_parser_t> &ConfigOptionParsers(
 	    {"parquet_row_group_size", ParseRowGroupSize},
 	    {"parquet_row_group_size_bytes", ParseRowGroupSizeBytes},
 	    {"target_file_size", ParseMemorySize},
-	    {"require_commit_message", ParseBooleanLiteral},
-	    {"hive_file_pattern", ParseBooleanLiteral},
+	    {"require_commit_message", ParseBoolean},
+	    {"hive_file_pattern", ParseBoolean},
 	    {"rewrite_delete_threshold", ParseDeleteThreshold},
 	    {"delete_older_than", ParseInterval},
 	    {"expire_older_than", ParseInterval},
@@ -809,6 +812,11 @@ bool DuckLakeUtil::TryGetLiteralValue(const ParsedExpression &expr, Value &resul
 	}
 	result = std::move(*value);
 	return true;
+}
+
+optional<Value> DuckLakeUtil::TryParseSnapshotId(const Value &version) {
+	// the cast of a string to the BIGINT version parameters
+	return version.DefaultTryCastAs(LogicalType::BIGINT);
 }
 
 bool DuckLakeUtil::TryReadTextAs(const Value &text, const LogicalType &type, Value &result) {

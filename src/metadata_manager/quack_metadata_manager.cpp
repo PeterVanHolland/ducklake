@@ -110,15 +110,17 @@ static bool IsDataOnlyCommit(const TransactionChangeInformation &c) {
 	       c.created_scalar_macros.empty() && c.created_table_macros.empty() && c.altered_tables.empty() &&
 	       c.altered_tables_with_schema_version_changes.empty() && c.altered_views.empty() &&
 	       c.dropped_tables.empty() && c.dropped_views.empty() && c.dropped_scalar_macros.empty() &&
-	       c.dropped_table_macros.empty();
+	       c.dropped_table_macros.empty() && !c.HasRefChanges();
 }
 
 //! Whether the commit has to take the client-side path
 static bool RequiresClientSideCommit(DuckLakeTransaction &transaction) {
-	// the server-side commit cannot create inlined tables, delete flushed data, rewrite delete files or write options
+	// the server-side commit cannot create inlined tables, delete flushed data, rewrite delete files, write options or
+	// expire snapshots
 	return transaction.GetRequiresNewInlinedTable() || !transaction.GetFlushedInlinedTables().empty() ||
 	       !transaction.GetFlushedInlinedFileDeletions().empty() ||
-	       transaction.GetLocalChanges().HasDatedNewDeletes() || transaction.HasDeferredConfigOptions();
+	       transaction.GetLocalChanges().HasDatedNewDeletes() || transaction.HasDeferredConfigOptions() ||
+	       transaction.ExpiresSnapshotsOnCommit();
 }
 
 //! Whether the commit writes inlined file deletions, which create the deletion table of a table on first use

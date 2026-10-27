@@ -200,7 +200,7 @@ public:
 	DuckLakeConfigOptionUndo SetConfigOption(const DuckLakeConfigOption &option);
 	DuckLakeConfigOptionUndo ResetConfigOption(const DuckLakeConfigOption &option);
 	void UndoConfigOption(const DuckLakeConfigOptionUndo &undo);
-	//! Forgets the rolled back writes that a committed change replaced
+	//! Makes a write the committed value of its option
 	void CommitConfigOption(const DuckLakeConfigOptionUndo &undo);
 	//! Pending table options take precedence
 	bool TryGetConfigOption(const string &option, string &result, SchemaIndex schema_id, TableIndex table_id,
@@ -466,15 +466,10 @@ private:
 	mutable mutex config_lock;
 	//! The DuckLake options
 	DuckLakeOptions options;
-	//! Starts a write of a config option, under the config lock
-	DuckLakeConfigOptionUndo StartConfigOptionWrite(const option_map_t &scope, const DuckLakeConfigOption &option);
-	//! The number of config option writes, and the last write of every set option
+	DuckLakeConfigOptionUndo WriteConfigOption(const DuckLakeConfigOption &option, bool reset);
+	//! The number of config option writes, and the history of every option with uncommitted writes
 	idx_t config_option_write_count = 0;
-	unordered_map<string, idx_t> config_option_writes;
-	//! The uncommitted write that replaced a write
-	unordered_map<idx_t, idx_t> config_option_replacements;
-	//! Rolled back writes that an uncommitted write replaced, undone once that write is undone too
-	unordered_map<idx_t, DuckLakeConfigOptionUndo> rolled_back_config_option_writes;
+	unordered_map<string, DuckLakeConfigOptionHistory> config_option_history;
 	//! The path separator
 	string separator = "/";
 	//! A unique tracker for catalog changes in uncommitted transactions.

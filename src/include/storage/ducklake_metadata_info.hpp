@@ -582,16 +582,24 @@ struct DuckLakeConfigOption {
 	TableIndex table_id;
 };
 
-//! What a config option held before a transaction set it, so a rollback can put it back
+//! A write of a config option by a transaction, so a rollback can take it back
 struct DuckLakeConfigOptionUndo {
-	//! the option as written
 	DuckLakeConfigOption option;
-	string previous_value;
-	//! the write of this change and the write it replaced, a rollback only undoes the latest write
+	//! the write in the history of the option
 	idx_t write = 0;
-	idx_t previous_write = 0;
-	bool was_set = false;
 	bool reset = false;
+};
+
+//! The uncommitted writes of a config option on top of its committed value
+struct DuckLakeConfigOptionHistory {
+	struct Write {
+		idx_t write;
+		bool set;
+		string value;
+	};
+	bool base_set = false;
+	string base_value;
+	vector<Write> writes;
 };
 
 struct DuckLakeNameMapColumnInfo {

@@ -2753,7 +2753,8 @@ set<idx_t> DuckLakeMetadataManager::GetTableRewriteSnapshots(TableIndex table_id
                                                              DuckLakeSnapshot snapshot) {
 	auto &catalog = transaction.GetCatalog();
 	set<idx_t> rewrite_snapshots;
-	if (!catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id, rewrite_snapshots)) {
+	if (!catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id,
+	                                    rewrite_snapshots)) {
 		// the changes of committed snapshots never change, so the catalog caches them
 		auto result = Query(GetRewriteSnapshotsQuery(catalog.GetFirstUnreadRewriteSnapshot(), snapshot.snapshot_id));
 		result->ThrowIfError("Failed to get rewrite snapshots from DuckLake: ");

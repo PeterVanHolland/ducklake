@@ -15,7 +15,7 @@ statement ok
 ATTACH 'ducklake:sqlite:{TEST_DIR}/v02_name_mapping.sqlite' AS dl (DATA_PATH 'data/old_ducklake/v02_name_mapping/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
 
 query II
-SELECT column_id, is_partition FROM __ducklake_metadata_dl.ducklake_name_mapping ORDER BY ALL
+SELECT column_id, is_partition::BOOLEAN FROM __ducklake_metadata_dl.ducklake_name_mapping ORDER BY ALL
 ----
 0	false
 1	false

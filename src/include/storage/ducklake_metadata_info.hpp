@@ -584,9 +584,12 @@ struct DuckLakeConfigOption {
 
 //! What a config option held before a transaction set it, so a rollback can put it back
 struct DuckLakeConfigOptionUndo {
-	//! the option as written, whose value the undo compares against
+	//! the option as written
 	DuckLakeConfigOption option;
 	string previous_value;
+	//! the write of this change and the write it replaced, a rollback only undoes the latest write
+	idx_t write = 0;
+	idx_t previous_write = 0;
 	bool was_set = false;
 	bool reset = false;
 };

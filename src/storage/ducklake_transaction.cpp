@@ -846,6 +846,9 @@ void DuckLakeTransaction::Commit() {
 	FlushNameMapCacheInvalidations();
 	connection.reset();
 	state->local_changes.Clear();
+	for (auto &change : config_option_undo) {
+		ducklake_catalog.CommitConfigOption(change);
+	}
 	config_option_undo.clear();
 	SetRequiresNewInlinedTable(false);
 	ClearSchemaCachePins();

@@ -389,6 +389,7 @@ void DuckLakeMetadataManager::ExecuteMigration(string migrate_query, bool allow_
 void DuckLakeMetadataManager::MigrateV02(bool allow_failures) {
 	string migrate_query = R"(
 ALTER TABLE {METADATA_CATALOG}.ducklake_name_mapping ADD COLUMN {IF_NOT_EXISTS} is_partition BOOLEAN DEFAULT false;
+UPDATE {METADATA_CATALOG}.ducklake_name_mapping SET is_partition = false WHERE is_partition IS NULL;
 ALTER TABLE {METADATA_CATALOG}.ducklake_snapshot_changes ADD COLUMN {IF_NOT_EXISTS} author VARCHAR DEFAULT NULL;
 ALTER TABLE {METADATA_CATALOG}.ducklake_snapshot_changes ADD COLUMN {IF_NOT_EXISTS} commit_message VARCHAR DEFAULT NULL;
 ALTER TABLE {METADATA_CATALOG}.ducklake_snapshot_changes ADD COLUMN {IF_NOT_EXISTS} commit_extra_info VARCHAR DEFAULT NULL;
@@ -4819,7 +4820,8 @@ ORDER BY mapping_id ASC, parent_column ASC NULLS FIRST
 		name_map_column.source_name = row.GetValue<string>(4);
 		name_map_column.target_field_id = FieldIndex(row.GetValue<idx_t>(5));
 		name_map_column.parent_column = OptIdx(row, 6);
-		name_map_column.hive_partition = row.GetValue<bool>(7);
+		// SQLite catalogs migrated from 0.2 without the backfill have NULL
+		name_map_column.hive_partition = !row.IsNull(7) && row.GetValue<bool>(7);
 		mapping_info.map_columns.push_back(std::move(name_map_column));
 	}
 	return column_maps;

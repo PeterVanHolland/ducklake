@@ -2776,9 +2776,7 @@ set<idx_t> DuckLakeMetadataManager::GetTableRewriteSnapshots(TableIndex table_id
 	vector<idx_t> snapshot_ids;
 	for (auto snapshot_id : rewrite_snapshots) {
 		snapshot_ids.push_back(snapshot_id);
-		if (snapshot_id > start_snapshot.snapshot_id) {
-			snapshot_ids.push_back(snapshot_id - 1);
-		}
+		snapshot_ids.push_back(snapshot_id - 1);
 	}
 	vector<idx_t> unknown_snapshots;
 	{
@@ -2804,8 +2802,7 @@ set<idx_t> DuckLakeMetadataManager::GetTableRewriteSnapshots(TableIndex table_id
 	set<idx_t> unchanged_snapshots;
 	lock_guard<mutex> guard(remaining_snapshots_lock);
 	for (auto snapshot_id : rewrite_snapshots) {
-		bool previous_remains = snapshot_id == start_snapshot.snapshot_id || remaining_snapshots[snapshot_id - 1];
-		if (remaining_snapshots[snapshot_id] && previous_remains) {
+		if (remaining_snapshots[snapshot_id] && remaining_snapshots[snapshot_id - 1]) {
 			unchanged_snapshots.insert(snapshot_id);
 		}
 	}

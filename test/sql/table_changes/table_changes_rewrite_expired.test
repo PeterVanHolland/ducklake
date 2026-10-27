@@ -116,9 +116,10 @@ FROM dl.table_changes('u', getvariable('u') + 1, getvariable('u') + 4)
 ----
 3	3
 
-# a feed that starts at the rewrite does not need the expired snapshot before it
-query III
-SELECT snapshot_id - getvariable('u'), change_type, id
-FROM dl.table_changes('u', getvariable('u') + 3, getvariable('u') + 4) ORDER BY ALL
+# a feed that starts at the rewrite reports the deletion of the expired snapshot before it there
+query II
+SELECT (SELECT count(*) FROM dl.u AT (VERSION => getvariable('u') + 1))
+    + sum(CASE WHEN change_type IN ('insert', 'update_postimage') THEN 1 ELSE -1 END), (SELECT count(*) FROM dl.u)
+FROM dl.table_changes('u', getvariable('u') + 3, getvariable('u') + 4)
 ----
-4	delete	4
+3	3

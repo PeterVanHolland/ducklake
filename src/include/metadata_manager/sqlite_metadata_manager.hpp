@@ -40,6 +40,7 @@ public:
 	string GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
 	                                      const string &metadata_table_prefix) override;
 	string GetRewriteSnapshotsQuery(idx_t first_snapshot, idx_t last_snapshot) const override;
+	string GetRemainingSnapshotsQuery(const vector<idx_t> &snapshot_ids) const override;
 };
 
 } // namespace duckdb

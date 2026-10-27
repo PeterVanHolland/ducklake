@@ -2780,23 +2780,42 @@ set<idx_t> DuckLakeMetadataManager::GetTableRewriteSnapshots(TableIndex table_id
 			snapshot_ids.push_back(snapshot_id - 1);
 		}
 	}
-	auto result = Query(StringUtil::Format(
-	    "SELECT snapshot_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id IN (%s)",
-	    StringUtil::Join(snapshot_ids, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); })));
-	result->ThrowIfError("Failed to get the remaining rewrite snapshots from DuckLake: ");
-	set<idx_t> remaining_snapshots;
-	for (auto &row : *result) {
-		remaining_snapshots.insert(row.GetValue<idx_t>(0));
+	vector<idx_t> unknown_snapshots;
+	{
+		lock_guard<mutex> guard(remaining_snapshots_lock);
+		for (auto snapshot_id : snapshot_ids) {
+			if (remaining_snapshots.find(snapshot_id) == remaining_snapshots.end()) {
+				unknown_snapshots.push_back(snapshot_id);
+			}
+		}
+	}
+	if (!unknown_snapshots.empty()) {
+		auto result = Query(GetRemainingSnapshotsQuery(unknown_snapshots));
+		result->ThrowIfError("Failed to get the remaining rewrite snapshots from DuckLake: ");
+		unordered_set<idx_t> found_snapshots;
+		for (auto &row : *result) {
+			found_snapshots.insert(row.GetValue<idx_t>(0));
+		}
+		lock_guard<mutex> guard(remaining_snapshots_lock);
+		for (auto snapshot_id : unknown_snapshots) {
+			remaining_snapshots.emplace(snapshot_id, found_snapshots.count(snapshot_id) > 0);
+		}
 	}
 	set<idx_t> unchanged_snapshots;
+	lock_guard<mutex> guard(remaining_snapshots_lock);
 	for (auto snapshot_id : rewrite_snapshots) {
-		bool previous_remains =
-		    snapshot_id == start_snapshot.snapshot_id || remaining_snapshots.count(snapshot_id - 1) > 0;
-		if (remaining_snapshots.count(snapshot_id) && previous_remains) {
+		bool previous_remains = snapshot_id == start_snapshot.snapshot_id || remaining_snapshots[snapshot_id - 1];
+		if (remaining_snapshots[snapshot_id] && previous_remains) {
 			unchanged_snapshots.insert(snapshot_id);
 		}
 	}
 	return unchanged_snapshots;
+}
+
+string DuckLakeMetadataManager::GetRemainingSnapshotsQuery(const vector<idx_t> &snapshot_ids) const {
+	return StringUtil::Format(
+	    "SELECT snapshot_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id IN (%s)",
+	    StringUtil::Join(snapshot_ids, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); }));
 }
 
 string DuckLakeMetadataManager::GetRewriteSnapshotsQuery(idx_t first_snapshot, idx_t last_snapshot) const {
@@ -5775,6 +5794,10 @@ string DuckLakeMetadataManager::DeleteSnapshotsSql(const vector<DuckLakeSnapshot
 void DuckLakeMetadataManager::DeleteSnapshots(const vector<DuckLakeSnapshotInfo> &snapshots) {
 	auto result = Execute(DeleteSnapshotsSql(snapshots));
 	result->ThrowIfError("Failed to delete snapshots in DuckLake: ");
+	{
+		lock_guard<mutex> guard(remaining_snapshots_lock);
+		remaining_snapshots.clear();
+	}
 	CleanupExpiredSnapshots(snapshots);
 }
 

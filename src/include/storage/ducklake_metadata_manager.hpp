@@ -645,6 +645,8 @@ protected:
 	virtual string GetLatestSnapshotQuery() const;
 	//! The changes of the snapshots from first_snapshot to last_snapshot that recorded a rewrite
 	virtual string GetRewriteSnapshotsQuery(idx_t first_snapshot, idx_t last_snapshot) const;
+	//! The snapshots among snapshot_ids that have not been expired
+	virtual string GetRemainingSnapshotsQuery(const vector<idx_t> &snapshot_ids) const;
 
 	virtual string GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
 	                                              const string &metadata_table_prefix);
@@ -777,6 +779,9 @@ private:
 
 	unordered_map<idx_t, string> insert_inlined_table_name_cache;
 	unordered_set<idx_t> delete_inlined_table_cache;
+	//! Whether a snapshot remains, read once per transaction so that its scans agree with concurrent expiry
+	mutex remaining_snapshots_lock;
+	unordered_map<idx_t, bool> remaining_snapshots;
 
 protected:
 	DuckLakeTransaction &transaction;

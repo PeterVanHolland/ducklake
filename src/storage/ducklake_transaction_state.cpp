@@ -2806,6 +2806,12 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			// read after the latest snapshot, so a commit the expiry does not see takes the id of the new snapshot
 			auto expired_snapshots = context.get_expired_snapshots(i, commit_snapshot.snapshot_id - 1);
 			if (expired_snapshots.empty() && context.only_expires_snapshots) {
+				// nothing is left to expire, so the commit writes the options of the transaction without a snapshot
+				auto option_changes = context.write_config_options();
+				if (!option_changes.empty()) {
+					context.execute_commit_batch(commit_snapshot, option_changes)
+					    ->ThrowIfError("Failed to write config options to DuckLake: ");
+				}
 				context.commit_connection();
 				wrote_snapshot = false;
 				break;

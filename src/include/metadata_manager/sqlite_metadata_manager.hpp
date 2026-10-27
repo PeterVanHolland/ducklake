@@ -41,6 +41,10 @@ public:
 	                                      const string &metadata_table_prefix) override;
 	string GetChangesSinceQuery(idx_t snapshot_id, DuckLakeSnapshot snapshot) const override;
 	string GetRewriteSnapshotsQuery(idx_t first_snapshot, idx_t last_snapshot) const override;
+
+private:
+	//! The snapshot_id and changes_made of a query of the change log, read through sqlite_query
+	string GetSnapshotChangesQuery(string changes_query) const;
 };
 
 } // namespace duckdb

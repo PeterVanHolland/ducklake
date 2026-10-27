@@ -741,7 +741,7 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 			}
 			if (user_columns.count(entry.second)) {
 				if (legacy_tables) {
-					// the attach of a v1.1 catalog does not fail for a table it cannot rename
+					// the repair of an attach does not fail for a table it cannot rename
 					table_renames.clear();
 					break;
 				}

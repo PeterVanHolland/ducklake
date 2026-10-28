@@ -223,7 +223,12 @@
     {
       "reason": "Quack expires snapshots when the transaction commits, so a cleanup in that transaction finds none of their files",
       "paths": [
-        "test/sql/cleanup/expire_cleanup_in_transaction.test",
+        "test/sql/cleanup/expire_cleanup_in_transaction.test"
+      ]
+    },
+    {
+      "reason": "The test reads ducklake_files_scheduled_for_deletion from the metadata catalog directly, which the quack client does not serve",
+      "paths": [
         "test/sql/cleanup/expire_cleanup_concurrent_commit.test"
       ]
     }

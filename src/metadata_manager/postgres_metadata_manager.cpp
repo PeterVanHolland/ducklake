@@ -384,12 +384,17 @@ PostgresMetadataManager::GetMetadataTableColumns(const vector<Identifier> &table
 	    StringUtil::Format("SELECT * FROM postgres_query({METADATA_CATALOG_NAME_LITERAL}, %s, use_transaction = true)",
 	                       SQLString::ToString(remote_query)));
 	result->ThrowIfError("Failed to read the columns of the DuckLake metadata tables: ");
-	identifier_set_t requested_tables(table_names.begin(), table_names.end());
+	// Postgres names differing only in case are distinct tables, so the exact name of the requested table is read
+	unordered_set<string> requested_tables;
+	for (auto &table_name : table_names) {
+		requested_tables.insert(table_name.GetIdentifierName());
+	}
 	map<Identifier, vector<pair<Identifier, string>>> columns;
 	for (auto &row : *result) {
-		auto table_name = row.GetValue<Identifier>(0);
+		auto table_name = row.GetValue<string>(0);
 		if (requested_tables.count(table_name)) {
-			columns[table_name].emplace_back(row.GetValue<Identifier>(1), MetadataColumnType(row.GetValue<string>(2)));
+			columns[Identifier(table_name)].emplace_back(row.GetValue<Identifier>(1),
+			                                             MetadataColumnType(row.GetValue<string>(2)));
 		}
 	}
 	return columns;

@@ -34,7 +34,10 @@ public:
 	static bool TryGetTimestampOption(const TableFunctionBindInput &input, const string &name, Value &result);
 	static string GetStringOption(const TableFunctionBindInput &input, const string &name);
 	static string GetTableName(const Value &input);
+	static void VerifySnapshotIdentifier(const Value &input);
 	static BoundAtClause AtClauseFromValue(const Value &input);
+	//! A string is the name of a snapshot tag, any other value a snapshot id
+	static BoundAtClause VersionAtClauseFromValue(const Value &input);
 };
 
 struct MetadataBindData : public TableFunctionData {
@@ -128,6 +131,26 @@ public:
 class DuckLakeSetCommitMessage : public TableFunction {
 public:
 	DuckLakeSetCommitMessage();
+};
+
+class DuckLakeCreateTagFunction : public TableFunction {
+public:
+	DuckLakeCreateTagFunction();
+};
+
+class DuckLakeReplaceTagFunction : public TableFunction {
+public:
+	DuckLakeReplaceTagFunction();
+};
+
+class DuckLakeDropTagFunction : public TableFunction {
+public:
+	DuckLakeDropTagFunction();
+};
+
+class DuckLakeTagsFunction : public DuckLakeBaseMetadataFunction {
+public:
+	DuckLakeTagsFunction();
 };
 
 class DuckLakeOptionsFunction : public DuckLakeBaseMetadataFunction {

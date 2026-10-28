@@ -71,7 +71,7 @@ public:
 	static DeleteFileSource DeleteFileSourceFromString(const string &source);
 };
 
-//! The rows a commit stages, sent as one INSERT per staged table
+//! The rows a commit stages, sent as multi-row INSERTs per staged table
 class DuckLakeStagedRows {
 public:
 	DuckLakeStagedRows();

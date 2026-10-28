@@ -2834,6 +2834,14 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			bool retry_on_error =
 			    error.Type() != ExceptionType::INTERNAL &&
 			    (retryable_metadata_error || (can_retry && DuckLakeTransaction::RetryOnError(error.RawMessage())));
+			if (retry_on_error) {
+				try {
+					context.verify_retry();
+				} catch (std::exception &retry_ex) {
+					error = ErrorData(retry_ex);
+					retry_on_error = false;
+				}
+			}
 			// We perform one initial attempt plus up to max_retry_count retries. Since i is the
 			// zero-based attempt index, we are done retrying once i reaches max_retry_count.
 			bool finished_retrying = i >= retry_config.max_retry_count;

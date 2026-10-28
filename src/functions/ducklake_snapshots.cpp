@@ -25,10 +25,10 @@ static Value NameListToValue(const case_insensitive_set_t &list_val) {
 	return Value::LIST(LogicalType::VARCHAR, std::move(list_values));
 }
 
-using CatalogNameMap = case_insensitive_map_t<case_insensitive_set_t>;
+using CatalogNameMap = case_insensitive_map_t<identifier_set_t>;
 
-static void SplitCreatedEntries(const case_insensitive_map_t<case_insensitive_map_t<string>> &created,
-                                const string &type, CatalogNameMap &matching, optional_ptr<CatalogNameMap> other) {
+static void SplitCreatedEntries(const case_insensitive_map_t<identifier_map_t<string>> &created, const string &type,
+                                CatalogNameMap &matching, optional_ptr<CatalogNameMap> other) {
 	for (auto &entry : created) {
 		for (auto &sub_entry : entry.second) {
 			if (sub_entry.second == type) {
@@ -87,6 +87,21 @@ static void PushIDChangeList(vector<Value> &change_keys, vector<Value> &change_v
 	change_values.push_back(IDListToValue(id_list));
 }
 
+static void PushNameChangeList(vector<Value> &change_keys, vector<Value> &change_values,
+                               const case_insensitive_set_t &names, const char *key) {
+	if (names.empty()) {
+		return;
+	}
+	vector<string> sorted_names(names.begin(), names.end());
+	std::sort(sorted_names.begin(), sorted_names.end());
+	vector<Value> list_values;
+	for (auto &name : sorted_names) {
+		list_values.emplace_back(name);
+	}
+	change_keys.emplace_back(key);
+	change_values.push_back(Value::LIST(LogicalType::VARCHAR, std::move(list_values)));
+}
+
 vector<Value> DuckLakeSnapshotsFunction::GetSnapshotValues(const DuckLakeSnapshotInfo &snapshot) {
 	vector<Value> row_values;
 	row_values.push_back(Value::BIGINT(NumericCast<int64_t>(snapshot.id)));
@@ -140,6 +155,16 @@ vector<Value> DuckLakeSnapshotsFunction::GetSnapshotValues(const DuckLakeSnapsho
 	PushIDChangeList(change_keys, change_values, other_changes.tables_merge_adjacent, "merge_adjacent");
 	PushIDChangeList(change_keys, change_values, other_changes.tables_rewrite_delete, "rewrite_delete");
 	PushIDChangeList(change_keys, change_values, other_changes.tables_compacted, "compacted_table");
+	PushNameChangeList(change_keys, change_values, other_changes.created_snapshot_tags, "tags_created");
+	PushNameChangeList(change_keys, change_values, other_changes.dropped_snapshot_tags, "tags_dropped");
+	if (!other_changes.expired_snapshots.empty()) {
+		vector<Value> expired;
+		for (auto &snapshot_id : other_changes.expired_snapshots) {
+			expired.emplace_back(std::to_string(snapshot_id));
+		}
+		change_keys.emplace_back("snapshots_expired");
+		change_values.push_back(Value::LIST(LogicalType::VARCHAR, std::move(expired)));
+	}
 
 	row_values.push_back(Value::MAP(LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR),
 	                                std::move(change_keys), std::move(change_values)));
@@ -149,24 +174,37 @@ vector<Value> DuckLakeSnapshotsFunction::GetSnapshotValues(const DuckLakeSnapsho
 	return row_values;
 }
 
+struct DuckLakeSnapshotsBindData : public TableFunctionData {
+	vector<DuckLakeSnapshotInfo> snapshots;
+};
+
 static unique_ptr<FunctionData> DuckLakeSnapshotsBind(ClientContext &context, TableFunctionBindInput &input,
                                                       vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto &catalog = DuckLakeBaseMetadataFunction::GetCatalog(context, input);
 	auto &transaction = DuckLakeTransaction::Get(context, catalog);
 
 	auto &metadata_manager = transaction.GetMetadataManager();
-	auto snapshots = metadata_manager.GetAllSnapshots();
-	auto result = make_uniq<MetadataBindData>();
-	for (auto &snapshot : snapshots) {
-		auto row_values = DuckLakeSnapshotsFunction::GetSnapshotValues(snapshot);
-		result->rows.push_back(std::move(row_values));
-	}
+	auto result = make_uniq<DuckLakeSnapshotsBindData>();
+	result->snapshots = metadata_manager.GetAllSnapshots(
+	    StringUtil::Format("snapshot_id <= %llu", transaction.GetNewestVisibleSnapshotId()));
 	DuckLakeSnapshotsFunction::GetSnapshotTypes(return_types, names);
 	return std::move(result);
 }
 
+static void DuckLakeSnapshotsExecute(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &data = data_p.bind_data->Cast<DuckLakeSnapshotsBindData>();
+	auto &state = data_p.global_state->Cast<DuckLakeRunOnceState>();
+	vector<vector<Value>> rows;
+	while (state.offset < data.snapshots.size() && rows.size() < STANDARD_VECTOR_SIZE) {
+		rows.push_back(DuckLakeSnapshotsFunction::GetSnapshotValues(data.snapshots[state.offset++]));
+	}
+	idx_t chunk_offset = 0;
+	DuckLakeBaseMetadataFunction::ScanRows(rows, chunk_offset, output);
+}
+
 DuckLakeSnapshotsFunction::DuckLakeSnapshotsFunction()
     : DuckLakeBaseMetadataFunction("ducklake_snapshots", DuckLakeSnapshotsBind) {
+	function = DuckLakeSnapshotsExecute;
 }
 
 } // namespace duckdb

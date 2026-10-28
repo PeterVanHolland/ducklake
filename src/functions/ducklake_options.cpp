@@ -18,7 +18,7 @@ static constexpr DuckLakeOptionMetadata DUCKLAKE_OPTIONS[] = {
     {"parquet_compression",
      "Compression algorithm for Parquet files (uncompressed, snappy, gzip, zstd, brotli, lz4, lz4_raw)"},
     {"parquet_version", "Parquet format version (1 or 2)"},
-    {"parquet_compression_level", "Compression level for Parquet files"},
+    {"parquet_compression_level", "Compression level for Parquet files written with zstd"},
     {"parquet_row_group_size", "Number of rows per row group in Parquet files"},
     {"parquet_row_group_size_bytes", "Number of bytes per row group in Parquet files"},
     {"hive_file_pattern", "If partitioned data should be written in a hive-like folder structure"},
@@ -38,7 +38,8 @@ static constexpr DuckLakeOptionMetadata DUCKLAKE_OPTIONS[] = {
     {"encrypted", "Whether or not to encrypt Parquet files written to the data path"},
     {"per_thread_output", "Whether to create separate output files per thread during parallel insertion"},
     {"write_deletion_vectors", "[EXPERIMENTAL - do not use outside testing] Whether to write Iceberg V3 deletion "
-                               "vectors (puffin) instead of positional delete files (parquet)"},
+                               "vectors (puffin) instead of positional delete files (parquet), encrypted catalogs "
+                               "always write parquet"},
     {"sort_on_insert", "Whether to sort data on INSERT according to SET SORTED BY (default: true)"},
     {"skip_stats_columns", "Columns for which min/max bounds are not recorded (counts are still recorded)"},
 };

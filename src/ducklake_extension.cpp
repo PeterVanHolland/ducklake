@@ -16,6 +16,7 @@
 namespace duckdb {
 
 ScalarFunction DuckLakeMurmur3Function();
+ScalarFunction DuckLakeUnreadableMacroDefaultFunction();
 
 static void LoadInternal(ExtensionLoader &loader) {
 	loader.SetDescription("Adds support for DuckLake, SQL as a Lakehouse Format");
@@ -89,6 +90,18 @@ static void LoadInternal(ExtensionLoader &loader) {
 	DuckLakeSetCommitMessage set_commit_message;
 	loader.RegisterFunction(set_commit_message);
 
+	DuckLakeCreateTagFunction create_tag;
+	loader.RegisterFunction(create_tag);
+
+	DuckLakeReplaceTagFunction replace_tag;
+	loader.RegisterFunction(replace_tag);
+
+	DuckLakeDropTagFunction drop_tag;
+	loader.RegisterFunction(drop_tag);
+
+	DuckLakeTagsFunction tags;
+	loader.RegisterFunction(tags);
+
 	auto table_changes = DuckLakeTableInsertionsFunction::GetDuckLakeTableChanges();
 	loader.RegisterFunction(*table_changes);
 
@@ -124,8 +137,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register murmur3_32 scalar function for Iceberg-compatible bucket partitioning
 	auto murmur3_func = DuckLakeMurmur3Function();
 	loader.RegisterFunction(murmur3_func);
+
+	auto unreadable_macro_default_func = DuckLakeUnreadableMacroDefaultFunction();
+	loader.RegisterFunction(unreadable_macro_default_func);
 }
 
+// LCOV_EXCL_START
 void DucklakeExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
@@ -136,6 +153,7 @@ std::string DucklakeExtension::Name() {
 std::string DucklakeExtension::Version() const {
 #ifdef EXT_VERSION_DUCKLAKE
 	return EXT_VERSION_DUCKLAKE;
+// LCOV_EXCL_STOP
 #else
 	return "";
 #endif

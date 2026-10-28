@@ -39,7 +39,7 @@ struct LocalChange {
 	//! For operations that alter individual columns
 	FieldIndex field_index;
 	//! For SET_COLUMN_COMMENT on views
-	string view_column_comment_name;
+	Identifier view_column_comment_name;
 	//! For CHANGE_COLUMN_TYPE, whether the stored values were checked to convert
 	bool checked_values = false;
 
@@ -48,7 +48,7 @@ struct LocalChange {
 		result.field_index = field_idx;
 		return result;
 	}
-	static LocalChange SetViewColumnComment(const string &column_name) {
+	static LocalChange SetViewColumnComment(const Identifier &column_name) {
 		LocalChange result(LocalChangeType::SET_COLUMN_COMMENT);
 		result.view_column_comment_name = column_name;
 		return result;

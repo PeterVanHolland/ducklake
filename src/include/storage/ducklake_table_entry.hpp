@@ -35,6 +35,8 @@ class ParsedExpression;
 struct ColumnChangeInfo {
 	vector<DuckLakeNewColumn> new_fields;
 	vector<FieldIndex> dropped_fields;
+	//! Fields retyped to a finer timestamp unit
+	vector<FieldIndex> refined_timestamp_fields;
 
 	void DropField(const DuckLakeFieldId &field_id);
 };
@@ -141,8 +143,8 @@ public:
 	idx_t GetNetInlinedRowCount(DuckLakeTransaction &transaction);
 
 	//! Gets the top-level not-null fields
-	case_insensitive_set_t GetNotNullFields() const;
-	void ThrowNotNullViolation(const string &column_name) const;
+	identifier_set_t GetNotNullFields() const;
+	void ThrowNotNullViolation(const Identifier &column_name) const;
 
 	DuckLakeTableInfo GetTableInfo() const;
 	vector<DuckLakeColumnInfo> GetTableColumns() const;
@@ -153,6 +155,9 @@ public:
 	TableFunction GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) override;
 	TableFunction GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data,
 	                              const EntryLookupInfo &lookup_info) override;
+	//! The scan of an entry looked up by id, which this transaction may have renamed since
+	TableFunction GetScanFunctionById(ClientContext &context, unique_ptr<FunctionData> &bind_data,
+	                                  const EntryLookupInfo &lookup_info);
 
 	TableStorageInfo GetStorageInfo(ClientContext &context) override;
 
@@ -166,9 +171,11 @@ public:
 	DuckLakeColumnInfo GetColumnInfo(FieldIndex field_index) const;
 	DuckLakeColumnInfo GetAddColumnInfo() const;
 
-	static DuckLakeColumnInfo ConvertColumn(const string &name, const LogicalType &type,
+	static DuckLakeColumnInfo ConvertColumn(const Identifier &name, const LogicalType &type,
 	                                        const DuckLakeFieldId &field_id);
 	void RequireNextColumnId(DuckLakeTransaction &transaction);
+	//! The column id of the next added column, every column id the table gave out is below it
+	idx_t GetNextColumnId(DuckLakeTransaction &transaction);
 
 	const string &DataPath() const;
 	virtual_column_map_t GetVirtualColumns() const override;
@@ -180,13 +187,13 @@ public:
 	static string ResolveSkippedStatsColumns(DuckLakeTableEntry &table, const Value &val);
 	static string ResolveSkippedStatsColumns(const ColumnList &columns, const DuckLakeFieldData &field_data,
 	                                         optional_ptr<const DuckLakePartition> partition_data,
-	                                         const string &table_name, const Value &val);
+	                                         const Identifier &table_name, const Value &val);
 	//! Validates table options and normalizes their values
 	static map<string, string> ParseTableOptions(ClientContext &context, DuckLakeCatalog &catalog,
 	                                             const case_insensitive_map_t<unique_ptr<ParsedExpression>> &options,
 	                                             const ColumnList &columns, const DuckLakeFieldData &field_data,
 	                                             optional_ptr<const DuckLakePartition> partition_data,
-	                                             const string &table_name);
+	                                             const Identifier &table_name);
 
 	//! Build a DuckLakePartition from raw partition expressions (allocates a transaction-local id).
 	static unique_ptr<DuckLakePartition> BuildPartitionData(DuckLakeTransaction &transaction, const ColumnList &columns,
@@ -200,9 +207,12 @@ public:
 	                                              const vector<unique_ptr<ParsedExpression>> &sort_keys);
 
 private:
+	unique_ptr<CatalogEntry> AlterEntry(ClientContext &context, DuckLakeTransaction &transaction, AlterTableInfo &info);
 	bool CanUseGlobalStats(DuckLakeTransaction &transaction) const;
 	unique_ptr<CatalogEntry> AlterTable(DuckLakeTransaction &transaction, RenameTableInfo &info);
 	unique_ptr<CatalogEntry> AlterTable(DuckLakeTransaction &transaction, SetPartitionedByInfo &info);
+	//! Whether a bucket column of the new spec changed its bucket type since the last commit
+	bool BucketTypesChanged(DuckLakeTransaction &transaction, DuckLakeTableEntry &table);
 	unique_ptr<CatalogEntry> AlterTable(ClientContext &context, DuckLakeTransaction &transaction, SetNotNullInfo &info);
 	unique_ptr<CatalogEntry> AlterTable(DuckLakeTransaction &transaction, DropNotNullInfo &info);
 	unique_ptr<CatalogEntry> AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
@@ -233,7 +243,7 @@ private:
 	unique_ptr<DuckLakeFieldId> TypePromotion(const DuckLakeFieldId &source_id, const LogicalType &target,
 	                                          ColumnChangeInfo &result, optional_idx parent_idx);
 
-	void CheckSupportedTypes();
+	void CheckSupportedType(const LogicalType &type);
 
 public:
 	// ! Create a DuckLakeTableEntry from an ALTER
@@ -242,7 +252,7 @@ public:
 
 	// ! Create a DuckLakeTableEntry from a RENAME COLUMN
 	DuckLakeTableEntry(DuckLakeTableEntry &parent, CreateTableInfo &info, LocalChange local_change,
-	                   const string &new_name);
+	                   const Identifier &new_name);
 	// ! Create a DuckLakeTableEntry from a REMOVE COLUMN
 	DuckLakeTableEntry(DuckLakeTableEntry &parent, CreateTableInfo &info, LocalChange local_change,
 	                   unique_ptr<ColumnChangeInfo> changed_fields);

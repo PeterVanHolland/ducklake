@@ -35,6 +35,13 @@ struct DuckLakeInlinedData {
 	void CastTo(ClientContext &context, const vector<LogicalType> &new_types);
 };
 
+//! The committed rows of an inlined table, read before the file list of a scan
+struct DuckLakeCommittedInlinedRows {
+	//! The column each inlined data reader selects, in the order of the columns of the rows
+	vector<string> columns;
+	shared_ptr<DuckLakeInlinedData> rows;
+};
+
 struct DuckLakeInlinedDataDeletes {
 	set<idx_t> rows;
 };

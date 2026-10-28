@@ -13,12 +13,14 @@ add_library(
   ducklake_set_commit_message.cpp
   ducklake_set_option.cpp
   ducklake_snapshots.cpp
+  ducklake_snapshot_tags.cpp
   ducklake_options.cpp
   ducklake_settings.cpp
   ducklake_table_changes.cpp
   ducklake_table_info.cpp
   ducklake_table_insertions.cpp
-  ducklake_murmur3.cpp)
+  ducklake_murmur3.cpp
+  ducklake_unreadable_macro_default.cpp)
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:ducklake_functions>
     PARENT_SCOPE)

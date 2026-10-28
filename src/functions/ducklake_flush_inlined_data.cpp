@@ -77,7 +77,7 @@ SourceResultType DuckLakeFlushData::GetDataInternal(ExecutionContext &context, D
 	auto &transaction = DuckLakeTransaction::Get(context.client, catalog);
 	auto &latest_table = DuckLakeCompactor::GetLatestTableEntry(catalog, transaction, table);
 	chunk.data[0].Append(Value(latest_table.schema.GetSchemaName()));
-	chunk.data[1].Append(Value(latest_table.name.GetIdentifierName()));
+	chunk.data[1].Append(Value(latest_table.name));
 	chunk.data[2].Append(Value::BIGINT(static_cast<int64_t>(gstate.rows_flushed)));
 	chunk.SetChildCardinality(1);
 	return SourceResultType::FINISHED;
@@ -104,7 +104,7 @@ using DeletesPerFile = unordered_map<string, set<PositionWithSnapshot>>;
 using DeletedRowVersions = map<pair<int64_t, int64_t>, int64_t>;
 
 static DeletedRowVersions GetDeletedRowVersions(DuckLakeMetadataManager &metadata_manager, DuckLakeSnapshot snapshot,
-                                                const DuckLakeTableEntry &table, const string &inlined_table_name) {
+                                                const DuckLakeTableEntry &table, const Identifier &inlined_table_name) {
 	auto col_names = metadata_manager.InlinedColNames();
 	auto flush_source = metadata_manager.InlinedFlushSource(inlined_table_name, table);
 	auto result = metadata_manager.Query(
@@ -537,8 +537,8 @@ static unique_ptr<LogicalOperator> FlushInlinedDataBind(ClientContext &context, 
 			auto unwritable_column = GetUnwritableColumn(ducklake_catalog, transaction, table_entry, inlined_table);
 			if (unwritable_column) {
 				if (!table.empty() && transaction.GetMetadataManager().InlinedTableHasRows(inlined_table.table_name)) {
-					throw DuckLakeTypes::NestedVariantWriteError(
-					    "flush the inlined data", table_entry.name.GetIdentifierName(), *unwritable_column);
+					throw DuckLakeTypes::NestedVariantWriteError("flush the inlined data", table_entry.name,
+					                                             *unwritable_column);
 				}
 				// the rows stay inlined, so that they do not keep the other tables from being flushed
 				continue;

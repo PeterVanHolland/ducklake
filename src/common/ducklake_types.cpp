@@ -193,6 +193,9 @@ void DuckLakeTypes::CheckSupportedType(const LogicalType &type, DuckLakeVersion 
 		if (type.id() == LogicalTypeId::SQLNULL && version < DuckLakeVersion::V1_1) {
 			ThrowUnsupportedByVersion(version, "the NULL type");
 		}
+		if (type.id() == LogicalTypeId::TIMESTAMP_TZ_NS && version < DuckLakeVersion::V1_1) {
+			ThrowUnsupportedByVersion(version, "the TIMESTAMPTZ_NS type");
+		}
 		DuckLakeTypes::ToString(type);
 		return type;
 	});
@@ -211,11 +214,11 @@ optional_ptr<const ColumnDefinition> DuckLakeTypes::GetNestedVariantColumn(const
 	return nullptr;
 }
 
-NotImplementedException DuckLakeTypes::NestedVariantWriteError(const string &action, const string &table_name,
+NotImplementedException DuckLakeTypes::NestedVariantWriteError(const string &action, const Identifier &table_name,
                                                                const ColumnDefinition &column) {
-	return NotImplementedException("Cannot %s of table \"%s\": column \"%s\" of type %s has a VARIANT inside, which "
+	return NotImplementedException("Cannot %s of table %s: column %s of type %s has a VARIANT inside, which "
 	                               "cannot be written to Parquet yet",
-	                               action, table_name, column.Name().GetIdentifierName(), column.Type());
+	                               action, table_name, column.Name(), column.Type());
 }
 
 void DuckLakeTypes::CheckSupportedTypes(const ColumnList &columns, DuckLakeVersion version) {

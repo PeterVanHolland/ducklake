@@ -32,7 +32,7 @@ public:
 	//! Whether a VARIANT is nested inside a LIST, STRUCT or MAP, which the Parquet writer cannot write yet
 	static bool HasNestedVariant(const LogicalType &type);
 	static optional_ptr<const ColumnDefinition> GetNestedVariantColumn(const ColumnList &columns);
-	static NotImplementedException NestedVariantWriteError(const string &action, const string &table_name,
+	static NotImplementedException NestedVariantWriteError(const string &action, const Identifier &table_name,
 	                                                       const ColumnDefinition &column);
 
 	//! VARCHAR and BLOB, whose values can be the text NULL

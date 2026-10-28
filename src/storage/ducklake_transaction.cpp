@@ -802,7 +802,7 @@ void DuckLakeTransaction::Commit() {
 	if (connection) {
 		GetConnection();
 	}
-	if (!expiry_filters.empty() && !ExpiresSnapshotsOnCommit()) {
+	if (!expiry_filters.empty() && metadata_manager->CommitsEachStatement() && !ExpiresSnapshotsOnCommit()) {
 		try {
 			lock_guard<mutex> guard(snapshot_tag_lock);
 			for (auto &filter : expiry_filters) {
@@ -1622,17 +1622,15 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		connection->BeginTransaction();
 		snapshot.reset();
 	};
-	context.verify_retry = [&]() {
-		if (ExpiredSnapshotsInMetadataTransaction() && !ExpiresSnapshotsOnCommit()) {
-			// the rollback of the failed attempt undid the expiry, which only a catalog with snapshot tags repeats
-			throw TransactionException("Transaction conflict - a concurrent commit preceded the commit of a "
-			                           "transaction that expires snapshots");
-		}
-	};
 	context.rewrite_before_retry = [&]() {
 		RewriteConfigOptions();
 		if (!cleaned_up_files.empty()) {
 			metadata_manager->RemoveFilesScheduledForCleanup(cleaned_up_files);
+		}
+		if (!ExpiresSnapshotsOnCommit()) {
+			// the rollback restored the snapshots the statements expired
+			lock_guard<mutex> guard(snapshot_tag_lock);
+			ExpireReleasedSnapshots();
 		}
 	};
 	context.query_metadata = [&](string q) {
@@ -1973,14 +1971,11 @@ vector<DuckLakeSnapshotInfo> DuckLakeTransaction::ExpireSnapshots(const string &
 		return vector<DuckLakeSnapshotInfo>();
 	}
 	lock_guard<mutex> guard(snapshot_tag_lock);
+	// a retry of the commit expires again with what the commits before it changed
+	expiry_filters.push_back(filter);
 	if (GetMetadataManager().CommitsEachStatement()) {
 		// expired when the transaction commits, so a rollback keeps the snapshots
-		expiry_filters.push_back(filter);
 		return ExpirableSnapshotsInternal(filter);
-	}
-	if (ducklake_catalog.SupportsSnapshotTags()) {
-		// a retry of the commit expires again with what the commits before it changed
-		expiry_filters.push_back(filter);
 	}
 	return ExpireSnapshotsNow(filter);
 }

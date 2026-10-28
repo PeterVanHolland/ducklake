@@ -1,0 +1,91 @@
+# name: test/sql/cleanup/expire_retry_1_0.test
+# description: On a 1.0 catalog a retried commit expires its snapshots again
+# group: [cleanup]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+(DATA_PATH '{DATA_PATH}/expire_retry_1_0', DUCKLAKE_VERSION '1.0', DATA_INLINING_ROW_LIMIT 1000)
+
+statement ok
+SET ducklake_retry_wait_ms = 0
+
+statement ok
+CREATE TABLE dl.t(i INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1), (2), (3)
+
+# the commit of con1 retries after con2 commits first
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM dl.t WHERE i = 1
+
+query I con1
+SELECT snapshot_id FROM ducklake_expire_snapshots('dl', versions => [0, 1])
+----
+0
+1
+
+statement ok con2
+CREATE SCHEMA dl.bump
+
+statement ok con1
+COMMIT
+
+query I
+SELECT snapshot_id FROM dl.snapshots() ORDER BY snapshot_id
+----
+2
+3
+4
+
+query I
+SELECT sum(i) FROM dl.t
+----
+5
+
+# a commit without retries left fails and keeps the snapshots
+statement ok con1
+SET ducklake_max_retry_count = 0
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM dl.t WHERE i = 2
+
+query I con1
+SELECT snapshot_id FROM ducklake_expire_snapshots('dl', versions => [2])
+----
+2
+
+statement ok con2
+CREATE SCHEMA dl.bump2
+
+statement error con1
+COMMIT
+----
+Exceeded the maximum retry count
+
+query I
+SELECT snapshot_id FROM dl.snapshots() ORDER BY snapshot_id
+----
+2
+3
+4
+5
+
+query I
+SELECT sum(i) FROM dl.t
+----
+5

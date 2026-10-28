@@ -404,7 +404,7 @@ private:
 	vector<DuckLakeSnapshotTagInfo> GetSnapshotTagsInternal(bool with_snapshot_time = true);
 	//! Fails when the expiry of this transaction removes the snapshot a tag is to name
 	void CheckNotExpiredInTransaction(idx_t snapshot_id);
-	//! Expires what a tag change releases, when an expiry of this transaction ran in its statements
+	//! Expires again what the expiries of this transaction select, after a tag change or a rolled back attempt
 	void ExpireReleasedSnapshots();
 	set<idx_t> TaggedSnapshotsInternal();
 	vector<DuckLakeSnapshotInfo> ExpirableSnapshotsInternal(const string &filter);

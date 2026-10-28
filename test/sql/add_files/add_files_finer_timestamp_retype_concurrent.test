@@ -1,5 +1,5 @@
 # name: test/sql/add_files/add_files_finer_timestamp_retype_concurrent.test
-# description: A retype to a finer timestamp unit clears the bounds of a file that another transaction adds in between
+# description: A retype to a finer timestamp unit conflicts with a file another transaction adds in between
 # group: [add_files]
 
 require ducklake
@@ -28,8 +28,14 @@ ALTER TABLE dl.c ALTER t TYPE TIMESTAMP_NS
 statement ok con2
 CALL ducklake_add_data_files('dl', 'c', '{DATA_PATH}/finer_timestamp_concurrent.parquet')
 
-statement ok con1
+# the retype checked the stored values, which do not include the added file
+statement error con1
 COMMIT
+----
+attempting to change a column type of table with index "1" - but another transaction has inserted into it
+
+statement ok con1
+ALTER TABLE dl.c ALTER t TYPE TIMESTAMP_NS
 
 query I
 SELECT count(*) FROM dl.c WHERE t = TIMESTAMP_NS '2020-01-01 00:00:00.000000001'

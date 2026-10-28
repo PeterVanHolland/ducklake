@@ -21,7 +21,8 @@ public:
 	}
 
 	bool TypeIsNativelySupported(const LogicalType &type) override;
-	map<string, vector<pair<string, string>>> GetMetadataTableColumns(const vector<string> &table_names) override;
+	map<Identifier, vector<pair<Identifier, string>>>
+	GetMetadataTableColumns(const vector<Identifier> &table_names) override;
 	bool CanInlineValues(DataChunk &chunk) override;
 	bool SupportsAppender() const override {
 		return false;
@@ -42,7 +43,7 @@ public:
 
 	string GetColumnTypeInternal(const LogicalType &type) override;
 	string GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot snapshot, bool include_exactness) const override;
-	bool InlinedDeletionTableExists(const string &table_name) override;
+	bool InlinedDeletionTableExists(const Identifier &table_name) override;
 	void MigrateInlinedDataTypes() override;
 	bool IsRetryableCommitError(const string &message) const override;
 
@@ -66,6 +67,7 @@ protected:
 	                             const vector<DuckLakeFileListDynamicFilter> &dynamic_filters,
 	                             const vector<idx_t> &runtime_filter_stats_columns, FileListType file_list_type,
 	                             const string &metadata_table_prefix) override;
+	bool MaterializeStatsCTEs() const override;
 	string CastValueToTarget(const Value &value, const LogicalType &type) override;
 	string CastStatsToTarget(const string &stats, const LogicalType &type, StatsCastType cast_type) override;
 };

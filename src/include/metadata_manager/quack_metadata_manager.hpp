@@ -30,7 +30,8 @@ public:
 		return true;
 	}
 	void ProbeServerCapabilities() override;
-	map<string, vector<pair<string, string>>> GetMetadataTableColumns(const vector<string> &table_names) override;
+	map<Identifier, vector<pair<Identifier, string>>>
+	GetMetadataTableColumns(const vector<Identifier> &table_names) override;
 	bool CanSkipSnapshotFetch(const TransactionChangeInformation &changes) const override;
 	void FlushChangesServerSide(DuckLakeTransaction &transaction, DuckLakeSnapshot transaction_snapshot,
 	                            const TransactionChangeInformation &transaction_changes,
@@ -43,7 +44,7 @@ public:
 	void ClearCache() override;
 
 	bool MetadataExists() override;
-	bool InlinedDeletionTableExists(const string &table_name) override;
+	bool InlinedDeletionTableExists(const Identifier &table_name) override;
 
 protected:
 	string MetadataExistsQuery() const override;

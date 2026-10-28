@@ -28,7 +28,7 @@ public:
 	const vector<Identifier> &GetNames() const;
 
 	//! Find a column by name, returns invalid index if not found
-	optional_idx FindColumn(const string &name) const;
+	optional_idx FindColumn(const Identifier &name) const;
 	//! Find a column by its field id, returns invalid index if not found
 	optional_idx FindColumnByFieldId(int32_t field_id) const;
 

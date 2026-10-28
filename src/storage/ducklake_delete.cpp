@@ -44,8 +44,8 @@ static DuckLakeDeleteFile WriteDeleteFileInternal(ClientContext &context, InputT
 	// generate the field ids to be written by the parquet writer
 	// these field ids follow icebergs' ids and names for the delete files
 	child_list_t<Value> values;
-	values.emplace_back("file_path", Value::INTEGER(MultiFileReader::FILENAME_FIELD_ID));
-	values.emplace_back("pos", Value::INTEGER(MultiFileReader::ORDINAL_FIELD_ID));
+	values.emplace_back("file_path", Value::INTEGER(MultiFileReader::DELETE_FILE_PATH_FIELD_ID));
+	values.emplace_back("pos", Value::INTEGER(MultiFileReader::DELETE_POS_FIELD_ID));
 	if (with_snapshots) {
 		// add the snapshot_id column to track when each deletion became valid
 		values.emplace_back("_ducklake_internal_snapshot_id",
@@ -506,7 +506,8 @@ void DuckLakeDelete::FlushDelete(DuckLakeTransaction &transaction, ClientContext
 	}
 	if (data_file_info.data_type == DuckLakeDataType::INLINED_DATA) {
 		// deletes from inlined data are not written to a file but pushed directly into the metadata manager
-		transaction.AddNewInlinedDeletes(table.GetTableId(), data_file_info.file.path, std::move(sorted_deletes));
+		transaction.AddNewInlinedDeletes(table.GetTableId(), Identifier(data_file_info.file.path),
+		                                 std::move(sorted_deletes));
 		return;
 	}
 	DuckLakeDeleteFile delete_file;

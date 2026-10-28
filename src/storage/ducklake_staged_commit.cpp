@@ -214,10 +214,10 @@ shared_ptr<DuckLakeStagedTableState> DuckLakeStagedTableState::Get(DuckLakeTrans
 	auto &db = catalog.GetDatabase();
 	// quack_query_by_name runs on the metadata database pinned by the metadata transaction
 	auto &context = *transaction.GetConnection().context;
-	auto pinned = DatabaseManager::Get(context).GetDatabase(context, Identifier(catalog.MetadataDatabaseName()));
+	auto pinned = DatabaseManager::Get(context).GetDatabase(context, catalog.MetadataDatabaseName());
 	if (!pinned) {
 		// LCOV_EXCL_START
-		throw InvalidInputException("Failed to find the metadata database \"%s\" of the DuckLake commit",
+		throw InvalidInputException("Failed to find the metadata database %s of the DuckLake commit",
 		                            catalog.MetadataDatabaseName());
 		// LCOV_EXCL_STOP
 	}
@@ -440,7 +440,7 @@ void DuckLakeStagedCommit::EmitInlinedDeletes(DuckLakeStagedRows &rows, const Lo
 		auto table_id = entry.first;
 		auto &table_changes = entry.second;
 		for (auto &deletes_entry : table_changes.new_inlined_data_deletes) {
-			auto inlined_table_name = SQLString(deletes_entry.first);
+			auto inlined_table_name = SQLString(deletes_entry.first.GetIdentifierName());
 			for (auto &row_id : deletes_entry.second->rows) {
 				rows.Add(DuckLakeStagedTableType::INLINED_DELETE,
 				         StringUtil::Format("(%llu, %s, %llu)", table_id.index, inlined_table_name, row_id));
@@ -548,7 +548,7 @@ void DuckLakeStagedCommit::EmitFlushedInlinedTables(DuckLakeStagedRows &rows,
 	for (auto &entry : flushed) {
 		// LCOV_EXCL_START
 		rows.Add(DuckLakeStagedTableType::FLUSHED_INLINED,
-		         StringUtil::Format("(%s, %llu, %llu)", SQLString(entry.inlined_table.table_name),
+		         StringUtil::Format("(%s, %llu, %llu)", SQLString(entry.inlined_table.table_name.GetIdentifierName()),
 		                            entry.inlined_table.schema_version, entry.flush_snapshot_id));
 		// LCOV_EXCL_STOP
 	}

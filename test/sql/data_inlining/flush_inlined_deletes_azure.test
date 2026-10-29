@@ -1,0 +1,58 @@
+# name: test/sql/data_inlining/flush_inlined_deletes_azure.test
+# description: Flushing inlined deletes into a data file that has a delete file works on Azure
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+require azure
+
+require-env AZURE_STORAGE_CONNECTION_STRING
+
+require-env DUCKLAKE_AZURE_CONTAINER
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+statement ok
+CREATE SECRET az (TYPE azure, CONNECTION_STRING '{AZURE_STORAGE_CONNECTION_STRING}')
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH 'az://{DUCKLAKE_AZURE_CONTAINER}/flush_inlined_deletes_{UUID}/', METADATA_CATALOG 'lake_meta', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.t (i INTEGER)
+
+statement ok
+INSERT INTO lake.t SELECT * FROM range(1000)
+
+# the first delete writes a delete file, the second one is inlined
+statement ok
+DELETE FROM lake.t WHERE i < 100
+
+statement ok
+DELETE FROM lake.t WHERE i IN (500, 501)
+
+query II
+SELECT (SELECT count(*) FROM lake_meta.ducklake_delete_file), (SELECT count(*) FROM lake_meta.ducklake_inlined_delete_1)
+----
+1	2
+
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+query II
+SELECT count(*), sum(i) FROM lake.t
+----
+898	493549
+
+statement ok
+DELETE FROM lake.t WHERE i = 999
+
+statement ok
+CHECKPOINT lake
+
+query II
+SELECT count(*), sum(i) FROM lake.t
+----
+897	492550

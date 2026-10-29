@@ -87,7 +87,8 @@
         "test/sql/rewrite_data_files/test_rewrite_many_non_candidate_files.test",
         "test/sql/stats/nan_column_stats_missing_max.test",
         "test/sql/stats/nan_column_stats_missing_min.test",
-        "test/sql/stats/numeric_stats_one_bound.test"
+        "test/sql/stats/numeric_stats_one_bound.test",
+        "test/sql/table_changes/table_changes_unordered_snapshot_times.test"
       ]
     },
     {
@@ -218,6 +219,12 @@
       "reason": "A quack catalog commits each statement, so its commits keep sending inlined rows as SQL text",
       "paths": [
         "test/sql/data_inlining/inlined_commit_append.test"
+      ]
+    },
+    {
+      "reason": "Quack expires snapshots when the transaction commits, so a change feed of that transaction still sees them",
+      "paths": [
+        "test/sql/table_changes/table_changes_start_timestamp_expired_transaction.test"
       ]
     }
   ]

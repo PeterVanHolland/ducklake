@@ -5028,8 +5028,6 @@ unique_ptr<DuckLakeSnapshot> DuckLakeMetadataManager::GetSnapshot(BoundAtClause 
 	auto &val = at_clause.GetValue();
 	DuckLakeTableFunctionUtil::VerifySnapshotIdentifier(val);
 	unique_ptr<QueryResult> result;
-	const string timestamp_order = bound == SnapshotBound::LOWER_BOUND ? "ASC" : "DESC";
-	const string timestamp_condition = bound == SnapshotBound::LOWER_BOUND ? ">" : "<";
 	const string visible_condition = StringUtil::Format(" AND snapshot_id <= %llu", newest_snapshot_id);
 	if (unit == "version") {
 		result = Query(StringUtil::Format(R"(
@@ -5043,30 +5041,46 @@ WHERE snapshot_id = %llu%s;)",
 		if (!timestamp.IsNull() && timestamp.GetValue<timestamp_tz_t>() > current_time) {
 			throw InvalidInputException("Cannot time travel to a future timestamp: %s", val.ToString());
 		}
-		result = Query(StringUtil::Format(
-		    R"(
+		auto timestamp_literal = timestamp.DefaultCastAs(LogicalType::VARCHAR).ToSQLString();
+		if (bound == SnapshotBound::LOWER_BOUND) {
+			// the changes start after the last snapshot before the timestamp, so that those of expired snapshots in
+			// between are not lost, or with the first remaining snapshot at or after it when that one has a lower id
+			auto last_before = StringUtil::Format("(SELECT MAX(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot "
+			                                      "WHERE snapshot_time::TIMESTAMPTZ < %s%s)",
+			                                      timestamp_literal, visible_condition);
+			auto first_after = StringUtil::Format("(SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot "
+			                                      "WHERE snapshot_time::TIMESTAMPTZ >= %s%s)",
+			                                      timestamp_literal, visible_condition);
+			// one query, so a concurrent expiry cannot remove the snapshot between the bounds and its row, and the
+			// other fields come from a remaining snapshot since the feed reads only the id
+			result = Query(StringUtil::Format(R"(
+SELECT CASE WHEN last_before IS NULL THEN 0 ELSE LEAST(last_before + 1, COALESCE(first_after, last_before + 1)) END,
+	schema_version, next_catalog_id, next_file_id
+FROM (
+	SELECT schema_version, next_catalog_id, next_file_id, %s AS last_before, %s AS first_after
+	FROM {METADATA_CATALOG}.ducklake_snapshot
+	WHERE snapshot_id = COALESCE(%s, (SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot WHERE true%s))
+);)",
+			                                  last_before, first_after, last_before, visible_condition));
+		} else {
+			result = Query(StringUtil::Format(
+			    R"(
 SELECT snapshot_id, schema_version, next_catalog_id, next_file_id
 FROM {METADATA_CATALOG}.ducklake_snapshot
 WHERE snapshot_id = (
 	SELECT snapshot_id
 	FROM {METADATA_CATALOG}.ducklake_snapshot
-	WHERE snapshot_time::TIMESTAMPTZ %s= %s%s
-	ORDER BY snapshot_time::TIMESTAMPTZ %s
+	WHERE snapshot_time::TIMESTAMPTZ <= %s%s
+	ORDER BY snapshot_time::TIMESTAMPTZ DESC, snapshot_id DESC
 	LIMIT 1);)",
-		    timestamp_condition, timestamp.DefaultCastAs(LogicalType::VARCHAR).ToSQLString(), visible_condition,
-		    timestamp_order));
+			    timestamp_literal, visible_condition));
+		}
 	} else {
 		throw InvalidInputException("Unsupported AT clause unit - %s", unit);
 	}
 	result->ThrowIfError(StringUtil::Format("Failed to query snapshot at %s %s for DuckLake: ",
 	                                        StringUtil::Lower(unit.GetIdentifierName()), val.ToString()));
 	auto snapshot = ParseSnapshot(*result);
-	if (!snapshot && bound == SnapshotBound::LOWER_BOUND && unit == "timestamp") {
-		// nothing was committed since the timestamp, so changes from it start after the newest snapshot
-		BoundAtClause newest_clause(Identifier("version"), Value::UBIGINT(newest_snapshot_id));
-		snapshot = GetSnapshot(newest_clause, bound, newest_snapshot_id);
-		snapshot->snapshot_id++;
-	}
 	if (!snapshot) {
 		throw InvalidInputException("No snapshot found at %s %s", StringUtil::Lower(unit.GetIdentifierName()),
 		                            val.ToString());

@@ -1,0 +1,103 @@
+# name: test/sql/table_changes/table_changes_start_timestamp_expired.test
+# description: a change feed that starts at the timestamp of an expired snapshot lists the changes of the expired snapshots
+# group: [table_changes]
+
+require ducklake
+
+require parquet
+
+require icu
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/table_changes_start_timestamp_expired', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t (id INTEGER, v INTEGER)
+
+statement ok
+INSERT INTO lake.t VALUES (1, 1)
+
+statement ok
+INSERT INTO lake.t VALUES (2, 2)
+
+statement ok
+UPDATE lake.t SET v = 100 WHERE id = 1
+
+statement ok
+INSERT INTO lake.t VALUES (3, 3)
+
+statement ok
+CREATE TABLE lake.other (i INTEGER)
+
+statement ok
+INSERT INTO lake.t VALUES (4, 4)
+
+statement ok
+SET VARIABLE t4 = (SELECT snapshot_time FROM lake.snapshots() WHERE snapshot_id = 4)
+
+statement ok
+SET VARIABLE t5 = (SELECT snapshot_time FROM lake.snapshots() WHERE snapshot_id = 5)
+
+statement ok
+SET VARIABLE t6 = (SELECT snapshot_time FROM lake.snapshots() WHERE snapshot_id = 6)
+
+statement ok
+SET VARIABLE t7 = (SELECT snapshot_time FROM lake.snapshots() WHERE snapshot_id = 7)
+
+query III
+SELECT change_type, id, v FROM ducklake_table_changes('lake', 'main', 't', getvariable('t5'), getvariable('t7')) ORDER BY snapshot_id, change_type
+----
+insert	3	3
+insert	4	4
+
+statement ok
+CALL ducklake_expire_snapshots('lake', versions => [5, 6])
+
+# the changes of the expired snapshots stay in the files, so a feed from their time still lists them
+query III
+SELECT change_type, id, v FROM ducklake_table_changes('lake', 'main', 't', getvariable('t5'), getvariable('t7')) ORDER BY snapshot_id, change_type
+----
+insert	3	3
+insert	4	4
+
+# the times of the expired snapshots are gone, so a feed from one of them starts after the last remaining snapshot
+query III
+SELECT change_type, id, v FROM ducklake_table_changes('lake', 'main', 't', getvariable('t6'), getvariable('t7')) ORDER BY snapshot_id, change_type
+----
+insert	3	3
+insert	4	4
+
+query III
+SELECT change_type, id, v FROM ducklake_table_changes('lake', 'main', 't', getvariable('t4'), getvariable('t7')) ORDER BY snapshot_id, change_type
+----
+update_postimage	1	100
+update_preimage	1	1
+insert	3	3
+insert	4	4
+
+query I
+SELECT count(*) FROM ducklake_table_insertions('lake', 'main', 't', getvariable('t5'), getvariable('t7'))
+----
+2
+
+# a timestamp before every snapshot starts with the first change
+query I
+SELECT count(*) FROM ducklake_table_changes('lake', 'main', 't', TIMESTAMPTZ '1970-01-01 00:00:00+00', getvariable('t7'))
+----
+6
+
+# a timestamp after the last snapshot still finds no changes
+query I
+SELECT count(*) FROM ducklake_table_changes('lake', 'main', 't', now(), now())
+----
+0
+
+# the upper bound keeps resolving to the snapshot before the timestamp
+query II
+SELECT list(id ORDER BY id), sum(v) FROM lake.t AT (TIMESTAMP => getvariable('t5'))
+----
+[1, 2]	102

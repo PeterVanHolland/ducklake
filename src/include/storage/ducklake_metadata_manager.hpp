@@ -56,13 +56,13 @@ struct DuckLakeInlinedValueCheck {
 	Identifier column_name;
 };
 
-//! Metadata column names inside ducklake_inlined_data_<table_id>_<schema_version> tables.
 struct DuckLakeAddedColumn {
 	const char *table;
 	const char *column;
 	const char *type;
 };
 
+//! Metadata column names inside ducklake_inlined_data_<table_id>_<schema_version> tables.
 struct DuckLakeInlinedColNames {
 	//! Column name prefix reserved for DuckLake internal use
 	static constexpr const char *PREFIX = "_ducklake_";

@@ -72,9 +72,9 @@ void QuackMetadataManager::CommitMigration() {
 	if (!migration_transaction) {
 		return;
 	}
-	migration_transaction = false;
 	auto result = Query("COMMIT;");
 	result->ThrowIfError("Failed to commit the migration in DuckLake: ");
+	migration_transaction = false;
 }
 
 void QuackMetadataManager::RollbackMigration() {

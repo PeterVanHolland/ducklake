@@ -309,11 +309,11 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 					                              DuckLakeVersionToString(catalog_version));
 					// LCOV_EXCL_STOP
 				}
+				metadata_manager.CommitMigration();
 			} catch (...) {
 				metadata_manager.RollbackMigration();
 				throw;
 			}
-			metadata_manager.CommitMigration();
 			resolved_version = catalog_version;
 		}
 		if (tag.key == "data_path") {

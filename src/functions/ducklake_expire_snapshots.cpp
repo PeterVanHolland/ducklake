@@ -35,13 +35,7 @@ static unique_ptr<FunctionData> DuckLakeExpireSnapshotsBind(ClientContext &conte
 
 	const auto older_than_default = ducklake_catalog.GetConfigOption<string>("expire_older_than", {}, {}, "");
 
-	Value dry_run;
-	if (DuckLakeTableFunctionUtil::TryGetNonNullOption(input, "dry_run", "boolean", dry_run)) {
-		result->dry_run = BooleanValue::Get(dry_run);
-	}
-	if (!result->dry_run) {
-		ducklake_catalog.VerifyWritable();
-	}
+	result->dry_run = DuckLakeTableFunctionUtil::GetDryRunOption(input, ducklake_catalog);
 	vector<string> snapshot_ids;
 	auto versions_entry = input.named_parameters.find("versions");
 	bool has_versions = versions_entry != input.named_parameters.end();
@@ -73,16 +67,13 @@ static unique_ptr<FunctionData> DuckLakeExpireSnapshotsBind(ClientContext &conte
 	string filter;
 	// we can never delete the most recent snapshot
 	filter = "snapshot_id != (SELECT MAX(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot) AND ";
-	if (has_timestamp) {
-		auto from_timestamp = older_than.GetValue<timestamp_tz_t>();
-		auto timestamp_filter = DuckLakeTableFunctionUtil::FormatTimestampISO8601(timestamp_t(from_timestamp.value));
-		filter += StringUtil::Format("snapshot_time::TIMESTAMPTZ < '%s'", timestamp_filter);
-	} else if (!has_versions) {
-		auto timestamp_filter =
-		    DuckLakeTableFunctionUtil::FormatTimestampOlderThan("expire_older_than", older_than_default);
-		filter += StringUtil::Format("snapshot_time::TIMESTAMPTZ < '%s'", timestamp_filter);
-	} else {
+	if (has_versions) {
 		filter += StringUtil::Format("snapshot_id IN (%s)", StringUtil::Join(snapshot_ids, ", "));
+	} else {
+		auto timestamp_filter = has_timestamp ? DuckLakeTableFunctionUtil::FormatTimestampISO8601(older_than)
+		                                      : DuckLakeTableFunctionUtil::FormatTimestampOlderThan("expire_older_than",
+		                                                                                            older_than_default);
+		filter += StringUtil::Format("snapshot_time::TIMESTAMPTZ < '%s'", timestamp_filter);
 	}
 	result->filter = filter;
 	if (result->dry_run) {

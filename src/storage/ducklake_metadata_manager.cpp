@@ -5051,36 +5051,20 @@ WHERE snapshot_id = %llu%s;)",
 			auto first_after = StringUtil::Format("(SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot "
 			                                      "WHERE snapshot_time::TIMESTAMPTZ >= %s%s)",
 			                                      timestamp_literal, visible_condition);
-			// one query, so a concurrent expiry cannot remove the snapshot between the bounds and its row
+			// one query, so a concurrent expiry cannot remove the snapshot between the bounds and its row, and the
+			// other fields come from a remaining snapshot since the feed reads only the id
 			result = Query(StringUtil::Format(R"(
-SELECT snapshot_id, schema_version, next_catalog_id, next_file_id, %s, %s
-FROM {METADATA_CATALOG}.ducklake_snapshot
-WHERE snapshot_id = COALESCE(%s, (SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot WHERE true%s));)",
+SELECT CASE WHEN last_before IS NULL THEN 0 ELSE LEAST(last_before + 1, COALESCE(first_after, last_before + 1)) END,
+	schema_version, next_catalog_id, next_file_id
+FROM (
+	SELECT schema_version, next_catalog_id, next_file_id, %s AS last_before, %s AS first_after
+	FROM {METADATA_CATALOG}.ducklake_snapshot
+	WHERE snapshot_id = COALESCE(%s, (SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot WHERE true%s))
+);)",
 			                                  last_before, first_after, last_before, visible_condition));
-			result->ThrowIfError(
-			    StringUtil::Format("Failed to query snapshot at timestamp %s for DuckLake: ", val.ToString()));
-			unique_ptr<DuckLakeSnapshot> snapshot;
-			for (auto &row : *result) {
-				// the feed reads only the id, the other fields come from a remaining snapshot
-				snapshot = make_uniq<DuckLakeSnapshot>(row.GetValue<idx_t>(0), row.GetValue<idx_t>(1),
-				                                       row.GetValue<idx_t>(2), row.GetValue<idx_t>(3));
-				auto before = OptIdx(row, 4);
-				auto after = OptIdx(row, 5);
-				snapshot->snapshot_id = 0;
-				if (before.IsValid()) {
-					snapshot->snapshot_id = before.GetIndex() + 1;
-					if (after.IsValid()) {
-						snapshot->snapshot_id = MinValue(snapshot->snapshot_id, after.GetIndex());
-					}
-				}
-			}
-			if (!snapshot) {
-				throw InvalidInputException("No snapshot found at timestamp %s", val.ToString());
-			}
-			return snapshot;
-		}
-		result = Query(StringUtil::Format(
-		    R"(
+		} else {
+			result = Query(StringUtil::Format(
+			    R"(
 SELECT snapshot_id, schema_version, next_catalog_id, next_file_id
 FROM {METADATA_CATALOG}.ducklake_snapshot
 WHERE snapshot_id = (
@@ -5089,7 +5073,8 @@ WHERE snapshot_id = (
 	WHERE snapshot_time::TIMESTAMPTZ <= %s%s
 	ORDER BY snapshot_time::TIMESTAMPTZ DESC, snapshot_id DESC
 	LIMIT 1);)",
-		    timestamp_literal, visible_condition));
+			    timestamp_literal, visible_condition));
+		}
 	} else {
 		throw InvalidInputException("Unsupported AT clause unit - %s", unit);
 	}

@@ -220,6 +220,12 @@
       "paths": [
         "test/sql/data_inlining/inlined_commit_append.test"
       ]
+    },
+    {
+      "reason": "Quack expires snapshots when the transaction commits, so a change feed of that transaction still sees them",
+      "paths": [
+        "test/sql/table_changes/table_changes_start_timestamp_expired_transaction.test"
+      ]
     }
   ]
 }

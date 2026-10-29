@@ -1,0 +1,52 @@
+# name: test/sql/retry/commit_cleanup_keeps_error.test
+# description: A failed commit or a rollback keeps its own outcome when the removal of its files fails
+# group: [retry]
+
+require ducklake
+
+require parquet
+
+statement ok
+ATTACH 'ducklake::memory:' AS lake (DATA_PATH '{TEST_DIR}/commit_cleanup_keeps_error', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t(i INTEGER)
+
+statement ok
+CREATE TABLE lake.dropped(i INTEGER)
+
+statement ok
+SET ducklake_max_retry_count = 1
+
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+DROP TABLE lake.dropped
+
+statement ok con2
+INSERT INTO lake.dropped VALUES (1)
+
+statement ok con1
+COMMIT
+
+statement ok con3
+BEGIN
+
+statement ok con3
+INSERT INTO lake.t VALUES (2)
+
+# the written files can no longer be removed
+statement ok
+SET disabled_filesystems = 'LocalFileSystem'
+
+statement error con2
+COMMIT
+----
+<REGEX>:.*Transaction conflict - attempting to insert into table.*but another transaction has dropped it.*
+
+statement ok con3
+ROLLBACK

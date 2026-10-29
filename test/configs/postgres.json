@@ -19,6 +19,12 @@
   ],
   "skip_tests": [
     {
+      "reason": "Inlined data is read in pages only from DuckDB catalogs, whose scans apply the filters of a page before reading values",
+      "paths": [
+        "test/sql/data_inlining/inlined_data_paged_reads_memory.test"
+      ]
+    },
+    {
       "reason": "Postgres text cannot hold a NUL byte, test/sql/general/postgres_nul_byte_text.test covers the error",
       "paths": [
         "test/sql/snapshot_info/commit_message_nul_byte.test"

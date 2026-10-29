@@ -21,6 +21,12 @@ struct DuckLakeInlinedColNames;
 
 enum class InlinedVirtualColumn { NONE, COLUMN_ROW_ID, COLUMN_FILE_ROW_NUMBER, COLUMN_EMPTY };
 
+//! Extracts the field a pushed-down extract reads from the whole column
+struct InlinedFieldExtract {
+	unique_ptr<Expression> expression;
+	unique_ptr<ExpressionExecutor> executor;
+};
+
 class DuckLakeInlinedDataReader : public BaseFileReader {
 public:
 	//! Initialize an inlined data reader over a set of data stored within a table in the metadata catalog
@@ -55,6 +61,10 @@ private:
 	                            string &column, LogicalType &type);
 	bool TryEvaluateExpression(ClientContext &context, idx_t virtual_col_idx, Vector &input_vector,
 	                           const LogicalType &input_type, Vector &output_vector);
+	void AddFieldExtract(ClientContext &context, idx_t column_idx, const LogicalType &column_type, idx_t scan_idx);
+	//! Apply the filters on the columns that are not field extracts
+	idx_t ApplyFilters(ClientContext &context, DataChunk &chunk, SelectionVector &sel, idx_t approved_tuple_count);
+	void ComputeFieldExtract(ClientContext &context, idx_t column_idx, DataChunk &chunk);
 
 	mutex lock;
 	DuckLakeFunctionInfo &read_info;
@@ -69,6 +79,8 @@ private:
 	DataChunk scan_chunk;
 	//! Expression executors for expression_map entries, keyed by column_t (from column_ids)
 	unordered_map<column_t, unique_ptr<ExpressionExecutor>> expression_executors;
+	//! Field extracts of pushed-down extracts, keyed by output column
+	unordered_map<idx_t, InlinedFieldExtract> field_extracts;
 };
 
 } // namespace duckdb

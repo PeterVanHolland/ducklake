@@ -632,6 +632,8 @@ public:
 	void MigrateRenamedFieldDefaults();
 	//! Clears the bounds that older versions may have stored in the type of a file or of an earlier column type
 	void MigrateRetypedBounds();
+	//! Gives GEOMETRY files that older versions stored with an empty type set but with values unknown statistics
+	void MigrateAddedGeometryStats();
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
 	virtual void MigrateInlinedDataTypes() {
 	}

@@ -289,6 +289,9 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				catalog_version = DuckLakeVersion::V1_0;
 			}
 			if (catalog_version >= target_version) {
+				if (catalog_version == DuckLakeVersion::V1_1 && options.access_mode != AccessMode::READ_ONLY) {
+					metadata_manager.RepairV10Bounds();
+				}
 				resolved_version = catalog_version;
 				continue;
 			}

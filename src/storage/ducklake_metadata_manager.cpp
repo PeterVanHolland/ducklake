@@ -654,7 +654,9 @@ UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '2.0-dev1' WHERE key = '
 }
 
 bool DuckLakeMetadataManager::HasSnapshotTagExpiry() {
-	return !Query("SELECT expires_at FROM {METADATA_CATALOG}.ducklake_snapshot_tag LIMIT 0")->HasError();
+	// a probe that fails for another reason leaves that error to the caller
+	auto probe = Query("SELECT * FROM {METADATA_CATALOG}.ducklake_snapshot_tag LIMIT 0");
+	return probe->HasError() || ResultHasColumn(*probe, "expires_at");
 }
 
 void DuckLakeMetadataManager::AddSnapshotTagExpiry() {

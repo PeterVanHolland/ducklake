@@ -10,6 +10,7 @@
 #include "storage/ducklake_schema_entry.hpp"
 #include "storage/ducklake_table_entry.hpp"
 #include "storage/ducklake_insert.hpp"
+#include "common/ducklake_types.hpp"
 #include "storage/ducklake_multi_file_reader.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
@@ -506,6 +507,18 @@ WHERE del.begin_snapshot <= {SNAPSHOT_ID}
 //===--------------------------------------------------------------------===//
 // Function
 //===--------------------------------------------------------------------===//
+//! The column of an inlined table that cannot be written to Parquet
+static optional_ptr<const ColumnDefinition> GetUnwritableColumn(DuckLakeCatalog &catalog,
+                                                                DuckLakeTransaction &transaction,
+                                                                DuckLakeTableEntry &table_entry,
+                                                                const DuckLakeInlinedTableInfo &inlined_table) {
+	auto table = catalog.GetTableAtSchemaVersion(transaction, table_entry.GetTableId(), inlined_table.schema_version);
+	if (!table) {
+		return nullptr;
+	}
+	return DuckLakeTypes::GetNestedVariantColumn(table->GetColumns());
+}
+
 static unique_ptr<LogicalOperator> FlushInlinedDataBind(ClientContext &context, TableFunctionBindInput &input,
                                                         TableIndex bind_index, vector<Identifier> &return_names) {
 	auto &ducklake_catalog = DuckLakeBaseMetadataFunction::GetCatalog(context, input);
@@ -521,6 +534,15 @@ static unique_ptr<LogicalOperator> FlushInlinedDataBind(ClientContext &context, 
 			continue;
 		}
 		for (auto &inlined_table : table_entry.GetInlinedDataTables(transaction, transaction.GetSnapshot())) {
+			auto unwritable_column = GetUnwritableColumn(ducklake_catalog, transaction, table_entry, inlined_table);
+			if (unwritable_column) {
+				if (!table.empty() && transaction.GetMetadataManager().InlinedTableHasRows(inlined_table.table_name)) {
+					throw DuckLakeTypes::NestedVariantWriteError("flush the inlined data", table_entry.name,
+					                                             *unwritable_column);
+				}
+				// the rows stay inlined, so that they do not keep the other tables from being flushed
+				continue;
+			}
 			DuckLakeDataFlusher flusher(context, ducklake_catalog, transaction, *input.binder, table_entry.GetTableId(),
 			                            inlined_table);
 			flushes.push_back(flusher.GenerateFlushCommand());

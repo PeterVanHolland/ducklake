@@ -3536,6 +3536,12 @@ string DuckLakeMetadataManager::InlinedTableHasRowsQuery(const Identifier &table
 	return StringUtil::Format("SELECT 1 FROM {METADATA_CATALOG}.%s LIMIT 1;", table_name);
 }
 
+bool DuckLakeMetadataManager::InlinedTableHasRows(const Identifier &table_name) {
+	auto result = Query(InlinedTableHasRowsQuery(table_name));
+	result->ThrowIfError("Failed to check emptiness of an inlined data table in DuckLake: ");
+	return result->begin() != result->end();
+}
+
 string DuckLakeMetadataManager::DropInlinedTableSql(idx_t table_id, idx_t schema_version,
                                                     const Identifier &table_name) {
 	return StringUtil::Format(
@@ -3557,10 +3563,7 @@ string DuckLakeMetadataManager::DropInlinedTableIfEmpty(TableIndex table_id, con
 	if (transaction.InlinedTableFlushed(current.table_name)) {
 		return string();
 	}
-	auto query = InlinedTableHasRowsQuery(current.table_name);
-	auto result = Query(query);
-	result->ThrowIfError("Failed to check emptiness of an inlined data table in DuckLake: ");
-	if (result->begin() != result->end()) {
+	if (InlinedTableHasRows(current.table_name)) {
 		return string();
 	}
 	// readers of older schema versions skip dropped inlined tables, so the cached versions stay valid

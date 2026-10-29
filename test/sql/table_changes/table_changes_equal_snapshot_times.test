@@ -1,0 +1,54 @@
+# name: test/sql/table_changes/table_changes_equal_snapshot_times.test
+# description: a change feed by timestamp picks the right snapshot among snapshots committed in the same instant
+# group: [table_changes]
+
+require ducklake
+
+require parquet
+
+require icu
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/table_changes_equal_snapshot_times', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t (i INTEGER)
+
+statement ok
+INSERT INTO lake.t VALUES (1)
+
+statement ok
+INSERT INTO lake.t VALUES (2)
+
+statement ok
+INSERT INTO lake.t VALUES (3)
+
+# snapshots 2 and 3 committed in the same instant
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_snapshot SET snapshot_time = (SELECT snapshot_time FROM __ducklake_metadata_lake.ducklake_snapshot WHERE snapshot_id = 2) WHERE snapshot_id = 3
+
+statement ok
+SET VARIABLE t2 = (SELECT snapshot_time FROM lake.snapshots() WHERE snapshot_id = 2)
+
+statement ok
+SET VARIABLE t4 = (SELECT snapshot_time FROM lake.snapshots() WHERE snapshot_id = 4)
+
+# the feed from the time of snapshot 4 starts after snapshot 3, not after snapshot 2
+query I
+SELECT list(i ORDER BY i) FROM ducklake_table_changes('lake', 'main', 't', getvariable('t4'), getvariable('t4'))
+----
+[3]
+
+query I
+SELECT list(i ORDER BY i) FROM ducklake_table_changes('lake', 'main', 't', getvariable('t2'), getvariable('t4'))
+----
+[1, 2, 3]
+
+query I
+SELECT list(i ORDER BY i) FROM lake.t AT (TIMESTAMP => getvariable('t2'))
+----
+[1, 2]

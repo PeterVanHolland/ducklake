@@ -5051,13 +5051,13 @@ WHERE snapshot_id = (
 	SELECT snapshot_id
 	FROM {METADATA_CATALOG}.ducklake_snapshot
 	WHERE snapshot_time::TIMESTAMPTZ %s %s%s
-	ORDER BY snapshot_time::TIMESTAMPTZ %s
+	ORDER BY snapshot_time::TIMESTAMPTZ %s, snapshot_id %s
 	LIMIT 1);)";
 		if (bound == SnapshotBound::LOWER_BOUND) {
 			// the changes start after the last snapshot before the timestamp, so that those of expired snapshots
 			// between it and the next remaining snapshot are not lost
-			result =
-			    Query(StringUtil::Format(snapshot_at_time_query, "<", timestamp_literal, visible_condition, "DESC"));
+			result = Query(
+			    StringUtil::Format(snapshot_at_time_query, "<", timestamp_literal, visible_condition, "DESC", "DESC"));
 			result->ThrowIfError(
 			    StringUtil::Format("Failed to query snapshot at timestamp %s for DuckLake: ", val.ToString()));
 			auto before = ParseSnapshot(*result);
@@ -5067,7 +5067,7 @@ WHERE snapshot_id = (
 			}
 		}
 		result = Query(StringUtil::Format(snapshot_at_time_query, timestamp_condition + "=", timestamp_literal,
-		                                  visible_condition, timestamp_order));
+		                                  visible_condition, timestamp_order, timestamp_order));
 	} else {
 		throw InvalidInputException("Unsupported AT clause unit - %s", unit);
 	}

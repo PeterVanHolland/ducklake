@@ -1045,11 +1045,24 @@ bool DuckLakeTransactionState::TryMergeInlinedStats(TableIndex table_id,
 	return true;
 }
 
+static void AddSkippedStatsFields(const string &option_value, set<FieldIndex> &result) {
+	auto field_indexes = DuckLakeTableEntry::ParseSkippedStatsFields(option_value);
+	result.insert(field_indexes.begin(), field_indexes.end());
+}
+
 //! The field ids of `table_id`'s skip_stats_columns option, read from the metadata rather than the catalog so
 //! the server-side commit resolves it too. Only roots matter here: step 3 of the recompute merges inlined stats,
 //! which TryMergeInlinedStats only produces for scalar roots.
 static set<FieldIndex> ReadSkippedStatsFields(TableIndex table_id, const DuckLakeCommitContext &context) {
 	set<FieldIndex> result;
+	// the metadata does not have a change that is written with this commit yet
+	auto written = context.find_written_table_option(table_id, "skip_stats_columns");
+	if (written) {
+		if (!written->reset) {
+			AddSkippedStatsFields(written->option.option.value, result);
+		}
+		return result;
+	}
 	auto query = StringUtil::Format("SELECT value FROM {METADATA_CATALOG}.ducklake_metadata "
 	                                "WHERE key='skip_stats_columns' AND scope='table' AND scope_id=%d;",
 	                                table_id.index);
@@ -1061,12 +1074,7 @@ static set<FieldIndex> ReadSkippedStatsFields(TableIndex table_id, const DuckLak
 			continue;
 			// LCOV_EXCL_STOP
 		}
-		for (auto &entry : StringUtil::Split(row.GetValue<string>(0), ',')) {
-			idx_t field_index;
-			if (TryCast::Operation<string_t, idx_t>(string_t(entry), field_index)) {
-				result.insert(FieldIndex(field_index));
-			}
-		}
+		AddSkippedStatsFields(row.GetValue<string>(0), result);
 	}
 	return result;
 }
@@ -2387,6 +2395,8 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 		                                            new_inlined_data_tables_result);
 	}
 
+	batch_queries += context.write_config_options();
+
 	// drop data files
 	if (!dropped_files.empty()) {
 		set<DataFileIndex> dropped_indexes;
@@ -2795,6 +2805,12 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			auto expiry = context.get_expired_snapshots(i, commit_snapshot.snapshot_id - 1);
 			auto &expired_snapshots = expiry.snapshots;
 			if (expired_snapshots.empty() && expiry.tags.empty() && context.only_expires_snapshots) {
+				// nothing is left to expire, so the commit writes the options of the transaction without a snapshot
+				auto option_changes = context.write_config_options();
+				if (!option_changes.empty()) {
+					context.execute_commit_batch(commit_snapshot, option_changes)
+					    ->ThrowIfError("Failed to write config options to DuckLake: ");
+				}
 				context.commit_connection();
 				wrote_snapshot = false;
 				break;

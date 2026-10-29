@@ -987,7 +987,7 @@ SELECT
 
 idx_t DuckLakeMetadataManager::GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot) {
 	auto query = GetNetDataFileRowCountSql(table_id, GetInlinedDeletionTableName(table_id, snapshot), false, true);
-	auto result = Query(snapshot, query);
+	auto result = QuerySnapshotData(snapshot, query);
 	for (auto &row : *result) {
 		return row.GetValue<idx_t>(0);
 	}
@@ -998,7 +998,7 @@ idx_t DuckLakeMetadataManager::GetNetDataFileRowCount(TableIndex table_id, DuckL
 
 optional_idx DuckLakeMetadataManager::GetNetDataFileRowCountForStats(TableIndex table_id, DuckLakeSnapshot snapshot) {
 	auto query = GetNetDataFileRowCountSql(table_id, GetInlinedDeletionTableName(table_id, snapshot), true);
-	auto result = Query(snapshot, query);
+	auto result = QuerySnapshotData(snapshot, query);
 	result->ThrowIfError("Failed to get exact data file row count from DuckLake: ");
 	for (auto &row : *result) {
 		return OptIdx(row, 0);
@@ -1030,7 +1030,7 @@ WHERE {SNAPSHOT_ID} >= %s)",
 }
 
 idx_t DuckLakeMetadataManager::GetNetInlinedRowCount(const Identifier &inlined_table_name, DuckLakeSnapshot snapshot) {
-	auto result = Query(snapshot, GetNetInlinedRowCountSql(inlined_table_name, InlinedColNames()));
+	auto result = QuerySnapshotData(snapshot, GetNetInlinedRowCountSql(inlined_table_name, InlinedColNames()));
 	CheckInlinedDataReadError(*result, inlined_table_name);
 	for (auto &row : *result) {
 		return row.GetValue<idx_t>(0);
@@ -2406,7 +2406,7 @@ vector<DuckLakeFileListEntry> DuckLakeMetadataManager::GetFilesForTable(DuckLake
 
 	auto query =
 	    GenerateFileListQuery(table, snapshot, filter_info, dynamic_filter_columns, runtime_filter_stats_columns);
-	auto result = Query(snapshot, query);
+	auto result = QuerySnapshotData(snapshot, query);
 	result->ThrowIfError("Failed to get data file list from DuckLake: ");
 
 	// Query inlined file deletions for this table
@@ -2476,7 +2476,7 @@ WHERE data.table_id=%d AND data.begin_snapshot <= {SNAPSHOT_ID} AND (
 	                                select_list, table_id.index, start_snapshot.snapshot_id, table_id.index,
 	                                start_snapshot.snapshot_id, start_snapshot.snapshot_id);
 
-	auto result = Query(end_snapshot, query);
+	auto result = QuerySnapshotData(end_snapshot, query, start_snapshot.snapshot_id);
 	result->ThrowIfError("Failed to get table insertion file list from DuckLake: ");
 	auto rewrite_snapshots = GetTableRewriteSnapshots(table_id, start_snapshot, end_snapshot);
 	vector<DuckLakeFileListEntry> files;
@@ -2680,7 +2680,7 @@ FROM main_results
 )";
 	}
 
-	auto result = Query(end_snapshot, query);
+	auto result = QuerySnapshotData(end_snapshot, query, start_snapshot.snapshot_id);
 	result->ThrowIfError("Failed to get table deletion file list from DuckLake: ");
 
 	// Build entries from the unified query result
@@ -2743,13 +2743,15 @@ FROM main_results
 	for (auto &entry : deleted_files) {
 		deleted_file_ids.emplace_back(entry.first);
 	}
-	auto earlier_deletions = Query(end_snapshot, StringUtil::Format(R"(
+	auto earlier_deletions = QuerySnapshotData(end_snapshot,
+	                                           StringUtil::Format(R"(
 SELECT file_id, row_id, begin_snapshot
 FROM {METADATA_CATALOG}.%s
 WHERE begin_snapshot < %d AND file_id IN (%s)
 )",
-	                                                                inlined_table_name, start_snapshot.snapshot_id,
-	                                                                GenerateIDList(deleted_file_ids)));
+	                                                              inlined_table_name, start_snapshot.snapshot_id,
+	                                                              GenerateIDList(deleted_file_ids)),
+	                                           start_snapshot.snapshot_id);
 	earlier_deletions->ThrowIfError("Failed to get inlined deletions of deleted data files from DuckLake: ");
 	for (auto &row : *earlier_deletions) {
 		auto &entry = deleted_files.at(row.GetValue<idx_t>(0)).get();
@@ -2793,7 +2795,7 @@ vector<DuckLakeFileListExtendedEntry>
 DuckLakeMetadataManager::GetExtendedFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
                                                   const FilterPushdownInfo *filter_info) {
 	auto query = GenerateFileListQuery(table, snapshot, filter_info, {}, {}, FileListType::EXTENDED);
-	auto result = Query(snapshot, query);
+	auto result = QuerySnapshotData(snapshot, query);
 	result->ThrowIfError("Failed to get extended data file list from DuckLake: ");
 	vector<DuckLakeFileListExtendedEntry> files;
 	for (auto &row : *result) {
@@ -2983,7 +2985,7 @@ ORDER BY data.begin_snapshot ASC, data.row_id_start ASC, data.data_file_id ASC, 
 	)",
 	                                candidate_files_cte, table_id.index, select_list, data_file_source, table_id.index,
 	                                delete_file_filter, partition_value_filter, table_id.index, file_filter_clause);
-	auto result = Query(query);
+	auto result = QuerySnapshotData(snapshot, query);
 	result->ThrowIfError("Failed to get compaction file list from DuckLake: ");
 	vector<DuckLakeCompactionFileEntry> files;
 	for (auto &row : *result) {
@@ -3210,6 +3212,16 @@ unique_ptr<QueryResult> DuckLakeMetadataManager::Execute(string &&query) {
 
 unique_ptr<QueryResult> DuckLakeMetadataManager::Query(DuckLakeSnapshot snapshot, string &&query) {
 	return Query(snapshot, query);
+}
+
+unique_ptr<QueryResult> DuckLakeMetadataManager::QuerySnapshotData(DuckLakeSnapshot snapshot, string &query,
+                                                                   optional_idx start_snapshot) {
+	return Query(snapshot, query);
+}
+
+unique_ptr<QueryResult> DuckLakeMetadataManager::QuerySnapshotData(DuckLakeSnapshot snapshot, string &&query,
+                                                                   optional_idx start_snapshot) {
+	return QuerySnapshotData(snapshot, query, start_snapshot);
 }
 
 unique_ptr<QueryResult> DuckLakeMetadataManager::Query(string &&query) {
@@ -3989,7 +4001,7 @@ map<idx_t, set<idx_t>> DuckLakeMetadataManager::ReadInlinedFileDeletions(TableIn
 	auto query = StringUtil::Format("SELECT file_id, row_id FROM {METADATA_CATALOG}.%s WHERE begin_snapshot <= "
 	                                "{SNAPSHOT_ID}",
 	                                inlined_table_name);
-	auto query_result = Query(snapshot, query);
+	auto query_result = QuerySnapshotData(snapshot, query);
 	query_result->ThrowIfError("Failed to read inlined file deletions from DuckLake: ");
 	for (auto &row : *query_result) {
 		auto file_id = row.GetValue<idx_t>(0);
@@ -4008,7 +4020,7 @@ unordered_set<idx_t> DuckLakeMetadataManager::GetFileIdsWithInlinedDeletions(Tab
 	}
 	auto query = StringUtil::Format(
 	    "SELECT DISTINCT file_id FROM {METADATA_CATALOG}.%s WHERE begin_snapshot <= {SNAPSHOT_ID}", inlined_table_name);
-	auto query_result = Query(snapshot, query);
+	auto query_result = QuerySnapshotData(snapshot, query);
 	query_result->ThrowIfError("Failed to read inlined file deletion IDs from DuckLake: ");
 	for (auto &row : *query_result) {
 		result.insert(row.GetValue<idx_t>(0));
@@ -4121,13 +4133,14 @@ unique_ptr<QueryResult> DuckLakeMetadataManager::ReadInlinedData(DuckLakeSnapsho
                                                                  const vector<string> &columns_to_read) {
 	auto projection = GetProjection(columns_to_read);
 	auto col_names = InlinedColNames();
-	auto result = Query(snapshot, StringUtil::Format(R"(
+	auto result = QuerySnapshotData(snapshot, StringUtil::Format(R"(
 SELECT %s
 FROM {METADATA_CATALOG}.%s inlined_data
 WHERE {SNAPSHOT_ID} >= %s AND ({SNAPSHOT_ID} < %s OR %s IS NULL)
 ORDER BY %s ASC;)",
-	                                                 projection, inlined_table_name, col_names.begin_snapshot,
-	                                                 col_names.end_snapshot, col_names.end_snapshot, col_names.row_id));
+	                                                             projection, inlined_table_name,
+	                                                             col_names.begin_snapshot, col_names.end_snapshot,
+	                                                             col_names.end_snapshot, col_names.row_id));
 	return result;
 }
 
@@ -4137,12 +4150,14 @@ unique_ptr<QueryResult> DuckLakeMetadataManager::ReadInlinedDataChanges(DuckLake
                                                                         const vector<string> &columns_to_read,
                                                                         const Identifier &snapshot_column) {
 	auto projection = GetProjection(columns_to_read);
-	return Query(end_snapshot, StringUtil::Format(R"(
+	return QuerySnapshotData(end_snapshot,
+	                         StringUtil::Format(R"(
 SELECT %s
 FROM {METADATA_CATALOG}.%s inlined_data
 WHERE inlined_data.%s >= %d AND inlined_data.%s <= {SNAPSHOT_ID};)",
-	                                              projection, inlined_table_name, snapshot_column,
-	                                              start_snapshot.snapshot_id, snapshot_column));
+	                                            projection, inlined_table_name, snapshot_column,
+	                                            start_snapshot.snapshot_id, snapshot_column),
+	                         start_snapshot.snapshot_id);
 }
 
 unique_ptr<QueryResult> DuckLakeMetadataManager::ReadInlinedDataInsertions(DuckLakeSnapshot start_snapshot,
@@ -4174,12 +4189,12 @@ unique_ptr<QueryResult> DuckLakeMetadataManager::ReadAllInlinedDataForFlush(Duck
 		// a window ORDER BY binds the source columns, never the projection aliases
 		order = "ROW_NUMBER() OVER (ORDER BY " + order + ") ASC";
 	}
-	auto result = Query(snapshot, StringUtil::Format(R"(
+	auto result = QuerySnapshotData(snapshot, StringUtil::Format(R"(
 SELECT %s
 FROM %s inlined_data
 WHERE {SNAPSHOT_ID} >= %s
 ORDER BY %s;)",
-	                                                 projection, source, col_names.begin_snapshot, order));
+	                                                             projection, source, col_names.begin_snapshot, order));
 	return result;
 }
 
@@ -6063,7 +6078,7 @@ unordered_set<idx_t> DuckLakeMetadataManager::GetTablesWithLiveDataFiles() {
 
 vector<DuckLakeTableSizeInfo> DuckLakeMetadataManager::GetTableSizes(DuckLakeSnapshot snapshot) {
 	vector<DuckLakeTableSizeInfo> table_sizes;
-	auto result = Query(snapshot, R"(
+	auto result = QuerySnapshotData(snapshot, R"(
 SELECT
 	schema_id, table_id, table_name, table_uuid,
 	data_file_info.file_count AS data_file_count,

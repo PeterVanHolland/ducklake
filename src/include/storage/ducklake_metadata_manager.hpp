@@ -311,6 +311,11 @@ public:
 
 	virtual unique_ptr<QueryResult> Query(DuckLakeSnapshot snapshot, string &query);
 	virtual unique_ptr<QueryResult> Query(string &query);
+	//! Reads the files or rows a snapshot sees, which an expired snapshot cannot supply (a change feed has two)
+	virtual unique_ptr<QueryResult> QuerySnapshotData(DuckLakeSnapshot snapshot, string &query,
+	                                                  optional_idx start_snapshot = optional_idx());
+	unique_ptr<QueryResult> QuerySnapshotData(DuckLakeSnapshot snapshot, string &&query,
+	                                          optional_idx start_snapshot = optional_idx());
 
 	//! Rvalue sugar so call sites can pass `R"(...)"` and `StringUtil::Format(...)` directly.
 	//! Named-rvalue decays to an lvalue inside, so the virtual dispatch still picks up the

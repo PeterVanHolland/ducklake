@@ -3633,15 +3633,20 @@ static string RewriteColumnStatsBoundsSql(const map<TableIndex, set<FieldIndex>>
 	                          bounds, column_pairs, table_condition);
 }
 
+//! Expands {BOUND} for min_value and max_value
+static string SetBoundsSql(const string &expression) {
+	string result;
+	for (auto bound : {"min_value", "max_value"}) {
+		result += result.empty() ? "" : ", ";
+		result += string(bound) + " = " + StringUtil::Replace(expression, "{BOUND}", bound);
+	}
+	return result;
+}
+
 string DuckLakeMetadataManager::WriteFloatWidenedStats(const map<TableIndex, set<FieldIndex>> &widened_columns,
                                                        const map<TableIndex, set<FieldIndex>> &cleared_columns,
                                                        idx_t next_file_id) {
-	string widened_bounds;
-	for (auto bound : {"min_value", "max_value"}) {
-		widened_bounds += widened_bounds.empty() ? "" : ", ";
-		widened_bounds +=
-		    StringUtil::Format("%s = CAST(CAST(CAST(%s AS REAL) AS DOUBLE PRECISION) AS VARCHAR)", bound, bound);
-	}
+	auto widened_bounds = SetBoundsSql("CAST(CAST(CAST({BOUND} AS REAL) AS DOUBLE PRECISION) AS VARCHAR)");
 	return RewriteColumnStatsBoundsSql(widened_columns, widened_bounds, next_file_id) +
 	       RewriteColumnStatsBoundsSql(cleared_columns, "min_value = NULL, max_value = NULL", next_file_id);
 }
@@ -3650,6 +3655,12 @@ string DuckLakeMetadataManager::WriteRefinedTimestampStats(const map<TableIndex,
                                                            idx_t next_file_id) {
 	return RewriteColumnStatsBoundsSql(refined_columns, "min_value = NULL, max_value = NULL", next_file_id,
 	                                   "mapping_id IS NOT NULL");
+}
+
+string DuckLakeMetadataManager::WriteBooleanToNumberStats(const map<TableIndex, set<FieldIndex>> &retyped_columns,
+                                                          idx_t next_file_id) {
+	auto number_bounds = SetBoundsSql("CASE {BOUND} WHEN 'true' THEN '1' WHEN 'false' THEN '0' ELSE {BOUND} END");
+	return RewriteColumnStatsBoundsSql(retyped_columns, number_bounds, next_file_id);
 }
 
 static string ExpireDroppedColumns(const vector<DuckLakeDroppedColumn> &dropped_columns, const string &metadata_table) {

@@ -23,9 +23,15 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <thread>
 
 namespace duckdb {
+
+//! Wide decimal values and their bound strings can round differently
+static bool IsWideDecimal(const LogicalType &type) {
+	return type.id() == LogicalTypeId::DECIMAL && DecimalType::GetWidth(type) > std::numeric_limits<double>::digits10;
+}
 
 bool DuckLakeCommitState::WidensFloatColumns(TableIndex table_id) const {
 	return float_widened_columns.find(table_id) != float_widened_columns.end();
@@ -44,12 +50,11 @@ void DuckLakeCommitState::PrepareFloatBounds(TableIndex table_id, map<FieldIndex
 			continue;
 		}
 		auto &stats = column_entry->second;
-		if (stats.type.id() != LogicalTypeId::FLOAT) {
-			// written with the new type already
+		if (stats.type.id() != LogicalTypeId::FLOAT && !IsWideDecimal(stats.type)) {
 			continue;
 		}
-		bool keep_bounds =
-		    can_widen && (clear_entry == float_bounds_to_clear.end() || !clear_entry->second.count(field_index));
+		bool keep_bounds = stats.type.id() == LogicalTypeId::FLOAT && can_widen &&
+		                   (clear_entry == float_bounds_to_clear.end() || !clear_entry->second.count(field_index));
 		if (keep_bounds) {
 			stats.WidenFloatBounds();
 		} else {
@@ -1853,6 +1858,9 @@ void DuckLakeTransactionState::GetNewTableInfo(DuckLakeCommitState &commit_state
 			for (auto &field_index : changed_fields.refined_timestamp_fields) {
 				commit_state.refined_timestamp_columns[commit_state.GetTableId(table)].insert(field_index);
 			}
+			for (auto &field_index : changed_fields.boolean_to_number_fields) {
+				commit_state.boolean_to_number_columns[commit_state.GetTableId(table)].insert(field_index);
+			}
 			if (table.StartsPartitionSpec()) {
 				auto partition_key = DuckLakeTransaction::GetNewPartitionKey(commit_state, table);
 				partition_key.replaces_equal_spec = true;
@@ -2180,8 +2188,12 @@ FROM {METADATA_CATALOG}.ducklake_column WHERE (table_id, column_id) IN (%s))",
 	for (auto &row : *query_result) {
 		auto table_id = TableIndex(row.GetValue<idx_t>(0));
 		auto field_index = FieldIndex(row.GetValue<idx_t>(1));
-		if (row.GetValue<string>(2) != float_type) {
+		auto column_type = row.GetValue<string>(2);
+		if (column_type != float_type) {
 			older_type[table_id].insert(field_index);
+			if (IsWideDecimal(DuckLakeTypes::FromString(column_type))) {
+				result.cleared[table_id].insert(field_index);
+			}
 		} else if (row.IsNull(3)) {
 			live_float[table_id].insert(field_index);
 		}
@@ -2453,9 +2465,11 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 		auto compacted_tables = local_changes.GetCompactedTables();
 		refreshed_table_sizes.insert(compacted_tables.begin(), compacted_tables.end());
 	}
-	// runs after this commit writes its files and table stats, so it clears those too
+	// these run after this commit writes its files and table stats, so they rewrite those too
 	batch_queries += DuckLakeMetadataManager::WriteRefinedTimestampStats(commit_state.refined_timestamp_columns,
 	                                                                     commit_snapshot.next_file_id);
+	batch_queries += DuckLakeMetadataManager::WriteBooleanToNumberStats(commit_state.boolean_to_number_columns,
+	                                                                    commit_snapshot.next_file_id);
 	batch_queries += DuckLakeMetadataManager::RefreshTableSizesSql(refreshed_table_sizes);
 
 	// delete the flushed inlined rows and inlined file deletions after the deletes of the transaction

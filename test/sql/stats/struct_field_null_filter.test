@@ -1,0 +1,49 @@
+# name: test/sql/stats/struct_field_null_filter.test
+# description: A filter on a struct field with one value in its stats does not match the rows where the field is NULL
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/struct_field_null_filter')
+
+statement ok
+CREATE TABLE ducklake.t (id INTEGER, s STRUCT(y VARCHAR, i INTEGER));
+
+statement ok
+INSERT INTO ducklake.t VALUES (1, {'y': 'a', 'i': 1}), (2, {'y': NULL, 'i': NULL});
+
+query II
+SELECT (SELECT list(id) FROM ducklake.t WHERE s.y LIKE 'a%'), (SELECT list(id) FROM ducklake.t WHERE s.i IN (1, 2))
+----
+[1]	[1]
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake')
+
+query II
+SELECT (SELECT list(id) FROM ducklake.t WHERE s.y LIKE 'a%'), (SELECT list(id) FROM ducklake.t WHERE s.i IN (1, 2))
+----
+[1]	[1]
+
+statement ok
+UPDATE ducklake.t SET id = id + 10 WHERE s.y IN ('a', 'b')
+
+query I
+SELECT list(id ORDER BY id) FROM ducklake.t
+----
+[2, 11]
+
+statement ok
+DELETE FROM ducklake.t WHERE s.y LIKE 'a%'
+
+query I
+SELECT list(id ORDER BY id) FROM ducklake.t
+----
+[2]

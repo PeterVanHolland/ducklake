@@ -74,6 +74,7 @@ benchmark/micro/write/insert_large_file_commit.benchmark
 benchmark/micro/write/insert_small_file_commits.benchmark
 benchmark/micro/write/insert_inlined_variant.benchmark
 benchmark/micro/read/load_nested_catalog.benchmark
+benchmark/micro/write/insert_inlined_numeric.benchmark
 benchmark/micro/write/create_tables_quoted_columns.benchmark
 benchmark/micro/read/snapshots_listing_limit.benchmark
 benchmark/micro/read/snapshots_listing_changes.benchmark

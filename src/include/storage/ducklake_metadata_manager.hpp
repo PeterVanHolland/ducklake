@@ -212,6 +212,10 @@ public:
 	virtual bool CommitsEachStatement() const {
 		return false;
 	}
+	//! The type of a metadata column that a migration adds for a timestamp with time zone
+	virtual string TimestampTzColumnType() const {
+		return "TIMESTAMPTZ";
+	}
 	//! Whether transactions that started before a metadata table was dropped still read it
 	virtual bool DroppedTablesStayReadable() const {
 		return true;
@@ -622,6 +626,12 @@ public:
 	static string GetSnapshotTagTableStatement();
 	//! Whether the catalog already has every metadata table and column of v1.1
 	bool HasV1_1Additions();
+	//! The columns of the tag table
+	unique_ptr<QueryResult> ProbeSnapshotTagTable();
+	//! Whether the tag table has the expiry time, which the first 2.0-dev1 builds wrote without
+	bool HasSnapshotTagExpiry();
+	//! Adds the expiry time to the tag table of a 2.0-dev1 catalog
+	void AddSnapshotTagExpiry();
 	//! Renames inlined metadata columns to the prefixed variants, skipping already renamed tables
 	virtual void MigrateInlinedColumnNames(bool probe_renamed);
 	//! Renames the given (old name, new name) columns of each inlined table

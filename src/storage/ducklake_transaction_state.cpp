@@ -2677,6 +2677,10 @@ WHERE idt.schema_version < (
 		if (rows_result->begin() != rows_result->end()) {
 			continue;
 		}
+		// a transaction that started before the table was emptied can still read its rows, a later flush drops it
+		if (context.others_may_read_dropped_tables()) {
+			break;
+		}
 		// keep the registration if the drop fails
 		auto res = context.execute_in_transaction(DuckLakeMetadataManager::DropInlinedTableSql(
 		    candidate.table_id, candidate.schema_version, candidate.table_name));

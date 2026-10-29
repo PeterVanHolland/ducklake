@@ -1673,6 +1673,25 @@ void DuckLakeCatalog::RegisterCatalog() {
 	attached_catalogs->catalogs.push_back(*this);
 }
 
+bool DuckLakeCatalog::OtherTransactionHasMetadataConnection(DuckLakeTransaction &transaction) {
+	if (!attached_catalogs) {
+		auto &manager = GetAttached().GetTransactionManager().Cast<DuckLakeTransactionManager>();
+		return manager.OtherTransactionHasMetadataConnection(transaction);
+	}
+	lock_guard<mutex> guard(attached_catalogs->lock);
+	for (auto &entry : attached_catalogs->catalogs) {
+		auto &other = entry.get();
+		if (other.MetadataDatabaseName() != MetadataDatabaseName()) {
+			continue;
+		}
+		auto &manager = other.GetAttached().GetTransactionManager().Cast<DuckLakeTransactionManager>();
+		if (manager.OtherTransactionHasMetadataConnection(transaction)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool DuckLakeCatalog::UnregisterCatalog() {
 	if (!attached_catalogs) {
 		return true;

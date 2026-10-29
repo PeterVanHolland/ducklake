@@ -483,6 +483,23 @@ static string PostgresQuery(const string &remote_query) {
 	                          SQLString(remote_query));
 }
 
+bool PostgresMetadataManager::OtherTransactionsMayReadDroppedTables() {
+	if (DuckLakeMetadataManager::OtherTransactionsMayReadDroppedTables()) {
+		return true;
+	}
+	// a dropped table is gone for older snapshots too, so every open transaction in the database may read it; the
+	// sessions of other roles without pg_read_all_stats and with track_activities off show none, so they count too
+	auto result = Query(PostgresQuery(
+	    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND "
+	    "((backend_type = 'client backend' AND (xact_start IS NOT NULL OR state = 'disabled')) OR "
+	    "backend_type IS NULL)"));
+	result->ThrowIfError("Failed to look for open transactions in the PostgreSQL metadata catalog: ");
+	for (auto &row : *result) {
+		return row.GetValue<int64_t>(0) > 0;
+	}
+	return true;
+}
+
 string PostgresMetadataManager::GetLatestSnapshotQuery() const {
 	auto remote_query = LatestSnapshotQuery();
 	SubstituteCatalogPlaceholders(remote_query,

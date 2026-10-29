@@ -158,6 +158,10 @@ struct DuckLakeCommitContext {
 	// LCOV_EXCL_STOP
 	//! Author / message / extra info for the snapshot row.
 	DuckLakeSnapshotCommit commit_info;
+	//! Whether another transaction may still read a metadata table that a drop would remove
+	std::function<bool()> others_may_read_dropped_tables = []() {
+		return true;
+	};
 	//! When true, Commit() skips the post-commit DropEmptySupersededInlinedTables cleanup.
 	bool skip_drop_empty_inlined = false;
 	//! Whether the metadata schema has the >= 1.1 additions.

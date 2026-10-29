@@ -847,6 +847,7 @@ void DuckLakeTransaction::Commit() {
 		rewrote_config_options = false;
 	}
 	FlushNameMapCacheInvalidations();
+	has_metadata_connection = false;
 	connection.reset();
 	state->local_changes.Clear();
 	config_option_undo.clear();
@@ -864,6 +865,7 @@ void DuckLakeTransaction::Rollback() {
 			}
 		} catch (std::exception &) {
 			// nothing references the written files, so they are removed also when the rollback fails
+			has_metadata_connection = false;
 			connection.reset();
 			try {
 				state->CleanupFiles();
@@ -871,6 +873,7 @@ void DuckLakeTransaction::Rollback() {
 			}
 			throw;
 		}
+		has_metadata_connection = false;
 		connection.reset();
 	}
 	state->CleanupFiles();
@@ -887,6 +890,7 @@ Connection &DuckLakeTransaction::GetConnection() {
 	lock_guard<mutex> lock(connection_lock);
 	if (!connection) {
 		connection = make_uniq<Connection>(db);
+		has_metadata_connection = true;
 		connection->context->registered_state->GetOrCreate<DuckLakeInternalConnectionState>(
 		    DuckLakeInternalConnectionState::KEY);
 		auto caller_context = context.lock();
@@ -921,6 +925,10 @@ void DuckLakeTransaction::BeginMetadataTransaction() {
 	connection->context->transaction.SetInvalidationPolicy(
 	    TransactionInvalidationPolicy::SYNTACTIC_ERRORS_DO_NOT_INVALIDATE);
 	metadata_transaction_released = false;
+}
+
+bool DuckLakeTransaction::HasMetadataConnection() {
+	return has_metadata_connection;
 }
 
 void DuckLakeTransaction::ReleaseMetadataTransaction() {
@@ -1524,6 +1532,9 @@ void DuckLakeTransaction::DropEmptySupersededInlinedTablesClientSide() {
 	context.execute_in_transaction = [&](string q) {
 		return metadata_manager->ExecuteDropInTransaction(q);
 	};
+	context.others_may_read_dropped_tables = [&]() {
+		return metadata_manager->OtherTransactionsMayReadDroppedTables();
+	};
 	context.invalidate_schema_cache = [&](idx_t schema_version) {
 		ducklake_catalog.InvalidateSchemaCache(schema_version);
 	};
@@ -1630,6 +1641,9 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	};
 	context.execute_in_transaction = [&](string q) {
 		return metadata_manager->ExecuteDropInTransaction(q);
+	};
+	context.others_may_read_dropped_tables = [&]() {
+		return metadata_manager->OtherTransactionsMayReadDroppedTables();
 	};
 	context.query_metadata_with_snapshot = [&](DuckLakeSnapshot s, string q) {
 		return metadata_manager->Query(s, q);

@@ -106,7 +106,7 @@ static DeletedRowVersions GetDeletedRowVersions(DuckLakeMetadataManager &metadat
                                                 const DuckLakeTableEntry &table, const Identifier &inlined_table_name) {
 	auto col_names = metadata_manager.InlinedColNames();
 	auto flush_source = metadata_manager.InlinedFlushSource(inlined_table_name, table);
-	auto result = metadata_manager.Query(
+	auto result = metadata_manager.QuerySnapshotData(
 	    snapshot,
 	    StringUtil::Format("SELECT %s, %s, %s FROM %s inlined_data WHERE {SNAPSHOT_ID} >= %s AND %s IS NOT NULL;",
 	                       col_names.row_id, col_names.begin_snapshot, col_names.end_snapshot, flush_source,

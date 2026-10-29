@@ -57,23 +57,30 @@ unique_ptr<QueryResult> QuackMetadataManager::QuerySnapshotData(DuckLakeSnapshot
                                                                 optional_idx start_snapshot) {
 	// the server commits each statement on its own, so another connection can expire a snapshot between the
 	// statements of this transaction, and the server transaction of the read checks that its snapshots remain
-	// a snapshot nothing was committed after is one this transaction is about to commit, not an expired one
-	vector<idx_t> snapshot_ids {snapshot.snapshot_id};
-	if (start_snapshot.IsValid()) {
-		snapshot_ids.push_back(start_snapshot.GetIndex());
+	auto newest_snapshot_id = transaction.GetNewestVisibleSnapshotId();
+	vector<idx_t> snapshot_ids;
+	for (auto snapshot_id : {snapshot.snapshot_id, start_snapshot.IsValid() ? start_snapshot.GetIndex() : 0}) {
+		// a snapshot beyond the newest visible one is being committed or starts an empty change feed
+		if (snapshot_id > 0 && snapshot_id <= newest_snapshot_id) {
+			snapshot_ids.push_back(snapshot_id);
+		}
+	}
+	if (snapshot_ids.empty()) {
+		return DuckLakeMetadataManager::Query(snapshot, query);
 	}
 	string expired_cases;
 	for (auto snapshot_id : snapshot_ids) {
 		expired_cases += StringUtil::Format(
-		    "\n\tWHEN count(*) FILTER (snapshot_id > %llu) > 0 AND count(*) FILTER (snapshot_id = %llu) = 0"
+		    "\n\tWHEN count(*) FILTER (snapshot_id = %llu) = 0"
 		    "\n\t\tTHEN error('Snapshot %llu of the DuckLake catalog has been expired by another connection')",
-		    snapshot_id, snapshot_id, snapshot_id);
+		    snapshot_id, snapshot_id);
 	}
 	SubstituteTransactionPlaceholders(snapshot, query);
 	query = StringUtil::Format(R"(SET VARIABLE ducklake_snapshot_check = (SELECT CASE%s END
-	FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id >= %llu);
+	FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id IN (%s));
 %s;)",
-	                           expired_cases, *std::min_element(snapshot_ids.begin(), snapshot_ids.end()), query);
+	                           expired_cases,
+	                           StringUtil::Join(snapshot_ids, ", ", [](idx_t id) { return to_string(id); }), query);
 	return ExecuteInTransaction(query);
 }
 

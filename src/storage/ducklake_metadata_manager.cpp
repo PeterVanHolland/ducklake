@@ -5043,33 +5043,44 @@ WHERE snapshot_id = %llu%s;)",
 		if (!timestamp.IsNull() && timestamp.GetValue<timestamp_tz_t>() > current_time) {
 			throw InvalidInputException("Cannot time travel to a future timestamp: %s", val.ToString());
 		}
-		result = Query(StringUtil::Format(
-		    R"(
+		auto timestamp_literal = timestamp.DefaultCastAs(LogicalType::VARCHAR).ToSQLString();
+		const string snapshot_at_time_query = R"(
 SELECT snapshot_id, schema_version, next_catalog_id, next_file_id
 FROM {METADATA_CATALOG}.ducklake_snapshot
 WHERE snapshot_id = (
 	SELECT snapshot_id
 	FROM {METADATA_CATALOG}.ducklake_snapshot
-	WHERE snapshot_time::TIMESTAMPTZ %s= %s%s
+	WHERE snapshot_time::TIMESTAMPTZ %s %s%s
 	ORDER BY snapshot_time::TIMESTAMPTZ %s
-	LIMIT 1);)",
-		    timestamp_condition, timestamp.DefaultCastAs(LogicalType::VARCHAR).ToSQLString(), visible_condition,
-		    timestamp_order));
+	LIMIT 1);)";
+		if (bound == SnapshotBound::LOWER_BOUND) {
+			// the changes start after the last snapshot before the timestamp, so that those of expired snapshots
+			// between it and the next remaining snapshot are not lost
+			result =
+			    Query(StringUtil::Format(snapshot_at_time_query, "<", timestamp_literal, visible_condition, "DESC"));
+			result->ThrowIfError(
+			    StringUtil::Format("Failed to query snapshot at timestamp %s for DuckLake: ", val.ToString()));
+			auto before = ParseSnapshot(*result);
+			if (before) {
+				before->snapshot_id++;
+				return before;
+			}
+		}
+		result = Query(StringUtil::Format(snapshot_at_time_query, timestamp_condition + "=", timestamp_literal,
+		                                  visible_condition, timestamp_order));
 	} else {
 		throw InvalidInputException("Unsupported AT clause unit - %s", unit);
 	}
 	result->ThrowIfError(StringUtil::Format("Failed to query snapshot at %s %s for DuckLake: ",
 	                                        StringUtil::Lower(unit.GetIdentifierName()), val.ToString()));
 	auto snapshot = ParseSnapshot(*result);
-	if (!snapshot && bound == SnapshotBound::LOWER_BOUND && unit == "timestamp") {
-		// nothing was committed since the timestamp, so changes from it start after the newest snapshot
-		BoundAtClause newest_clause(Identifier("version"), Value::UBIGINT(newest_snapshot_id));
-		snapshot = GetSnapshot(newest_clause, bound, newest_snapshot_id);
-		snapshot->snapshot_id++;
-	}
 	if (!snapshot) {
 		throw InvalidInputException("No snapshot found at %s %s", StringUtil::Lower(unit.GetIdentifierName()),
 		                            val.ToString());
+	}
+	if (bound == SnapshotBound::LOWER_BOUND && unit == "timestamp") {
+		// every snapshot was committed at or after the timestamp, so the changes start with the first one
+		snapshot->snapshot_id = 0;
 	}
 	return snapshot;
 }

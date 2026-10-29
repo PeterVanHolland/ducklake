@@ -151,11 +151,15 @@ void QuackMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tra
 		flush_transaction.RunCommitLoop(transaction_snapshot, transaction_changes, retry_config);
 		return;
 	}
+	shared_ptr<DuckLakeStagedTableState> staged_tables;
+	unique_lock<mutex> staged_guard;
 	string batch;
 	try {
 		transaction.GetCatalog().EnsureCommitInfoProvided(flush_transaction.GetCommitInfo());
+		staged_tables = DuckLakeStagedTableState::Get(transaction);
+		staged_guard = unique_lock<mutex>(staged_tables->lock);
 		DuckLakeStagedCommit staged;
-		batch = staged.Build(flush_transaction, transaction_snapshot, retry_config);
+		batch = staged.Build(flush_transaction, transaction_snapshot, retry_config, *staged_tables);
 	} catch (std::exception &) {
 		// the server never sees this commit, so its files are only removed here
 		try {
@@ -165,6 +169,8 @@ void QuackMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tra
 		throw;
 	}
 	auto result = Query(batch);
+	staged_tables->BatchFinished(result && !result->HasError());
+	staged_guard.unlock();
 	if (!result) {
 		throw IOException("Failed to invoke server-side ducklake_commit: empty result");
 	}

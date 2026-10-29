@@ -285,10 +285,15 @@ static bool TimestampRetyped(const DuckLakeFieldId &older_field, optional_ptr<co
 }
 
 //! Returns true if every field in `older_fields` still exists in `latest` with an identical field id, name and type.
-//! New fields in `latest` (ADD COLUMN) are allowed; a dropped, renamed, retyped or nested-changed field is not.
+//! New fields in `latest` (ADD COLUMN) are allowed, a dropped, renamed, retyped or nested changed field is not.
 static bool FieldsPreservedInLatest(const vector<unique_ptr<DuckLakeFieldId>> &older_fields,
                                     const DuckLakeFieldData &latest) {
 	return !AnyFieldMatches(older_fields, latest, FieldChangedInLatest);
+}
+
+static bool TimestampRetypedInLatest(const vector<unique_ptr<DuckLakeFieldId>> &older_fields,
+                                     const DuckLakeFieldData &latest) {
+	return AnyFieldMatches(older_fields, latest, TimestampRetyped);
 }
 
 void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
@@ -309,15 +314,14 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 	auto &latest_table = latest_entry ? latest_entry->Cast<DuckLakeTableEntry>() : table;
 	auto &latest_field_data = latest_table.GetFieldData();
 	const idx_t latest_schema_version = snapshot.schema_version;
-	// whether any field of the table at a schema version matches a check against the latest fields, cached per version
-	auto any_version_field_matches = [&](unordered_map<idx_t, bool> &cache, idx_t schema_version, field_check_t check) {
+	using fields_check_t = bool (*)(const vector<unique_ptr<DuckLakeFieldId>> &, const DuckLakeFieldData &);
+	auto version_fields_pass = [&](unordered_map<idx_t, bool> &cache, idx_t schema_version, fields_check_t check) {
 		auto cached = cache.find(schema_version);
 		if (cached != cache.end()) {
 			return cached->second;
 		}
 		auto version_table = catalog.GetTableAtSchemaVersion(transaction, table_id, schema_version);
-		bool result =
-		    version_table && AnyFieldMatches(version_table->GetFieldData().GetFieldIds(), latest_field_data, check);
+		bool result = version_table && check(version_table->GetFieldData().GetFieldIds(), latest_field_data);
 		cache[schema_version] = result;
 		return result;
 	};
@@ -334,7 +338,7 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 			// DuckLake 1.0 compaction derives the schema of a file from its begin snapshot
 			return false;
 		}
-		return !any_version_field_matches(merges_into_latest_schema, schema_version, FieldChangedInLatest);
+		return version_fields_pass(merges_into_latest_schema, schema_version, FieldsPreservedInLatest);
 	};
 	// an added file can hold timestamps finer than its schema version, which reading at that version rounds
 	unordered_map<idx_t, bool> rounds_added_timestamps;
@@ -342,7 +346,7 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 		if (schema_version == latest_schema_version) {
 			return false;
 		}
-		return any_version_field_matches(rounds_added_timestamps, schema_version, TimestampRetyped);
+		return version_fields_pass(rounds_added_timestamps, schema_version, TimestampRetypedInLatest);
 	};
 
 	// iterate over the files and split into separate compaction groups

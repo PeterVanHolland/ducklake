@@ -5677,7 +5677,8 @@ vector<DuckLakeSnapshotTagInfo> DuckLakeMetadataManager::GetSnapshotTags(bool wi
 	if (!transaction.GetCatalog().SupportsSnapshotTags()) {
 		return vector<DuckLakeSnapshotTagInfo>();
 	}
-	return GetSnapshotTagsAt(transaction.GetSnapshot().snapshot_id, with_snapshot_time);
+	// the newest snapshot the transaction sees, resolving the snapshot of the attach could take the tag lock again
+	return GetSnapshotTagsAt(transaction.GetNewestVisibleSnapshotId(), with_snapshot_time);
 }
 
 vector<DuckLakeSnapshotTagInfo> DuckLakeMetadataManager::GetSnapshotTagsAt(idx_t snapshot_id, bool with_snapshot_time) {

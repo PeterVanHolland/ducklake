@@ -253,42 +253,42 @@ template <typename T>
 using compaction_map_t =
     unordered_map<DuckLakeCompactionGroup, T, DuckLakeCompactionGroupHash, DuckLakeCompactionGroupEquality>;
 
-//! Returns true if every field in `older_fields` still exists in `latest` with an identical field id, name and type.
-//! New fields in `latest` (ADD COLUMN) are allowed; a dropped, renamed, retyped or nested-changed field is not.
-static bool FieldsPreservedInLatest(const vector<unique_ptr<DuckLakeFieldId>> &older_fields,
-                                    const DuckLakeFieldData &latest) {
-	for (auto &older_field : older_fields) {
-		auto latest_field = latest.GetByFieldIndex(older_field->GetFieldIndex());
-		if (!latest_field) {
-			return false;
-		}
-		// a rename that only changes the case is still a rename, which `Identifier` equality would not see
-		if (older_field->Name().GetIdentifierName() != latest_field->Name().GetIdentifierName()) {
-			return false;
-		}
-		if (older_field->Type() != latest_field->Type()) {
-			return false;
-		}
-		if (!FieldsPreservedInLatest(older_field->Children(), latest)) {
-			return false;
-		}
-	}
-	return true;
-}
+//! A check of an older field against its field in the latest schema, which is null when the field was dropped
+using field_check_t = bool (*)(const DuckLakeFieldId &older_field, optional_ptr<const DuckLakeFieldId> latest_field);
 
-static bool TimestampRetypedInLatest(const vector<unique_ptr<DuckLakeFieldId>> &older_fields,
-                                     const DuckLakeFieldData &latest) {
+//! Returns true if `check` holds for any of `older_fields` or their nested fields
+static bool AnyFieldMatches(const vector<unique_ptr<DuckLakeFieldId>> &older_fields, const DuckLakeFieldData &latest,
+                            field_check_t check) {
 	for (auto &older_field : older_fields) {
-		auto latest_field = latest.GetByFieldIndex(older_field->GetFieldIndex());
-		if (latest_field && LogicalType::TypeIsTimestamp(older_field->Type()) &&
-		    older_field->Type() != latest_field->Type()) {
+		if (check(*older_field, latest.GetByFieldIndex(older_field->GetFieldIndex()))) {
 			return true;
 		}
-		if (TimestampRetypedInLatest(older_field->Children(), latest)) {
+		if (AnyFieldMatches(older_field->Children(), latest, check)) {
 			return true;
 		}
 	}
 	return false;
+}
+
+static bool FieldChangedInLatest(const DuckLakeFieldId &older_field, optional_ptr<const DuckLakeFieldId> latest_field) {
+	if (!latest_field) {
+		return true;
+	}
+	// a rename that only changes the case is still a rename, which `Identifier` equality would not see
+	return older_field.Name().GetIdentifierName() != latest_field->Name().GetIdentifierName() ||
+	       older_field.Type() != latest_field->Type();
+}
+
+static bool TimestampRetyped(const DuckLakeFieldId &older_field, optional_ptr<const DuckLakeFieldId> latest_field) {
+	return latest_field && LogicalType::TypeIsTimestamp(older_field.Type()) &&
+	       older_field.Type() != latest_field->Type();
+}
+
+//! Returns true if every field in `older_fields` still exists in `latest` with an identical field id, name and type.
+//! New fields in `latest` (ADD COLUMN) are allowed; a dropped, renamed, retyped or nested-changed field is not.
+static bool FieldsPreservedInLatest(const vector<unique_ptr<DuckLakeFieldId>> &older_fields,
+                                    const DuckLakeFieldData &latest) {
+	return !AnyFieldMatches(older_fields, latest, FieldChangedInLatest);
 }
 
 void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
@@ -309,6 +309,18 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 	auto &latest_table = latest_entry ? latest_entry->Cast<DuckLakeTableEntry>() : table;
 	auto &latest_field_data = latest_table.GetFieldData();
 	const idx_t latest_schema_version = snapshot.schema_version;
+	// whether any field of the table at a schema version matches a check against the latest fields, cached per version
+	auto any_version_field_matches = [&](unordered_map<idx_t, bool> &cache, idx_t schema_version, field_check_t check) {
+		auto cached = cache.find(schema_version);
+		if (cached != cache.end()) {
+			return cached->second;
+		}
+		auto version_table = catalog.GetTableAtSchemaVersion(transaction, table_id, schema_version);
+		bool result =
+		    version_table && AnyFieldMatches(version_table->GetFieldData().GetFieldIds(), latest_field_data, check);
+		cache[schema_version] = result;
+		return result;
+	};
 	unordered_map<idx_t, bool> merges_into_latest_schema;
 	auto can_merge_into_latest = [&](idx_t schema_version) -> bool {
 		if (type != CompactionType::MERGE_ADJACENT_TABLES) {
@@ -322,15 +334,7 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 			// DuckLake 1.0 compaction derives the schema of a file from its begin snapshot
 			return false;
 		}
-		auto cached = merges_into_latest_schema.find(schema_version);
-		if (cached != merges_into_latest_schema.end()) {
-			return cached->second;
-		}
-		auto version_table = catalog.GetTableAtSchemaVersion(transaction, table_id, schema_version);
-		bool result =
-		    version_table && FieldsPreservedInLatest(version_table->GetFieldData().GetFieldIds(), latest_field_data);
-		merges_into_latest_schema[schema_version] = result;
-		return result;
+		return !any_version_field_matches(merges_into_latest_schema, schema_version, FieldChangedInLatest);
 	};
 	// an added file can hold timestamps finer than its schema version, which reading at that version rounds
 	unordered_map<idx_t, bool> rounds_added_timestamps;
@@ -338,15 +342,7 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 		if (schema_version == latest_schema_version) {
 			return false;
 		}
-		auto cached = rounds_added_timestamps.find(schema_version);
-		if (cached != rounds_added_timestamps.end()) {
-			return cached->second;
-		}
-		auto version_table = catalog.GetTableAtSchemaVersion(transaction, table_id, schema_version);
-		bool result =
-		    version_table && TimestampRetypedInLatest(version_table->GetFieldData().GetFieldIds(), latest_field_data);
-		rounds_added_timestamps[schema_version] = result;
-		return result;
+		return any_version_field_matches(rounds_added_timestamps, schema_version, TimestampRetyped);
 	};
 
 	// iterate over the files and split into separate compaction groups

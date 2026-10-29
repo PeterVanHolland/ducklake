@@ -623,7 +623,13 @@ public:
 	//! Whether the catalog already has every metadata table and column of v1.1
 	bool HasV1_1Additions();
 	//! Renames inlined metadata columns to the prefixed variants, skipping already renamed tables
-	virtual void MigrateInlinedColumnNames(bool probe_renamed);
+	//! With legacy_tables only those are renamed, and a table that cannot be renamed is skipped
+	virtual void MigrateInlinedColumnNames(bool probe_renamed,
+	                                       optional_ptr<const identifier_set_t> legacy_tables = nullptr);
+	//! Repairs the inlined tables that a v1.0 session created after the migration
+	void RepairLegacyInlinedTables();
+	//! The inlined tables whose metadata columns have the v1.0 names
+	virtual identifier_set_t GetLegacyNamedInlinedTables();
 	//! Renames the given (old name, new name) columns of each inlined table
 	virtual void RenameInlinedColumns(const map<Identifier, vector<pair<Identifier, Identifier>>> &renames);
 	//! Adds the schema version rows of inlined tables that older versions registered without one

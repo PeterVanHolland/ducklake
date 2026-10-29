@@ -6,7 +6,7 @@ require ducklake
 
 require parquet
 
-require-env DUCKLAKE_CONNECTION
+require-env DUCKLAKE_CONNECTION quack:localhost:19999
 
 require quack
 
@@ -43,16 +43,11 @@ SELECT count(*) FROM lake.t AT (VERSION => 1)
 ----
 Snapshot 1 of the DuckLake catalog has been expired by another connection
 
+# the error ends the transaction like any other error
 statement error con1
-SELECT i FROM lake.t AT (VERSION => 1)
+SELECT 1
 ----
-Snapshot 1 of the DuckLake catalog has been expired by another connection
-
-# the snapshot of the transaction itself is the same snapshot
-statement error con1
-SELECT count(*) FROM lake.t
-----
-Snapshot 1 of the DuckLake catalog has been expired by another connection
+Current transaction is aborted
 
 statement ok con1
 ROLLBACK
@@ -62,7 +57,33 @@ SELECT count(*) FROM lake.t
 ----
 0
 
+# the snapshot of the transaction itself can be expired too
+statement ok con2
+INSERT INTO lake.t VALUES (42)
+
+statement ok con1
+BEGIN
+
 query I con1
-SELECT count(*) FROM lake.t AT (VERSION => 2)
+SELECT i FROM lake.t
 ----
-0
+42
+
+statement ok con2
+INSERT INTO lake.t VALUES (43)
+
+statement ok con2
+CALL ducklake_expire_snapshots('lake', older_than => now())
+
+statement error con1
+SELECT i FROM lake.t
+----
+of the DuckLake catalog has been expired by another connection
+
+statement ok con1
+ROLLBACK
+
+query I con1
+SELECT count(*) FROM lake.t
+----
+2

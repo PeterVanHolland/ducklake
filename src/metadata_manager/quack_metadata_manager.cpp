@@ -53,17 +53,27 @@ unique_ptr<QueryResult> QuackMetadataManager::AttachMetadata(const string &attac
 	return std::move(result);
 }
 
-unique_ptr<QueryResult> QuackMetadataManager::Query(DuckLakeSnapshot snapshot, string &query) {
-	// the server commits each statement on its own, so another connection can expire the snapshot between the
-	// statements of this transaction, and the server transaction that reads it checks that it still exists
-	// a snapshot this transaction is about to commit does not exist yet, so only an expired one fails
+unique_ptr<QueryResult> QuackMetadataManager::QuerySnapshotData(DuckLakeSnapshot snapshot, string &query,
+                                                                optional_idx start_snapshot) {
+	// the server commits each statement on its own, so another connection can expire a snapshot between the
+	// statements of this transaction, and the server transaction of the read checks that its snapshots remain
+	// a snapshot nothing was committed after is one this transaction is about to commit, not an expired one
+	vector<idx_t> snapshot_ids {snapshot.snapshot_id};
+	if (start_snapshot.IsValid()) {
+		snapshot_ids.push_back(start_snapshot.GetIndex());
+	}
+	string expired_cases;
+	for (auto snapshot_id : snapshot_ids) {
+		expired_cases += StringUtil::Format(
+		    "\n\tWHEN count(*) FILTER (snapshot_id > %llu) > 0 AND count(*) FILTER (snapshot_id = %llu) = 0"
+		    "\n\t\tTHEN error('Snapshot %llu of the DuckLake catalog has been expired by another connection')",
+		    snapshot_id, snapshot_id, snapshot_id);
+	}
 	SubstituteTransactionPlaceholders(snapshot, query);
-	query = StringUtil::Format(R"(SET VARIABLE ducklake_snapshot_check = (
-	SELECT CASE WHEN count(*) > 0 AND count(*) FILTER (snapshot_id = %llu) = 0
-		THEN error('Snapshot %llu of the DuckLake catalog has been expired by another connection') END
+	query = StringUtil::Format(R"(SET VARIABLE ducklake_snapshot_check = (SELECT CASE%s END
 	FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id >= %llu);
 %s;)",
-	                           snapshot.snapshot_id, snapshot.snapshot_id, snapshot.snapshot_id, query);
+	                           expired_cases, *std::min_element(snapshot_ids.begin(), snapshot_ids.end()), query);
 	return ExecuteInTransaction(query);
 }
 

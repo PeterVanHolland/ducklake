@@ -611,6 +611,13 @@ public:
 	unordered_set<idx_t> GetTablesWithLiveDataFiles();
 	virtual void SetConfigOption(const DuckLakeConfigOption &option);
 	virtual bool ResetConfigOption(const DuckLakeConfigOption &option);
+	//! Runs the migrations in one metadata transaction where each statement commits on its own
+	virtual void BeginMigration() {
+	}
+	virtual void CommitMigration() {
+	}
+	virtual void RollbackMigration() {
+	}
 	virtual void MigrateV01();
 	virtual void MigrateV02(bool allow_failures = false);
 	virtual void MigrateV03(bool allow_failures = false);

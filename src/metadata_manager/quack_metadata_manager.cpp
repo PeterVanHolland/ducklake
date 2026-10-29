@@ -54,9 +54,35 @@ unique_ptr<QueryResult> QuackMetadataManager::AttachMetadata(const string &attac
 }
 
 unique_ptr<QueryResult> QuackMetadataManager::Execute(DuckLakeSnapshot snapshot, string &query) {
-	// the server commits each statement on its own, so the statements run in a server transaction
 	SubstituteTransactionPlaceholders(snapshot, query);
+	if (migration_transaction) {
+		return Query(query);
+	}
+	// the server commits each statement on its own, so the statements run in a server transaction
 	return ExecuteInTransaction(query);
+}
+
+void QuackMetadataManager::BeginMigration() {
+	auto result = Query("BEGIN TRANSACTION;");
+	result->ThrowIfError("Failed to begin the migration transaction in DuckLake: ");
+	migration_transaction = true;
+}
+
+void QuackMetadataManager::CommitMigration() {
+	if (!migration_transaction) {
+		return;
+	}
+	migration_transaction = false;
+	auto result = Query("COMMIT;");
+	result->ThrowIfError("Failed to commit the migration in DuckLake: ");
+}
+
+void QuackMetadataManager::RollbackMigration() {
+	if (!migration_transaction) {
+		return;
+	}
+	migration_transaction = false;
+	Query("ROLLBACK;");
 }
 
 unique_ptr<QueryResult> QuackMetadataManager::ExecuteInTransaction(string &query) {

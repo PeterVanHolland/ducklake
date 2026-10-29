@@ -263,50 +263,58 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 			}
 			if (catalog_version < target_version) {
 				catalog.VerifyWritable();
+				metadata_manager.BeginMigration();
 			}
-			if (catalog_version == DuckLakeVersion::V0_1) {
-				metadata_manager.MigrateV01();
-				catalog_version = DuckLakeVersion::V0_2;
-			}
-			if (catalog_version == DuckLakeVersion::V0_2) {
-				metadata_manager.MigrateV02();
-				catalog_version = DuckLakeVersion::V0_3;
-			}
-			if (catalog_version == DuckLakeVersion::V0_3_DEV1) {
-				metadata_manager.MigrateV02(true);
-				catalog_version = DuckLakeVersion::V0_3;
-			}
-			if (catalog_version == DuckLakeVersion::V0_3) {
-				metadata_manager.MigrateV03();
-				catalog_version = DuckLakeVersion::V0_4;
-			}
-			if (catalog_version == DuckLakeVersion::V0_4_DEV1) {
-				metadata_manager.MigrateV03(true);
-				catalog_version = DuckLakeVersion::V0_4;
-			}
-			if (catalog_version == DuckLakeVersion::V0_4) {
-				metadata_manager.MigrateV04();
-				catalog_version = DuckLakeVersion::V1_0;
-			}
-			if (catalog_version >= target_version) {
+			try {
+				if (catalog_version == DuckLakeVersion::V0_1) {
+					metadata_manager.MigrateV01();
+					catalog_version = DuckLakeVersion::V0_2;
+				}
+				if (catalog_version == DuckLakeVersion::V0_2) {
+					metadata_manager.MigrateV02();
+					catalog_version = DuckLakeVersion::V0_3;
+				}
+				if (catalog_version == DuckLakeVersion::V0_3_DEV1) {
+					metadata_manager.MigrateV02(true);
+					catalog_version = DuckLakeVersion::V0_3;
+				}
+				if (catalog_version == DuckLakeVersion::V0_3) {
+					metadata_manager.MigrateV03();
+					catalog_version = DuckLakeVersion::V0_4;
+				}
+				if (catalog_version == DuckLakeVersion::V0_4_DEV1) {
+					metadata_manager.MigrateV03(true);
+					catalog_version = DuckLakeVersion::V0_4;
+				}
+				if (catalog_version == DuckLakeVersion::V0_4) {
+					metadata_manager.MigrateV04();
+					catalog_version = DuckLakeVersion::V1_0;
+				}
+				if (catalog_version >= target_version) {
+					metadata_manager.CommitMigration();
+					resolved_version = catalog_version;
+					continue;
+				}
+				if (catalog_version == DuckLakeVersion::V1_0 || catalog_version == DuckLakeVersion::V1_1_DEV_1) {
+					metadata_manager.MigrateV10(catalog_version == DuckLakeVersion::V1_1_DEV_1);
+					catalog_version = DuckLakeVersion::V1_1;
+				}
+				if (catalog_version == DuckLakeVersion::V1_1 && catalog_version < target_version) {
+					metadata_manager.MigrateV11();
+					catalog_version = DuckLakeVersion::V2_0_DEV1;
+				}
+				if (catalog_version != target_version) {
+					// LCOV_EXCL_START
+					throw NotImplementedException("Unsupported DuckLake version '%s'",
+					                              DuckLakeVersionToString(catalog_version));
+					// LCOV_EXCL_STOP
+				}
+				metadata_manager.CommitMigration();
 				resolved_version = catalog_version;
-				continue;
+			} catch (...) {
+				metadata_manager.RollbackMigration();
+				throw;
 			}
-			if (catalog_version == DuckLakeVersion::V1_0 || catalog_version == DuckLakeVersion::V1_1_DEV_1) {
-				metadata_manager.MigrateV10(catalog_version == DuckLakeVersion::V1_1_DEV_1);
-				catalog_version = DuckLakeVersion::V1_1;
-			}
-			if (catalog_version == DuckLakeVersion::V1_1 && catalog_version < target_version) {
-				metadata_manager.MigrateV11();
-				catalog_version = DuckLakeVersion::V2_0_DEV1;
-			}
-			if (catalog_version != target_version) {
-				// LCOV_EXCL_START
-				throw NotImplementedException("Unsupported DuckLake version '%s'",
-				                              DuckLakeVersionToString(catalog_version));
-				// LCOV_EXCL_STOP
-			}
-			resolved_version = catalog_version;
 		}
 		if (tag.key == "data_path") {
 			if (options.data_path.empty()) {

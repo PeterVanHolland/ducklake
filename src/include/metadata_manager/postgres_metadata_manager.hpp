@@ -68,6 +68,7 @@ protected:
 	bool MaterializeStatsCTEs() const override;
 	string CastValueToTarget(const Value &value, const LogicalType &type) override;
 	string CastStatsToTarget(const string &stats, const LogicalType &type, StatsCastType cast_type) override;
+	string StaleBoundSql(const string &bound, LogicalTypeId type) override;
 };
 
 } // namespace duckdb

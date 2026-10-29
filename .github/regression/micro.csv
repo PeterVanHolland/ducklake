@@ -15,7 +15,9 @@ benchmark/micro/time_travel/at_version_history.benchmark
 benchmark/micro/time_travel/table_changes_incremental_poll.benchmark
 benchmark/micro/read/warm_small_queries.benchmark
 benchmark/micro/read/file_pruning_many_files.benchmark
+benchmark/micro/read/file_pruning_many_files_v10.benchmark
 benchmark/micro/read/big_lake_cold_listing.benchmark
+benchmark/micro/read/big_lake_cold_listing_v10.benchmark
 benchmark/micro/read/big_lake_cold_inlined_reads.benchmark
 benchmark/micro/read/big_lake_filtered_reads.benchmark
 benchmark/micro/read/sorted_probes.benchmark

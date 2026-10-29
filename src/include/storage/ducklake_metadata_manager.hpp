@@ -82,9 +82,16 @@ struct DuckLakeInlinedColNames {
 struct CTERequirement {
 	idx_t column_field_index;
 	unordered_set<string> referenced_stats;
+	//! The type of a column whose bounds older versions may have stored for another type
+	LogicalTypeId stale_bounds_type = LogicalTypeId::INVALID;
 
 	CTERequirement(idx_t col_idx, unordered_set<string> stats)
 	    : column_field_index(col_idx), referenced_stats(std::move(stats)) {
+	}
+
+	bool ChecksStaleBounds() const {
+		return stale_bounds_type != LogicalTypeId::INVALID &&
+		       (referenced_stats.count("min_value") > 0 || referenced_stats.count("max_value") > 0);
 	}
 };
 
@@ -652,6 +659,10 @@ protected:
 
 	virtual string GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
 	                                              const string &metadata_table_prefix);
+	//! Whether a bound that an older version wrote may not hold for the column type
+	virtual string StaleBoundSql(const string &bound, LogicalTypeId type);
+	//! Whether an older version may have written the bounds of a file for another type
+	static string StaleBoundFileSql(const string &prefix, TableIndex table_id, const CTERequirement &req);
 	//! The snapshot placeholders of the query are replaced later, unless an override does it
 	virtual string GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                                     const FilterPushdownInfo *filter_info,

@@ -509,6 +509,19 @@ bool DuckLakeMetadataManager::HasV1_1Additions() {
 	return !Query(probe)->HasError();
 }
 
+//! The defaults of a struct field cannot change, so a later row of the field without them lost them in a rename
+static string RenamedFieldOriginalSql() {
+	return R"(renamed.parent_column IS NOT NULL AND renamed.initial_default IS NULL
+AND original.table_id = renamed.table_id AND original.column_id = renamed.column_id
+AND original.initial_default IS NOT NULL AND original.begin_snapshot < renamed.begin_snapshot
+AND NOT EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column later
+	WHERE later.table_id = original.table_id AND later.column_id = original.column_id
+	AND later.initial_default IS NOT NULL AND later.begin_snapshot > original.begin_snapshot
+	AND later.begin_snapshot < renamed.begin_snapshot
+))";
+}
+
 void DuckLakeMetadataManager::MigrateInlinedSchemaVersions() {
 	// the commit of an inlined table is only known while the snapshot before that commit exists
 	auto result = Execute(R"(
@@ -535,22 +548,13 @@ AND NOT EXISTS (
 }
 
 void DuckLakeMetadataManager::MigrateRenamedFieldDefaults() {
-	// the defaults of a struct field cannot change, so a later row of the field without them lost them in a rename
 	auto result = Execute(R"(
 UPDATE {METADATA_CATALOG}.ducklake_column AS renamed
 SET initial_default = original.initial_default, default_value = original.default_value,
 	default_value_type = original.default_value_type, default_value_dialect = original.default_value_dialect
 FROM {METADATA_CATALOG}.ducklake_column AS original
-WHERE renamed.parent_column IS NOT NULL AND renamed.initial_default IS NULL
-AND original.table_id = renamed.table_id AND original.column_id = renamed.column_id
-AND original.initial_default IS NOT NULL AND original.begin_snapshot < renamed.begin_snapshot
-AND NOT EXISTS (
-	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column later
-	WHERE later.table_id = original.table_id AND later.column_id = original.column_id
-	AND later.initial_default IS NOT NULL AND later.begin_snapshot > original.begin_snapshot
-	AND later.begin_snapshot < renamed.begin_snapshot
-);
-)");
+WHERE )" + RenamedFieldOriginalSql() +
+	                      ";");
 	result->ThrowIfError("Failed to restore the defaults of renamed struct fields while migrating to v1.1: ");
 }
 
@@ -559,6 +563,13 @@ static string FloatBoundSql(const string &bound) {
 	return StringUtil::Format("(TRY_CAST(TRY_CAST(%s AS REAL) AS VARCHAR) = %s AND TRY_CAST(TRY_CAST(%s AS REAL) AS "
 	                          "DOUBLE PRECISION) <> TRY_CAST(%s AS DOUBLE PRECISION))",
 	                          bound, bound, bound, bound);
+}
+
+//! Whether the column had another type than DOUBLE
+static string HadNonDoubleTypeSql(const string &prefix, const string &table_id, const string &column_id) {
+	return StringUtil::Format("EXISTS (SELECT 1 FROM %s.ducklake_column AS original WHERE original.table_id = %s AND "
+	                          "original.column_id = %s AND original.column_type <> 'float64')",
+	                          prefix, table_id, column_id);
 }
 
 //! A timestamp bound with more fractional digits than the column type keeps
@@ -581,10 +592,7 @@ void DuckLakeMetadataManager::MigrateRetypedBounds() {
 ))",
 		                          types);
 	};
-	auto retyped = string(R"(EXISTS (
-	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS col
-	WHERE col.table_id = stats.table_id AND col.column_id = stats.column_id AND col.column_type <> 'float64'
-))");
+	auto retyped = HadNonDoubleTypeSql("{METADATA_CATALOG}", "stats.table_id", "stats.column_id");
 	auto added_file = string(R"(EXISTS (
 	SELECT 1 FROM {METADATA_CATALOG}.ducklake_data_file AS added
 	WHERE added.data_file_id = stats.data_file_id AND added.mapping_id IS NOT NULL
@@ -1154,6 +1162,22 @@ WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_s
 	    {"value", "value"},
 	};
 
+	string column_source = "{METADATA_CATALOG}.ducklake_column";
+	if (!supports_v1_1_metadata) {
+		// the defaults that renamed struct fields lost
+		string restored;
+		for (auto field : {"initial_default", "default_value", "default_value_type", "default_value_dialect"}) {
+			restored +=
+			    StringUtil::Format(", CASE WHEN original.column_id IS NULL THEN renamed.%s ELSE original.%s END AS %s",
+			                       field, field, field);
+		}
+		column_source = "(SELECT renamed.* EXCLUDE (initial_default, default_value, default_value_type, "
+		                "default_value_dialect)" +
+		                restored +
+		                " FROM {METADATA_CATALOG}.ducklake_column AS renamed LEFT JOIN "
+		                "{METADATA_CATALOG}.ducklake_column AS original ON " +
+		                RenamedFieldOriginalSql() + ") AS restored";
+	}
 	// load the table information
 	result = query_executor(snapshot,
 	                        StringUtil::Format(R"(
@@ -1180,14 +1204,14 @@ SELECT schema_id, tbl.table_id, table_uuid::VARCHAR, table_name,
 FROM {METADATA_CATALOG}.ducklake_table tbl
 LEFT JOIN (
 	SELECT *
-	FROM {METADATA_CATALOG}.ducklake_column
+	FROM %s
 	WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
 ) col USING (table_id)
 WHERE {SNAPSHOT_ID} >= tbl.begin_snapshot AND ({SNAPSHOT_ID} < tbl.end_snapshot OR tbl.end_snapshot IS NULL)
 ORDER BY table_id ASC, parent_column ASC NULLS FIRST, column_order ASC
 )",
 	                                           ListAggregation(TAG_FIELDS), ListAggregation(INLINED_DATA_TABLES_FIELDS),
-	                                           ListAggregation(TAG_FIELDS)));
+	                                           ListAggregation(TAG_FIELDS), column_source));
 	result->ThrowIfError("Failed to get table information from DuckLake: ");
 	const idx_t COLUMN_INDEX_START = 8;
 	auto &tables = catalog.tables;
@@ -1476,11 +1500,63 @@ bool DuckLakeMetadataManager::ResultHasColumn(QueryResult &result, const string 
 	return false;
 }
 
+//! Types whose bounds DuckDB 1.5.6 stored in the type of an added file
+static const LogicalTypeId STALE_BOUND_TYPES[] = {LogicalTypeId::DOUBLE, LogicalTypeId::TIMESTAMP,
+                                                  LogicalTypeId::TIMESTAMP_MS, LogicalTypeId::TIMESTAMP_SEC,
+                                                  LogicalTypeId::TIMESTAMP_TZ};
+
+static bool MayHaveStaleBounds(const LogicalType &type) {
+	for (auto &id : STALE_BOUND_TYPES) {
+		if (type.id() == id) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! The snapshot that retyped a column to DOUBLE
+static string DoubleRetypeSnapshotSql(const string &prefix, const string &table_id, const string &column_id) {
+	return StringUtil::Format(
+	    "(SELECT MIN(retyped.begin_snapshot) FROM %s.ducklake_column AS retyped WHERE "
+	    "retyped.table_id = %s AND retyped.column_id = %s AND retyped.column_type = 'float64' AND %s)",
+	    prefix, table_id, column_id, HadNonDoubleTypeSql(prefix, table_id, column_id));
+}
+
+static string TableColumnBoundSql(const string &bound, bool v1_1_metadata) {
+	if (v1_1_metadata) {
+		return bound;
+	}
+	return StringUtil::Format("CASE WHEN stale_bounds.stale_column_id IS NULL THEN %s END AS %s", bound, bound);
+}
+
+//! Without the v1.1 metadata, the columns whose table bounds may have been merged from such files
+static string StaleTableBoundsJoin(bool v1_1_metadata) {
+	if (v1_1_metadata) {
+		return string();
+	}
+	vector<string> type_names;
+	for (auto &id : STALE_BOUND_TYPES) {
+		type_names.push_back(SQLString::ToString(DuckLakeTypes::ToString(LogicalType(id))));
+	}
+	// a column mapping marks a table with added files
+	return StringUtil::Format(R"(LEFT JOIN (
+    SELECT DISTINCT col.table_id AS stale_table_id, col.column_id AS stale_column_id
+    FROM {METADATA_CATALOG}.ducklake_column AS col
+    WHERE (col.column_type IN (%s)
+        AND col.table_id IN (SELECT mapping.table_id FROM {METADATA_CATALOG}.ducklake_column_mapping AS mapping))
+    OR (col.column_type = 'float64' AND %s)
+) AS stale_bounds ON stale_bounds.stale_table_id = ducklake_table_column_stats.table_id
+    AND stale_bounds.stale_column_id = ducklake_table_column_stats.column_id
+)",
+	                          StringUtil::Join(type_names, ", "),
+	                          HadNonDoubleTypeSql("{METADATA_CATALOG}", "col.table_id", "col.column_id"));
+}
+
 static string TableStatsQuery(const string &select_list, bool include_column_stats,
-                              const vector<TableIndex> &table_ids = {}) {
+                              const string &column_stats_join = string(), const vector<TableIndex> &table_ids = {}) {
 	auto query = "\nSELECT " + select_list + "\nFROM {METADATA_CATALOG}.ducklake_table_stats\n";
 	if (include_column_stats) {
-		query += "LEFT JOIN {METADATA_CATALOG}.ducklake_table_column_stats USING (table_id)\n";
+		query += "LEFT JOIN {METADATA_CATALOG}.ducklake_table_column_stats USING (table_id)\n" + column_stats_join;
 	}
 	if (!table_ids.empty()) {
 		vector<string> ids;
@@ -1496,13 +1572,14 @@ static string TableStatsQuery(const string &select_list, bool include_column_sta
 }
 
 string DuckLakeMetadataManager::GlobalTableStatsQuery(bool include_exactness, const vector<TableIndex> &table_ids) {
-	string select_list =
-	    "table_id, column_id, record_count, next_row_id, file_size_bytes, contains_null, contains_nan, min_value, "
-	    "max_value, extra_stats";
+	auto select_list =
+	    "table_id, column_id, record_count, next_row_id, file_size_bytes, contains_null, contains_nan, " +
+	    TableColumnBoundSql("min_value", include_exactness) + ", " +
+	    TableColumnBoundSql("max_value", include_exactness) + ", extra_stats";
 	if (include_exactness) {
 		select_list += ", min_is_exact, max_is_exact";
 	}
-	return TableStatsQuery(select_list, true, table_ids);
+	return TableStatsQuery(select_list, true, StaleTableBoundsJoin(include_exactness), table_ids);
 }
 
 vector<DuckLakeGlobalStatsInfo> DuckLakeMetadataManager::ParseGlobalTableStats(QueryResult &result) {
@@ -2021,8 +2098,38 @@ FilterSQLResult DuckLakeMetadataManager::ConvertFilterPushdownToSQL(const Filter
 	return result;
 }
 
+string DuckLakeMetadataManager::StaleBoundFileSql(const string &prefix, TableIndex table_id,
+                                                  const CTERequirement &req) {
+	// added files, and for DOUBLE the files from before a retype
+	string files = "mapping_id IS NOT NULL";
+	if (req.stale_bounds_type == LogicalTypeId::DOUBLE) {
+		files += " OR begin_snapshot <= " +
+		         DoubleRetypeSnapshotSql(prefix, to_string(table_id.index), to_string(req.column_field_index));
+	}
+	return StringUtil::Format(
+	    "data_file_id IN (SELECT data_file_id FROM %s.ducklake_data_file WHERE table_id = %d AND (%s))", prefix,
+	    table_id.index, files);
+}
+
+string DuckLakeMetadataManager::StaleBoundSql(const string &bound, LogicalTypeId type) {
+	switch (type) {
+	case LogicalTypeId::DOUBLE:
+		return FloatBoundSql(bound);
+	case LogicalTypeId::TIMESTAMP:
+		return bound + " LIKE '%._______%'";
+	case LogicalTypeId::TIMESTAMP_MS:
+		return bound + " LIKE '%.____%'";
+	case LogicalTypeId::TIMESTAMP_SEC:
+		return bound + " LIKE '%._%'";
+	default:
+		// DuckDB 1.5.6 dropped the nanoseconds of TIMESTAMPTZ bounds
+		return "TRUE";
+	}
+}
+
 string DuckLakeMetadataManager::GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
                                                                const string &metadata_table_prefix) {
+	auto stale_bounds = req.ChecksStaleBounds();
 	string select_list = "data_file_id";
 	for (const auto &stat : req.referenced_stats) {
 		if (stat == "value_count" || stat == "null_count") {
@@ -2031,12 +2138,22 @@ string DuckLakeMetadataManager::GenerateFileColumnStatsCTEBody(const CTERequirem
 			    ", CASE WHEN value_count = 0 AND null_count = 0 THEN NULL ELSE %s END AS %s", stat, stat);
 			continue;
 		}
+		if (stale_bounds && (stat == "min_value" || stat == "max_value")) {
+			select_list += StringUtil::Format(", CASE WHEN stale_file AND %s THEN NULL ELSE %s END AS %s",
+			                                  StaleBoundSql(stat, req.stale_bounds_type), stat, stat);
+			continue;
+		}
 		select_list += ", " + stat;
 	}
+	auto stats_table = StringUtil::Format("%s.ducklake_file_column_stats\n  WHERE column_id = %d AND table_id = %d",
+	                                      metadata_table_prefix, req.column_field_index, table_id.index);
+	if (stale_bounds) {
+		stats_table = StringUtil::Format("(SELECT *, %s AS stale_file FROM %s) AS stats",
+		                                 StaleBoundFileSql(metadata_table_prefix, table_id, req), stats_table);
+	}
 	return StringUtil::Format("  SELECT %s\n"
-	                          "  FROM %s.ducklake_file_column_stats\n"
-	                          "  WHERE column_id = %d AND table_id = %d\n",
-	                          select_list, metadata_table_prefix, req.column_field_index, table_id.index);
+	                          "  FROM %s\n",
+	                          select_list, stats_table);
 }
 
 string DuckLakeMetadataManager::GenerateStatsJoinList(const map<idx_t, CTERequirement> &requirements) {
@@ -2299,6 +2416,14 @@ string DuckLakeMetadataManager::GenerateFileListQuery(DuckLakeTableEntry &table,
 		entry->second.referenced_stats.insert("min_value");
 		entry->second.referenced_stats.insert("max_value");
 		entry->second.referenced_stats.insert("contains_nan");
+	}
+	if (!transaction.GetCatalog().SupportsV1_1Metadata()) {
+		for (auto &entry : filter_result.required_ctes) {
+			auto field = table.GetFieldId(FieldIndex(entry.first));
+			if (field && MayHaveStaleBounds(field->Type())) {
+				entry.second.stale_bounds_type = field->Type().id();
+			}
+		}
 	}
 	string query = GenerateCTESectionFromRequirements(filter_result.required_ctes, table_id, metadata_table_prefix);
 	// one join per column serves both the filter conditions and the runtime stats below
@@ -4930,14 +5055,15 @@ SELECT
     file_size_bytes,
     contains_null,
     contains_nan,
-    min_value,
-    max_value,
+    )" + TableColumnBoundSql("min_value", include_exactness) +
+	       ",\n    " + TableColumnBoundSql("max_value", include_exactness) + R"(,
     extra_stats)" +
 	       stats_arm_columns + R"(
 FROM {METADATA_CATALOG}.ducklake_table_stats
 LEFT JOIN {METADATA_CATALOG}.ducklake_table_column_stats
     USING (table_id)
-ORDER BY table_id ASC NULLS FIRST;
+)" + StaleTableBoundsJoin(include_exactness) +
+	       R"(ORDER BY table_id ASC NULLS FIRST;
 	)";
 }
 

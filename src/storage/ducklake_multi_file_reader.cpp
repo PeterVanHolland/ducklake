@@ -184,13 +184,13 @@ static bool CanSkipFileByRuntimeFilter(const DuckLakeFileListEntry &file_entry, 
 }
 
 static MultiFileColumnDefinition RowIdColumn() {
-	MultiFileColumnDefinition column("_ducklake_internal_row_id", LogicalType::BIGINT);
+	MultiFileColumnDefinition column(DuckLakeConstants::ROW_ID_COLUMN_NAME, LogicalType::BIGINT);
 	column.identifier = Value::INTEGER(MultiFileReader::ROW_ID_FIELD_ID);
 	return column;
 }
 
 static MultiFileColumnDefinition SnapshotIdColumn() {
-	MultiFileColumnDefinition column("_ducklake_internal_snapshot_id", LogicalType::BIGINT);
+	MultiFileColumnDefinition column(DuckLakeConstants::SNAPSHOT_ID_COLUMN_NAME, LogicalType::BIGINT);
 	column.identifier = Value::INTEGER(MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID);
 	return column;
 }

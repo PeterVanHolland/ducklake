@@ -59,8 +59,18 @@ public:
 
 unique_ptr<GlobalOperatorState> DuckLakeUpdate::GetGlobalOperatorState(ClientContext &context) const {
 	auto result = make_uniq<DuckLakeUpdateGlobalState>(context);
-	// init delete_op sink state
-	delete_op.sink_state = delete_op.GetGlobalSinkState(context);
+	if (!shared_delete) {
+		// init delete_op sink state
+		delete_op.sink_state = delete_op.GetGlobalSinkState(context);
+		return std::move(result);
+	}
+	lock_guard<mutex> guard(shared_delete->lock);
+	auto query = context.transaction.GetActiveQuery();
+	if (shared_delete->query != query) {
+		delete_op.sink_state = delete_op.GetGlobalSinkState(context);
+		shared_delete->finalized_count = 0;
+		shared_delete->query = query;
+	}
 	return std::move(result);
 }
 
@@ -156,6 +166,13 @@ OperatorFinalizeResultType DuckLakeUpdate::FinalExecute(ExecutionContext &contex
 
 OperatorFinalResultType DuckLakeUpdate::OperatorFinalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                                          OperatorFinalizeInput &input) const {
+	if (shared_delete) {
+		lock_guard<mutex> guard(shared_delete->lock);
+		if (++shared_delete->finalized_count < shared_delete->operator_count) {
+			// the last of the update operators finalizes the delete
+			return OperatorFinalResultType::FINISHED;
+		}
+	}
 	OperatorSinkFinalizeInput del_finalize_input {*delete_op.sink_state, input.interrupt_state};
 	auto result = delete_op.Finalize(pipeline, event, context, del_finalize_input);
 	if (result != SinkFinalizeType::READY) {
@@ -179,7 +196,8 @@ InsertionOrderPreservingMap<string> DuckLakeUpdate::ParamsToString() const {
 
 DuckLakeUpdate &DuckLakeUpdate::PlanUpdateOperator(ClientContext &context, PhysicalPlanGenerator &planner,
                                                    LogicalUpdate &op, PhysicalOperator &child_plan,
-                                                   DuckLakeCopyInput &copy_input) {
+                                                   DuckLakeCopyInput &copy_input,
+                                                   optional_ptr<PhysicalOperator> delete_op) {
 	for (auto &expr : op.expressions) {
 		if (expr->GetExpressionType() == ExpressionType::VALUE_DEFAULT) {
 			throw BinderException("SET DEFAULT is not yet supported for updates of a DuckLake table");
@@ -187,12 +205,14 @@ DuckLakeUpdate &DuckLakeUpdate::PlanUpdateOperator(ClientContext &context, Physi
 	}
 	auto &table = op.table.Cast<DuckLakeTableEntry>();
 
-	vector<idx_t> row_id_indexes;
-	for (idx_t i = 0; i < DuckLakeUpdate::DELETION_INFO_SIZE; i++) {
-		row_id_indexes.push_back(i);
+	if (!delete_op) {
+		vector<idx_t> row_id_indexes;
+		for (idx_t i = 0; i < DuckLakeUpdate::DELETION_INFO_SIZE; i++) {
+			row_id_indexes.push_back(i);
+		}
+		delete_op = DuckLakeDelete::PlanDelete(context, planner, table, child_plan, std::move(row_id_indexes),
+		                                       copy_input.encryption_key, false);
 	}
-	auto &delete_op = DuckLakeDelete::PlanDelete(context, planner, table, child_plan, std::move(row_id_indexes),
-	                                             copy_input.encryption_key, false);
 
 	// build update expressions (physical columns only, no partition cols, no casts)
 	vector<unique_ptr<Expression>> expressions(op.columns.size());
@@ -201,7 +221,7 @@ DuckLakeUpdate &DuckLakeUpdate::PlanUpdateOperator(ClientContext &context, Physi
 	}
 
 	auto &update_op =
-	    planner.Make<DuckLakeUpdate>(table, op.columns, child_plan, delete_op, expressions).Cast<DuckLakeUpdate>();
+	    planner.Make<DuckLakeUpdate>(table, op.columns, child_plan, *delete_op, expressions).Cast<DuckLakeUpdate>();
 
 	// set output types we use physical column types + BIGINT row_id
 	vector<LogicalType> update_output_types;
@@ -213,6 +233,21 @@ DuckLakeUpdate &DuckLakeUpdate::PlanUpdateOperator(ClientContext &context, Physi
 	return update_op;
 }
 
+unique_ptr<Expression> DuckLakeUpdate::CompareToLocalRowIds(ExpressionType comparison, const LogicalType &row_id_type,
+                                                            idx_t row_id_index) {
+	return BoundComparisonExpression::Create(comparison, make_uniq<BoundReferenceExpression>(row_id_type, row_id_index),
+	                                         make_uniq<BoundConstantExpression>(Value::BIGINT(NumericCast<int64_t>(
+	                                             DuckLakeConstants::TRANSACTION_LOCAL_ROW_ID_START))));
+}
+
+static vector<unique_ptr<Expression>> ColumnsWithoutRowId(PhysicalOperator &plan, idx_t row_id_index) {
+	vector<unique_ptr<Expression>> result;
+	for (idx_t col_idx = 0; col_idx < row_id_index; col_idx++) {
+		result.push_back(make_uniq<BoundReferenceExpression>(plan.types[col_idx], col_idx));
+	}
+	return result;
+}
+
 //! Whether the plan is the input of a MERGE action, which cannot hold a MERGE of its own
 static bool IsMergeActionInput(PhysicalOperator &plan) {
 	reference<PhysicalOperator> op = plan;
@@ -222,12 +257,39 @@ static bool IsMergeActionInput(PhysicalOperator &plan) {
 	return op.get().type == PhysicalOperatorType::MERGE_ACTION_SOURCE;
 }
 
+//! Plans a half of a split MERGE update, the first half writes the rows inserted in the transaction without row ids
+static PhysicalOperator &PlanMergeUpdateHalf(DuckLakeCatalog &catalog, ClientContext &context,
+                                             PhysicalPlanGenerator &planner, LogicalUpdate &op,
+                                             PhysicalOperator &child_plan, DuckLakeMergeUpdateSplit &split) {
+	auto &table = op.table.Cast<DuckLakeTableEntry>();
+	bool local_rows = !split.delete_op;
+	DuckLakeCopyInput copy_input(context, table);
+	if (!local_rows) {
+		copy_input.virtual_columns = InsertVirtualColumns::WRITE_ROW_ID;
+	}
+	auto &update_op = DuckLakeUpdate::PlanUpdateOperator(context, planner, op, child_plan, copy_input, split.delete_op);
+	update_op.shared_delete = split.shared_delete;
+	split.delete_op = update_op.delete_op;
+	auto &verified_plan = DuckLakeVerifyNotNull::Plan(planner, table, update_op);
+	if (!local_rows) {
+		return catalog.PlanUpdateInsert(context, planner, table, verified_plan, copy_input);
+	}
+	auto expressions = ColumnsWithoutRowId(verified_plan, update_op.row_id_index);
+	optional_ptr<PhysicalOperator> plan = verified_plan;
+	DuckLakeInsert::GenerateProjection(planner, expressions, plan);
+	return catalog.PlanUpdateInsert(context, planner, table, *plan, copy_input);
+}
+
 PhysicalOperator &DuckLakeCatalog::PlanUpdate(ClientContext &context, PhysicalPlanGenerator &planner, LogicalUpdate &op,
                                               PhysicalOperator &child_plan) {
 	if (op.return_chunk) {
 		throw BinderException("RETURNING clause not yet supported for updates of a DuckLake table");
 	}
 	auto &table = op.table.Cast<DuckLakeTableEntry>();
+	auto split = context.registered_state->Get<DuckLakeMergeUpdateSplit>(DuckLakeMergeUpdateSplit::KEY);
+	if (split && IsMergeActionInput(child_plan)) {
+		return PlanMergeUpdateHalf(*this, context, planner, op, child_plan, *split);
+	}
 
 	DuckLakeCopyInput copy_input(context, table);
 	copy_input.virtual_columns = InsertVirtualColumns::WRITE_ROW_ID;
@@ -242,14 +304,9 @@ PhysicalOperator &DuckLakeCatalog::PlanUpdate(ClientContext &context, PhysicalPl
 	auto row_id_index = update_op.row_id_index;
 	auto local_rows = make_uniq<MergeIntoOperator>();
 	local_rows->action_type = MergeActionType::MERGE_INSERT;
-	local_rows->condition = BoundComparisonExpression::Create(
-	    ExpressionType::COMPARE_GREATERTHANOREQUALTO,
-	    make_uniq<BoundReferenceExpression>(LogicalType::BIGINT, row_id_index),
-	    make_uniq<BoundConstantExpression>(
-	        Value::BIGINT(NumericCast<int64_t>(DuckLakeConstants::TRANSACTION_LOCAL_ROW_ID_START))));
-	for (idx_t col_idx = 0; col_idx < row_id_index; col_idx++) {
-		local_rows->expressions.push_back(make_uniq<BoundReferenceExpression>(verified_plan.types[col_idx], col_idx));
-	}
+	local_rows->condition = DuckLakeUpdate::CompareToLocalRowIds(ExpressionType::COMPARE_GREATERTHANOREQUALTO,
+	                                                             LogicalType::BIGINT, row_id_index);
+	local_rows->expressions = ColumnsWithoutRowId(verified_plan, row_id_index);
 	auto &local_input = PlanMergeActionSource(planner, verified_plan, MergeActionCondition::WHEN_MATCHED, *local_rows);
 	DuckLakeCopyInput local_copy_input(context, table);
 	local_rows->op = PlanUpdateInsert(context, planner, table, local_input, local_copy_input);

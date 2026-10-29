@@ -35,6 +35,7 @@ public:
 	                            const TransactionChangeInformation &transaction_changes,
 	                            const DuckLakeRetryConfig &retry_config) override;
 	using DuckLakeMetadataManager::Query;
+	unique_ptr<QueryResult> Query(DuckLakeSnapshot snapshot, string &query) override;
 	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query) override;
 	unique_ptr<QueryResult> ExecuteInTransaction(string &query) override;
 	unique_ptr<QueryResult> Query(string &query) override;

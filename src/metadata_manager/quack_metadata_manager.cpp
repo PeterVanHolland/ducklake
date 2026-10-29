@@ -53,6 +53,20 @@ unique_ptr<QueryResult> QuackMetadataManager::AttachMetadata(const string &attac
 	return std::move(result);
 }
 
+unique_ptr<QueryResult> QuackMetadataManager::Query(DuckLakeSnapshot snapshot, string &query) {
+	// the server commits each statement on its own, so another connection can expire the snapshot between the
+	// statements of this transaction, and the server transaction that reads it checks that it still exists
+	// a snapshot this transaction is about to commit does not exist yet, so only an expired one fails
+	SubstituteTransactionPlaceholders(snapshot, query);
+	query = StringUtil::Format(R"(SET VARIABLE ducklake_snapshot_check = (
+	SELECT CASE WHEN count(*) > 0 AND count(*) FILTER (snapshot_id = %llu) = 0
+		THEN error('Snapshot %llu of the DuckLake catalog has been expired by another connection') END
+	FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id >= %llu);
+%s;)",
+	                           snapshot.snapshot_id, snapshot.snapshot_id, snapshot.snapshot_id, query);
+	return ExecuteInTransaction(query);
+}
+
 unique_ptr<QueryResult> QuackMetadataManager::Execute(DuckLakeSnapshot snapshot, string &query) {
 	// the server commits each statement on its own, so the statements run in a server transaction
 	SubstituteTransactionPlaceholders(snapshot, query);

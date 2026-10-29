@@ -128,10 +128,11 @@ static set<PositionWithSnapshot> GetWrittenFileDeletes(ClientContext &context, c
 	file_data.encryption_key = encryption_key;
 	file_data.file_size_bytes = file.file_size_bytes;
 	ParquetFileScanner scanner(context, file_data, true);
+	auto &field_data = table.GetFieldData();
 	auto row_id_column =
-	    scanner.FindColumn(DuckLakeInsert::InternalColumnName(table.GetFieldData(), "_ducklake_internal_row_id"));
-	auto snapshot_column =
-	    scanner.FindColumn(DuckLakeInsert::InternalColumnName(table.GetFieldData(), "_ducklake_internal_snapshot_id"));
+	    scanner.FindColumn(DuckLakeInsert::InternalColumnName(field_data, MultiFileReader::ROW_ID_FIELD_ID));
+	auto snapshot_column = scanner.FindColumn(
+	    DuckLakeInsert::InternalColumnName(field_data, MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID));
 	if (!row_id_column.IsValid() || !snapshot_column.IsValid()) {
 		throw InternalException("Flushed file \"%s\" has no embedded row or snapshot ids", file.file_name);
 	}

@@ -230,6 +230,10 @@ public:
 	virtual bool IsRetryableCommitError(const string &) const {
 		return false;
 	}
+	//! Whether the commit error names one of these inlined tables after another attach dropped it
+	virtual bool IsDroppedInlinedTableError(const string &, const map<TableIndex, vector<Identifier>> &) {
+		return false;
+	}
 	//! Advice added to the error of a commit that failed for good
 	virtual string CommitErrorHint(const string &) const {
 		return string();

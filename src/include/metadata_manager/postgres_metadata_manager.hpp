@@ -44,6 +44,8 @@ public:
 	bool InlinedDeletionTableExists(const Identifier &table_name) override;
 	void MigrateInlinedDataTypes() override;
 	bool IsRetryableCommitError(const string &message) const override;
+	bool IsDroppedInlinedTableError(const string &message,
+	                                const map<TableIndex, vector<Identifier>> &inlined_tables) override;
 
 	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query) override;
 	unique_ptr<QueryResult> ExecuteDropInTransaction(string &query) override;

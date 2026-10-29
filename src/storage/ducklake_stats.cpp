@@ -156,11 +156,12 @@ void DuckLakeMissingField::AddStats(idx_t count, map<FieldIndex, DuckLakeColumnS
 		result.emplace(field_index, std::move(stats));
 		return;
 	}
-	// the statistics of a non NULL default are left unknown
+	// the statistics of a non NULL default are left unknown, variant statistics without fields already are
 	DuckLakeColumnStats unknown_stats(field_type);
-	if (unknown_stats.extra_stats) {
-		// extra statistics cannot be unknown, so the column gets no statistics
-		return;
+	if (unknown_stats.extra_stats && unknown_stats.extra_stats->GetStatsType() == DuckLakeExtraStatsType::GEOMETRY) {
+		auto &geo_stats = unknown_stats.extra_stats->Cast<DuckLakeColumnGeoStats>();
+		geo_stats.SetUnknownExtent();
+		geo_stats.SetUnknownTypes();
 	}
 	result.emplace(field_index, std::move(unknown_stats));
 }

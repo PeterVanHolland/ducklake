@@ -44,6 +44,9 @@ public:
 	bool InlinedDeletionTableExists(const Identifier &table_name) override;
 	void MigrateInlinedDataTypes() override;
 	bool IsRetryableCommitError(const string &message) const override;
+	optional_idx GetCommitTransactionId() override;
+	DuckLakeCommitOutcome GetCommitOutcome(optional_idx transaction_id,
+	                                       const DuckLakeRetryConfig &retry_config) override;
 
 	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query) override;
 	unique_ptr<QueryResult> ExecuteDropInTransaction(string &query) override;

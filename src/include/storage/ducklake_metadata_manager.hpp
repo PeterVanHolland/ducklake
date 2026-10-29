@@ -46,6 +46,8 @@ struct FlushedInlinedTableInfo;
 
 enum class SnapshotBound { LOWER_BOUND, UPPER_BOUND };
 
+enum class DuckLakeCommitOutcome : uint8_t { NOT_COMMITTED, COMMITTED, UNKNOWN };
+
 //! A check whether the live rows of an inlined data table hold a value of a column
 struct DuckLakeInlinedValueCheck {
 	Identifier table_name;
@@ -233,6 +235,14 @@ public:
 	//! Advice added to the error of a commit that failed for good
 	virtual string CommitErrorHint(const string &) const {
 		return string();
+	}
+	//! The id of the open metadata transaction, to learn the outcome of its COMMIT if that fails
+	virtual optional_idx GetCommitTransactionId() {
+		return optional_idx();
+	}
+	//! Whether a metadata transaction whose COMMIT failed was committed, as a remote server can still commit it
+	virtual DuckLakeCommitOutcome GetCommitOutcome(optional_idx, const DuckLakeRetryConfig &) {
+		return DuckLakeCommitOutcome::NOT_COMMITTED;
 	}
 
 	//! Run the commit retry loop with the metadata server handling retries.

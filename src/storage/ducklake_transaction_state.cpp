@@ -2770,6 +2770,8 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 	for (idx_t i = 0;; i++) {
 		bool can_retry;
 		bool retryable_metadata_error = false;
+		bool committing = false;
+		optional_idx commit_transaction_id;
 		auto attempt_changes = transaction_changes;
 		auto attempt_dropped_file_stats = dropped_file_stats;
 		try {
@@ -2828,12 +2830,26 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			}
 			flushed_inlined = !flushed_inlined_tables.empty();
 			context.flush_cache_if_pending();
-			context.commit_connection();
+			commit_transaction_id = context.get_commit_transaction_id();
 			new_entry_oids = std::move(commit_state.new_entry_oids);
+			committing = true;
+			context.commit_connection();
 			break;
 		} catch (std::exception &ex) {
 			ErrorData error(ex);
 			RollbackKeepingError(context);
+			auto outcome =
+			    committing ? context.get_commit_outcome(commit_transaction_id) : DuckLakeCommitOutcome::NOT_COMMITTED;
+			if (outcome == DuckLakeCommitOutcome::COMMITTED) {
+				// only the reply to the COMMIT was lost
+				break;
+			}
+			if (outcome == DuckLakeCommitOutcome::UNKNOWN) {
+				// the snapshot may reference the files
+				commit_outcome_unknown = true;
+				error.Throw(
+				    "Failed to commit DuckLake transaction, it may have been committed and its files are kept.\n");
+			}
 			retryable_metadata_error =
 			    retryable_metadata_error || context.is_retryable_metadata_error(error.RawMessage());
 			// an internal error is a bug that a retry cannot fix

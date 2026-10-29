@@ -30,6 +30,8 @@ public:
 		return true;
 	}
 	void ProbeServerCapabilities() override;
+	map<Identifier, vector<pair<Identifier, string>>>
+	GetMetadataTableColumns(const vector<Identifier> &table_names) override;
 	bool CanSkipSnapshotFetch(const TransactionChangeInformation &changes) const override;
 	void FlushChangesServerSide(DuckLakeTransaction &transaction, DuckLakeSnapshot transaction_snapshot,
 	                            const TransactionChangeInformation &transaction_changes,

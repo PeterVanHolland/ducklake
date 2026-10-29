@@ -620,6 +620,15 @@ public:
 	virtual void MigrateV10(bool from_dev1 = false);
 	virtual void MigrateV11();
 	static string GetSnapshotTagTableStatement();
+	//! Checks the columns of every metadata table against the tables that this catalog version creates
+	void ValidateMetadataTables();
+	//! The type that a metadata column created with the given type is read back as
+	virtual LogicalType StoredMetadataType(const LogicalType &type) {
+		return type;
+	}
+	//! Column names and types of the given metadata tables that exist
+	virtual map<Identifier, vector<pair<Identifier, string>>>
+	GetMetadataTableColumns(const vector<Identifier> &table_names);
 	//! Whether the catalog already has every metadata table and column of v1.1
 	bool HasV1_1Additions();
 	//! Renames inlined metadata columns to the prefixed variants, skipping already renamed tables

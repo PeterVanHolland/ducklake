@@ -54,6 +54,19 @@ string SQLiteMetadataManager::CommitErrorHint(const string &message) const {
 	       "time.\n";
 }
 
+LogicalType SQLiteMetadataManager::StoredMetadataType(const LogicalType &type) {
+	// sqlite_scanner reads the declared types by their affinity
+	switch (type.id()) {
+	case LogicalTypeId::BOOLEAN:
+		return LogicalType::BIGINT;
+	case LogicalTypeId::UUID:
+	case LogicalTypeId::TIMESTAMP_TZ:
+		return LogicalType::VARCHAR;
+	default:
+		return type;
+	}
+}
+
 string SQLiteMetadataManager::GetColumnTypeInternal(const LogicalType &column_type) {
 	switch (column_type.id()) {
 	case LogicalTypeId::FLOAT:

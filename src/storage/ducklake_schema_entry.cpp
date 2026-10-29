@@ -113,6 +113,12 @@ DuckLakeSchemaEntry::CreateTableExtended(CatalogTransaction transaction, BoundCr
                                          map<string, string> prebuilt_table_options) {
 	auto &duck_transaction = transaction.transaction->Cast<DuckLakeTransaction>();
 	auto &base_info = info.Base();
+	// bind the sort keys before a table this replaces is dropped
+	auto sort_data = std::move(prebuilt_sort_data);
+	if (!sort_data && !base_info.sort_keys.empty()) {
+		sort_data = DuckLakeTableEntry::BuildSortData(transaction.GetContext(), duck_transaction, *this,
+		                                              base_info.GetTableName(), base_info.columns, base_info.sort_keys);
+	}
 	// check if we have an existing entry with this name
 	if (!HandleCreateConflict(transaction, CatalogType::TABLE_ENTRY, base_info.GetTableName(), base_info)) {
 		return nullptr;
@@ -133,11 +139,8 @@ DuckLakeSchemaEntry::CreateTableExtended(CatalogTransaction transaction, BoundCr
 		table_entry->SetPartitionData(DuckLakeTableEntry::BuildPartitionData(
 		    duck_transaction, table_entry->GetColumns(), table_entry->GetFieldData(), base_info.partition_keys));
 	}
-	if (prebuilt_sort_data) {
-		table_entry->SetSortData(std::move(prebuilt_sort_data));
-	} else if (!base_info.sort_keys.empty()) {
-		table_entry->SetSortData(
-		    DuckLakeTableEntry::BuildSortData(duck_transaction, table_entry->GetColumns(), base_info.sort_keys));
+	if (sort_data) {
+		table_entry->SetSortData(std::move(sort_data));
 	}
 	if (!prebuilt_table_options.empty()) {
 		table_entry->SetTableOptions(std::move(prebuilt_table_options));

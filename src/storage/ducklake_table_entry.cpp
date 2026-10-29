@@ -884,6 +884,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 
 	RequireNextColumnId(transaction);
 	auto new_entry = make_uniq<DuckLakeTableEntry>(*this, table_info, LocalChangeType::ADD_COLUMN);
+	CheckSortStillBinds(context, *new_entry);
 
 	if (transaction.HasTransactionInlinedData(GetTableId())) {
 		auto &new_table = new_entry->Cast<DuckLakeTableEntry>();
@@ -909,7 +910,8 @@ void ColumnChangeInfo::DropField(const DuckLakeFieldId &field_id) {
 	}
 }
 
-unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &transaction, RemoveColumnInfo &info) {
+unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
+                                                        RemoveColumnInfo &info) {
 	auto create_info = GetInfo();
 	auto &table_info = create_info->Cast<CreateTableInfo>();
 	auto removed_index = GetColumnIndex(info.removed_column, info.if_column_exists);
@@ -945,10 +947,6 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 			    });
 		}
 	}
-	if (transaction.HasTransactionInlinedData(GetTableId())) {
-		transaction.RemoveColumnFromLocalInlinedData(GetTableId(), removed_index, field_id);
-	}
-
 	for (idx_t c_idx = 0; c_idx < table_info.constraints.size(); c_idx++) {
 		auto &constraint = table_info.constraints[c_idx];
 		if (constraint->type == ConstraintType::NOT_NULL) {
@@ -979,8 +977,13 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	auto change_info = make_uniq<ColumnChangeInfo>();
 	change_info->DropField(field_id);
 
-	return make_uniq<DuckLakeTableEntry>(*this, table_info, LocalChange::RemoveColumn(field_id.GetFieldIndex()),
-	                                     std::move(change_info));
+	auto new_entry = make_uniq<DuckLakeTableEntry>(
+	    *this, table_info, LocalChange::RemoveColumn(field_id.GetFieldIndex()), std::move(change_info));
+	CheckSortStillBinds(context, *new_entry);
+	if (transaction.HasTransactionInlinedData(GetTableId())) {
+		transaction.RemoveColumnFromLocalInlinedData(GetTableId(), removed_index, field_id);
+	}
+	return std::move(new_entry);
 }
 
 static void ExtractDefaultValue(const DuckLakeColumnData &col_data, DuckLakeColumnInfo &info) {
@@ -1158,7 +1161,21 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFiel
 	return make_uniq<DuckLakeFieldId>(std::move(column_data), source_id.Name(), target);
 }
 
-unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &transaction, ChangeColumnTypeInfo &info) {
+//! Bind sort keys as writes do, returning the error when they do not bind
+static string GetSortBindError(ClientContext &context, SchemaCatalogEntry &schema, const ColumnList &columns,
+                               const Identifier &table_name, const vector<OrderByNode> &orders) {
+	try {
+		auto binder = Binder::CreateBinder(context);
+		DuckLakeCompactor::BindSortOrders(*binder, schema, columns, table_name, TableIndex(0), orders);
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		return error.RawMessage();
+	}
+	return string();
+}
+
+unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
+                                                        ChangeColumnTypeInfo &info) {
 	if (info.column_path.size() > 1) {
 		throw NotImplementedException("Changing the type of a nested field is not yet supported");
 	}
@@ -1375,12 +1392,16 @@ static bool SortFieldsMatch(optional_ptr<DuckLakeSort> current_sort, const DuckL
 	return current_sort->fields == requested_sort.fields;
 }
 
-unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(DuckLakeTransaction &transaction, const ColumnList &columns,
+unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(ClientContext &context, DuckLakeTransaction &transaction,
+                                                           SchemaCatalogEntry &schema, const Identifier &table_name,
+                                                           const ColumnList &columns,
                                                            const vector<OrderByNode> &orders) {
 	if (orders.empty()) {
 		return nullptr;
 	}
-	ValidateSortExpressionColumns(columns, orders);
+	// bind the sort keys as writes do, so that a sort key no write can evaluate is not stored
+	auto binder = Binder::CreateBinder(context);
+	DuckLakeCompactor::BindSortOrders(*binder, schema, columns, table_name, TableIndex(0), orders);
 	auto sort_data = make_uniq<DuckLakeSort>();
 	sort_data->sort_id = transaction.GetLocalCatalogId();
 	for (idx_t order_node_idx = 0; order_node_idx < orders.size(); order_node_idx++) {
@@ -1399,7 +1420,9 @@ unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(DuckLakeTransaction &
 	return sort_data;
 }
 
-unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(DuckLakeTransaction &transaction, const ColumnList &columns,
+unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(ClientContext &context, DuckLakeTransaction &transaction,
+                                                           SchemaCatalogEntry &schema, const Identifier &table_name,
+                                                           const ColumnList &columns,
                                                            const vector<unique_ptr<ParsedExpression>> &sort_keys) {
 	// SORTED BY gives bare exprs; wrap each ASC/ORDER_DEFAULT (matches ALTER TABLE ... SET SORTED BY).
 	vector<OrderByNode> orders;
@@ -1407,10 +1430,11 @@ unique_ptr<DuckLakeSort> DuckLakeTableEntry::BuildSortData(DuckLakeTransaction &
 	for (auto &expr : sort_keys) {
 		orders.emplace_back(OrderType::ASCENDING, OrderByNullType::ORDER_DEFAULT, expr->Copy());
 	}
-	return BuildSortData(transaction, columns, orders);
+	return BuildSortData(context, transaction, schema, table_name, columns, orders);
 }
 
-unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &transaction, SetSortedByInfo &info) {
+unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, DuckLakeTransaction &transaction,
+                                                        SetSortedByInfo &info) {
 	auto create_info = GetInfo();
 	auto &table_info = create_info->Cast<CreateTableInfo>();
 
@@ -1418,7 +1442,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 		// RESET SORTED BY on a table that has no sort data
 		return nullptr;
 	}
-	auto sort_data = BuildSortData(transaction, GetColumns(), info.orders);
+	auto sort_data = BuildSortData(context, transaction, ParentSchema(), name, GetColumns(), info.orders);
 	if (sort_data && SortFieldsMatch(GetSortData(), *sort_data)) {
 		return nullptr;
 	}
@@ -1511,9 +1535,54 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 	return nullptr;
 }
 
+void DuckLakeTableEntry::CheckSortStillBinds(ClientContext &context, DuckLakeTableEntry &altered) {
+	auto sort_data = GetSortData();
+	auto altered_sort_data = altered.GetSortData();
+	if (!sort_data || !altered_sort_data) {
+		return;
+	}
+	auto orders = DuckLakeCompactor::ParseSortOrders(*sort_data);
+	auto altered_orders = DuckLakeCompactor::ParseSortOrders(*altered_sort_data);
+	for (idx_t i = 0; i < orders.size() && i < altered_orders.size(); i++) {
+		vector<OrderByNode> key;
+		key.push_back(std::move(orders[i]));
+		// a sort key that already does not bind, e.g. after its macro was dropped, does not hold up the ALTER
+		if (!GetSortBindError(context, ParentSchema(), GetColumns(), name, key).empty()) {
+			continue;
+		}
+		vector<OrderByNode> altered_key;
+		altered_key.push_back(std::move(altered_orders[i]));
+		auto error = GetSortBindError(context, altered.ParentSchema(), altered.GetColumns(), altered.name, altered_key);
+		if (!error.empty()) {
+			throw BinderException("Cannot alter table %s: a sort key of the table could no longer be computed (%s). "
+			                      "Use RESET SORTED BY first",
+			                      name, error);
+		}
+	}
+}
+
+//! ALTERs that can keep a sort key from binding (ADD and DROP COLUMN check before changing inlined data)
+static bool AlterCanUnbindSort(AlterTableType type) {
+	switch (type) {
+	case AlterTableType::RENAME_TABLE:
+	case AlterTableType::RENAME_COLUMN:
+	case AlterTableType::ALTER_COLUMN_TYPE:
+	case AlterTableType::ADD_FIELD:
+	case AlterTableType::REMOVE_FIELD:
+	case AlterTableType::RENAME_FIELD:
+		return true;
+	default:
+		return false;
+	}
+}
+
 unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(ClientContext &context, DuckLakeTransaction &transaction,
                                                    AlterTableInfo &info) {
 	auto result = AlterEntry(context, transaction, info);
+	if (result && AlterCanUnbindSort(info.alter_table_type)) {
+		// writes sort by the sort keys, so an ALTER of the table must not keep them from binding
+		CheckSortStillBinds(context, result->Cast<DuckLakeTableEntry>());
+	}
 	if (!result || !transaction.HasTransactionInlinedData(GetTableId())) {
 		return result;
 	}
@@ -1559,9 +1628,9 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterEntry(ClientContext &context, 
 	case AlterTableType::ADD_COLUMN:
 		return AlterTable(context, transaction, info.Cast<AddColumnInfo>());
 	case AlterTableType::REMOVE_COLUMN:
-		return AlterTable(transaction, info.Cast<RemoveColumnInfo>());
+		return AlterTable(context, transaction, info.Cast<RemoveColumnInfo>());
 	case AlterTableType::ALTER_COLUMN_TYPE:
-		return AlterTable(transaction, info.Cast<ChangeColumnTypeInfo>());
+		return AlterTable(context, transaction, info.Cast<ChangeColumnTypeInfo>());
 	case AlterTableType::ADD_FIELD:
 		return AlterTable(transaction, info.Cast<AddFieldInfo>());
 	case AlterTableType::REMOVE_FIELD:
@@ -1571,7 +1640,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterEntry(ClientContext &context, 
 	case AlterTableType::SET_DEFAULT:
 		return AlterTable(transaction, info.Cast<SetDefaultInfo>());
 	case AlterTableType::SET_SORTED_BY:
-		return AlterTable(transaction, info.Cast<SetSortedByInfo>());
+		return AlterTable(context, transaction, info.Cast<SetSortedByInfo>());
 	case AlterTableType::SET_TABLE_OPTIONS:
 		return AlterTable(context, transaction, info.Cast<SetTableOptionsInfo>());
 	case AlterTableType::RESET_TABLE_OPTIONS:

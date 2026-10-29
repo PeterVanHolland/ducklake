@@ -1,0 +1,266 @@
+# name: test/sql/sorted_table/sort_key_not_computable.test
+# description: A sort key that no write can evaluate is rejected when it is set, instead of failing every later write
+# group: [sorted_table]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/sort_key_not_computable', DATA_INLINING_ROW_LIMIT 5)
+
+statement ok
+CREATE TABLE lake.t (id INTEGER, s VARCHAR)
+
+statement ok
+INSERT INTO lake.t VALUES (1, 'a')
+
+statement ok
+CREATE TABLE lake.other (x INTEGER)
+
+statement ok
+INSERT INTO lake.other VALUES (1)
+
+statement error
+ALTER TABLE lake.t SET SORTED BY ((SELECT 1))
+----
+subqueries are not allowed
+
+statement error
+ALTER TABLE lake.t SET SORTED BY (sum(id))
+----
+aggregate functions are not allowed
+
+statement error
+ALTER TABLE lake.t SET SORTED BY (row_number() OVER ())
+----
+window functions are not allowed
+
+statement error
+ALTER TABLE lake.t SET SORTED BY (id + 'x')
+----
+Could not choose a best candidate function
+
+statement error
+CREATE TABLE lake.c (a INTEGER) SORTED BY ((SELECT 1))
+----
+subqueries are not allowed
+
+statement error
+CREATE TABLE lake.c SORTED BY (sum(a)) AS SELECT 1 AS a
+----
+aggregate functions are not allowed
+
+# the rejected sorts left nothing behind, so writes and the catalog-wide maintenance work
+statement ok
+INSERT INTO lake.t SELECT range, 'r' FROM range(10, 20)
+
+statement ok
+CHECKPOINT lake
+
+query I
+SELECT count(*) FROM lake.t
+----
+11
+
+# expressions that writes can evaluate are still accepted
+statement ok
+ALTER TABLE lake.t SET SORTED BY (lower(s) DESC, id + 1)
+
+statement ok
+INSERT INTO lake.t VALUES (2, 'B')
+
+# a type change that leaves the sort key unable to be computed is rejected too
+statement ok
+CREATE TABLE lake.u (n INTEGER, s VARCHAR)
+
+statement ok
+ALTER TABLE lake.u SET SORTED BY (chr(n))
+
+statement error
+ALTER TABLE lake.u ALTER COLUMN n TYPE BIGINT
+----
+sort key
+
+statement ok
+INSERT INTO lake.u VALUES (66, 'x')
+
+query II
+SELECT n, s FROM lake.u
+----
+66	x
+
+# also for a sort key that refers to the column by position or as a method receiver
+statement ok
+CREATE TABLE lake.p (n INTEGER) SORTED BY (chr(#1))
+
+statement error
+ALTER TABLE lake.p ALTER COLUMN n TYPE BIGINT
+----
+sort key
+
+statement ok
+CREATE TABLE lake.m (n INTEGER) SORTED BY (n.chr())
+
+statement error
+ALTER TABLE lake.m ALTER COLUMN n TYPE BIGINT
+----
+sort key
+
+# a sort key that no longer binds for another reason does not hold up the type change of a column
+statement ok
+CREATE MACRO lake.q_key(x) AS x
+
+statement ok
+CREATE TABLE lake.q (n INTEGER, s VARCHAR) SORTED BY (q_key(s))
+
+statement ok
+DROP MACRO lake.q_key
+
+statement ok
+ALTER TABLE lake.q ALTER COLUMN n TYPE BIGINT
+
+# but the other sort keys are still checked
+statement ok
+CREATE MACRO lake.v_key(x) AS x
+
+statement ok
+CREATE TABLE lake.v (n INTEGER) SORTED BY (v_key(n), chr(n))
+
+statement ok
+DROP MACRO lake.v_key
+
+statement error
+ALTER TABLE lake.v ALTER COLUMN n TYPE BIGINT
+----
+sort key
+
+# the other ALTERs of the columns are checked the same way
+statement ok
+CREATE TABLE lake.d (a INTEGER, b INTEGER) SORTED BY (chr(#2))
+
+statement error
+ALTER TABLE lake.d DROP COLUMN b
+----
+sort key
+
+statement ok
+CREATE TABLE lake.r (n INTEGER) SORTED BY (n.chr())
+
+statement error
+ALTER TABLE lake.r RENAME COLUMN n TO m
+----
+sort key
+
+statement ok
+CREATE TABLE lake.f (s STRUCT(a INTEGER, b INTEGER)) SORTED BY (struct_extract(s, 'a'))
+
+statement error
+ALTER TABLE lake.f DROP COLUMN s.a
+----
+sort key
+
+statement error
+ALTER TABLE lake.f RENAME COLUMN s.a TO c
+----
+sort key
+
+statement ok
+CREATE TABLE lake.g (s STRUCT(b INTEGER)) SORTED BY (struct_insert(s, a := 0))
+
+statement error
+ALTER TABLE lake.g ADD COLUMN s.a INTEGER
+----
+sort key
+
+# ALTERs that keep the sort keys computable still work
+statement ok
+ALTER TABLE lake.f ADD COLUMN s.c INTEGER
+
+statement ok
+INSERT INTO lake.f VALUES ({'a': 1, 'b': 2, 'c': 3})
+
+statement ok
+CREATE TABLE lake.r2 (a INTEGER) SORTED BY (r2.a.chr())
+
+statement error
+ALTER TABLE lake.r2 RENAME TO renamed
+----
+sort key
+
+statement ok
+ALTER TABLE lake.u RENAME TO u2
+
+statement ok
+INSERT INTO lake.u2 VALUES (67, 'y')
+
+# a refused ALTER leaves the rows inlined in the transaction as they were
+statement ok
+SET default_transaction_invalidation_policy='SYNTACTIC_ERRORS_DO_NOT_INVALIDATE'
+
+statement ok
+CREATE TABLE lake.l (a INTEGER, b INTEGER) SORTED BY (l.struct_insert(c := 0), #2)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO lake.l VALUES (1, 2)
+
+statement error
+ALTER TABLE lake.l ADD COLUMN c INTEGER DEFAULT 99
+----
+sort key
+
+statement error
+ALTER TABLE lake.l DROP COLUMN b
+----
+sort key
+
+statement ok
+COMMIT
+
+query II
+SELECT * FROM lake.l
+----
+1	2
+
+statement ok
+CREATE TABLE lake.keep (a INTEGER)
+
+statement ok
+INSERT INTO lake.keep VALUES (42)
+
+statement ok
+BEGIN
+
+statement error
+CREATE OR REPLACE TABLE lake.keep (a INTEGER) SORTED BY (sum(a))
+----
+aggregate functions are not allowed
+
+statement ok
+COMMIT
+
+query I
+SELECT * FROM lake.keep
+----
+42
+
+# as for a CHECK constraint, IF NOT EXISTS still reports a sort key that does not bind
+statement error
+CREATE TABLE IF NOT EXISTS lake.keep (a INTEGER) SORTED BY (sum(a))
+----
+aggregate functions are not allowed
+
+statement error
+CREATE TABLE IF NOT EXISTS lake.keep SORTED BY (sum(a)) AS SELECT 1 AS a
+----
+aggregate functions are not allowed
+
+statement ok
+CREATE TABLE IF NOT EXISTS lake.keep (a INTEGER) SORTED BY (a)

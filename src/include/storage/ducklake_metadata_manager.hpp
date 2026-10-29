@@ -593,12 +593,14 @@ public:
 	static string InsertNewSchema(const DuckLakeSnapshot &snapshot, const set<TableIndex> &table_ids);
 
 	virtual vector<DuckLakeSnapshotInfo> GetAllSnapshots(const string &filter = string());
-	//! The live snapshot tags, with the times of their snapshots if requested
-	virtual vector<DuckLakeSnapshotTagInfo> GetSnapshotTags(bool with_snapshot_time = true);
-	//! The snapshot of the live snapshot tag with the name, if any
-	optional_idx GetTaggedSnapshot(const string &name);
+	//! The snapshot tags the transaction sees, with the times of their snapshots if requested
+	vector<DuckLakeSnapshotTagInfo> GetSnapshotTags(bool with_snapshot_time = true);
+	//! The snapshot tags that are live at the snapshot, with the times of their snapshots if requested
+	virtual vector<DuckLakeSnapshotTagInfo> GetSnapshotTagsAt(idx_t snapshot_id, bool with_snapshot_time = true);
+	//! The snapshot of the tag with the name that is live at the snapshot, if any
+	optional_idx GetTaggedSnapshot(const string &name, idx_t visible_snapshot_id);
 	//! The snapshot id of a VERSION value, a snapshot id or the name of a snapshot tag
-	idx_t ResolveSnapshotVersion(const Value &version);
+	idx_t ResolveSnapshotVersion(const Value &version, idx_t visible_snapshot_id);
 	static string WriteSnapshotTagChanges(const case_insensitive_map_t<DuckLakeSnapshotTagInfo> &created,
 	                                      const case_insensitive_map_t<DuckLakeSnapshotTagInfo> &dropped);
 	//! Ends the row of a committed tag at the snapshot of the commit

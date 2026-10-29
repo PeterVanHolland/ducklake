@@ -36,6 +36,7 @@
       "paths": [
         "test/sql/tags/tags_basic.test",
         "test/sql/tags/tags_conflict.test",
+        "test/sql/tags/tags_open_transaction_read.test",
         "test/sql/tags/tags_expire.test",
         "test/sql/tags/tags_expire_conflict.test",
         "test/sql/tags/tags_expire_dropped.test",

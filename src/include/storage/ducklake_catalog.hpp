@@ -200,6 +200,8 @@ public:
 	DuckLakeConfigOptionUndo SetConfigOption(const DuckLakeConfigOption &option);
 	DuckLakeConfigOptionUndo ResetConfigOption(const DuckLakeConfigOption &option);
 	void UndoConfigOption(const DuckLakeConfigOptionUndo &undo);
+	//! Makes a write the committed value of its option
+	void CommitConfigOption(const DuckLakeConfigOptionUndo &undo);
 	//! Pending table options take precedence
 	bool TryGetConfigOption(const string &option, string &result, SchemaIndex schema_id, TableIndex table_id,
 	                        optional_ptr<const map<string, string>> table_options = nullptr) const;
@@ -464,6 +466,10 @@ private:
 	mutable mutex config_lock;
 	//! The DuckLake options
 	DuckLakeOptions options;
+	DuckLakeConfigOptionUndo WriteConfigOption(const DuckLakeConfigOption &option, bool reset);
+	//! The number of config option writes, and the history of every option with uncommitted writes
+	idx_t config_option_write_count = 0;
+	unordered_map<string, DuckLakeConfigOptionHistory> config_option_history;
 	//! The path separator
 	string separator = "/";
 	//! A unique tracker for catalog changes in uncommitted transactions.

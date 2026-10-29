@@ -1,0 +1,173 @@
+# name: test/sql/settings/set_option_rollback_shared_value.test
+# description: a rolled back set_option only undoes its own write of the cached option
+# group: [settings]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/set_option_rollback_shared_value', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CALL lake.set_option('parquet_compression', 'uncompressed')
+
+statement ok
+CREATE TABLE lake.t (i INTEGER)
+
+statement ok
+CREATE TABLE lake.u (i INTEGER)
+
+statement ok
+CREATE TABLE lake.v (i INTEGER)
+
+statement ok
+CREATE TABLE lake.w (i INTEGER)
+
+statement ok
+CREATE TABLE lake.p (i INTEGER)
+
+# another transaction commits the same value before the rollback
+statement ok a
+BEGIN
+
+statement ok a
+CALL lake.set_option('parquet_compression', 'gzip', table_name => 't')
+
+statement ok b
+CALL lake.set_option('parquet_compression', 'gzip', table_name => 't')
+
+statement ok a
+ROLLBACK
+
+statement ok
+INSERT INTO lake.t VALUES (1)
+
+query T
+SELECT DISTINCT compression FROM parquet_metadata('{DATA_PATH}/set_option_rollback_shared_value/main/t/**')
+----
+GZIP
+
+# both transactions roll back, the first one first
+statement ok a
+BEGIN
+
+statement ok a
+CALL lake.set_option('parquet_compression', 'zstd', table_name => 'u')
+
+statement ok b
+BEGIN
+
+statement ok b
+CALL lake.set_option('parquet_compression', 'snappy', table_name => 'u')
+
+statement ok a
+ROLLBACK
+
+statement ok b
+ROLLBACK
+
+statement ok
+INSERT INTO lake.u VALUES (1)
+
+query T
+SELECT DISTINCT compression FROM parquet_metadata('{DATA_PATH}/set_option_rollback_shared_value/main/u/**')
+----
+UNCOMPRESSED
+
+# a transaction writes twice before another one writes, then both roll back
+statement ok a
+BEGIN
+
+statement ok a
+CALL lake.set_option('parquet_compression', 'gzip', table_name => 'v')
+
+statement ok a
+CALL lake.set_option('parquet_compression', 'zstd', table_name => 'v')
+
+statement ok b
+BEGIN
+
+statement ok b
+CALL lake.set_option('parquet_compression', 'snappy', table_name => 'v')
+
+statement ok a
+ROLLBACK
+
+statement ok b
+ROLLBACK
+
+statement ok
+INSERT INTO lake.v VALUES (1)
+
+query T
+SELECT DISTINCT compression FROM parquet_metadata('{DATA_PATH}/set_option_rollback_shared_value/main/v/**')
+----
+UNCOMPRESSED
+
+# three transactions write, the first rolls back, the last commits, then the second rolls back
+statement ok a
+BEGIN
+
+statement ok a
+CALL lake.set_option('parquet_compression', 'gzip', table_name => 'w')
+
+statement ok b
+BEGIN
+
+statement ok b
+CALL lake.set_option('parquet_compression', 'zstd', table_name => 'w')
+
+statement ok c
+BEGIN
+
+statement ok c
+CALL lake.set_option('parquet_compression', 'snappy', table_name => 'w')
+
+statement ok a
+ROLLBACK
+
+statement ok c
+COMMIT
+
+statement ok b
+ROLLBACK
+
+statement ok
+INSERT INTO lake.w VALUES (1)
+
+query T
+SELECT DISTINCT compression FROM parquet_metadata('{DATA_PATH}/set_option_rollback_shared_value/main/w/**')
+----
+SNAPPY
+
+# the first write commits while a later one is pending, then the later one rolls back
+statement ok a
+BEGIN
+
+statement ok a
+CALL lake.set_option('parquet_compression', 'gzip', table_name => 'p')
+
+statement ok b
+BEGIN
+
+statement ok b
+CALL lake.set_option('parquet_compression', 'zstd', table_name => 'p')
+
+statement ok a
+COMMIT
+
+statement ok b
+ROLLBACK
+
+statement ok
+INSERT INTO lake.p VALUES (1)
+
+query T
+SELECT DISTINCT compression FROM parquet_metadata('{DATA_PATH}/set_option_rollback_shared_value/main/p/**')
+----
+GZIP

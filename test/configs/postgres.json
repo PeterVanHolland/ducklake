@@ -98,6 +98,12 @@
       ]
     },
     {
+      "reason": "A RESET and a set_option of the same option in two open transactions wait on the Postgres row lock of that option",
+      "paths": [
+        "test/sql/settings/set_option_rollback_shared_reset.test"
+      ]
+    },
+    {
       "reason": "Current transaction is aborted",
       "paths": [
         "test/sql/deletion_inlining/test_deletion_inlining_concurrent.test"

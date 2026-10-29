@@ -839,9 +839,9 @@ void DuckLakeTransaction::Commit() {
 		// the retried commit wrote its options last, also where another transaction set them meanwhile
 		for (auto &change : config_option_undo) {
 			if (change.reset) {
-				ducklake_catalog.ResetConfigOption(change.option);
+				ducklake_catalog.CommitConfigOption(ducklake_catalog.ResetConfigOption(change.option));
 			} else {
-				ducklake_catalog.SetConfigOption(change.option);
+				ducklake_catalog.CommitConfigOption(ducklake_catalog.SetConfigOption(change.option));
 			}
 		}
 		rewrote_config_options = false;
@@ -849,6 +849,9 @@ void DuckLakeTransaction::Commit() {
 	FlushNameMapCacheInvalidations();
 	connection.reset();
 	state->local_changes.Clear();
+	for (auto &change : config_option_undo) {
+		ducklake_catalog.CommitConfigOption(change);
+	}
 	config_option_undo.clear();
 	SetRequiresNewInlinedTable(false);
 	ClearSchemaCachePins();
@@ -1738,7 +1741,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	};
 	context.set_table_options = [&](const vector<DuckLakeConfigOption> &options) {
 		for (auto &option : options) {
-			ducklake_catalog.SetConfigOption(option);
+			ducklake_catalog.CommitConfigOption(ducklake_catalog.SetConfigOption(option));
 		}
 	};
 	context.invalidate_table_stats_cache = [&](idx_t next_file_id, TableIndex table_id) {

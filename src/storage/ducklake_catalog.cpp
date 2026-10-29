@@ -1214,52 +1214,97 @@ static option_map_t &GetOptionScope(DuckLakeOptions &options, const DuckLakeConf
 	return options.config_options;
 }
 
-static DuckLakeConfigOptionUndo GetConfigOptionUndo(const option_map_t &scope, const DuckLakeConfigOption &option) {
+static string ConfigOptionHistoryKey(const DuckLakeConfigOption &option) {
+	if (option.table_id.IsValid()) {
+		return "table " + to_string(option.table_id.index) + " " + option.option.key;
+	}
+	if (option.schema_id.IsValid()) {
+		return "schema " + to_string(option.schema_id.index) + " " + option.option.key;
+	}
+	return "global " + option.option.key;
+}
+
+DuckLakeConfigOptionUndo DuckLakeCatalog::WriteConfigOption(const DuckLakeConfigOption &option, bool reset) {
+	lock_guard<mutex> guard(config_lock);
+	auto &scope = GetOptionScope(options, option);
+	auto &key = option.option.key;
+	auto &history = config_option_history[ConfigOptionHistoryKey(option)];
+	if (history.writes.empty()) {
+		auto entry = scope.find(key);
+		history.base_set = entry != scope.end();
+		history.base_value = history.base_set ? entry->second : string();
+	}
 	DuckLakeConfigOptionUndo undo;
 	undo.option = option;
-	auto entry = scope.find(option.option.key);
-	undo.was_set = entry != scope.end();
-	if (undo.was_set) {
-		undo.previous_value = entry->second;
+	undo.write = ++config_option_write_count;
+	undo.reset = reset;
+	history.writes.push_back({undo.write, !reset, option.option.value});
+	if (reset) {
+		scope.erase(key);
+	} else {
+		scope[key] = option.option.value;
 	}
 	return undo;
 }
 
 DuckLakeConfigOptionUndo DuckLakeCatalog::SetConfigOption(const DuckLakeConfigOption &option) {
-	lock_guard<mutex> guard(config_lock);
-	auto &scope = GetOptionScope(options, option);
-	auto undo = GetConfigOptionUndo(scope, option);
-	scope[option.option.key] = option.option.value;
-	return undo;
+	return WriteConfigOption(option, false);
 }
 
 DuckLakeConfigOptionUndo DuckLakeCatalog::ResetConfigOption(const DuckLakeConfigOption &option) {
-	lock_guard<mutex> guard(config_lock);
-	auto &scope = GetOptionScope(options, option);
-	auto undo = GetConfigOptionUndo(scope, option);
-	undo.reset = true;
-	scope.erase(option.option.key);
-	return undo;
+	return WriteConfigOption(option, true);
+}
+
+static vector<DuckLakeConfigOptionHistory::Write>::iterator FindConfigOptionWrite(DuckLakeConfigOptionHistory &history,
+                                                                                  idx_t write) {
+	return std::find_if(history.writes.begin(), history.writes.end(),
+	                    [&](const DuckLakeConfigOptionHistory::Write &entry) { return entry.write == write; });
 }
 
 void DuckLakeCatalog::UndoConfigOption(const DuckLakeConfigOptionUndo &undo) {
 	lock_guard<mutex> guard(config_lock);
+	auto entry = config_option_history.find(ConfigOptionHistoryKey(undo.option));
+	if (entry == config_option_history.end()) {
+		// a committed write replaced this one
+		return;
+	}
+	auto &history = entry->second;
+	auto write = FindConfigOptionWrite(history, undo.write);
+	if (write == history.writes.end()) {
+		return;
+	}
+	history.writes.erase(write);
+	// the option holds the latest write that is left, or the committed value
 	auto &scope = GetOptionScope(options, undo.option);
-	auto entry = scope.find(undo.option.option.key);
-	if (undo.reset) {
-		if (entry == scope.end() && undo.was_set) {
-			scope[undo.option.option.key] = undo.previous_value;
-		}
-		return;
-	}
-	if (entry == scope.end() || entry->second != undo.option.option.value) {
-		// another transaction has set the option since - leave its value in place
-		return;
-	}
-	if (undo.was_set) {
-		entry->second = undo.previous_value;
+	auto &key = undo.option.option.key;
+	auto set = history.writes.empty() ? history.base_set : history.writes.back().set;
+	if (set) {
+		scope[key] = history.writes.empty() ? history.base_value : history.writes.back().value;
 	} else {
-		scope.erase(entry);
+		scope.erase(key);
+	}
+	if (history.writes.empty()) {
+		config_option_history.erase(entry);
+	}
+}
+
+void DuckLakeCatalog::CommitConfigOption(const DuckLakeConfigOptionUndo &undo) {
+	lock_guard<mutex> guard(config_lock);
+	auto entry = config_option_history.find(ConfigOptionHistoryKey(undo.option));
+	if (entry == config_option_history.end()) {
+		return;
+	}
+	auto &history = entry->second;
+	auto write = FindConfigOptionWrite(history, undo.write);
+	if (write == history.writes.end()) {
+		return;
+	}
+	// the writes before a committed write can no longer come back
+	history.base_set = write->set;
+	history.base_value = write->value;
+	history.writes.erase(history.writes.begin(), write + 1);
+	if (history.writes.empty()) {
+		config_option_history.erase(entry);
 	}
 }
 

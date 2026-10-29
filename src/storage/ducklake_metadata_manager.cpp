@@ -6,6 +6,7 @@
 #include "storage/ducklake_transaction.hpp"
 #include "storage/ducklake_transaction_changes.hpp"
 #include "storage/ducklake_transaction_manager.hpp"
+#include "storage/ducklake_transaction_state.hpp"
 #include "storage/ducklake_variant_stats.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "common/ducklake_util.hpp"
@@ -377,20 +378,15 @@ UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '0.2' WHERE key = 'versi
 }
 
 void DuckLakeMetadataManager::ExecuteMigration(string migrate_query, bool allow_failures, const string &from_version,
-                                               const string &to_version) {
-	if (allow_failures) {
-		migrate_query = StringUtil::Replace(migrate_query, "{IF_NOT_EXISTS}", "IF NOT EXISTS");
-		migrate_query = StringUtil::Replace(migrate_query, "{IF_EXISTS}", "IF EXISTS");
-		migrate_query =
-		    StringUtil::Replace(migrate_query, "{WHERE_EMPTY}",
-		                        "WHERE NOT EXISTS (SELECT 1 FROM {METADATA_CATALOG}.ducklake_schema_versions);");
-	} else {
-		// All our place-holders are empty, so if any of these exist it will fail
-		migrate_query = StringUtil::Replace(migrate_query, "{IF_NOT_EXISTS}", "");
-		migrate_query = StringUtil::Replace(migrate_query, "{IF_EXISTS}", "");
-		migrate_query = StringUtil::Replace(migrate_query, "{WHERE_EMPTY}", "");
-	}
-	auto result = Execute(migrate_query);
+                                               const string &to_version, optional_ptr<DuckLakeSnapshot> snapshot) {
+	// All our place-holders are empty without allow_failures, so if any of these exist it will fail
+	string where_empty = "WHERE NOT EXISTS (SELECT 1 FROM {METADATA_CATALOG}.ducklake_schema_versions);";
+	migrate_query =
+	    DuckLakeUtil::ReplacePlaceholders(migrate_query, {{"{IF_NOT_EXISTS}", allow_failures ? "IF NOT EXISTS" : ""},
+	                                                      {"{IF_EXISTS}", allow_failures ? "IF EXISTS" : ""},
+	                                                      {"{WHERE_EMPTY}", allow_failures ? where_empty : ""}});
+	// with a snapshot the statements run as one commit, also on catalogs that commit each statement on its own
+	auto result = snapshot ? Execute(*snapshot, migrate_query) : Execute(migrate_query);
 	result->ThrowIfError("Failed to migrate DuckLake from v" + from_version + " to v" + to_version + ":");
 }
 
@@ -629,6 +625,29 @@ AND ((%s AND (%s OR %s)) OR ((%s OR %s) AND %s));)",
 	result->ThrowIfError("Failed to clear the bounds of retyped columns while migrating to v1.1: ");
 }
 
+string DuckLakeMetadataManager::MigrateTableStatsSql(DuckLakeSnapshot snapshot, bool read_exactness,
+                                                     bool write_stats_exactness) {
+	DuckLakeCommitContext context;
+	context.supports_v1_1_metadata = true;
+	context.query_metadata = [&](string query) {
+		return Query(query);
+	};
+	context.query_metadata_with_snapshot = [&](DuckLakeSnapshot query_snapshot, string query) {
+		return Query(query_snapshot, query);
+	};
+	context.cast_inlined_column = [&](const string &column, const LogicalType &type) {
+		return CastColumnToTarget(column, type);
+	};
+	auto committed_stats = ParseGlobalTableStats(*Query(GlobalTableStatsQuery(read_exactness)));
+	string batch;
+	auto tables_with_files = GetTablesWithLiveDataFiles();
+	for (auto &stats : DuckLakeTransactionState::RecomputeMigratedTableStats(
+	         committed_stats, tables_with_files, snapshot, read_exactness, write_stats_exactness, context)) {
+		batch += UpdateGlobalTableStatsSql(stats, write_stats_exactness);
+	}
+	return batch;
+}
+
 void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	// rename first so a conflict aborts before the version is updated, dev catalogs may already be renamed
 	MigrateInlinedColumnNames(from_dev1);
@@ -638,7 +657,19 @@ void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	MigrateInlinedDataTypes();
 	// DDL locks the metadata tables exclusively on Postgres, skip it when a dev catalog has every addition
 	auto has_additions = from_dev1 && HasV1_1Additions();
-	ExecuteMigration(V1_1MigrationQuery(has_additions), from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");
+	auto latest = Query(GetLatestSnapshotQuery());
+	latest->ThrowIfError("Failed to read the latest snapshot while migrating to v1.1: ");
+	auto snapshot = ParseSnapshot(*latest);
+	if (!snapshot) {
+		// LCOV_EXCL_START
+		throw InvalidInputException("No snapshot found in DuckLake");
+		// LCOV_EXCL_STOP
+	}
+	// 1.0 did not record whether bounds are exact, so its flags stay unknown
+	auto stats_query = MigrateTableStatsSql(*snapshot, has_additions, from_dev1);
+	// the stats are written in one commit with the version, so a failure leaves both to the next migration
+	ExecuteMigration(V1_1MigrationQuery(has_additions) + stats_query, from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1",
+	                 snapshot.get());
 }
 
 string DuckLakeMetadataManager::GetSnapshotTagTableStatement() {
@@ -1040,38 +1071,45 @@ idx_t DuckLakeMetadataManager::GetNetInlinedRowCount(const Identifier &inlined_t
 	// LCOV_EXCL_STOP
 }
 
-string DuckLakeMetadataManager::GetTableColumnSchemaSql(TableIndex table_id) {
+//! The filter on one table, or no filter
+static string TableFilter(optional_idx table_id, const string &column, const string &suffix) {
+	if (!table_id.IsValid()) {
+		return string();
+	}
+	return StringUtil::Format("%s = %d%s", column, table_id.GetIndex(), suffix);
+}
+
+string DuckLakeMetadataManager::GetTableColumnSchemaSql(optional_idx table_id) {
 	// Return the full flattened schema: top-level roots (parent_column IS NULL) and every nested leaf, each with its
 	// own column_id (== FieldIndex) and its own leaf column_type. Callers distinguish roots from leaves via
 	// parent_column. column_order == column_id for every row, so the ordering stays deterministic.
 	return StringUtil::Format(R"(
-SELECT column_id, column_name, column_type, parent_column
+SELECT column_id, column_name, column_type, parent_column, table_id, initial_default
 FROM {METADATA_CATALOG}.ducklake_column
-WHERE table_id = %d
-  AND {SNAPSHOT_ID} >= begin_snapshot
+WHERE %s{SNAPSHOT_ID} >= begin_snapshot
   AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
-ORDER BY column_order ASC)",
-	                          table_id.index);
+ORDER BY table_id ASC, column_order ASC)",
+	                          TableFilter(table_id, "table_id", "\n  AND "));
 }
 
-string DuckLakeMetadataManager::GetInlinedTableNamesSql(TableIndex table_id) {
+string DuckLakeMetadataManager::GetInlinedTableNamesSql(optional_idx table_id) {
+	auto table_filter = TableFilter(table_id, "table_id", "");
 	return StringUtil::Format(R"(
-SELECT DISTINCT table_name
-FROM {METADATA_CATALOG}.ducklake_inlined_data_tables
-WHERE table_id = %d)",
-	                          table_id.index);
+SELECT DISTINCT table_name, table_id
+FROM {METADATA_CATALOG}.ducklake_inlined_data_tables%s)",
+	                          table_filter.empty() ? table_filter : "\nWHERE " + table_filter);
 }
 
-string DuckLakeMetadataManager::GetInlinedTablesBeforeSchemaChangeSql(TableIndex table_id) {
+string DuckLakeMetadataManager::GetInlinedTablesBeforeSchemaChangeSql(optional_idx table_id) {
 	return StringUtil::Format(R"(
-SELECT table_name
-FROM {METADATA_CATALOG}.ducklake_inlined_data_tables
-WHERE table_id = %d AND schema_version < (
-	SELECT MAX(schema_version)
-	FROM {METADATA_CATALOG}.ducklake_schema_versions
-	WHERE table_id = %d AND begin_snapshot <= {SNAPSHOT_ID}
+SELECT idt.table_name
+FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
+WHERE %sidt.schema_version < (
+	SELECT MAX(sv.schema_version)
+	FROM {METADATA_CATALOG}.ducklake_schema_versions sv
+	WHERE sv.table_id = idt.table_id AND sv.begin_snapshot <= {SNAPSHOT_ID}
 ))",
-	                          table_id.index, table_id.index);
+	                          TableFilter(table_id, "idt.table_id", " AND "));
 }
 
 string DuckLakeMetadataManager::GetInlinedTableColumnsSql(optional_idx table_id) {
@@ -1097,7 +1135,7 @@ WHERE col.begin_snapshot <= inlined.snapshot_id AND (col.end_snapshot IS NULL OR
 }
 
 identifier_set_t DuckLakeMetadataManager::GetInlinedTableNames(TableIndex table_id) {
-	auto result = Query(GetInlinedTableNamesSql(table_id));
+	auto result = Query(GetInlinedTableNamesSql(table_id.index));
 	result->ThrowIfError("Failed to get inlined data tables from DuckLake: ");
 	identifier_set_t table_names;
 	for (auto &row : *result) {
@@ -4189,10 +4227,9 @@ string DuckLakeMetadataManager::ReadInlinedDataAggregatesSql(const Identifier &i
 	return StringUtil::Format(R"(
 SELECT %s
 FROM {METADATA_CATALOG}.%s
-WHERE {SNAPSHOT_ID} >= %s AND ({SNAPSHOT_ID} < %s OR %s IS NULL);
+WHERE {SNAPSHOT_ID} >= %s;
 )",
-	                          select_list, inlined_table_name, col_names.begin_snapshot, col_names.end_snapshot,
-	                          col_names.end_snapshot);
+	                          select_list, inlined_table_name, col_names.begin_snapshot);
 }
 
 string DuckLakeMetadataManager::ReadFileColumnStatsForTableSql(TableIndex table_id, bool include_exactness) {

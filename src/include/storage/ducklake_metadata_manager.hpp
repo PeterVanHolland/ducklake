@@ -396,9 +396,11 @@ public:
 	//! The rows that are stored, deleted ones included, and the rows that are live
 	static string GetInlinedRowCountsSql(const Identifier &inlined_table_name,
 	                                     const DuckLakeInlinedColNames &col_names);
-	static string GetTableColumnSchemaSql(TableIndex table_id);
-	static string GetInlinedTableNamesSql(TableIndex table_id);
-	static string GetInlinedTablesBeforeSchemaChangeSql(TableIndex table_id);
+	//! The columns of every table or of one at the snapshot, by table
+	static string GetTableColumnSchemaSql(optional_idx table_id = optional_idx());
+	static string GetInlinedTableNamesSql(optional_idx table_id = optional_idx());
+	//! The inlined data tables written before the latest schema change of their table
+	static string GetInlinedTablesBeforeSchemaChangeSql(optional_idx table_id = optional_idx());
 	//! The top-level columns of each inlined data table at the schema version of that table
 	static string GetInlinedTableColumnsSql(optional_idx table_id = optional_idx());
 	//! The inserts of the given rows, in batches
@@ -577,6 +579,7 @@ public:
 	                                                           const vector<string> &columns_to_read);
 	//! SQL builders for the stats-refresh queries used by DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite.
 	//! Caller substitutes `{METADATA_CATALOG}` / `{SNAPSHOT_ID}` and executes via the commit context's executor.
+	//! The aggregates cover every row stored at the snapshot, including deleted ones.
 	static string ReadInlinedDataAggregatesSql(const Identifier &inlined_table_name, const string &select_list,
 	                                           const DuckLakeInlinedColNames &col_names);
 	//! The column stats of the data files committed before the snapshot's next file id
@@ -632,11 +635,13 @@ public:
 	void MigrateRenamedFieldDefaults();
 	//! Clears the bounds that older versions may have stored in the type of a file or of an earlier column type
 	void MigrateRetypedBounds();
+	//! The SQL that recomputes the table stats, which older versions could leave narrower or wider than the live rows
+	string MigrateTableStatsSql(DuckLakeSnapshot snapshot, bool read_exactness, bool write_stats_exactness);
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
 	virtual void MigrateInlinedDataTypes() {
 	}
 	virtual void ExecuteMigration(string migrate_query, bool allow_failures, const string &from_version,
-	                              const string &to_version);
+	                              const string &to_version, optional_ptr<DuckLakeSnapshot> snapshot = nullptr);
 
 	string LoadPath(string path);
 	string StorePath(string path);

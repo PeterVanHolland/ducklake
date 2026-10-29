@@ -653,6 +653,16 @@ UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '2.0-dev1' WHERE key = '
 	ExecuteMigration(migrate_query, false, "1.1", "2.0-dev1");
 }
 
+bool DuckLakeMetadataManager::HasSnapshotTagExpiry() {
+	return !Query("SELECT expires_at FROM {METADATA_CATALOG}.ducklake_snapshot_tag LIMIT 0")->HasError();
+}
+
+void DuckLakeMetadataManager::AddSnapshotTagExpiry() {
+	auto result = Execute(StringUtil::Format(
+	    "ALTER TABLE {METADATA_CATALOG}.ducklake_snapshot_tag ADD COLUMN expires_at %s;", TimestampTzColumnType()));
+	result->ThrowIfError("Failed to add the expiry time of snapshot tags to the DuckLake catalog: ");
+}
+
 void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed) {
 	auto tables = Query(R"(
 SELECT idt.table_name AS inlined_table_name, tbl.table_name AS user_table_name
@@ -5690,6 +5700,11 @@ WHERE tag.end_snapshot IS NULL
 ORDER BY tag.begin_snapshot ASC, tag_name ASC;)";
 	}
 	auto result = Query(query);
+	if (result->HasError() && !HasSnapshotTagExpiry()) {
+		result->GetErrorObject().Throw("Failed to get snapshot tags from DuckLake. The catalog was written by a "
+		                               "development build without the expiry time of tags, reattach with "
+		                               "AUTOMATIC_MIGRATION TRUE to add the expires_at column: ");
+	}
 	result->ThrowIfError("Failed to get snapshot tags from DuckLake: ");
 	auto context = transaction.context.lock();
 	vector<DuckLakeSnapshotTagInfo> tags;

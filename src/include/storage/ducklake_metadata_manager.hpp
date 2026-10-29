@@ -626,6 +626,8 @@ public:
 	static string GetSnapshotTagTableStatement();
 	//! Whether the catalog already has every metadata table and column of v1.1
 	bool HasV1_1Additions();
+	//! The columns of the tag table
+	unique_ptr<QueryResult> ProbeSnapshotTagTable();
 	//! Whether the tag table has the expiry time, which the first 2.0-dev1 builds wrote without
 	bool HasSnapshotTagExpiry();
 	//! Adds the expiry time to the tag table of a 2.0-dev1 catalog

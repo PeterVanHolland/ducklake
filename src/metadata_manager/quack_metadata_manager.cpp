@@ -54,11 +54,8 @@ unique_ptr<QueryResult> QuackMetadataManager::AttachMetadata(const string &attac
 }
 
 unique_ptr<QueryResult> QuackMetadataManager::Execute(DuckLakeSnapshot snapshot, string &query) {
-	SubstituteTransactionPlaceholders(snapshot, query);
-	if (migration_transaction) {
-		return Query(query);
-	}
 	// the server commits each statement on its own, so the statements run in a server transaction
+	SubstituteTransactionPlaceholders(snapshot, query);
 	return ExecuteInTransaction(query);
 }
 
@@ -109,6 +106,10 @@ bool QuackMetadataManager::HasV1_1Additions() {
 unique_ptr<QueryResult> QuackMetadataManager::ExecuteInTransaction(string &query) {
 	// hold the lock through the rollback
 	lock_guard<std::recursive_mutex> guard(transaction.GetCatalog().GetMetadataQueryLock());
+	if (migration_transaction) {
+		// the statements join the server transaction of the migration
+		return Query(query);
+	}
 	return DuckLakeMetadataManager::ExecuteInTransaction(query);
 }
 

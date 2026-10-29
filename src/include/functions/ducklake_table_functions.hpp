@@ -28,9 +28,14 @@ public:
 		std::replace(ts_string.begin(), ts_string.end(), ' ', 'T');
 		return ts_string + "+00";
 	}
+	static string FormatTimestampISO8601(const Value &timestamp_tz) {
+		return FormatTimestampISO8601(timestamp_t(timestamp_tz.GetValue<timestamp_tz_t>().value));
+	}
 	static string FormatTimestampOlderThan(const string &option, const string &interval);
 	static bool TryGetNonNullOption(const TableFunctionBindInput &input, const string &name, const string &type_name,
 	                                Value &result);
+	//! The dry_run option, false by default. A run that is not dry needs a writable catalog
+	static bool GetDryRunOption(const TableFunctionBindInput &input, DuckLakeCatalog &catalog);
 	static bool TryGetTimestampOption(const TableFunctionBindInput &input, const string &name, Value &result);
 	//! Fails unless the timestamp is finite and in the year 1 or later
 	static void CheckTimestampOption(const string &name, const Value &value);

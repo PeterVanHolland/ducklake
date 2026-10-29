@@ -5045,38 +5045,38 @@ WHERE snapshot_id = %llu%s;)",
 		if (bound == SnapshotBound::LOWER_BOUND) {
 			// the changes start after the last snapshot before the timestamp, so that those of expired snapshots in
 			// between are not lost, or with the first remaining snapshot at or after it when that one has a lower id
-			auto bounds =
-			    Query(StringUtil::Format(R"(
-SELECT (SELECT MAX(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_time::TIMESTAMPTZ < %s%s),
-	(SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_time::TIMESTAMPTZ >= %s%s);)",
-			                             timestamp_literal, visible_condition, timestamp_literal, visible_condition));
-			bounds->ThrowIfError(
+			auto last_before = StringUtil::Format("(SELECT MAX(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot "
+			                                      "WHERE snapshot_time::TIMESTAMPTZ < %s%s)",
+			                                      timestamp_literal, visible_condition);
+			auto first_after = StringUtil::Format("(SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot "
+			                                      "WHERE snapshot_time::TIMESTAMPTZ >= %s%s)",
+			                                      timestamp_literal, visible_condition);
+			// one query, so a concurrent expiry cannot remove the snapshot between the bounds and its row
+			result = Query(StringUtil::Format(R"(
+SELECT snapshot_id, schema_version, next_catalog_id, next_file_id, %s, %s
+FROM {METADATA_CATALOG}.ducklake_snapshot
+WHERE snapshot_id = COALESCE(%s, (SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot WHERE true%s));)",
+			                                  last_before, first_after, last_before, visible_condition));
+			result->ThrowIfError(
 			    StringUtil::Format("Failed to query snapshot at timestamp %s for DuckLake: ", val.ToString()));
-			optional_idx last_before;
-			optional_idx first_after;
-			for (auto &row : *bounds) {
-				if (!row.IsNull(0)) {
-					last_before = row.GetValue<idx_t>(0);
-				}
-				if (!row.IsNull(1)) {
-					first_after = row.GetValue<idx_t>(1);
+			unique_ptr<DuckLakeSnapshot> snapshot;
+			for (auto &row : *result) {
+				// the feed reads only the id, the other fields come from a remaining snapshot
+				snapshot = make_uniq<DuckLakeSnapshot>(row.GetValue<idx_t>(0), row.GetValue<idx_t>(1),
+				                                       row.GetValue<idx_t>(2), row.GetValue<idx_t>(3));
+				auto before = OptIdx(row, 4);
+				auto after = OptIdx(row, 5);
+				snapshot->snapshot_id = 0;
+				if (before.IsValid()) {
+					snapshot->snapshot_id = before.GetIndex() + 1;
+					if (after.IsValid()) {
+						snapshot->snapshot_id = MinValue(snapshot->snapshot_id, after.GetIndex());
+					}
 				}
 			}
-			if (!last_before.IsValid() && !first_after.IsValid()) {
+			if (!snapshot) {
 				throw InvalidInputException("No snapshot found at timestamp %s", val.ToString());
 			}
-			idx_t start_id = 0;
-			if (last_before.IsValid()) {
-				start_id = last_before.GetIndex() + 1;
-				if (first_after.IsValid()) {
-					start_id = MinValue(start_id, first_after.GetIndex());
-				}
-			}
-			// the feed reads only the id, the other fields come from a remaining snapshot
-			auto remaining = last_before.IsValid() ? last_before.GetIndex() : first_after.GetIndex();
-			BoundAtClause remaining_clause(Identifier("version"), Value::UBIGINT(remaining));
-			auto snapshot = GetSnapshot(remaining_clause, bound, newest_snapshot_id);
-			snapshot->snapshot_id = start_id;
 			return snapshot;
 		}
 		result = Query(StringUtil::Format(

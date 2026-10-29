@@ -55,7 +55,7 @@ SELECT list(i ORDER BY i) FROM lake.t AT (TIMESTAMP => getvariable('t2'))
 
 # older writers took the time at the start of the transaction, so a later snapshot can carry an earlier time
 statement ok
-UPDATE __ducklake_metadata_lake.ducklake_snapshot SET snapshot_time = (SELECT snapshot_time - INTERVAL 1 SECOND FROM __ducklake_metadata_lake.ducklake_snapshot WHERE snapshot_id = 2) WHERE snapshot_id = 3
+UPDATE __ducklake_metadata_lake.ducklake_snapshot SET snapshot_time = (SELECT snapshot_time::TIMESTAMPTZ - INTERVAL 1 SECOND FROM __ducklake_metadata_lake.ducklake_snapshot WHERE snapshot_id = 2) WHERE snapshot_id = 3
 
 # the feed from the time of snapshot 2 starts at snapshot 2, although snapshot 3 is the last one before that time
 query I

@@ -5036,7 +5036,7 @@ unique_ptr<DuckLakeSnapshot> DuckLakeMetadataManager::GetSnapshot(BoundAtClause 
 SELECT snapshot_id, schema_version, next_catalog_id, next_file_id
 FROM {METADATA_CATALOG}.ducklake_snapshot
 WHERE snapshot_id = %llu%s;)",
-		                                  ResolveSnapshotVersion(val), visible_condition));
+		                                  ResolveSnapshotVersion(val, newest_snapshot_id), visible_condition));
 	} else if (unit == "timestamp") {
 		auto timestamp = val.CastAs(*transaction.GetConnection().context, LogicalType::TIMESTAMP_TZ);
 		auto current_time = timestamp_tz_t(Timestamp::GetCurrentTimestamp());
@@ -5677,17 +5677,30 @@ vector<DuckLakeSnapshotTagInfo> DuckLakeMetadataManager::GetSnapshotTags(bool wi
 	if (!transaction.GetCatalog().SupportsSnapshotTags()) {
 		return vector<DuckLakeSnapshotTagInfo>();
 	}
-	string query = R"(
+	// the newest snapshot the transaction sees, resolving the snapshot of the attach could take the tag lock again
+	return GetSnapshotTagsAt(transaction.GetNewestVisibleSnapshotId(), with_snapshot_time);
+}
+
+vector<DuckLakeSnapshotTagInfo> DuckLakeMetadataManager::GetSnapshotTagsAt(idx_t snapshot_id, bool with_snapshot_time) {
+	if (!transaction.GetCatalog().SupportsSnapshotTags()) {
+		return vector<DuckLakeSnapshotTagInfo>();
+	}
+	// the rows the snapshot sees, also on a catalog whose statements commit on their own
+	auto live = StringUtil::Format("tag.begin_snapshot <= %d AND (tag.end_snapshot IS NULL OR tag.end_snapshot > %d)",
+	                               snapshot_id, snapshot_id);
+	string query = StringUtil::Format(R"(
 SELECT tag_name, snapshot_id, NULL, begin_snapshot, expires_at
-FROM {METADATA_CATALOG}.ducklake_snapshot_tag
-WHERE end_snapshot IS NULL;)";
+FROM {METADATA_CATALOG}.ducklake_snapshot_tag tag
+WHERE %s;)",
+	                                  live);
 	if (with_snapshot_time) {
-		query = R"(
+		query = StringUtil::Format(R"(
 SELECT tag_name, tag.snapshot_id, snap.snapshot_time, tag.begin_snapshot, tag.expires_at
 FROM {METADATA_CATALOG}.ducklake_snapshot_tag tag
 LEFT JOIN {METADATA_CATALOG}.ducklake_snapshot snap ON snap.snapshot_id = tag.snapshot_id
-WHERE tag.end_snapshot IS NULL
-ORDER BY tag.begin_snapshot ASC, tag_name ASC;)";
+WHERE %s
+ORDER BY tag.begin_snapshot ASC, tag_name ASC;)",
+		                           live);
 	}
 	auto result = Query(query);
 	result->ThrowIfError("Failed to get snapshot tags from DuckLake: ");
@@ -5708,8 +5721,8 @@ ORDER BY tag.begin_snapshot ASC, tag_name ASC;)";
 	return tags;
 }
 
-optional_idx DuckLakeMetadataManager::GetTaggedSnapshot(const string &name) {
-	for (auto &tag : GetSnapshotTags()) {
+optional_idx DuckLakeMetadataManager::GetTaggedSnapshot(const string &name, idx_t visible_snapshot_id) {
+	for (auto &tag : GetSnapshotTagsAt(visible_snapshot_id)) {
 		if (StringUtil::CIEquals(tag.name, name)) {
 			return tag.snapshot_id;
 		}
@@ -5717,7 +5730,7 @@ optional_idx DuckLakeMetadataManager::GetTaggedSnapshot(const string &name) {
 	return optional_idx();
 }
 
-idx_t DuckLakeMetadataManager::ResolveSnapshotVersion(const Value &version) {
+idx_t DuckLakeMetadataManager::ResolveSnapshotVersion(const Value &version, idx_t visible_snapshot_id) {
 	if (version.type().id() != LogicalTypeId::VARCHAR) {
 		return version.DefaultCastAs(LogicalType::UBIGINT).GetValue<idx_t>();
 	}
@@ -5727,7 +5740,7 @@ idx_t DuckLakeMetadataManager::ResolveSnapshotVersion(const Value &version) {
 		return snapshot_id->DefaultCastAs(LogicalType::UBIGINT).GetValue<idx_t>();
 	}
 	auto &name = StringValue::Get(version);
-	auto tagged = GetTaggedSnapshot(name);
+	auto tagged = GetTaggedSnapshot(name, visible_snapshot_id);
 	if (tagged.IsValid()) {
 		return tagged.GetIndex();
 	}

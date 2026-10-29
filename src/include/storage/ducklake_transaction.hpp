@@ -399,7 +399,9 @@ private:
 	//! The committed tag that matches the name and this transaction did not drop
 	optional_ptr<const DuckLakeSnapshotTagInfo> FindCommittedSnapshotTag(const string &name,
 	                                                                     vector<DuckLakeSnapshotTagInfo> &tags);
-	vector<DuckLakeSnapshotTagInfo> GetSnapshotTagsInternal(bool with_snapshot_time = true);
+	//! The tags the transaction sees, or the tags live at the snapshot
+	vector<DuckLakeSnapshotTagInfo> GetSnapshotTagsInternal(bool with_snapshot_time = true,
+	                                                        optional_idx snapshot_id = optional_idx());
 	//! Fails when the expiry of this transaction removes the snapshot a tag is to name
 	void CheckNotExpiredInTransaction(idx_t snapshot_id);
 	//! Expires what a tag change releases, when an expiry of this transaction ran in its statements
@@ -408,15 +410,16 @@ private:
 	DuckLakeSnapshotTagInfo LiveSnapshotTag(const string &name);
 	//! Makes the changed tag the one the transaction commits for the live tag
 	void ChangeSnapshotTag(const DuckLakeSnapshotTagInfo &tag, DuckLakeSnapshotTagInfo changed);
-	set<idx_t> TaggedSnapshotsInternal();
-	vector<DuckLakeSnapshotInfo> ExpirableSnapshotsInternal(const string &filter);
+	set<idx_t> TaggedSnapshotsInternal(optional_idx snapshot_id = optional_idx());
+	vector<DuckLakeSnapshotInfo> ExpirableSnapshotsInternal(const string &filter,
+	                                                        optional_idx snapshot_id = optional_idx());
 	vector<DuckLakeSnapshotInfo> ExpireSnapshotsNow(const string &filter);
 	//! Whether the expiry time of the tag has passed at the start of the transaction
 	bool SnapshotTagExpired(const DuckLakeSnapshotTagInfo &tag) const;
 	//! Fails when the expiry time has passed at the start of the transaction
 	void CheckSnapshotTagExpiry(const string &name, const Value &expires_at) const;
 	//! The live tags whose expiry time has passed, which an expiry drops
-	vector<DuckLakeSnapshotTagInfo> ExpiredSnapshotTagsInternal();
+	vector<DuckLakeSnapshotTagInfo> ExpiredSnapshotTagsInternal(optional_idx snapshot_id = optional_idx());
 	//! What the commit attempt expires, what the statements expired for the first attempt
 	DuckLakeExpiry ExpiredSnapshotsForCommit(idx_t attempt, idx_t latest_snapshot_id);
 	bool ChangesMadeBesidesExpiry() const;

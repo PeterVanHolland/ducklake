@@ -135,4 +135,15 @@ string SQLiteMetadataManager::GetRewriteSnapshotsQuery(idx_t first_snapshot, idx
 	                          SQLString(native_query));
 }
 
+//! Looks the snapshots up through sqlite_query, so SQLite reads them by their key
+string SQLiteMetadataManager::GetRemainingSnapshotsQuery(const vector<idx_t> &snapshot_ids) const {
+	auto remaining_query = DuckLakeMetadataManager::GetRemainingSnapshotsQuery(snapshot_ids);
+	SubstituteCatalogPlaceholders(remaining_query, "main");
+	auto native_query =
+	    StringUtil::Format("SELECT CAST(snapshot_id AS TEXT) AS snapshot_id FROM (%s)", remaining_query);
+	return StringUtil::Format("SELECT snapshot_id::BIGINT AS snapshot_id\n"
+	                          "FROM sqlite_query({METADATA_CATALOG_NAME_LITERAL}, %s)\n",
+	                          SQLString(native_query));
+}
+
 } // namespace duckdb

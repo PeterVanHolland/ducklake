@@ -2762,22 +2762,66 @@ set<idx_t> DuckLakeMetadataManager::GetTableRewriteSnapshots(TableIndex table_id
                                                              DuckLakeSnapshot snapshot) {
 	auto &catalog = transaction.GetCatalog();
 	set<idx_t> rewrite_snapshots;
-	if (catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id, rewrite_snapshots)) {
+	if (!catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id,
+	                                    rewrite_snapshots)) {
+		// the changes of committed snapshots never change, so the catalog caches them
+		auto result = Query(GetRewriteSnapshotsQuery(catalog.GetFirstUnreadRewriteSnapshot(), snapshot.snapshot_id));
+		result->ThrowIfError("Failed to get rewrite snapshots from DuckLake: ");
+		vector<pair<TableIndex, idx_t>> rewrites;
+		for (auto &row : *result) {
+			auto changes = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(1));
+			for (auto &rewritten_table : changes.tables_rewrite_delete) {
+				rewrites.emplace_back(rewritten_table, row.GetValue<idx_t>(0));
+			}
+		}
+		catalog.CacheRewriteSnapshots(rewrites, snapshot.snapshot_id);
+		catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id, rewrite_snapshots);
+	}
+	if (rewrite_snapshots.empty()) {
 		return rewrite_snapshots;
 	}
-	// the changes of committed snapshots never change, so the catalog caches them
-	auto result = Query(GetRewriteSnapshotsQuery(catalog.GetFirstUnreadRewriteSnapshot(), snapshot.snapshot_id));
-	result->ThrowIfError("Failed to get rewrite snapshots from DuckLake: ");
-	vector<pair<TableIndex, idx_t>> rewrites;
-	for (auto &row : *result) {
-		auto changes = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(1));
-		for (auto &rewritten_table : changes.tables_rewrite_delete) {
-			rewrites.emplace_back(rewritten_table, row.GetValue<idx_t>(0));
+	// expiring the snapshot of a rewrite cleans up the files with the later changes of its rows, and expiring the one
+	// before it cleans up the deletions the rewrite dropped, so such a rewrite is reported like any other change
+	vector<idx_t> snapshot_ids;
+	for (auto snapshot_id : rewrite_snapshots) {
+		snapshot_ids.push_back(snapshot_id);
+		snapshot_ids.push_back(snapshot_id - 1);
+	}
+	vector<idx_t> unknown_snapshots;
+	{
+		lock_guard<mutex> guard(remaining_snapshots_lock);
+		for (auto snapshot_id : snapshot_ids) {
+			if (remaining_snapshots.find(snapshot_id) == remaining_snapshots.end()) {
+				unknown_snapshots.push_back(snapshot_id);
+			}
 		}
 	}
-	catalog.CacheRewriteSnapshots(rewrites, snapshot.snapshot_id);
-	catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id, rewrite_snapshots);
-	return rewrite_snapshots;
+	if (!unknown_snapshots.empty()) {
+		auto result = Query(GetRemainingSnapshotsQuery(unknown_snapshots));
+		result->ThrowIfError("Failed to get the remaining rewrite snapshots from DuckLake: ");
+		unordered_set<idx_t> found_snapshots;
+		for (auto &row : *result) {
+			found_snapshots.insert(row.GetValue<idx_t>(0));
+		}
+		lock_guard<mutex> guard(remaining_snapshots_lock);
+		for (auto snapshot_id : unknown_snapshots) {
+			remaining_snapshots.emplace(snapshot_id, found_snapshots.count(snapshot_id) > 0);
+		}
+	}
+	set<idx_t> unchanged_snapshots;
+	lock_guard<mutex> guard(remaining_snapshots_lock);
+	for (auto snapshot_id : rewrite_snapshots) {
+		if (remaining_snapshots[snapshot_id] && remaining_snapshots[snapshot_id - 1]) {
+			unchanged_snapshots.insert(snapshot_id);
+		}
+	}
+	return unchanged_snapshots;
+}
+
+string DuckLakeMetadataManager::GetRemainingSnapshotsQuery(const vector<idx_t> &snapshot_ids) const {
+	return StringUtil::Format(
+	    "SELECT snapshot_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id IN (%s)",
+	    StringUtil::Join(snapshot_ids, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); }));
 }
 
 string DuckLakeMetadataManager::GetRewriteSnapshotsQuery(idx_t first_snapshot, idx_t last_snapshot) const {
@@ -5774,6 +5818,10 @@ string DuckLakeMetadataManager::DeleteSnapshotsSql(const vector<DuckLakeSnapshot
 void DuckLakeMetadataManager::DeleteSnapshots(const vector<DuckLakeSnapshotInfo> &snapshots) {
 	auto result = Execute(DeleteSnapshotsSql(snapshots));
 	result->ThrowIfError("Failed to delete snapshots in DuckLake: ");
+	{
+		lock_guard<mutex> guard(remaining_snapshots_lock);
+		remaining_snapshots.clear();
+	}
 	CleanupExpiredSnapshots(snapshots);
 }
 

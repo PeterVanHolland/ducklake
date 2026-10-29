@@ -1,0 +1,125 @@
+# name: test/sql/table_changes/table_changes_rewrite_expired.test
+# description: Once the snapshots around a rewrite are expired, the change feed reports the rewrite like other changes
+# group: [table_changes]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/table_changes_rewrite_expired', DATA_INLINING_ROW_LIMIT 0)
+
+# snapshot ids are relative to the snapshot that created the table, since only some catalogs record expiry
+statement ok
+CREATE TABLE dl.t (id INTEGER, v VARCHAR)
+
+statement ok
+SET VARIABLE t = (SELECT max(snapshot_id) FROM dl.snapshots())
+
+statement ok
+INSERT INTO dl.t VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+statement ok
+DELETE FROM dl.t WHERE id = 1
+
+statement ok
+DELETE FROM dl.t WHERE id = 2
+
+statement ok
+CALL ducklake_rewrite_data_files('dl', 't', delete_threshold => 0)
+
+statement ok
+UPDATE dl.t SET v = 'x' WHERE id = 3
+
+query IIII
+SELECT snapshot_id - getvariable('t'), change_type, id, v
+FROM dl.table_changes('t', getvariable('t') + 3, getvariable('t') + 5) ORDER BY ALL
+----
+3	delete	2	b
+5	update_postimage	3	x
+5	update_preimage	3	c
+
+# expiring the rewrite cleans up the file with the update of its rows
+statement ok
+CALL ducklake_expire_snapshots('dl', versions => [getvariable('t') + 4])
+
+query IIII
+SELECT snapshot_id - getvariable('t'), change_type, id, v
+FROM dl.table_changes('t', getvariable('t') + 3, getvariable('t') + 5) ORDER BY ALL
+----
+3	delete	2	b
+4	delete	3	c
+5	insert	3	x
+
+query II
+SELECT list((id, v) ORDER BY id), (SELECT list((id, v) ORDER BY id) FROM dl.t AT (VERSION => getvariable('t') + 5))
+FROM dl.t AT (VERSION => getvariable('t') + 3)
+----
+[(3, c)]	[(3, x)]
+
+# expiring the snapshot before a rewrite cleans up the deletions the rewrite dropped
+statement ok
+CREATE TABLE dl.u (id INTEGER)
+
+statement ok
+SET VARIABLE u = (SELECT max(snapshot_id) FROM dl.snapshots())
+
+statement ok
+INSERT INTO dl.u SELECT range FROM range(5)
+
+statement ok
+DELETE FROM dl.u WHERE id = 0
+
+statement ok
+CALL ducklake_rewrite_data_files('dl', 'u', delete_threshold => 0)
+
+statement ok
+DELETE FROM dl.u WHERE id = 4
+
+query III
+SELECT snapshot_id - getvariable('u'), change_type, id
+FROM dl.table_changes('u', getvariable('u') + 1, getvariable('u') + 4)
+WHERE change_type IN ('insert', 'delete') ORDER BY ALL
+----
+1	insert	0
+1	insert	1
+1	insert	2
+1	insert	3
+1	insert	4
+2	delete	0
+4	delete	4
+
+statement ok
+CALL ducklake_expire_snapshots('dl', versions => [getvariable('u') + 2])
+
+query III
+SELECT snapshot_id - getvariable('u'), change_type, id
+FROM dl.table_changes('u', getvariable('u') + 1, getvariable('u') + 4)
+WHERE change_type IN ('insert', 'delete') ORDER BY ALL
+----
+1	insert	0
+1	insert	1
+1	insert	2
+1	insert	3
+1	insert	4
+3	delete	0
+4	delete	4
+
+# applying the change feed gives the current rows
+query II
+SELECT sum(CASE WHEN change_type IN ('insert', 'update_postimage') THEN 1 ELSE -1 END), (SELECT count(*) FROM dl.u)
+FROM dl.table_changes('u', getvariable('u') + 1, getvariable('u') + 4)
+----
+3	3
+
+# a feed that starts at the rewrite reports the deletion of the expired snapshot before it there
+query II
+SELECT (SELECT count(*) FROM dl.u AT (VERSION => getvariable('u') + 1))
+    + sum(CASE WHEN change_type IN ('insert', 'update_postimage') THEN 1 ELSE -1 END), (SELECT count(*) FROM dl.u)
+FROM dl.table_changes('u', getvariable('u') + 3, getvariable('u') + 4)
+----
+3	3

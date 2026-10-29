@@ -1,5 +1,5 @@
-# name: test/sql/table_changes/table_changes_equal_snapshot_times.test
-# description: a change feed by timestamp picks the right snapshot among snapshots committed in the same instant
+# name: test/sql/table_changes/table_changes_unordered_snapshot_times.test
+# description: a change feed by timestamp starts right among snapshots committed in the same instant or out of id order
 # group: [table_changes]
 
 require ducklake
@@ -13,7 +13,7 @@ test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
 test-env DATA_PATH {TEST_DIR}
 
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/table_changes_equal_snapshot_times', DATA_INLINING_ROW_LIMIT 0)
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/table_changes_unordered_snapshot_times', DATA_INLINING_ROW_LIMIT 0)
 
 statement ok
 CREATE TABLE lake.t (i INTEGER)
@@ -52,3 +52,18 @@ query I
 SELECT list(i ORDER BY i) FROM lake.t AT (TIMESTAMP => getvariable('t2'))
 ----
 [1, 2]
+
+# older writers took the time at the start of the transaction, so a later snapshot can carry an earlier time
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_snapshot SET snapshot_time = (SELECT snapshot_time - INTERVAL 1 SECOND FROM __ducklake_metadata_lake.ducklake_snapshot WHERE snapshot_id = 2) WHERE snapshot_id = 3
+
+# the feed from the time of snapshot 2 starts at snapshot 2, although snapshot 3 is the last one before that time
+query I
+SELECT list(i ORDER BY i) FROM ducklake_table_changes('lake', 'main', 't', getvariable('t2'), getvariable('t4'))
+----
+[1, 2, 3]
+
+query I
+SELECT list(i ORDER BY i) FROM ducklake_table_changes('lake', 'main', 't', getvariable('t4'), getvariable('t4'))
+----
+[3]

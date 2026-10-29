@@ -1,0 +1,215 @@
+# name: test/sql/table_changes/legacy_rewrite_change_feed.test
+# description: The change feed of files that DuckDB 1.4 rewrote reports each insert once, and only the rows deleted
+# group: [table_changes]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.4.4, whose rewrites began the new file at the last delete instead of the rewrite:
+# t inserts 0-4 at 2, deletes 0 at 3, is rewritten at 4, inserts 5-6 at 5 and deletes 1 at 6
+# u inserts 0-9 at 8, deletes 0 at 9 and 1-2 at 10, is rewritten at 11 and updates 3 to 100 at 12
+# v inserts 0-5 at 14, deletes 0 at 15, is rewritten at 16, deletes 1 at 17 and is rewritten at 18
+# x inserts 0-2 and deletes 0 in one transaction at 20, and is rewritten at 21
+# y inserts 0-2 at 23, deletes 0 at 24, is rewritten at 25 and adds a column _ducklake_internal_row_id at 26
+# w inserts 0-4 at 28 and 5-9 at 29, deletes 0 and 5 at 30, and is rewritten at 31
+# z inlines 0-4 at 33, flushes them at 34, deletes 0 at 35 and is rewritten at 36
+unzip data/old_ducklake/legacy_rewrite.db.gz {TEST_DIR}/legacy_rewrite_change_feed.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/legacy_rewrite_change_feed.db' AS lk (DATA_PATH 'data/old_ducklake/legacy_rewrite/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('t', 3, 3) ORDER BY ALL
+----
+3	0	delete	0
+
+query I
+SELECT count(*) FROM lk.table_changes('t', 4, 4)
+----
+0
+
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('t', 0, 6) ORDER BY ALL
+----
+2	0	insert	0
+2	1	insert	1
+2	2	insert	2
+2	3	insert	3
+2	4	insert	4
+3	0	delete	0
+5	5	insert	5
+5	6	insert	6
+6	1	delete	1
+
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('t', 3, 6) ORDER BY ALL
+----
+3	0	delete	0
+5	5	insert	5
+5	6	insert	6
+6	1	delete	1
+
+# a rewrite after two deletes keeps the rows of the earlier delete deleted
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('u', 10, 10) ORDER BY ALL
+----
+10	1	delete	1
+10	2	delete	2
+
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('u', 8, 12) ORDER BY ALL
+----
+8	0	insert	0
+8	1	insert	1
+8	2	insert	2
+8	3	insert	3
+8	4	insert	4
+8	5	insert	5
+8	6	insert	6
+8	7	insert	7
+8	8	insert	8
+8	9	insert	9
+9	0	delete	0
+10	1	delete	1
+10	2	delete	2
+12	3	update_postimage	100
+12	3	update_preimage	3
+
+query III
+SELECT snapshot_id, rowid, id FROM ducklake_table_insertions('lk', 'main', 'u', 9, 12) ORDER BY ALL
+----
+12	3	100
+
+query III
+SELECT snapshot_id, rowid, id FROM ducklake_table_deletions('lk', 'main', 'u', 9, 12) ORDER BY ALL
+----
+9	0	0
+10	1	1
+10	2	2
+12	3	3
+
+# a rewrite of a rewritten file, whose rows carry their own row ids
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('v', 14, 18) ORDER BY ALL
+----
+14	0	insert	0
+14	1	insert	1
+14	2	insert	2
+14	3	insert	3
+14	4	insert	4
+14	5	insert	5
+15	0	delete	0
+17	1	delete	1
+
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('v', 16, 18) ORDER BY ALL
+----
+17	1	delete	1
+
+# the rewritten file of rows inserted and deleted in one transaction ends where it begins
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('x', 19, 21) ORDER BY ALL
+----
+20	1	insert	1
+20	2	insert	2
+
+# the embedded columns are found by field id when a user column takes their name
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('y', 23, 26) ORDER BY ALL
+----
+23	0	insert	0
+23	1	insert	1
+23	2	insert	2
+24	0	delete	0
+
+# two files deleted at the same snapshot and rewritten into one
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('w', 30, 31) ORDER BY ALL
+----
+30	0	delete	0
+30	5	delete	5
+
+query I
+SELECT count(*) FROM lk.table_changes('w', 28, 31) WHERE change_type = 'insert'
+----
+10
+
+# a flush of DuckDB 1.4 wrote row ids and a row_id_start that disagrees with them
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('z', 35, 36) ORDER BY ALL
+----
+35	0	delete	0
+
+query I
+SELECT count(*) FROM lk.table_changes('z', 33, 36) WHERE change_type = 'insert'
+----
+5
+
+# reads and time travel are unchanged
+query II
+SELECT count(*), sum(id) FROM lk.t
+----
+5	20
+
+query II
+SELECT count(*), sum(id) FROM lk.t AT (VERSION => 3)
+----
+4	10
+
+query II
+SELECT count(*), sum(id) FROM lk.u AT (VERSION => 10)
+----
+7	42
+
+query II
+SELECT count(*), sum(id) FROM lk.u
+----
+7	139
+
+query II
+SELECT count(*), sum(id) FROM lk.v AT (VERSION => 16)
+----
+5	15
+
+query II
+SELECT count(*), sum(id) FROM lk.v
+----
+4	14
+
+# a file that a rewrite of this version wrote carries row ids, but no snapshot ids
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/legacy_rewrite_change_feed_current.db' AS cur (DATA_PATH '{TEST_DIR}/legacy_rewrite_change_feed_current', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE cur.t (id INTEGER)
+
+statement ok
+INSERT INTO cur.t SELECT range FROM range(5)
+
+statement ok
+DELETE FROM cur.t WHERE id = 0
+
+statement ok
+CALL ducklake_rewrite_data_files('cur', 't', delete_threshold => 0)
+
+statement ok
+SET VARIABLE rewrite_snapshot = (SELECT max(snapshot_id) FROM cur.snapshots())
+
+statement ok
+SELECT * FROM ducklake_table_insertions('cur', 'main', 't', getvariable('rewrite_snapshot'), getvariable('rewrite_snapshot'))
+
+query II
+SELECT snapshot_id, id FROM ducklake_table_deletions('cur', 'main', 't', 0, getvariable('rewrite_snapshot') - 1) ORDER BY ALL
+----
+3	0
+
+# the rewritten file is found when the snapshot it begins at has expired
+statement ok
+CALL ducklake_expire_snapshots('lk', versions => [3])
+
+query IIII
+SELECT snapshot_id, rowid, change_type, id FROM lk.table_changes('t', 2, 6) WHERE change_type = 'delete' ORDER BY ALL
+----
+3	0	delete	0
+6	1	delete	1

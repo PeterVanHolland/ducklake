@@ -46,6 +46,7 @@ public:
 	void BeginMigration() override;
 	void CommitMigration() override;
 	void RollbackMigration() override;
+	bool HasV1_1Additions() override;
 
 protected:
 	string MetadataExistsQuery() const override;

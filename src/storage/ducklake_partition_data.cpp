@@ -285,11 +285,13 @@ static unique_ptr<Expression> FloorNanosToMicros(ClientContext &context, unique_
 	};
 	auto nanos = DuckLakePartitionUtils::ApplyScalarFunction(context, "epoch_ns", std::move(column_expr));
 	auto nanos_copy = nanos->Copy();
+	// divide first, subtracting the remainder from the lowest timestamps would overflow
+	auto truncated = BindBinaryOp(context, "//", std::move(nanos), bigint_const(1000));
 	auto remainder = BindBinaryOp(context, "%", std::move(nanos_copy), bigint_const(1000));
-	auto shifted = BindBinaryOp(context, "+", std::move(remainder), bigint_const(1000));
-	auto nonneg_remainder = BindBinaryOp(context, "%", std::move(shifted), bigint_const(1000));
-	auto floored = BindBinaryOp(context, "-", std::move(nanos), std::move(nonneg_remainder));
-	auto micros = BindBinaryOp(context, "//", std::move(floored), bigint_const(1000));
+	auto negative =
+	    BoundComparisonExpression::Create(ExpressionType::COMPARE_LESSTHAN, std::move(remainder), bigint_const(0));
+	auto step_back = make_uniq<BoundCaseExpression>(std::move(negative), bigint_const(1), bigint_const(0));
+	auto micros = BindBinaryOp(context, "-", std::move(truncated), std::move(step_back));
 	return DuckLakePartitionUtils::ApplyScalarFunction(context, "make_timestamp", std::move(micros));
 }
 

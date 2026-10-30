@@ -16,13 +16,14 @@ ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/calendar
 statement ok
 CREATE TABLE lake.t (id INTEGER, ts TIMESTAMP_NS) PARTITIONED BY (year(ts), month(ts), day(ts), hour(ts), epoch_hour(ts))
 
-# the last nanosecond of an hour, a day and a year, and the first of the next
+# the last nanosecond of an hour, a day and a year, the first of the next, and the lowest TIMESTAMP_NS
 statement ok
 INSERT INTO lake.t VALUES
 	(1, TIMESTAMP_NS '1969-12-31 23:59:59.999999999'),
 	(2, TIMESTAMP_NS '1970-01-01 00:00:00.000000001'),
 	(3, TIMESTAMP_NS '2026-03-15 10:59:59.999999999'),
-	(4, TIMESTAMP_NS '2026-03-15 11:00:00.000000000')
+	(4, TIMESTAMP_NS '2026-03-15 11:00:00.000000000'),
+	(5, TIMESTAMP_NS '1677-09-21 00:12:43.145224194')
 
 query II
 SELECT id, (SELECT string_agg(v.partition_value, ', ' ORDER BY v.partition_key_index)
@@ -35,6 +36,7 @@ FROM (SELECT id, filename AS file FROM lake.t) ORDER BY id
 2	1970, 1, 1, 0, 0
 3	2026, 3, 15, 10, 492658
 4	2026, 3, 15, 11, 492659
+5	1677, 9, 21, 0, -2562048
 
 # the stored values are unchanged
 query I
@@ -44,6 +46,7 @@ SELECT ts FROM lake.t ORDER BY id
 1970-01-01 00:00:00.000000001
 2026-03-15 10:59:59.999999999
 2026-03-15 11:00:00
+1677-09-21 00:12:43.145224194
 
 # the hive path follows the partition values
 query I

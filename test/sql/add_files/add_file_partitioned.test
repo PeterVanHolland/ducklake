@@ -112,8 +112,20 @@ INSERT INTO partitioned_t VALUES (5,1,2), (6,1,2);
 statement ok
 CALL ducklake_flush_inlined_data('ducklake')
 
-statement error
+# a file the table already holds adds nothing, a new file with the old layout is checked
+statement ok
 CALL ducklake_add_data_files('ducklake', 'partitioned_t', '{DATA_PATH}/add_file_partitioned/main/partitioned_t/partition_column=2/file.parquet')
+
+query I
+SELECT COUNT(*) FROM partitioned_t where partition_column = 2;
+----
+2
+
+statement ok
+COPY (SELECT 4 AS id, 2 as other_partition_column) TO '{DATA_PATH}/add_file_partitioned/main/partitioned_t/partition_column=2/old_layout.parquet' (FORMAT parquet);
+
+statement error
+CALL ducklake_add_data_files('ducklake', 'partitioned_t', '{DATA_PATH}/add_file_partitioned/main/partitioned_t/partition_column=2/old_layout.parquet')
 ----
 contains an invalid partition value for the table configuration
 

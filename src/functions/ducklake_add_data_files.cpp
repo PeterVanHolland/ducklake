@@ -8,6 +8,7 @@
 #include "storage/ducklake_table_entry.hpp"
 #include "storage/ducklake_insert.hpp"
 #include "storage/ducklake_catalog.hpp"
+#include "storage/ducklake_metadata_manager.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/hive_partitioning.hpp"
@@ -175,6 +176,18 @@ public:
 				}
 			}
 		}
+		// a path the table already holds adds nothing, like a path repeated within one call
+		auto &fs = FileSystem::GetFileSystem(context);
+		if (!IsTransactionLocal(table.GetTableId())) {
+			auto &metadata_manager = transaction.GetMetadataManager();
+			for (const auto &entry :
+			     metadata_manager.GetFilesForTable(table, transaction.GetSnapshot(), nullptr, false)) {
+				existing_files.insert(fs.CanonicalizePath(entry.file.path));
+			}
+		}
+		for (const auto &path : transaction.GetTransactionLocalFilePaths(table.GetTableId())) {
+			existing_files.insert(fs.CanonicalizePath(path));
+		}
 	}
 
 	vector<DuckLakeDataFile> AddFiles(const vector<string> &globs);
@@ -217,6 +230,8 @@ private:
 	map<string, string> hive_partitions;
 	HivePartitioningType hive_partitioning;
 	unordered_set<string> processed_files;
+	//! The canonical paths of the data files the table holds before this call
+	unordered_set<string> existing_files;
 	unordered_set<idx_t> skipped_fields;
 	//! The types bound from the DuckDB type strings of the files
 	unordered_map<string, LogicalType> bound_types;
@@ -301,8 +316,8 @@ FROM parquet_full_metadata(%s)
 		auto canonical_filepath = fs.CanonicalizePath(filepath);
 
 		// Check if we've already processed this file (can happen with overlapping globs)
-		if (processed_files.count(canonical_filepath)) {
-			// File already processed in a previous glob, skip
+		if (processed_files.count(canonical_filepath) || existing_files.count(canonical_filepath)) {
+			// File already processed in a previous glob or held by the table, skip
 			continue;
 		}
 		processed_files.insert(canonical_filepath);

@@ -17,6 +17,8 @@
 #include "common/ducklake_util.hpp"
 #include "common/ducklake_snapshot.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/file_system.hpp"
+#include "duckdb/common/unordered_set.hpp"
 #include "duckdb/common/random_engine.hpp"
 #include "duckdb/common/string_util.hpp"
 
@@ -303,6 +305,7 @@ void DuckLakeTransactionState::CheckForConflicts(const TransactionChangeInformat
 		ConflictCheck(table_id, other_changes.tables_inserted_inlined, "delete from table", "inserted into it");
 	}
 	CheckFileConflicts(changes, other_changes, context);
+	CheckAddedFileConflicts(other_changes, context);
 	// inlined deletes of data file rows conflict per file in CheckFileConflicts
 	set<TableIndex> tables_deleted_inlined_rows;
 	for (auto &entry : local_changes.Changes()) {
@@ -2642,6 +2645,65 @@ void DuckLakeTransactionState::CheckFileConflicts(const TransactionChangeInforma
 		}
 		for (auto &file : compacted_files) {
 			ConflictCheck(file, other_files, "compact file", "deleted from it");
+		}
+	}
+}
+
+void DuckLakeTransactionState::CheckAddedFileConflicts(const SnapshotChangeInformation &other_changes,
+                                                       const DuckLakeCommitContext &context) const {
+	// ducklake_add_data_files skips the paths the table holds at the snapshot, a file written since escapes it
+	auto other_wrote_files = [&](TableIndex table_id) {
+		for (auto tables :
+		     {&other_changes.inserted_tables, &other_changes.tables_compacted, &other_changes.tables_merge_adjacent,
+		      &other_changes.tables_rewrite_delete, &other_changes.tables_flushed_inlined}) {
+			if (tables->find(table_id) != tables->end()) {
+				return true;
+			}
+		}
+		return false;
+	};
+	map<TableIndex, vector<reference<const string>>> added_files;
+	for (auto &entry : local_changes.Changes()) {
+		if (!other_wrote_files(entry.first)) {
+			continue;
+		}
+		for (auto &file : entry.second.new_data_files) {
+			if (!file.created_by_ducklake) {
+				added_files[entry.first].push_back(file.file_name);
+			}
+		}
+	}
+	if (added_files.empty()) {
+		return;
+	}
+	auto &fs = FileSystem::GetFileSystem(db);
+	for (auto &entry : added_files) {
+		auto &table_id = entry.first;
+		// compaction and flush outputs keep the begin_snapshot of their source, so also match on new file ids
+		auto query = StringUtil::Format("SELECT path, path_is_relative FROM {METADATA_CATALOG}.ducklake_data_file "
+		                                "WHERE table_id = %d AND (begin_snapshot > {SNAPSHOT_ID} OR data_file_id >= "
+		                                "{NEXT_FILE_ID});",
+		                                table_id.index);
+		auto query_result = context.conflict_query_executor(query);
+		query_result->ThrowIfError("Failed to commit DuckLake transaction - failed to get files added for "
+		                           "conflict resolution:");
+		unordered_set<string> other_paths;
+		string table_path;
+		for (auto &row : *query_result) {
+			DuckLakePath path {row.GetValue<string>(0), row.GetValue<bool>(1)};
+			if (path.path_is_relative && table_path.empty()) {
+				table_path = DuckLakeMetadataManager::GetPathForTable(table_id, {}, context.conflict_query_executor,
+				                                                      data_path, separator);
+			}
+			other_paths.insert(
+			    fs.CanonicalizePath(DuckLakeMetadataManager::FromRelativePath(path, table_path, separator)));
+		}
+		for (auto &file_name : entry.second) {
+			if (other_paths.count(fs.CanonicalizePath(file_name.get()))) {
+				throw TransactionException("Transaction conflict - attempting to add data file \"%s\" to a table - but "
+				                           "another transaction has added it already",
+				                           file_name.get());
+			}
 		}
 	}
 }

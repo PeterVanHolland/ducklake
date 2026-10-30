@@ -53,7 +53,8 @@ SELECT count(*) FROM ducklake.t WHERE s.b IS NULL
 
 # the field got a new column id
 query III
-SELECT column_name, begin_snapshot, end_snapshot FROM ducklake_meta.ducklake_column WHERE column_name = 'b' ORDER BY column_id
+SELECT column_name, begin_snapshot, end_snapshot FROM ducklake_meta.ducklake_column
+WHERE column_name = 'b' ORDER BY column_id
 ----
 b	1	2
 b	2	NULL
@@ -177,16 +178,18 @@ SELECT k, s FROM ducklake.retyped
 ----
 1	{'a': 1, 'b': NULL}
 
-# a struct replaced by a struct with no common member, whole and nested, in one step and in two
+# a struct replaced by one with no common member, whole, nested, in a list and as a map value, in one or two steps
 statement ok
 CREATE TABLE ducklake.replaced(k INTEGER, s STRUCT(a INTEGER), n STRUCT(a INTEGER, b STRUCT(c INTEGER)),
-	m STRUCT(a INTEGER, b STRUCT(c INTEGER)))
+	m STRUCT(a INTEGER, b STRUCT(c INTEGER)), l STRUCT(a INTEGER)[], mp MAP(VARCHAR, STRUCT(a INTEGER)))
 
 statement ok
 BEGIN
 
 statement ok
-INSERT INTO ducklake.replaced VALUES (1, {'a': 1}, {'a': 2, 'b': {'c': 7}}, {'a': 3, 'b': {'c': 8}})
+INSERT INTO ducklake.replaced VALUES
+	(1, {'a': 1}, {'a': 2, 'b': {'c': 7}}, {'a': 3, 'b': {'c': 8}}, [{'a': 4}, {'a': 5}], MAP {'x': {'a': 6}}),
+	(2, NULL, NULL, NULL, [], MAP {})
 
 statement ok
 ALTER TABLE ducklake.replaced ALTER s TYPE STRUCT(b INTEGER)
@@ -200,18 +203,26 @@ ALTER TABLE ducklake.replaced ALTER m TYPE STRUCT(a INTEGER)
 statement ok
 ALTER TABLE ducklake.replaced ALTER m TYPE STRUCT(a INTEGER, b STRUCT(d INTEGER))
 
-query IIII
-SELECT k, s, n, m FROM ducklake.replaced
+statement ok
+ALTER TABLE ducklake.replaced ALTER l TYPE STRUCT(b INTEGER)[]
+
+statement ok
+ALTER TABLE ducklake.replaced ALTER mp TYPE MAP(VARCHAR, STRUCT(b INTEGER))
+
+query IIIIII
+SELECT k, s, n, m, l, mp FROM ducklake.replaced ORDER BY k
 ----
-1	NULL	{'a': 2, 'b': NULL}	{'a': 3, 'b': NULL}
+1	{'b': NULL}	{'a': 2, 'b': {'d': NULL}}	{'a': 3, 'b': NULL}	[{'b': NULL}, {'b': NULL}]	{x={'b': NULL}}
+2	NULL	NULL	NULL	[]	{}
 
 statement ok
 COMMIT
 
-query IIII
-SELECT k, s, n, m FROM ducklake.replaced
+query IIIIII
+SELECT k, s, n, m, l, mp FROM ducklake.replaced ORDER BY k
 ----
-1	NULL	{'a': 2, 'b': NULL}	{'a': 3, 'b': NULL}
+1	{'b': NULL}	{'a': 2, 'b': {'d': NULL}}	{'a': 3, 'b': NULL}	[{'b': NULL}, {'b': NULL}]	{x={'b': NULL}}
+2	NULL	NULL	NULL	[]	{}
 
 # a type change that keeps the field keeps its values
 statement ok
@@ -267,10 +278,11 @@ SELECT k, s FROM ducklake.retyped
 ----
 1	{'a': 1, 'b': NULL}
 
-query IIII
-SELECT k, s, n, m FROM ducklake.replaced
+query IIIIII
+SELECT k, s, n, m, l, mp FROM ducklake.replaced ORDER BY k
 ----
-1	NULL	{'a': 2, 'b': NULL}	{'a': 3, 'b': NULL}
+1	{'b': NULL}	{'a': 2, 'b': {'d': NULL}}	{'a': 3, 'b': NULL}	[{'b': NULL}, {'b': NULL}]	{x={'b': NULL}}
+2	NULL	NULL	NULL	[]	{}
 
 query II
 SELECT k, s FROM ducklake.widen

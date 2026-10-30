@@ -246,9 +246,9 @@ void LocalTableChanges::AppendDeleteFiles(TableIndex table_id, const string &dat
 
 //! Cast the rows to the given types, as an ALTER COLUMN TYPE does not cast the rows that are already inlined
 static void CastInlinedData(ClientContext &context, DuckLakeInlinedData &inlined_data,
-                            const vector<LogicalType> &new_types, const set<idx_t> &null_columns = {}) {
+                            const vector<LogicalType> &new_types) {
 	auto &existing_types = inlined_data.data->Types();
-	if (existing_types == new_types && null_columns.empty()) {
+	if (existing_types == new_types) {
 		return;
 	}
 	auto casted_data = make_uniq<ColumnDataCollection>(context, new_types);
@@ -258,9 +258,7 @@ static void CastInlinedData(ClientContext &context, DuckLakeInlinedData &inlined
 		DataChunk casted_chunk;
 		casted_chunk.Initialize(context, new_types);
 		for (idx_t col_idx = 0; col_idx < chunk.ColumnCount(); col_idx++) {
-			if (null_columns.count(col_idx)) {
-				ConstantVector::SetNull(casted_chunk.data[col_idx], count_t(chunk.size()));
-			} else if (existing_types[col_idx] != new_types[col_idx]) {
+			if (existing_types[col_idx] != new_types[col_idx]) {
 				VectorOperations::Cast(context, chunk.data[col_idx], casted_chunk.data[col_idx], chunk.size());
 			} else {
 				casted_chunk.data[col_idx].Reference(chunk.data[col_idx]);
@@ -501,83 +499,80 @@ void LocalTableChanges::RemoveColumnFromLocalInlinedData(ClientContext &context,
 	table_changes.new_inlined_data->data = std::move(new_data);
 }
 
-//! The buffered type without the dropped fields, or INVALID when none of its fields is left
-static LogicalType TypeWithoutFields(const LogicalType &type, const DuckLakeFieldId &field_id,
-                                     const set<FieldIndex> &dropped_fields) {
-	if (field_id.Type().id() != type.id()) {
+static optional_ptr<const DuckLakeFieldId> FindChildById(const DuckLakeFieldId &field_id, FieldIndex child_index) {
+	for (auto &child : field_id.Children()) {
+		if (child->GetFieldIndex() == child_index) {
+			return *child;
+		}
+	}
+	return nullptr;
+}
+
+//! The buffered type with the fields of the new field id, matched by field id, keeping the buffered leaf types
+static LogicalType ReshapedType(const LogicalType &type, const DuckLakeFieldId &old_id, const DuckLakeFieldId &new_id,
+                                bool keep_dropped) {
+	if (!new_id.HasChildren() || type.id() != new_id.Type().id()) {
 		return type;
 	}
 	switch (type.id()) {
 	case LogicalTypeId::STRUCT: {
-		// the rows can predate fields added since, so the children are matched by name
-		child_list_t<LogicalType> children;
-		for (auto &child : StructType::GetChildTypes(type)) {
-			auto child_id = field_id.GetChildByName(Identifier(child.first));
-			if (!child_id) {
-				children.push_back(child);
-				continue;
-			}
-			if (dropped_fields.count(child_id->GetFieldIndex())) {
-				continue;
-			}
-			auto child_type = TypeWithoutFields(child.second, *child_id, dropped_fields);
-			if (child_type.id() != LogicalTypeId::INVALID) {
-				children.emplace_back(child.first, std::move(child_type));
+		// the rows can predate fields added since, so the members are matched by name
+		child_list_t<LogicalType> members;
+		set<FieldIndex> present;
+		for (auto &member : StructType::GetChildTypes(type)) {
+			auto old_child = old_id.GetChildByName(Identifier(member.first));
+			auto new_child = old_child ? FindChildById(new_id, old_child->GetFieldIndex()) : nullptr;
+			if (new_child) {
+				present.insert(new_child->GetFieldIndex());
+				members.emplace_back(member.first, ReshapedType(member.second, *old_child, *new_child, keep_dropped));
+			} else if (!old_child || keep_dropped) {
+				members.push_back(member);
 			}
 		}
-		if (children.empty()) {
-			return LogicalType::INVALID;
+		// the fields the rows do not have yet read NULL
+		for (auto &new_child : new_id.Children()) {
+			if (!present.count(new_child->GetFieldIndex())) {
+				members.emplace_back(new_child->Name().GetIdentifierName(), new_child->Type());
+			}
 		}
-		return LogicalType::STRUCT(std::move(children));
+		return LogicalType::STRUCT(std::move(members));
 	}
-	case LogicalTypeId::LIST: {
-		auto child_type = TypeWithoutFields(ListType::GetChildType(type), field_id.GetChildByIndex(0), dropped_fields);
-		if (child_type.id() == LogicalTypeId::INVALID) {
-			return LogicalType::INVALID;
-		}
-		return LogicalType::LIST(std::move(child_type));
-	}
-	case LogicalTypeId::MAP: {
-		auto key_type = TypeWithoutFields(MapType::KeyType(type), field_id.GetChildByIndex(0), dropped_fields);
-		auto value_type = TypeWithoutFields(MapType::ValueType(type), field_id.GetChildByIndex(1), dropped_fields);
-		if (key_type.id() == LogicalTypeId::INVALID || value_type.id() == LogicalTypeId::INVALID) {
-			return LogicalType::INVALID;
-		}
-		return LogicalType::MAP(std::move(key_type), std::move(value_type));
-	}
+	case LogicalTypeId::LIST:
+		return LogicalType::LIST(ReshapedType(ListType::GetChildType(type), old_id.GetChildByIndex(0),
+		                                      new_id.GetChildByIndex(0), keep_dropped));
+	case LogicalTypeId::MAP:
+		return LogicalType::MAP(
+		    ReshapedType(MapType::KeyType(type), old_id.GetChildByIndex(0), new_id.GetChildByIndex(0), keep_dropped),
+		    ReshapedType(MapType::ValueType(type), old_id.GetChildByIndex(1), new_id.GetChildByIndex(1), keep_dropped));
 	default:
 		return type;
 	}
 }
 
-void LocalTableChanges::RemoveFieldsFromLocalInlinedData(ClientContext &context, TableIndex table_id,
-                                                         const DuckLakeTableEntry &table,
-                                                         const DuckLakeTableEntry &new_table,
-                                                         const set<FieldIndex> &fields) {
+void LocalTableChanges::ReshapeLocalInlinedData(ClientContext &context, TableIndex table_id,
+                                                const DuckLakeTableEntry &table, const DuckLakeTableEntry &new_table) {
 	lock_guard<mutex> guard(lock);
 	auto entry = Find(table_id);
 	if (!entry || !entry->new_inlined_data) {
 		return;
 	}
 	auto &inlined_data = *entry->new_inlined_data;
-	auto &field_data = table.GetFieldData();
-	auto table_types = new_table.GetColumns().GetColumnTypes();
-
-	// a column that lost every field reads NULL in its new type
-	vector<LogicalType> new_types;
-	set<idx_t> null_columns;
-	for (auto &type : inlined_data.data->Types()) {
-		auto col_idx = new_types.size();
-		auto new_type = TypeWithoutFields(type, field_data.GetByRootIndex(PhysicalIndex(col_idx)), fields);
-		if (new_type.id() == LogicalTypeId::INVALID) {
-			null_columns.insert(col_idx);
-			new_type = table_types[col_idx];
-		}
-		new_types.push_back(std::move(new_type));
+	auto &old_fields = table.GetFieldData();
+	auto &new_fields = new_table.GetFieldData();
+	auto &types = inlined_data.data->Types();
+	vector<LogicalType> with_added_fields;
+	vector<LogicalType> reshaped;
+	for (idx_t col_idx = 0; col_idx < types.size(); col_idx++) {
+		auto &old_id = old_fields.GetByRootIndex(PhysicalIndex(col_idx));
+		auto &new_id = new_fields.GetByRootIndex(PhysicalIndex(col_idx));
+		with_added_fields.push_back(ReshapedType(types[col_idx], old_id, new_id, true));
+		reshaped.push_back(ReshapedType(types[col_idx], old_id, new_id, false));
 	}
-	CastInlinedData(context, inlined_data, new_types, null_columns);
-	for (auto &field : fields) {
-		RemoveFieldStats(inlined_data.column_stats, *field_data.GetByFieldIndex(field));
+	// a struct cast needs a common member, so the added fields come before the dropped ones go
+	CastInlinedData(context, inlined_data, with_added_fields);
+	CastInlinedData(context, inlined_data, reshaped);
+	for (auto &field : table.GetNewFields(new_table)) {
+		RemoveFieldStats(inlined_data.column_stats, *old_fields.GetByFieldIndex(field));
 	}
 }
 
@@ -2755,12 +2750,9 @@ void DuckLakeTransaction::AlterEntryInternal(DuckLakeTableEntry &table, unique_p
 		if (!new_fields.empty()) {
 			state->local_changes.AddFieldsToLocalFiles(table.GetTableId(), new_table, new_fields);
 		}
-		// the fields of the old table that the new table no longer has
-		auto dropped_fields = table.GetNewFields(new_table);
-		if (!dropped_fields.empty()) {
+		if (new_table.GetLocalChange().type == LocalChangeType::CHANGE_COLUMN_TYPE) {
 			auto context_ref = context.lock();
-			state->local_changes.RemoveFieldsFromLocalInlinedData(*context_ref, table.GetTableId(), table, new_table,
-			                                                      dropped_fields);
+			state->local_changes.ReshapeLocalInlinedData(*context_ref, table.GetTableId(), table, new_table);
 		}
 		break;
 	}

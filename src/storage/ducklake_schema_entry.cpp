@@ -122,7 +122,7 @@ DuckLakeSchemaEntry::CreateTableExtended(CatalogTransaction transaction, BoundCr
 	auto table_id = TableIndex(duck_transaction.GetLocalCatalogId());
 	// generate field ids based on the column ids
 	idx_t column_id = 1;
-	auto field_data = DuckLakeFieldData::FromColumns(base_info.columns, column_id);
+	auto field_data = DuckLakeFieldData::FromColumns(base_info.columns, column_id, transaction.GetContext());
 	vector<DuckLakeInlinedTableInfo> inlined_tables;
 	auto table_entry = make_uniq<DuckLakeTableEntry>(ParentCatalog(), *this, base_info, table_id, std::move(table_uuid),
 	                                                 std::move(table_data_path), std::move(field_data), column_id,
@@ -197,12 +197,12 @@ optional_ptr<CatalogEntry> DuckLakeSchemaEntry::CreateFunction(CatalogTransactio
 		}
 		for (auto &entry : macro->default_parameters) {
 			Value default_value;
-			if (DuckLakeUtil::TryGetLiteralValue(*entry.second, default_value)) {
+			if (DuckLakeUtil::TryGetLiteralValue(*entry.second, default_value, transaction.GetContext())) {
 				DuckLakeTypes::CheckSupportedType(default_value.IsNull() ? LogicalType::SQLNULL : default_value.type(),
 				                                  version);
 			}
 			if (!ducklake_catalog.SupportsV1_1Metadata() &&
-			    !DuckLakeUtil::TryGetMacroDefaultLiteral(*entry.second, default_value)) {
+			    !DuckLakeUtil::TryGetMacroDefaultLiteral(*entry.second, default_value, transaction.GetContext())) {
 				ThrowUnsupportedByVersion(version, "macro parameter defaults that are not scalar constants");
 			}
 		}

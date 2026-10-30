@@ -2682,7 +2682,6 @@ void DuckLakeTransaction::AlterEntryInternal(DuckLakeTableEntry &table, unique_p
 	case LocalChangeType::ADD_COLUMN:
 	case LocalChangeType::CHANGE_COLUMN_TYPE: {
 		if (new_table.GetLocalChange().type == LocalChangeType::CHANGE_COLUMN_TYPE) {
-			// the commit writes the inlined rows in the new types, which match struct fields by name as the cast does
 			state->local_changes.CastLocalInlinedData(*context.lock(), table.GetTableId(), new_table);
 		}
 		auto new_fields = new_table.GetNewFields(table);

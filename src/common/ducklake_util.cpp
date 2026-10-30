@@ -26,7 +26,6 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
-#include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/map_vector.hpp"
 #include "storage/ducklake_catalog.hpp"
 #include "storage/ducklake_scan.hpp"
@@ -840,9 +839,9 @@ bool DuckLakeUtil::TryGetMacroDefaultLiteral(const ParsedExpression &expr, Value
 	return !result.type().IsNested() && !(result.IsNull() && DuckLakeTypes::IsStringType(result.type()));
 }
 
-static optional_idx FindStructChild(const child_list_t<LogicalType> &children, const string &name) {
+static optional_idx FindStructChild(const child_list_t<LogicalType> &children, const Identifier &name) {
 	for (idx_t child_idx = 0; child_idx < children.size(); child_idx++) {
-		if (StringUtil::CIEquals(children[child_idx].first.GetIdentifierName(), name)) {
+		if (children[child_idx].first == name) {
 			return child_idx;
 		}
 	}
@@ -856,14 +855,11 @@ static bool ReplacesAllStructFields(const LogicalType &source, const LogicalType
 	}
 	switch (source.id()) {
 	case LogicalTypeId::STRUCT: {
-		if (StructType::IsUnnamed(source) || StructType::IsUnnamed(target)) {
-			return false;
-		}
 		auto &source_children = StructType::GetChildTypes(source);
 		auto &target_children = StructType::GetChildTypes(target);
 		bool any_match = false;
 		for (auto &target_child : target_children) {
-			auto source_idx = FindStructChild(source_children, target_child.first.GetIdentifierName());
+			auto source_idx = FindStructChild(source_children, target_child.first);
 			if (!source_idx.IsValid()) {
 				continue;
 			}
@@ -876,9 +872,6 @@ static bool ReplacesAllStructFields(const LogicalType &source, const LogicalType
 	}
 	case LogicalTypeId::LIST:
 		return ReplacesAllStructFields(ListType::GetChildType(source), ListType::GetChildType(target));
-	case LogicalTypeId::ARRAY:
-		return ArrayType::GetSize(source) == ArrayType::GetSize(target) &&
-		       ReplacesAllStructFields(ArrayType::GetChildType(source), ArrayType::GetChildType(target));
 	case LogicalTypeId::MAP:
 		return ReplacesAllStructFields(MapType::KeyType(source), MapType::KeyType(target)) ||
 		       ReplacesAllStructFields(MapType::ValueType(source), MapType::ValueType(target));
@@ -910,11 +903,10 @@ void DuckLakeUtil::CastInlinedVector(ClientContext &context, Vector &source, Vec
 		auto &result_entries = StructVector::GetEntries(result);
 		for (idx_t child_idx = 0; child_idx < target_children.size(); child_idx++) {
 			auto &result_entry = result_entries[child_idx];
-			auto source_idx = FindStructChild(source_children, target_children[child_idx].first.GetIdentifierName());
+			auto source_idx = FindStructChild(source_children, target_children[child_idx].first);
 			if (!source_idx.IsValid()) {
 				// a new field, the rows do not have a value for it yet
-				result_entry.SetVectorType(VectorType::CONSTANT_VECTOR);
-				ConstantVector::SetNull(result_entry, true);
+				ConstantVector::SetNull(result_entry, count_t(count));
 				continue;
 			}
 			CastInlinedVector(context, source_entries[source_idx.GetIndex()], result_entry, count);
@@ -935,12 +927,6 @@ void DuckLakeUtil::CastInlinedVector(ClientContext &context, Vector &source, Vec
 		if (source_type.id() == LogicalTypeId::MAP) {
 			MapVector::MapConversionVerify(result, count);
 		}
-		break;
-	}
-	case LogicalTypeId::ARRAY: {
-		auto child_count = count * ArrayType::GetSize(source_type);
-		CastInlinedVector(context, ArrayVector::GetChildMutable(flat), ArrayVector::GetChildMutable(result),
-		                  child_count);
 		break;
 	}
 	default:

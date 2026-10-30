@@ -41,7 +41,7 @@ SELECT k, s FROM lake.t ORDER BY k
 1	{'b': NULL}
 2	NULL
 
-# the commit casts the rows without a SELECT in between too
+# the same without a SELECT before the COMMIT
 statement ok
 CREATE TABLE lake.t2 (k INTEGER, s STRUCT(a INTEGER))
 

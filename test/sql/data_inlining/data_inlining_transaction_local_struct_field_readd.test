@@ -1,0 +1,166 @@
+# name: test/sql/data_inlining/data_inlining_transaction_local_struct_field_readd.test
+# description: a struct field dropped and added again in the transaction that inlined the rows reads NULL
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/inlining_struct_field_readd', METADATA_CATALOG 'ducklake_meta', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE ducklake.t(k INTEGER, s STRUCT(a INTEGER, b INTEGER))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.t VALUES (1, {'a': 1, 'b': 100})
+
+statement ok
+ALTER TABLE ducklake.t ALTER s TYPE STRUCT(a INTEGER)
+
+query II
+SELECT k, s FROM ducklake.t
+----
+1	{'a': 1}
+
+statement ok
+ALTER TABLE ducklake.t ALTER s TYPE STRUCT(a INTEGER, b INTEGER)
+
+query II
+SELECT k, s FROM ducklake.t
+----
+1	{'a': 1, 'b': NULL}
+
+statement ok
+COMMIT
+
+query II
+SELECT k, s FROM ducklake.t
+----
+1	{'a': 1, 'b': NULL}
+
+query I
+SELECT count(*) FROM ducklake.t WHERE s.b IS NULL
+----
+1
+
+# the field got a new column id
+query III
+SELECT column_name, begin_snapshot, end_snapshot FROM ducklake_meta.ducklake_column WHERE column_name = 'b' ORDER BY column_id
+----
+b	1	2
+b	2	NULL
+
+# an insert between the drop and the re-add
+statement ok
+CREATE TABLE ducklake.between(k INTEGER, s STRUCT(a INTEGER, b INTEGER))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.between VALUES (1, {'a': 1, 'b': 100})
+
+statement ok
+ALTER TABLE ducklake.between ALTER s TYPE STRUCT(a INTEGER)
+
+statement ok
+INSERT INTO ducklake.between VALUES (2, {'a': 2})
+
+statement ok
+ALTER TABLE ducklake.between ALTER s TYPE STRUCT(a INTEGER, b INTEGER)
+
+statement ok
+COMMIT
+
+query II
+SELECT k, s FROM ducklake.between ORDER BY k
+----
+1	{'a': 1, 'b': NULL}
+2	{'a': 2, 'b': NULL}
+
+# a struct inside a list and a struct map value
+statement ok
+CREATE TABLE ducklake.nested(k INTEGER, l STRUCT(a INTEGER, b INTEGER)[], m MAP(VARCHAR, STRUCT(a INTEGER, b INTEGER)))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.nested VALUES (1, [{'a': 1, 'b': 100}, {'a': 2, 'b': 200}], MAP {'x': {'a': 3, 'b': 300}})
+
+statement ok
+ALTER TABLE ducklake.nested ALTER l TYPE STRUCT(a INTEGER)[]
+
+statement ok
+ALTER TABLE ducklake.nested ALTER m TYPE MAP(VARCHAR, STRUCT(a INTEGER))
+
+statement ok
+ALTER TABLE ducklake.nested ALTER l TYPE STRUCT(a INTEGER, b INTEGER)[]
+
+statement ok
+ALTER TABLE ducklake.nested ALTER m TYPE MAP(VARCHAR, STRUCT(a INTEGER, b INTEGER))
+
+statement ok
+COMMIT
+
+query III
+SELECT k, l, m FROM ducklake.nested
+----
+1	[{'a': 1, 'b': NULL}, {'a': 2, 'b': NULL}]	{x={'a': 3, 'b': NULL}}
+
+# a type change that keeps the field keeps its values
+statement ok
+CREATE TABLE ducklake.widen(k INTEGER, s STRUCT(a INTEGER, b INTEGER))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.widen VALUES (1, {'a': 1, 'b': 100})
+
+statement ok
+ALTER TABLE ducklake.widen ALTER s TYPE STRUCT(a BIGINT, b INTEGER)
+
+statement ok
+ALTER TABLE ducklake.widen ALTER s TYPE STRUCT(a BIGINT, b BIGINT, c INTEGER)
+
+statement ok
+COMMIT
+
+query II
+SELECT k, s FROM ducklake.widen
+----
+1	{'a': 1, 'b': 100, 'c': NULL}
+
+# the rows read the same once flushed to a data file
+statement ok
+CALL ducklake_flush_inlined_data('ducklake')
+
+query II
+SELECT k, s FROM ducklake.t
+----
+1	{'a': 1, 'b': NULL}
+
+query II
+SELECT k, s FROM ducklake.between ORDER BY k
+----
+1	{'a': 1, 'b': NULL}
+2	{'a': 2, 'b': NULL}
+
+query III
+SELECT k, l, m FROM ducklake.nested
+----
+1	[{'a': 1, 'b': NULL}, {'a': 2, 'b': NULL}]	{x={'a': 3, 'b': NULL}}
+
+query II
+SELECT k, s FROM ducklake.widen
+----
+1	{'a': 1, 'b': 100, 'c': NULL}

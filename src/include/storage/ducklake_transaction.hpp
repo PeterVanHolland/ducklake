@@ -131,6 +131,9 @@ public:
 	                                      LogicalIndex removed_column_index, const DuckLakeFieldId &field_id);
 	//! Records what the files written before the fields were added read for them
 	void AddFieldsToLocalFiles(TableIndex table_id, const DuckLakeTableEntry &table, const set<FieldIndex> &fields);
+	//! Sets the dropped fields of the inlined rows to NULL, since a type change leaves those rows as they are
+	void RemoveFieldsFromLocalInlinedData(ClientContext &context, TableIndex table_id, const DuckLakeTableEntry &table,
+	                                      const set<FieldIndex> &fields);
 	optional_ptr<DuckLakeInlinedDataDeletes> GetInlinedDeletes(TableIndex table_id, const Identifier &table_name) const;
 	void AddNewInlinedFileDeletes(TableIndex table_id, idx_t file_id, set<idx_t> new_deletes);
 	//! Returns false without adding it when one of its source files is already compacted

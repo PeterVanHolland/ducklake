@@ -15,6 +15,9 @@
 #include "duckdb/common/thread.hpp"
 #include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/map_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
@@ -497,6 +500,69 @@ void LocalTableChanges::RemoveColumnFromLocalInlinedData(ClientContext &context,
 	RemoveFieldStats(table_changes.new_inlined_data->column_stats, field_id);
 
 	table_changes.new_inlined_data->data = std::move(new_data);
+}
+
+static void NullDroppedFields(Vector &data, idx_t count, const DuckLakeFieldId &field_id,
+                              const set<FieldIndex> &dropped_fields) {
+	if (dropped_fields.count(field_id.GetFieldIndex())) {
+		data.Flatten();
+		FlatVector::ValidityMutable(data).SetAllInvalid(count);
+		return;
+	}
+	switch (data.GetType().id()) {
+	case LogicalTypeId::STRUCT: {
+		// the rows can predate fields added since, so the children are matched by name
+		auto &child_types = StructType::GetChildTypes(data.GetType());
+		auto &children = StructVector::GetEntries(data);
+		for (idx_t child_idx = 0; child_idx < children.size(); child_idx++) {
+			auto child_id = field_id.GetChildByName(Identifier(child_types[child_idx].first));
+			if (child_id) {
+				NullDroppedFields(children[child_idx], count, *child_id, dropped_fields);
+			}
+		}
+		break;
+	}
+	case LogicalTypeId::LIST:
+		NullDroppedFields(ListVector::GetChildMutable(data), ListVector::GetListSize(data), field_id.GetChildByIndex(0),
+		                  dropped_fields);
+		break;
+	case LogicalTypeId::MAP: {
+		auto map_size = ListVector::GetListSize(data);
+		NullDroppedFields(MapVector::GetKeys(data), map_size, field_id.GetChildByIndex(0), dropped_fields);
+		NullDroppedFields(MapVector::GetValues(data), map_size, field_id.GetChildByIndex(1), dropped_fields);
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+void LocalTableChanges::RemoveFieldsFromLocalInlinedData(ClientContext &context, TableIndex table_id,
+                                                         const DuckLakeTableEntry &table,
+                                                         const set<FieldIndex> &fields) {
+	lock_guard<mutex> guard(lock);
+	auto entry = Find(table_id);
+	if (!entry || !entry->new_inlined_data) {
+		return;
+	}
+	auto &inlined_data = *entry->new_inlined_data;
+	auto &existing = *inlined_data.data;
+	auto &field_data = table.GetFieldData();
+
+	auto new_data = make_uniq<ColumnDataCollection>(context, existing.Types());
+	ColumnDataAppendState append_state;
+	new_data->InitializeAppend(append_state);
+	for (auto &chunk : existing.Chunks()) {
+		for (idx_t col_idx = 0; col_idx < chunk.ColumnCount(); col_idx++) {
+			NullDroppedFields(chunk.data[col_idx], chunk.size(), field_data.GetByRootIndex(PhysicalIndex(col_idx)),
+			                  fields);
+		}
+		new_data->Append(append_state, chunk);
+	}
+	for (auto &field : fields) {
+		RemoveFieldStats(inlined_data.column_stats, *field_data.GetByFieldIndex(field));
+	}
+	inlined_data.data = std::move(new_data);
 }
 
 optional_ptr<DuckLakeInlinedDataDeletes> LocalTableChanges::GetInlinedDeletes(TableIndex table_id,
@@ -2672,6 +2738,13 @@ void DuckLakeTransaction::AlterEntryInternal(DuckLakeTableEntry &table, unique_p
 		auto new_fields = new_table.GetNewFields(table);
 		if (!new_fields.empty()) {
 			state->local_changes.AddFieldsToLocalFiles(table.GetTableId(), new_table, new_fields);
+		}
+		// the fields of the old table that the new table no longer has
+		auto dropped_fields = table.GetNewFields(new_table);
+		if (!dropped_fields.empty()) {
+			auto context_ref = context.lock();
+			state->local_changes.RemoveFieldsFromLocalInlinedData(*context_ref, table.GetTableId(), table,
+			                                                      dropped_fields);
 		}
 		break;
 	}

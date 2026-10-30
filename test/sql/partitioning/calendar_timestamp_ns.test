@@ -1,0 +1,59 @@
+# name: test/sql/partitioning/calendar_timestamp_ns.test
+# description: calendar partition values of a TIMESTAMP_NS floor the nanoseconds like the epoch transforms
+# group: [partitioning]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/calendar_timestamp_ns', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t (id INTEGER, ts TIMESTAMP_NS) PARTITIONED BY (year(ts), month(ts), day(ts), hour(ts), epoch_hour(ts))
+
+# the last nanosecond of an hour, a day and a year, the first of the next, and the lowest TIMESTAMP_NS
+statement ok
+INSERT INTO lake.t VALUES
+	(1, TIMESTAMP_NS '1969-12-31 23:59:59.999999999'),
+	(2, TIMESTAMP_NS '1970-01-01 00:00:00.000000001'),
+	(3, TIMESTAMP_NS '2026-03-15 10:59:59.999999999'),
+	(4, TIMESTAMP_NS '2026-03-15 11:00:00.000000000'),
+	(5, TIMESTAMP_NS '1677-09-21 00:12:43.145224194')
+
+# the hive path of each row follows the floored timestamp
+query II
+SELECT id, regexp_extract(filename, '/(year=[^/]*/month=[^/]*/day=[^/]*/hour=[^/]*/epoch_hour=[^/]*)/', 1)
+FROM lake.t ORDER BY id
+----
+1	year=1969/month=12/day=31/hour=23/epoch_hour=-1
+2	year=1970/month=1/day=1/hour=0/epoch_hour=0
+3	year=2026/month=3/day=15/hour=10/epoch_hour=492658
+4	year=2026/month=3/day=15/hour=11/epoch_hour=492659
+5	year=1677/month=9/day=21/hour=0/epoch_hour=-2562048
+
+# the stored partition values match the paths
+query I
+SELECT string_agg(partition_value, ', ' ORDER BY partition_key_index) AS partition_values
+FROM __ducklake_metadata_lake.ducklake_file_partition_value
+GROUP BY data_file_id ORDER BY partition_values
+----
+1677, 9, 21, 0, -2562048
+1969, 12, 31, 23, -1
+1970, 1, 1, 0, 0
+2026, 3, 15, 10, 492658
+2026, 3, 15, 11, 492659
+
+# the stored values are unchanged
+query I
+SELECT ts FROM lake.t ORDER BY id
+----
+1969-12-31 23:59:59.999999999
+1970-01-01 00:00:00.000000001
+2026-03-15 10:59:59.999999999
+2026-03-15 11:00:00
+1677-09-21 00:12:43.145224194

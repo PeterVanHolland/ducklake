@@ -162,6 +162,24 @@ vector<DuckLakeDataFile> LocalTableChanges::GetTransactionLocalFiles(TableIndex 
 	return table_changes->new_data_files;
 }
 
+vector<string> LocalTableChanges::GetTransactionLocalFilePaths(TableIndex table_id) const {
+	lock_guard<mutex> guard(lock);
+	vector<string> result;
+	auto table_changes = Find(table_id);
+	if (!table_changes) {
+		return result;
+	}
+	for (const auto &file : table_changes->new_data_files) {
+		result.push_back(file.file_name);
+	}
+	for (const auto &compaction : table_changes->compactions) {
+		for (const auto &file : compaction.written_files) {
+			result.push_back(file.file_name);
+		}
+	}
+	return result;
+}
+
 shared_ptr<DuckLakeInlinedData> LocalTableChanges::GetTransactionLocalInlinedData(ClientContext &context,
                                                                                   TableIndex table_id) const {
 	lock_guard<mutex> guard(lock);
@@ -2283,6 +2301,10 @@ void DuckLakeTransaction::GetWrittenFiles(vector<string> &result) const {
 
 vector<DuckLakeDataFile> DuckLakeTransaction::GetTransactionLocalFiles(TableIndex table_id) const {
 	return state->local_changes.GetTransactionLocalFiles(table_id);
+}
+
+vector<string> DuckLakeTransaction::GetTransactionLocalFilePaths(TableIndex table_id) const {
+	return state->local_changes.GetTransactionLocalFilePaths(table_id);
 }
 
 shared_ptr<DuckLakeInlinedData> DuckLakeTransaction::GetTransactionLocalInlinedData(TableIndex table_id) const {

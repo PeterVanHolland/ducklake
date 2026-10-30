@@ -15,9 +15,6 @@
 #include "duckdb/common/thread.hpp"
 #include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
-#include "duckdb/common/vector/list_vector.hpp"
-#include "duckdb/common/vector/map_vector.hpp"
-#include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
@@ -249,9 +246,9 @@ void LocalTableChanges::AppendDeleteFiles(TableIndex table_id, const string &dat
 
 //! Cast the rows to the given types, as an ALTER COLUMN TYPE does not cast the rows that are already inlined
 static void CastInlinedData(ClientContext &context, DuckLakeInlinedData &inlined_data,
-                            const vector<LogicalType> &new_types) {
+                            const vector<LogicalType> &new_types, const set<idx_t> &null_columns = {}) {
 	auto &existing_types = inlined_data.data->Types();
-	if (existing_types == new_types) {
+	if (existing_types == new_types && null_columns.empty()) {
 		return;
 	}
 	auto casted_data = make_uniq<ColumnDataCollection>(context, new_types);
@@ -261,7 +258,9 @@ static void CastInlinedData(ClientContext &context, DuckLakeInlinedData &inlined
 		DataChunk casted_chunk;
 		casted_chunk.Initialize(context, new_types);
 		for (idx_t col_idx = 0; col_idx < chunk.ColumnCount(); col_idx++) {
-			if (existing_types[col_idx] != new_types[col_idx]) {
+			if (null_columns.count(col_idx)) {
+				ConstantVector::SetNull(casted_chunk.data[col_idx], count_t(chunk.size()));
+			} else if (existing_types[col_idx] != new_types[col_idx]) {
 				VectorOperations::Cast(context, chunk.data[col_idx], casted_chunk.data[col_idx], chunk.size());
 			} else {
 				casted_chunk.data[col_idx].Reference(chunk.data[col_idx]);
@@ -502,46 +501,58 @@ void LocalTableChanges::RemoveColumnFromLocalInlinedData(ClientContext &context,
 	table_changes.new_inlined_data->data = std::move(new_data);
 }
 
-static void NullDroppedFields(Vector &data, idx_t count, const DuckLakeFieldId &field_id,
-                              const set<FieldIndex> &dropped_fields) {
-	if (dropped_fields.count(field_id.GetFieldIndex())) {
-		ConstantVector::SetNull(data, count_t(count));
-		return;
+//! The buffered type without the dropped fields, or INVALID when none of its fields is left
+static LogicalType TypeWithoutFields(const LogicalType &type, const DuckLakeFieldId &field_id,
+                                     const set<FieldIndex> &dropped_fields) {
+	if (field_id.Type().id() != type.id()) {
+		return type;
 	}
-	// a dropped field that was added again with another type keeps its old values until the cast
-	if (field_id.Type().id() != data.GetType().id()) {
-		return;
-	}
-	switch (data.GetType().id()) {
+	switch (type.id()) {
 	case LogicalTypeId::STRUCT: {
 		// the rows can predate fields added since, so the children are matched by name
-		auto &child_types = StructType::GetChildTypes(data.GetType());
-		auto &children = StructVector::GetEntries(data);
-		for (idx_t child_idx = 0; child_idx < children.size(); child_idx++) {
-			auto child_id = field_id.GetChildByName(Identifier(child_types[child_idx].first));
-			if (child_id) {
-				NullDroppedFields(children[child_idx], count, *child_id, dropped_fields);
+		child_list_t<LogicalType> children;
+		for (auto &child : StructType::GetChildTypes(type)) {
+			auto child_id = field_id.GetChildByName(Identifier(child.first));
+			if (!child_id) {
+				children.push_back(child);
+				continue;
+			}
+			if (dropped_fields.count(child_id->GetFieldIndex())) {
+				continue;
+			}
+			auto child_type = TypeWithoutFields(child.second, *child_id, dropped_fields);
+			if (child_type.id() != LogicalTypeId::INVALID) {
+				children.emplace_back(child.first, std::move(child_type));
 			}
 		}
-		break;
+		if (children.empty()) {
+			return LogicalType::INVALID;
+		}
+		return LogicalType::STRUCT(std::move(children));
 	}
-	case LogicalTypeId::LIST:
-		NullDroppedFields(ListVector::GetChildMutable(data), ListVector::GetListSize(data), field_id.GetChildByIndex(0),
-		                  dropped_fields);
-		break;
+	case LogicalTypeId::LIST: {
+		auto child_type = TypeWithoutFields(ListType::GetChildType(type), field_id.GetChildByIndex(0), dropped_fields);
+		if (child_type.id() == LogicalTypeId::INVALID) {
+			return LogicalType::INVALID;
+		}
+		return LogicalType::LIST(std::move(child_type));
+	}
 	case LogicalTypeId::MAP: {
-		auto map_size = ListVector::GetListSize(data);
-		NullDroppedFields(MapVector::GetKeys(data), map_size, field_id.GetChildByIndex(0), dropped_fields);
-		NullDroppedFields(MapVector::GetValues(data), map_size, field_id.GetChildByIndex(1), dropped_fields);
-		break;
+		auto key_type = TypeWithoutFields(MapType::KeyType(type), field_id.GetChildByIndex(0), dropped_fields);
+		auto value_type = TypeWithoutFields(MapType::ValueType(type), field_id.GetChildByIndex(1), dropped_fields);
+		if (key_type.id() == LogicalTypeId::INVALID || value_type.id() == LogicalTypeId::INVALID) {
+			return LogicalType::INVALID;
+		}
+		return LogicalType::MAP(std::move(key_type), std::move(value_type));
 	}
 	default:
-		break;
+		return type;
 	}
 }
 
 void LocalTableChanges::RemoveFieldsFromLocalInlinedData(ClientContext &context, TableIndex table_id,
                                                          const DuckLakeTableEntry &table,
+                                                         const DuckLakeTableEntry &new_table,
                                                          const set<FieldIndex> &fields) {
 	lock_guard<mutex> guard(lock);
 	auto entry = Find(table_id);
@@ -549,23 +560,25 @@ void LocalTableChanges::RemoveFieldsFromLocalInlinedData(ClientContext &context,
 		return;
 	}
 	auto &inlined_data = *entry->new_inlined_data;
-	auto &existing = *inlined_data.data;
 	auto &field_data = table.GetFieldData();
+	auto table_types = new_table.GetColumns().GetColumnTypes();
 
-	auto new_data = make_uniq<ColumnDataCollection>(context, existing.Types());
-	ColumnDataAppendState append_state;
-	new_data->InitializeAppend(append_state);
-	for (auto &chunk : existing.Chunks()) {
-		for (idx_t col_idx = 0; col_idx < chunk.ColumnCount(); col_idx++) {
-			NullDroppedFields(chunk.data[col_idx], chunk.size(), field_data.GetByRootIndex(PhysicalIndex(col_idx)),
-			                  fields);
+	// a column that lost every field reads NULL in its new type
+	vector<LogicalType> new_types;
+	set<idx_t> null_columns;
+	for (auto &type : inlined_data.data->Types()) {
+		auto col_idx = new_types.size();
+		auto new_type = TypeWithoutFields(type, field_data.GetByRootIndex(PhysicalIndex(col_idx)), fields);
+		if (new_type.id() == LogicalTypeId::INVALID) {
+			null_columns.insert(col_idx);
+			new_type = table_types[col_idx];
 		}
-		new_data->Append(append_state, chunk);
+		new_types.push_back(std::move(new_type));
 	}
+	CastInlinedData(context, inlined_data, new_types, null_columns);
 	for (auto &field : fields) {
 		RemoveFieldStats(inlined_data.column_stats, *field_data.GetByFieldIndex(field));
 	}
-	inlined_data.data = std::move(new_data);
 }
 
 optional_ptr<DuckLakeInlinedDataDeletes> LocalTableChanges::GetInlinedDeletes(TableIndex table_id,
@@ -2746,7 +2759,7 @@ void DuckLakeTransaction::AlterEntryInternal(DuckLakeTableEntry &table, unique_p
 		auto dropped_fields = table.GetNewFields(new_table);
 		if (!dropped_fields.empty()) {
 			auto context_ref = context.lock();
-			state->local_changes.RemoveFieldsFromLocalInlinedData(*context_ref, table.GetTableId(), table,
+			state->local_changes.RemoveFieldsFromLocalInlinedData(*context_ref, table.GetTableId(), table, new_table,
 			                                                      dropped_fields);
 		}
 		break;

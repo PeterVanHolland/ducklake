@@ -1,5 +1,5 @@
 # name: test/sql/data_inlining/data_inlining_transaction_local_struct_field_readd.test
-# description: a struct field dropped and added again in the transaction that inlined the rows reads NULL
+# description: struct fields dropped by a type change in the transaction that inlined the rows are gone from those rows
 # group: [data_inlining]
 
 require ducklake
@@ -177,6 +177,42 @@ SELECT k, s FROM ducklake.retyped
 ----
 1	{'a': 1, 'b': NULL}
 
+# a struct replaced by a struct with no common member, whole and nested, in one step and in two
+statement ok
+CREATE TABLE ducklake.replaced(k INTEGER, s STRUCT(a INTEGER), n STRUCT(a INTEGER, b STRUCT(c INTEGER)),
+	m STRUCT(a INTEGER, b STRUCT(c INTEGER)))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.replaced VALUES (1, {'a': 1}, {'a': 2, 'b': {'c': 7}}, {'a': 3, 'b': {'c': 8}})
+
+statement ok
+ALTER TABLE ducklake.replaced ALTER s TYPE STRUCT(b INTEGER)
+
+statement ok
+ALTER TABLE ducklake.replaced ALTER n TYPE STRUCT(a INTEGER, b STRUCT(d INTEGER))
+
+statement ok
+ALTER TABLE ducklake.replaced ALTER m TYPE STRUCT(a INTEGER)
+
+statement ok
+ALTER TABLE ducklake.replaced ALTER m TYPE STRUCT(a INTEGER, b STRUCT(d INTEGER))
+
+query IIII
+SELECT k, s, n, m FROM ducklake.replaced
+----
+1	NULL	{'a': 2, 'b': NULL}	{'a': 3, 'b': NULL}
+
+statement ok
+COMMIT
+
+query IIII
+SELECT k, s, n, m FROM ducklake.replaced
+----
+1	NULL	{'a': 2, 'b': NULL}	{'a': 3, 'b': NULL}
+
 # a type change that keeps the field keeps its values
 statement ok
 CREATE TABLE ducklake.widen(k INTEGER, s STRUCT(a INTEGER, b INTEGER))
@@ -230,6 +266,11 @@ query II
 SELECT k, s FROM ducklake.retyped
 ----
 1	{'a': 1, 'b': NULL}
+
+query IIII
+SELECT k, s, n, m FROM ducklake.replaced
+----
+1	NULL	{'a': 2, 'b': NULL}	{'a': 3, 'b': NULL}
 
 query II
 SELECT k, s FROM ducklake.widen

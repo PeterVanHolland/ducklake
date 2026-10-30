@@ -6010,11 +6010,11 @@ WHERE NOT EXISTS (
 		result->ThrowIfError("Failed to delete from ducklake_name_mapping in DuckLake: ");
 	}
 
-	unordered_set<idx_t> expired_next_file_ids;
+	unordered_set<idx_t> expired_snapshot_ids;
 	for (auto &snapshot : snapshots) {
-		expired_next_file_ids.insert(snapshot.next_file_id);
+		expired_snapshot_ids.insert(snapshot.id);
 	}
-	catalog.InvalidateTableStatsCaches(expired_next_file_ids);
+	catalog.InvalidateTableStatsCaches(expired_snapshot_ids);
 	ClearCache();
 }
 

@@ -91,7 +91,7 @@ SELECT COUNT(*) FROM __ducklake_metadata_ducklake.ducklake_table_column_stats WH
 ----
 0
 
-# Re-insert after the drop in the same connection: the stats cache was invalidated, so the insert
+# Re-insert after the drop in the same connection: the stats are read for the new snapshot, so the insert
 # starts from the decremented base (record_count 0), not the stale pre-delete value.
 statement ok
 INSERT INTO ducklake.t SELECT range::INT id FROM range(100, 110)

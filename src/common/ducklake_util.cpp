@@ -23,6 +23,10 @@
 #include "duckdb/function/scalar/struct_utils.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/type_visitor.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
+#include "duckdb/common/vector/map_vector.hpp"
 #include "storage/ducklake_catalog.hpp"
 #include "storage/ducklake_scan.hpp"
 #include "duckdb/catalog/catalog_entry/copy_function_catalog_entry.hpp"
@@ -833,6 +837,101 @@ bool DuckLakeUtil::TryGetMacroDefaultLiteral(const ParsedExpression &expr, Value
 	}
 	// nested types are stored without their child types and a NULL string would read back as the text NULL
 	return !result.type().IsNested() && !(result.IsNull() && DuckLakeTypes::IsStringType(result.type()));
+}
+
+static optional_idx FindStructChild(const child_list_t<LogicalType> &children, const Identifier &name) {
+	for (idx_t child_idx = 0; child_idx < children.size(); child_idx++) {
+		if (children[child_idx].first == name) {
+			return child_idx;
+		}
+	}
+	return optional_idx();
+}
+
+//! Whether a cast between the types reaches a struct whose fields were all replaced, which DuckDB refuses to cast
+static bool ReplacesAllStructFields(const LogicalType &source, const LogicalType &target) {
+	if (source.id() != target.id()) {
+		return false;
+	}
+	switch (source.id()) {
+	case LogicalTypeId::STRUCT: {
+		auto &source_children = StructType::GetChildTypes(source);
+		auto &target_children = StructType::GetChildTypes(target);
+		bool any_match = false;
+		for (auto &target_child : target_children) {
+			auto source_idx = FindStructChild(source_children, target_child.first);
+			if (!source_idx.IsValid()) {
+				continue;
+			}
+			any_match = true;
+			if (ReplacesAllStructFields(source_children[source_idx.GetIndex()].second, target_child.second)) {
+				return true;
+			}
+		}
+		return !any_match;
+	}
+	case LogicalTypeId::LIST:
+		return ReplacesAllStructFields(ListType::GetChildType(source), ListType::GetChildType(target));
+	case LogicalTypeId::MAP:
+		return ReplacesAllStructFields(MapType::KeyType(source), MapType::KeyType(target)) ||
+		       ReplacesAllStructFields(MapType::ValueType(source), MapType::ValueType(target));
+	default:
+		return false;
+	}
+}
+
+void DuckLakeUtil::CastInlinedVector(ClientContext &context, Vector &source, Vector &result, idx_t count) {
+	auto &source_type = source.GetType();
+	auto &target_type = result.GetType();
+	if (source_type == target_type) {
+		result.Reference(source);
+		return;
+	}
+	if (!ReplacesAllStructFields(source_type, target_type)) {
+		VectorOperations::Cast(context, source, result, count);
+		return;
+	}
+	Vector flat(source_type, count);
+	VectorOperations::Copy(source, flat, count, 0, 0);
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	FlatVector::SetValidity(result, FlatVector::Validity(flat));
+	switch (source_type.id()) {
+	case LogicalTypeId::STRUCT: {
+		auto &source_children = StructType::GetChildTypes(source_type);
+		auto &target_children = StructType::GetChildTypes(target_type);
+		auto &source_entries = StructVector::GetEntries(flat);
+		auto &result_entries = StructVector::GetEntries(result);
+		for (idx_t child_idx = 0; child_idx < target_children.size(); child_idx++) {
+			auto &result_entry = result_entries[child_idx];
+			auto source_idx = FindStructChild(source_children, target_children[child_idx].first);
+			if (!source_idx.IsValid()) {
+				// a new field, the rows do not have a value for it yet
+				ConstantVector::SetNull(result_entry, count_t(count));
+				continue;
+			}
+			CastInlinedVector(context, source_entries[source_idx.GetIndex()], result_entry, count);
+		}
+		break;
+	}
+	case LogicalTypeId::LIST:
+	case LogicalTypeId::MAP: {
+		auto source_entries = FlatVector::GetData<list_entry_t>(flat);
+		auto result_entries = FlatVector::GetDataMutable<list_entry_t>(result);
+		for (idx_t i = 0; i < count; i++) {
+			result_entries[i] = source_entries[i];
+		}
+		auto child_count = ListVector::GetListSize(flat);
+		ListVector::Reserve(result, child_count);
+		CastInlinedVector(context, ListVector::GetChildMutable(flat), ListVector::GetChildMutable(result), child_count);
+		ListVector::SetListSize(result, child_count);
+		if (source_type.id() == LogicalTypeId::MAP) {
+			MapVector::MapConversionVerify(result, count);
+		}
+		break;
+	}
+	default:
+		throw InternalException("CastInlinedVector reached a non-nested type");
+	}
 }
 
 } // namespace duckdb

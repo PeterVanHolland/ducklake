@@ -499,6 +499,83 @@ void LocalTableChanges::RemoveColumnFromLocalInlinedData(ClientContext &context,
 	table_changes.new_inlined_data->data = std::move(new_data);
 }
 
+static optional_ptr<const DuckLakeFieldId> FindChildById(const DuckLakeFieldId &field_id, FieldIndex child_index) {
+	for (auto &child : field_id.Children()) {
+		if (child->GetFieldIndex() == child_index) {
+			return *child;
+		}
+	}
+	return nullptr;
+}
+
+//! The buffered type with the fields of the new field id, matched by field id, keeping the buffered leaf types
+static LogicalType ReshapedType(const LogicalType &type, const DuckLakeFieldId &old_id, const DuckLakeFieldId &new_id,
+                                bool keep_dropped) {
+	if (!new_id.HasChildren() || type.id() != new_id.Type().id()) {
+		return type;
+	}
+	switch (type.id()) {
+	case LogicalTypeId::STRUCT: {
+		// the rows can predate fields added since, so the members are matched by name
+		child_list_t<LogicalType> members;
+		set<FieldIndex> present;
+		for (auto &member : StructType::GetChildTypes(type)) {
+			auto old_child = old_id.GetChildByName(Identifier(member.first));
+			auto new_child = old_child ? FindChildById(new_id, old_child->GetFieldIndex()) : nullptr;
+			if (new_child) {
+				present.insert(new_child->GetFieldIndex());
+				members.emplace_back(member.first, ReshapedType(member.second, *old_child, *new_child, keep_dropped));
+			} else if (!old_child || keep_dropped) {
+				members.push_back(member);
+			}
+		}
+		// the fields the rows do not have yet read NULL
+		for (auto &new_child : new_id.Children()) {
+			if (!present.count(new_child->GetFieldIndex())) {
+				members.emplace_back(new_child->Name().GetIdentifierName(), new_child->Type());
+			}
+		}
+		return LogicalType::STRUCT(std::move(members));
+	}
+	case LogicalTypeId::LIST:
+		return LogicalType::LIST(ReshapedType(ListType::GetChildType(type), old_id.GetChildByIndex(0),
+		                                      new_id.GetChildByIndex(0), keep_dropped));
+	case LogicalTypeId::MAP:
+		return LogicalType::MAP(
+		    ReshapedType(MapType::KeyType(type), old_id.GetChildByIndex(0), new_id.GetChildByIndex(0), keep_dropped),
+		    ReshapedType(MapType::ValueType(type), old_id.GetChildByIndex(1), new_id.GetChildByIndex(1), keep_dropped));
+	default:
+		return type;
+	}
+}
+
+void LocalTableChanges::ReshapeLocalInlinedData(ClientContext &context, TableIndex table_id,
+                                                const DuckLakeTableEntry &table, const DuckLakeTableEntry &new_table) {
+	lock_guard<mutex> guard(lock);
+	auto entry = Find(table_id);
+	if (!entry || !entry->new_inlined_data) {
+		return;
+	}
+	auto &inlined_data = *entry->new_inlined_data;
+	auto &old_fields = table.GetFieldData();
+	auto &new_fields = new_table.GetFieldData();
+	auto &types = inlined_data.data->Types();
+	vector<LogicalType> with_added_fields;
+	vector<LogicalType> reshaped;
+	for (idx_t col_idx = 0; col_idx < types.size(); col_idx++) {
+		auto &old_id = old_fields.GetByRootIndex(PhysicalIndex(col_idx));
+		auto &new_id = new_fields.GetByRootIndex(PhysicalIndex(col_idx));
+		with_added_fields.push_back(ReshapedType(types[col_idx], old_id, new_id, true));
+		reshaped.push_back(ReshapedType(types[col_idx], old_id, new_id, false));
+	}
+	// a struct cast needs a common member, so the added fields come before the dropped ones go
+	CastInlinedData(context, inlined_data, with_added_fields);
+	CastInlinedData(context, inlined_data, reshaped);
+	for (auto &field : table.GetNewFields(new_table)) {
+		RemoveFieldStats(inlined_data.column_stats, *old_fields.GetByFieldIndex(field));
+	}
+}
+
 optional_ptr<DuckLakeInlinedDataDeletes> LocalTableChanges::GetInlinedDeletes(TableIndex table_id,
                                                                               const Identifier &table_name) const {
 	lock_guard<mutex> guard(lock);
@@ -2672,6 +2749,10 @@ void DuckLakeTransaction::AlterEntryInternal(DuckLakeTableEntry &table, unique_p
 		auto new_fields = new_table.GetNewFields(table);
 		if (!new_fields.empty()) {
 			state->local_changes.AddFieldsToLocalFiles(table.GetTableId(), new_table, new_fields);
+		}
+		if (new_table.GetLocalChange().type == LocalChangeType::CHANGE_COLUMN_TYPE) {
+			auto context_ref = context.lock();
+			state->local_changes.ReshapeLocalInlinedData(*context_ref, table.GetTableId(), table, new_table);
 		}
 		break;
 	}

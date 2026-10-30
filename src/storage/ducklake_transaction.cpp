@@ -1533,14 +1533,6 @@ void DuckLakeTransaction::CleanupFiles() {
 }
 
 void DuckLakeTransaction::ApplyServerSideCommit(idx_t schema_version) {
-	if (snapshot) {
-		for (auto &entry : state->dropped_file_stats) {
-			ducklake_catalog.InvalidateTableStatsCache(snapshot->next_file_id, entry.first);
-		}
-		for (auto &table_id : state->local_changes.GetCompactedTables()) {
-			ducklake_catalog.InvalidateTableStatsCache(snapshot->next_file_id, table_id);
-		}
-	}
 	catalog_version = schema_version;
 	if (connection) {
 		connection->Commit();
@@ -1771,9 +1763,6 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		for (auto &option : options) {
 			ducklake_catalog.SetConfigOption(option);
 		}
-	};
-	context.invalidate_table_stats_cache = [&](idx_t next_file_id, TableIndex table_id) {
-		ducklake_catalog.InvalidateTableStatsCache(next_file_id, table_id);
 	};
 	context.report_post_commit_error = [&](const string &message) {
 		ReportPostCommitError(message);

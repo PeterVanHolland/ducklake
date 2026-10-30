@@ -148,9 +148,6 @@ struct DuckLakeCommitContext {
 	std::function<void(const vector<DuckLakeConfigOption> &)> set_table_options =
 	    [](const vector<DuckLakeConfigOption> &) {
 	    };
-	//! Invalidates the cached stats entry for a table after a stats-affecting file drop.
-	std::function<void(idx_t, TableIndex)> invalidate_table_stats_cache = [](idx_t, TableIndex) {
-	};
 	//! Reports a failure after the metadata commit is already durable.
 	// LCOV_EXCL_START
 	std::function<void(const string &)> report_post_commit_error = [](const string &) {

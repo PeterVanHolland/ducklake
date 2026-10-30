@@ -1249,7 +1249,8 @@ bool DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 
 static idx_t SubtractDroppedFileStat(idx_t value, idx_t decrement) {
 	if (decrement > value) {
-		throw InternalException("Dropped DuckLake file stats exceed current table stats");
+		throw InternalException("Dropped DuckLake file stats exceed current table stats (%llu > %llu)", decrement,
+		                        value);
 	}
 	return value - decrement;
 }
@@ -2444,7 +2445,7 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 				                                     compaction_rewrite_delete_changes, table_entry.second, context);
 			}
 			if (recomputed && compaction_rewrite_delete_changes.new_files.empty()) {
-				// cached stats are keyed by the next file id, which a rewrite without new files keeps
+				// a rewrite without new files still advances the next file id
 				commit_snapshot.next_file_id++;
 			}
 		}
@@ -2885,13 +2886,6 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 	context.set_entry_oids(new_entry_oids);
 	context.set_committed_snapshot_id(commit_snapshot.snapshot_id);
 	context.set_table_options(committed_table_options);
-	for (auto &entry : dropped_file_stats) {
-		context.invalidate_table_stats_cache(commit_snapshot.next_file_id, entry.first);
-	}
-	// a compaction without new files keeps the next file id of the cached stats
-	for (auto &table_id : local_changes.GetCompactedTables()) {
-		context.invalidate_table_stats_cache(commit_snapshot.next_file_id, table_id);
-	}
 	if (flushed_inlined && !context.skip_drop_empty_inlined) {
 		try {
 			DropEmptySupersededInlinedTables(context);

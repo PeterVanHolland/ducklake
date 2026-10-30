@@ -138,6 +138,7 @@
         "test/sql/partitioning/epoch_timestamptz.test",
         "test/sql/partitioning/epoch_transform_column_types.test",
         "test/sql/partitioning/epoch_transforms.test",
+        "test/sql/partitioning/calendar_timestamp_ns.test",
         "test/sql/partitioning/update_partition_epoch.test"
       ]
     },

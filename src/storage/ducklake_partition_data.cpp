@@ -356,8 +356,13 @@ unique_ptr<Expression> DuckLakePartitionUtils::ApplyPartitionTransform(ClientCon
 	case DuckLakeTransformType::MONTH:
 	case DuckLakeTransformType::DAY:
 	case DuckLakeTransformType::HOUR:
-		return ApplyScalarFunction(context, GetTransformName(field.transform.type),
-		                           TimestampTZToUTC(context, std::move(column_expr)));
+		if (column_expr->GetReturnType().id() == LogicalTypeId::TIMESTAMP_NS) {
+			// the implicit cast to microseconds rounds, which moves the last nanoseconds of a period into the next
+			column_expr = FloorNanosToMicros(context, std::move(column_expr));
+		} else {
+			column_expr = TimestampTZToUTC(context, std::move(column_expr));
+		}
+		return ApplyScalarFunction(context, GetTransformName(field.transform.type), std::move(column_expr));
 	case DuckLakeTransformType::EPOCH_YEAR:
 	case DuckLakeTransformType::EPOCH_MONTH:
 	case DuckLakeTransformType::EPOCH_DAY:

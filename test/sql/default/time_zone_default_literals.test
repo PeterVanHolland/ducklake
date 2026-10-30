@@ -93,6 +93,18 @@ SELECT d FROM l.d
 ----
 2023-12-31
 
+# a time zone type nested in the cast is read in the session too
+statement ok
+CREATE TABLE l.n(id INT, c VARCHAR DEFAULT CAST('[2024-01-01 00:00:00]' AS TIMESTAMPTZ[]))
+
+statement ok
+INSERT INTO l.n (id) VALUES (1)
+
+query I
+SELECT c FROM l.n
+----
+['2024-01-01 00:00:00-08']
+
 # a later session reads the cast default in its own time zone
 statement ok
 SET TimeZone = 'Asia/Tokyo'

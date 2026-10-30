@@ -780,16 +780,18 @@ void DuckLakeUtil::ValidateConfigOptionScope(const string &option, bool has_sche
 	}
 }
 
-//! Whether a cast to or from the type reads an instant in the time zone of the session
+//! Whether a cast to or from the type reads an instant in the time zone of the session, also in a nested type
 static bool DependsOnTimeZone(const LogicalType &type) {
-	switch (type.id()) {
-	case LogicalTypeId::TIMESTAMP_TZ:
-	case LogicalTypeId::TIMESTAMP_TZ_NS:
-	case LogicalTypeId::TIME_TZ:
-		return true;
-	default:
-		return false;
-	}
+	return TypeVisitor::Contains(type, [](const LogicalType &child) {
+		switch (child.id()) {
+		case LogicalTypeId::TIMESTAMP_TZ:
+		case LogicalTypeId::TIMESTAMP_TZ_NS:
+		case LogicalTypeId::TIME_TZ:
+			return true;
+		default:
+			return false;
+		}
+	});
 }
 
 bool DuckLakeUtil::TryGetLiteralValue(const ParsedExpression &expr, Value &result,

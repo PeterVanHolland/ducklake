@@ -43,7 +43,7 @@ public:
 	static constexpr idx_t MAX_FILE_NAME_LENGTH = 255;
 
 	//! Extracts the value of a literal, or of a cast over a literal, as written in a DEFAULT or parameter default
-	//! A constant, or a cast of one that the session cannot change, which a cast with the context always is
+	//! A constant or a cast of one, folded with the context, which a cast of a time zone type needs
 	static bool TryGetLiteralValue(const ParsedExpression &expr, Value &result,
 	                               optional_ptr<ClientContext> context = nullptr);
 	//! Casts stored text to a type when the value prints as the same text
@@ -53,8 +53,7 @@ public:
 	//! The expression of a literal default stored as text, for a column of the given type
 	static unique_ptr<ParsedExpression> LiteralDefaultExpression(const Value &text, const LogicalType &type);
 	//! Extracts a macro parameter default that can be stored as a literal of its DuckLake type
-	static bool TryGetMacroDefaultLiteral(const ParsedExpression &expr, Value &result,
-	                                      optional_ptr<ClientContext> context = nullptr);
+	static bool TryGetMacroDefaultLiteral(const ParsedExpression &expr, Value &result);
 	static string ParseQuotedValue(const string &input, idx_t &pos);
 	static string ToQuotedList(const vector<Identifier> &input, char list_separator = ',');
 	static vector<string> ParseQuotedList(const string &input, char list_separator = ',');

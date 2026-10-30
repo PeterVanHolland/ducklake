@@ -197,12 +197,12 @@ optional_ptr<CatalogEntry> DuckLakeSchemaEntry::CreateFunction(CatalogTransactio
 		}
 		for (auto &entry : macro->default_parameters) {
 			Value default_value;
-			if (DuckLakeUtil::TryGetLiteralValue(*entry.second, default_value, transaction.GetContext())) {
+			if (DuckLakeUtil::TryGetLiteralValue(*entry.second, default_value)) {
 				DuckLakeTypes::CheckSupportedType(default_value.IsNull() ? LogicalType::SQLNULL : default_value.type(),
 				                                  version);
 			}
 			if (!ducklake_catalog.SupportsV1_1Metadata() &&
-			    !DuckLakeUtil::TryGetMacroDefaultLiteral(*entry.second, default_value, transaction.GetContext())) {
+			    !DuckLakeUtil::TryGetMacroDefaultLiteral(*entry.second, default_value)) {
 				ThrowUnsupportedByVersion(version, "macro parameter defaults that are not scalar constants");
 			}
 		}

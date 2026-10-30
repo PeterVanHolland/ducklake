@@ -849,9 +849,8 @@ unique_ptr<ParsedExpression> DuckLakeUtil::LiteralDefaultExpression(const Value 
 	return ConstantExpression::FromValue(text);
 }
 
-bool DuckLakeUtil::TryGetMacroDefaultLiteral(const ParsedExpression &expr, Value &result,
-                                             optional_ptr<ClientContext> context) {
-	if (!TryGetLiteralValue(expr, result, context)) {
+bool DuckLakeUtil::TryGetMacroDefaultLiteral(const ParsedExpression &expr, Value &result) {
+	if (!TryGetLiteralValue(expr, result)) {
 		return false;
 	}
 	// nested types are stored without their child types and a NULL string would read back as the text NULL

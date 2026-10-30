@@ -505,8 +505,11 @@ void LocalTableChanges::RemoveColumnFromLocalInlinedData(ClientContext &context,
 static void NullDroppedFields(Vector &data, idx_t count, const DuckLakeFieldId &field_id,
                               const set<FieldIndex> &dropped_fields) {
 	if (dropped_fields.count(field_id.GetFieldIndex())) {
-		data.Flatten();
-		FlatVector::ValidityMutable(data).SetAllInvalid(count);
+		ConstantVector::SetNull(data, count_t(count));
+		return;
+	}
+	// a dropped field that was added again with another type keeps its old values until the cast
+	if (field_id.Type().id() != data.GetType().id()) {
 		return;
 	}
 	switch (data.GetType().id()) {

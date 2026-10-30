@@ -58,7 +58,7 @@ SELECT column_name, begin_snapshot, end_snapshot FROM ducklake_meta.ducklake_col
 b	1	2
 b	2	NULL
 
-# an insert between the drop and the re-add
+# an insert between the drop and the add
 statement ok
 CREATE TABLE ducklake.between(k INTEGER, s STRUCT(a INTEGER, b INTEGER))
 
@@ -116,6 +116,67 @@ SELECT k, l, m FROM ducklake.nested
 ----
 1	[{'a': 1, 'b': NULL}, {'a': 2, 'b': NULL}]	{x={'a': 3, 'b': NULL}}
 
+# a dropped struct field hides its children too
+statement ok
+CREATE TABLE ducklake.deep(k INTEGER, s STRUCT(a INTEGER, b STRUCT(c INTEGER)))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.deep VALUES (1, {'a': 1, 'b': {'c': 7}})
+
+statement ok
+ALTER TABLE ducklake.deep ALTER s TYPE STRUCT(a INTEGER)
+
+statement ok
+ALTER TABLE ducklake.deep ALTER s TYPE STRUCT(a INTEGER, b STRUCT(c INTEGER))
+
+query III
+SELECT s, s.b, s.b.c FROM ducklake.deep
+----
+{'a': 1, 'b': NULL}	NULL	NULL
+
+statement ok
+COMMIT
+
+query III
+SELECT s, s.b, s.b.c FROM ducklake.deep
+----
+{'a': 1, 'b': NULL}	NULL	NULL
+
+# a field added again with another type, then another drop
+statement ok
+CREATE TABLE ducklake.retyped(k INTEGER, s STRUCT(a INTEGER, b INTEGER[], d INTEGER))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.retyped VALUES (1, {'a': 1, 'b': [1, 2], 'd': 4})
+
+statement ok
+ALTER TABLE ducklake.retyped ALTER s TYPE STRUCT(a INTEGER, d INTEGER)
+
+statement ok
+ALTER TABLE ducklake.retyped ALTER s TYPE STRUCT(a INTEGER, d INTEGER, b INTEGER)
+
+statement ok
+ALTER TABLE ducklake.retyped ALTER s TYPE STRUCT(a INTEGER, b INTEGER)
+
+query II
+SELECT k, s FROM ducklake.retyped
+----
+1	{'a': 1, 'b': NULL}
+
+statement ok
+COMMIT
+
+query II
+SELECT k, s FROM ducklake.retyped
+----
+1	{'a': 1, 'b': NULL}
+
 # a type change that keeps the field keeps its values
 statement ok
 CREATE TABLE ducklake.widen(k INTEGER, s STRUCT(a INTEGER, b INTEGER))
@@ -159,6 +220,16 @@ query III
 SELECT k, l, m FROM ducklake.nested
 ----
 1	[{'a': 1, 'b': NULL}, {'a': 2, 'b': NULL}]	{x={'a': 3, 'b': NULL}}
+
+query III
+SELECT s, s.b, s.b.c FROM ducklake.deep
+----
+{'a': 1, 'b': NULL}	NULL	NULL
+
+query II
+SELECT k, s FROM ducklake.retyped
+----
+1	{'a': 1, 'b': NULL}
 
 query II
 SELECT k, s FROM ducklake.widen

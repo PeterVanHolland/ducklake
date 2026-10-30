@@ -126,7 +126,7 @@ public:
 	//! Recompute the inlined column stats that deletes left outdated
 	void RecomputeOutdatedStats(ClientContext &context);
 	//! Cast the inlined rows to the column types a type change gave the table
-	void CastLocalInlinedData(ClientContext &context, TableIndex table_id, const vector<LogicalType> &types);
+	void CastLocalInlinedData(ClientContext &context, TableIndex table_id, DuckLakeTableEntry &table);
 	void AddColumnToLocalInlinedData(ClientContext &context, TableIndex table_id, const LogicalType &new_column_type,
 	                                 FieldIndex new_field_index, const Value &default_value);
 	void RemoveColumnFromLocalInlinedData(ClientContext &context, TableIndex table_id,

@@ -62,6 +62,16 @@ SELECT k, s FROM lake.t2
 ----
 1	{'b': NULL}
 
+# the stats of the inlined rows follow the fields, the dropped field has none
+query II
+SELECT c.column_name, s.min_value FROM __ducklake_metadata_lake.ducklake_table_column_stats s
+JOIN __ducklake_metadata_lake.ducklake_column c USING (table_id, column_id)
+WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 't2')
+ORDER BY column_id
+----
+k	1
+b	NULL
+
 # the same for a struct nested in a struct, a list and a map
 statement ok
 CREATE TABLE lake.t3 (k INTEGER, s STRUCT(a INTEGER, b STRUCT(c INTEGER)), l STRUCT(a INTEGER)[], m MAP(INTEGER, STRUCT(a INTEGER)))
@@ -87,6 +97,10 @@ SELECT * FROM lake.t3 ORDER BY k
 1	{'a': 1, 'b': {'d': NULL}}	[{'b': NULL}, NULL]	{4={'b': NULL}}
 2	NULL	NULL	NULL
 
+# more rows can be inlined after the type change
+statement ok
+INSERT INTO lake.t3 VALUES (3, {'a': 6, 'b': {'d': 7}}, [{'b': 8}], MAP {9: {'b': 10}})
+
 statement ok
 COMMIT
 
@@ -95,6 +109,7 @@ SELECT * FROM lake.t3 ORDER BY k
 ----
 1	{'a': 1, 'b': {'d': NULL}}	[{'b': NULL}, NULL]	{4={'b': NULL}}
 2	NULL	NULL	NULL
+3	{'a': 6, 'b': {'d': 7}}	[{'b': 8}]	{9={'b': 10}}
 
 # flushing the inlined rows into a file keeps them
 statement ok
@@ -105,9 +120,28 @@ SELECT * FROM lake.t3 ORDER BY k
 ----
 1	{'a': 1, 'b': {'d': NULL}}	[{'b': NULL}, NULL]	{4={'b': NULL}}
 2	NULL	NULL	NULL
+3	{'a': 6, 'b': {'d': 7}}	[{'b': 8}]	{9={'b': 10}}
 
 query II
 SELECT k, s FROM lake.t ORDER BY k
 ----
 1	{'b': NULL}
 2	NULL
+
+# map keys that become the same struct are refused, as the cast of DuckDB does
+statement ok
+CREATE TABLE lake.t4 (k INTEGER, m MAP(STRUCT(a INTEGER), INTEGER))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO lake.t4 VALUES (1, MAP {{'a': 1}: 1, {'a': 2}: 2})
+
+statement error
+ALTER TABLE lake.t4 ALTER m TYPE MAP(STRUCT(b INTEGER), INTEGER)
+----
+Map keys must be unique
+
+statement ok
+ROLLBACK

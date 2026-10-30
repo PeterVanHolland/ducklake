@@ -27,6 +27,7 @@
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/vector/array_vector.hpp"
+#include "duckdb/common/vector/map_vector.hpp"
 #include "storage/ducklake_catalog.hpp"
 #include "storage/ducklake_scan.hpp"
 #include "duckdb/catalog/catalog_entry/copy_function_catalog_entry.hpp"
@@ -897,7 +898,6 @@ void DuckLakeUtil::CastInlinedVector(ClientContext &context, Vector &source, Vec
 		VectorOperations::Cast(context, source, result, count);
 		return;
 	}
-	// the struct cast of DuckDB matches the fields by name but refuses structs without a shared field
 	Vector flat(source_type, count);
 	VectorOperations::Copy(source, flat, count, 0, 0);
 	result.SetVectorType(VectorType::FLAT_VECTOR);
@@ -932,6 +932,9 @@ void DuckLakeUtil::CastInlinedVector(ClientContext &context, Vector &source, Vec
 		ListVector::Reserve(result, child_count);
 		CastInlinedVector(context, ListVector::GetChildMutable(flat), ListVector::GetChildMutable(result), child_count);
 		ListVector::SetListSize(result, child_count);
+		if (source_type.id() == LogicalTypeId::MAP) {
+			MapVector::MapConversionVerify(result, count);
+		}
 		break;
 	}
 	case LogicalTypeId::ARRAY: {

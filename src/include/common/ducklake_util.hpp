@@ -22,6 +22,7 @@ namespace duckdb {
 class ClientContext;
 class ColumnDataCollection;
 class DataChunk;
+class Vector;
 class ColumnList;
 class DuckLakeCatalog;
 class DuckLakeMetadataManager;
@@ -125,6 +126,8 @@ public:
 	                                       const LogicalType &type);
 	//! Formats inlined rows as comma separated cell literals in storage types
 	static vector<string> InlinedDataToSQL(DuckLakeTransaction &transaction, ColumnDataCollection &data);
+	//! Casts inlined rows to the type of an ALTER, also when a struct keeps none of its fields
+	static void CastInlinedVector(ClientContext &context, Vector &source, Vector &result, idx_t count);
 };
 
 } // namespace duckdb

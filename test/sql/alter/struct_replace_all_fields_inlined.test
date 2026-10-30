@@ -1,0 +1,113 @@
+# name: test/sql/alter/struct_replace_all_fields_inlined.test
+# description: a type change that replaces every field of a struct keeps the rows inlined in the same transaction
+# group: [alter]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/struct_replace_all_fields', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.t (k INTEGER, s STRUCT(a INTEGER))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO lake.t VALUES (1, {'a': 1}), (2, NULL)
+
+statement ok
+ALTER TABLE lake.t ALTER s TYPE STRUCT(b INTEGER)
+
+# the dropped field is gone and the new field reads NULL, as for committed rows
+query II
+SELECT k, s FROM lake.t ORDER BY k
+----
+1	{'b': NULL}
+2	NULL
+
+statement ok
+COMMIT
+
+query II
+SELECT k, s FROM lake.t ORDER BY k
+----
+1	{'b': NULL}
+2	NULL
+
+# the commit casts the rows without a SELECT in between too
+statement ok
+CREATE TABLE lake.t2 (k INTEGER, s STRUCT(a INTEGER))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO lake.t2 VALUES (1, {'a': 1})
+
+statement ok
+ALTER TABLE lake.t2 ALTER s TYPE STRUCT(b INTEGER)
+
+statement ok
+COMMIT
+
+query II
+SELECT k, s FROM lake.t2
+----
+1	{'b': NULL}
+
+# the same for a struct nested in a struct, a list and a map
+statement ok
+CREATE TABLE lake.t3 (k INTEGER, s STRUCT(a INTEGER, b STRUCT(c INTEGER)), l STRUCT(a INTEGER)[], m MAP(INTEGER, STRUCT(a INTEGER)))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO lake.t3 VALUES (1, {'a': 1, 'b': {'c': 2}}, [{'a': 3}, NULL], MAP {4: {'a': 5}}), (2, NULL, NULL, NULL)
+
+statement ok
+ALTER TABLE lake.t3 ALTER s TYPE STRUCT(a INTEGER, b STRUCT(d INTEGER))
+
+statement ok
+ALTER TABLE lake.t3 ALTER l TYPE STRUCT(b INTEGER)[]
+
+statement ok
+ALTER TABLE lake.t3 ALTER m TYPE MAP(INTEGER, STRUCT(b INTEGER))
+
+query IIII
+SELECT * FROM lake.t3 ORDER BY k
+----
+1	{'a': 1, 'b': {'d': NULL}}	[{'b': NULL}, NULL]	{4={'b': NULL}}
+2	NULL	NULL	NULL
+
+statement ok
+COMMIT
+
+query IIII
+SELECT * FROM lake.t3 ORDER BY k
+----
+1	{'a': 1, 'b': {'d': NULL}}	[{'b': NULL}, NULL]	{4={'b': NULL}}
+2	NULL	NULL	NULL
+
+# flushing the inlined rows into a file keeps them
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+query IIII
+SELECT * FROM lake.t3 ORDER BY k
+----
+1	{'a': 1, 'b': {'d': NULL}}	[{'b': NULL}, NULL]	{4={'b': NULL}}
+2	NULL	NULL	NULL
+
+query II
+SELECT k, s FROM lake.t ORDER BY k
+----
+1	{'b': NULL}
+2	NULL

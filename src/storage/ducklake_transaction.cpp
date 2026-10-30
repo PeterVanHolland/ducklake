@@ -258,11 +258,7 @@ static void CastInlinedData(ClientContext &context, DuckLakeInlinedData &inlined
 		DataChunk casted_chunk;
 		casted_chunk.Initialize(context, new_types);
 		for (idx_t col_idx = 0; col_idx < chunk.ColumnCount(); col_idx++) {
-			if (existing_types[col_idx] != new_types[col_idx]) {
-				VectorOperations::Cast(context, chunk.data[col_idx], casted_chunk.data[col_idx], chunk.size());
-			} else {
-				casted_chunk.data[col_idx].Reference(chunk.data[col_idx]);
-			}
+			DuckLakeUtil::CastInlinedVector(context, chunk.data[col_idx], casted_chunk.data[col_idx], chunk.size());
 		}
 		casted_chunk.SetChildCardinality(chunk.size());
 		casted_data->Append(append_state, casted_chunk);
@@ -372,6 +368,15 @@ void LocalTableChanges::SetOutdatedStatsTable(TableIndex table_id, DuckLakeTable
 	auto table_changes = Find(table_id);
 	if (table_changes && table_changes->new_inlined_data && table_changes->new_inlined_data->outdated_stats_table) {
 		table_changes->new_inlined_data->outdated_stats_table = table;
+	}
+}
+
+void LocalTableChanges::CastLocalInlinedData(ClientContext &context, TableIndex table_id,
+                                             const vector<LogicalType> &types) {
+	lock_guard<mutex> guard(lock);
+	auto table_changes = Find(table_id);
+	if (table_changes && table_changes->new_inlined_data) {
+		CastInlinedData(context, *table_changes->new_inlined_data, types);
 	}
 }
 
@@ -2669,6 +2674,11 @@ void DuckLakeTransaction::AlterEntryInternal(DuckLakeTableEntry &table, unique_p
 	}
 	case LocalChangeType::ADD_COLUMN:
 	case LocalChangeType::CHANGE_COLUMN_TYPE: {
+		if (new_table.GetLocalChange().type == LocalChangeType::CHANGE_COLUMN_TYPE) {
+			// the commit writes the inlined rows into a table of the new types
+			state->local_changes.CastLocalInlinedData(*context.lock(), table.GetTableId(),
+			                                          new_table.GetColumns().GetColumnTypes());
+		}
 		auto new_fields = new_table.GetNewFields(table);
 		if (!new_fields.empty()) {
 			state->local_changes.AddFieldsToLocalFiles(table.GetTableId(), new_table, new_fields);

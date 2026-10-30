@@ -25,18 +25,28 @@ INSERT INTO lake.t VALUES
 	(4, TIMESTAMP_NS '2026-03-15 11:00:00.000000000'),
 	(5, TIMESTAMP_NS '1677-09-21 00:12:43.145224194')
 
+# the hive path of each row follows the floored timestamp
 query II
-SELECT id, (SELECT string_agg(v.partition_value, ', ' ORDER BY v.partition_key_index)
-	FROM __ducklake_metadata_lake.ducklake_file_partition_value v
-	JOIN __ducklake_metadata_lake.ducklake_data_file f USING (data_file_id)
-	WHERE split_part(f.path, '/', -1) = split_part(file, '/', -1)) AS partition_values
-FROM (SELECT id, filename AS file FROM lake.t) ORDER BY id
+SELECT id, regexp_extract(filename, '/(year=[^/]*/month=[^/]*/day=[^/]*/hour=[^/]*/epoch_hour=[^/]*)/', 1)
+FROM lake.t ORDER BY id
 ----
-1	1969, 12, 31, 23, -1
-2	1970, 1, 1, 0, 0
-3	2026, 3, 15, 10, 492658
-4	2026, 3, 15, 11, 492659
-5	1677, 9, 21, 0, -2562048
+1	year=1969/month=12/day=31/hour=23/epoch_hour=-1
+2	year=1970/month=1/day=1/hour=0/epoch_hour=0
+3	year=2026/month=3/day=15/hour=10/epoch_hour=492658
+4	year=2026/month=3/day=15/hour=11/epoch_hour=492659
+5	year=1677/month=9/day=21/hour=0/epoch_hour=-2562048
+
+# the stored partition values match the paths
+query I
+SELECT string_agg(partition_value, ', ' ORDER BY partition_key_index) AS partition_values
+FROM __ducklake_metadata_lake.ducklake_file_partition_value
+GROUP BY data_file_id ORDER BY partition_values
+----
+1677, 9, 21, 0, -2562048
+1969, 12, 31, 23, -1
+1970, 1, 1, 0, 0
+2026, 3, 15, 10, 492658
+2026, 3, 15, 11, 492659
 
 # the stored values are unchanged
 query I
@@ -47,9 +57,3 @@ SELECT ts FROM lake.t ORDER BY id
 2026-03-15 10:59:59.999999999
 2026-03-15 11:00:00
 1677-09-21 00:12:43.145224194
-
-# the hive path follows the partition values
-query I
-SELECT count(*) FROM glob('{DATA_PATH}/calendar_timestamp_ns/main/t/year=1969/month=12/day=31/hour=23/epoch_hour=-1/*.parquet')
-----
-1

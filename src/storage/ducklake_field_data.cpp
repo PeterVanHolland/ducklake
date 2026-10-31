@@ -1,7 +1,5 @@
 #include "storage/ducklake_field_data.hpp"
 #include "common/ducklake_util.hpp"
-#include "duckdb/common/types/variant.hpp"
-#include "duckdb/function/scalar/variant_utils.hpp"
 
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception/catalog_exception.hpp"
@@ -77,15 +75,6 @@ static void VerifyDefaultType(const LogicalType &type) {
 	}
 }
 
-static bool IsVariantString(const Value &value) {
-	Vector vec(value.type());
-	vec.Reference(value, count_t(1));
-	RecursiveUnifiedVectorFormat format;
-	Vector::RecursiveToUnifiedFormat(vec, format);
-	UnifiedVariantVectorData variant(format);
-	return variant.RowIsValid(0) && variant.GetTypeId(0, 0) == VariantLogicalType::VARCHAR;
-}
-
 static Value ExtractInitialValue(optional_ptr<const ParsedExpression> initial_expr, const LogicalType &type,
                                  bool add_column) {
 	if (!initial_expr) {
@@ -100,7 +89,7 @@ static Value ExtractInitialValue(optional_ptr<const ParsedExpression> initial_ex
 	}
 	auto initial_default = literal_value.DefaultCastAs(type);
 	if (type.id() == LogicalTypeId::VARIANT && !add_column && !initial_default.IsNull() &&
-	    !IsVariantString(initial_default)) {
+	    VariantValue::GetValue(initial_default).type().id() != LogicalTypeId::VARCHAR) {
 		// the catalog stores the initial default as text, which only a VARIANT string reads back as
 		return Value(type);
 	}

@@ -1,0 +1,110 @@
+# name: test/sql/default/variant_literal_defaults.test
+# description: Literal defaults of a VARIANT column keep their type, as the catalog reads stored text as a string
+# group: [default]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/variant_literal_defaults')
+
+statement ok
+CREATE TABLE ducklake.t (id INTEGER, v VARIANT DEFAULT 3.5::VARIANT, b VARIANT DEFAULT true::VARIANT,
+    o VARIANT DEFAULT {'k': 6}::VARIANT, p VARIANT DEFAULT 42, s VARIANT DEFAULT 'abc', n VARIANT DEFAULT NULL)
+
+statement ok
+INSERT INTO ducklake.t (id) VALUES (1)
+
+statement ok
+INSERT INTO ducklake.t VALUES (2, 3.5::VARIANT, true::VARIANT, {'k': 6}::VARIANT, 42, 'abc', NULL)
+
+query IIIIIII
+SELECT id, variant_typeof(v), variant_typeof(b), variant_typeof(o), variant_typeof(p), variant_typeof(s), n IS NULL
+FROM ducklake.t ORDER BY id
+----
+1	DECIMAL(2, 1)	BOOL_TRUE	OBJECT(k)	INT32	VARCHAR	true
+2	DECIMAL(2, 1)	BOOL_TRUE	OBJECT(k)	INT32	VARCHAR	true
+
+query I
+SELECT count(*) FROM ducklake.t WHERE v = 3.5::VARIANT AND b = true::VARIANT AND p = 42::VARIANT
+----
+2
+
+# the defaults are rendered as in a DuckDB table
+query II
+SELECT column_name, column_default FROM information_schema.columns
+WHERE table_catalog = 'ducklake' AND table_name = 't' AND column_name <> 'id' ORDER BY ordinal_position
+----
+v	CAST(3.5 AS VARIANT)
+b	CAST(true AS VARIANT)
+o	CAST(struct_pack(k := 6) AS VARIANT)
+p	42
+s	'abc'
+n	NULL
+
+statement ok
+DETACH ducklake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/variant_literal_defaults')
+
+statement ok
+INSERT INTO ducklake.t (id) VALUES (3)
+
+query IIIII
+SELECT variant_typeof(v), variant_typeof(b), variant_typeof(o), variant_typeof(p), variant_typeof(s)
+FROM ducklake.t WHERE id = 3
+----
+DECIMAL(2, 1)	BOOL_TRUE	OBJECT(k)	INT32	VARCHAR
+
+# the rows that exist read the default of an added column from text, which is a string for a VARIANT column
+statement ok
+CREATE TABLE ducklake.u (id INTEGER, st STRUCT(a INTEGER))
+
+statement ok
+INSERT INTO ducklake.u VALUES (1, {'a': 1})
+
+statement error
+ALTER TABLE ducklake.u ADD COLUMN v VARIANT DEFAULT 3.5::VARIANT
+----
+We cannot add a VARIANT column with a default that is not a string
+
+statement error
+ALTER TABLE ducklake.u ADD COLUMN v VARIANT DEFAULT 42
+----
+We cannot add a VARIANT column with a default that is not a string
+
+statement error
+ALTER TABLE ducklake.u ADD COLUMN st.f VARIANT DEFAULT 3.5::VARIANT
+----
+We cannot add a struct field with a non-literal default value
+
+statement ok
+ALTER TABLE ducklake.u ADD COLUMN s VARIANT DEFAULT 'abc'
+
+# a default set after the column is added leaves the rows that exist NULL
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE ducklake.u ADD COLUMN v VARIANT
+
+statement ok
+ALTER TABLE ducklake.u ALTER COLUMN v SET DEFAULT 3.5::VARIANT
+
+statement ok
+INSERT INTO ducklake.u (id) VALUES (2)
+
+statement ok
+COMMIT
+
+query IIII
+SELECT id, variant_typeof(s), v IS NULL, variant_typeof(v) FROM ducklake.u ORDER BY id
+----
+1	VARCHAR	true	VARIANT_NULL
+2	VARCHAR	false	DECIMAL(2, 1)

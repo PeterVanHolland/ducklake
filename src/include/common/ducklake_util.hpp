@@ -44,6 +44,10 @@ public:
 
 	//! Extracts the value of a literal, or of a cast over a literal, as written in a DEFAULT or parameter default
 	static bool TryGetLiteralValue(const ParsedExpression &expr, Value &result);
+	//! Whether the text of a literal reads back with its type in a column of the type
+	static bool LiteralKeepsTypeAsText(const Value &literal, const LogicalType &column_type);
+	//! Extracts a column default that can be stored as text, which is cast to the column type when read
+	static bool TryGetColumnDefaultLiteral(const ParsedExpression &expr, const LogicalType &column_type, Value &result);
 	//! Casts stored text to a type when the value prints as the same text
 	static bool TryReadTextAs(const Value &text, const LogicalType &type, Value &result);
 	//! The snapshot id a VERSION string reads as, such a string is never the name of a snapshot tag

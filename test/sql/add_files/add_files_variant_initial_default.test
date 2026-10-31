@@ -14,17 +14,20 @@ statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/variant_initial_default', DATA_INLINING_ROW_LIMIT 0)
 
 statement ok
-CREATE TABLE lake.t (i INTEGER, v VARIANT DEFAULT 42, s VARIANT DEFAULT 'abc', n VARIANT DEFAULT NULL, j VARIANT DEFAULT {'a': 1})
+CREATE TABLE lake.t (i INTEGER, v VARIANT DEFAULT 42, s VARIANT DEFAULT 'abc', n VARIANT DEFAULT NULL, j VARIANT DEFAULT {'a': 1}, cv VARIANT DEFAULT 'abc'::VARIANT, b VARIANT DEFAULT 'abc'::BLOB, d VARIANT DEFAULT 1.5)
 
 # the catalog keeps the initial default as text, which only keeps the type of a string
 query II
 SELECT column_name, initial_default FROM __ducklake_metadata_lake.ducklake_column
-WHERE column_name IN ('v', 's', 'n', 'j') ORDER BY column_name
+WHERE column_name <> 'i' ORDER BY column_id
 ----
-j	NULL
-n	NULL
-s	abc
 v	NULL
+s	abc
+n	NULL
+j	NULL
+cv	abc
+b	NULL
+d	NULL
 
 statement ok
 COPY (SELECT 1 AS i) TO '{DATA_PATH}/variant_initial_default_missing.parquet'
@@ -32,11 +35,11 @@ COPY (SELECT 1 AS i) TO '{DATA_PATH}/variant_initial_default_missing.parquet'
 statement ok
 CALL ducklake_add_data_files('lake', 't', '{DATA_PATH}/variant_initial_default_missing.parquet', allow_missing => true)
 
-# the missing columns read the string default and NULL for the others, not the text of the number
-query IIIII
-SELECT i, v, variant_typeof(s), s::VARCHAR, j FROM lake.t
+# the missing columns read the string defaults and NULL for the others, not the text of the number
+query IIIIIIII
+SELECT i, v, variant_typeof(s), s::VARCHAR, j, variant_typeof(cv), b, d FROM lake.t
 ----
-1	NULL	VARCHAR	abc	NULL
+1	NULL	VARCHAR	abc	NULL	VARCHAR	NULL	NULL
 
 statement ok
 DETACH lake
@@ -44,10 +47,10 @@ DETACH lake
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/variant_initial_default', DATA_INLINING_ROW_LIMIT 0)
 
-query IIIII
-SELECT i, v, variant_typeof(s), s::VARCHAR, j FROM lake.t
+query IIIIIIII
+SELECT i, v, variant_typeof(s), s::VARCHAR, j, variant_typeof(cv), b, d FROM lake.t
 ----
-1	NULL	VARCHAR	abc	NULL
+1	NULL	VARCHAR	abc	NULL	VARCHAR	NULL	NULL
 
 # a string default of a VARIANT column keeps working for an added file
 statement ok

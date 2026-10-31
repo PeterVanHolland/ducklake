@@ -1,5 +1,6 @@
 #include "storage/ducklake_field_data.hpp"
 #include "common/ducklake_util.hpp"
+#include "common/ducklake_types.hpp"
 
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception/catalog_exception.hpp"
@@ -86,6 +87,11 @@ static Value ExtractInitialValue(optional_ptr<const ParsedExpression> initial_ex
 			return Value(type);
 		}
 		throw NonLiteralAddColumnDefault();
+	}
+	if (type.id() == LogicalTypeId::VARIANT && !add_column && !literal_value.IsNull() &&
+	    !DuckLakeTypes::IsStringType(literal_value.type())) {
+		// the catalog stores the initial default as text, which reads back as a VARIANT string
+		return Value(type);
 	}
 	return literal_value.DefaultCastAs(type);
 }

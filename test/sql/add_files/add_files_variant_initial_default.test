@@ -1,0 +1,62 @@
+# name: test/sql/add_files/add_files_variant_initial_default.test
+# description: a VARIANT default that is not a string has no initial default, so rows of added files read NULL
+# group: [add_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/variant_initial_default', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t (i INTEGER, v VARIANT DEFAULT 42, s VARIANT DEFAULT 'abc', n VARIANT DEFAULT NULL, j VARIANT DEFAULT {'a': 1})
+
+# the catalog keeps the initial default as text, which only keeps the type of a string
+query II
+SELECT column_name, initial_default FROM __ducklake_metadata_lake.ducklake_column
+WHERE column_name IN ('v', 's', 'n', 'j') ORDER BY column_name
+----
+j	NULL
+n	NULL
+s	abc
+v	NULL
+
+statement ok
+COPY (SELECT 1 AS i) TO '{DATA_PATH}/variant_initial_default_missing.parquet'
+
+statement ok
+CALL ducklake_add_data_files('lake', 't', '{DATA_PATH}/variant_initial_default_missing.parquet', allow_missing => true)
+
+# the missing columns read the string default and NULL for the others, not the text of the number
+query IIIII
+SELECT i, v, variant_typeof(s), s::VARCHAR, j FROM lake.t
+----
+1	NULL	VARCHAR	abc	NULL
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/variant_initial_default', DATA_INLINING_ROW_LIMIT 0)
+
+query IIIII
+SELECT i, v, variant_typeof(s), s::VARCHAR, j FROM lake.t
+----
+1	NULL	VARCHAR	abc	NULL
+
+# a string default of a VARIANT column keeps working for an added file
+statement ok
+CREATE TABLE lake.t2 (i INTEGER, s VARIANT DEFAULT '42')
+
+statement ok
+CALL ducklake_add_data_files('lake', 't2', '{DATA_PATH}/variant_initial_default_missing.parquet', allow_missing => true)
+
+query III
+SELECT i, variant_typeof(s), s::VARCHAR FROM lake.t2
+----
+1	VARCHAR	42

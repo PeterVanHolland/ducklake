@@ -804,6 +804,20 @@ bool DuckLakeUtil::TryGetLiteralValue(const ParsedExpression &expr, Value &resul
 	return true;
 }
 
+bool DuckLakeUtil::LiteralKeepsTypeAsText(const Value &literal, const LogicalType &column_type) {
+	if (column_type.id() != LogicalTypeId::VARIANT || literal.IsNull()) {
+		return true;
+	}
+	// a VARIANT column reads any text as a string, which only a string literal gives back
+	auto variant_value = literal.DefaultTryCastAs(column_type);
+	return variant_value && VariantValue::GetValue(*variant_value).type().id() == LogicalTypeId::VARCHAR;
+}
+
+bool DuckLakeUtil::TryGetColumnDefaultLiteral(const ParsedExpression &expr, const LogicalType &column_type,
+                                              Value &result) {
+	return TryGetLiteralValue(expr, result) && LiteralKeepsTypeAsText(result, column_type);
+}
+
 optional<Value> DuckLakeUtil::TryParseSnapshotId(const Value &version) {
 	// the cast of a string to the BIGINT version parameters
 	return version.DefaultTryCastAs(LogicalType::BIGINT);
@@ -819,9 +833,9 @@ bool DuckLakeUtil::TryReadTextAs(const Value &text, const LogicalType &type, Val
 }
 
 unique_ptr<ParsedExpression> DuckLakeUtil::LiteralDefaultExpression(const Value &text, const LogicalType &type) {
-	// keep the text when the column type would print it differently, as for a rounded value or a time zone
+	// keep the text when the column type would print it differently or reads any text as a string, like VARIANT
 	Value typed_value;
-	if (TryReadTextAs(text, type, typed_value)) {
+	if (type.id() != LogicalTypeId::VARIANT && TryReadTextAs(text, type, typed_value)) {
 		return ConstantExpression::FromValue(typed_value);
 	}
 	return ConstantExpression::FromValue(text);

@@ -805,9 +805,12 @@ bool DuckLakeUtil::TryGetLiteralValue(const ParsedExpression &expr, Value &resul
 }
 
 bool DuckLakeUtil::LiteralKeepsTypeAsText(const Value &literal, const LogicalType &column_type) {
-	// a VARIANT column reads any text as a string
-	return column_type.id() != LogicalTypeId::VARIANT || literal.IsNull() ||
-	       literal.type().id() == LogicalTypeId::VARCHAR;
+	if (column_type.id() != LogicalTypeId::VARIANT || literal.IsNull()) {
+		return true;
+	}
+	// a VARIANT column reads any text as a string, which only a string literal gives back
+	auto variant_value = literal.DefaultTryCastAs(column_type);
+	return variant_value && VariantValue::GetValue(*variant_value).type().id() == LogicalTypeId::VARCHAR;
 }
 
 bool DuckLakeUtil::TryGetColumnDefaultLiteral(const ParsedExpression &expr, const LogicalType &column_type,

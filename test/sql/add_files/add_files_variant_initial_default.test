@@ -63,3 +63,25 @@ query III
 SELECT i, variant_typeof(s), s::VARCHAR FROM lake.t2
 ----
 1	VARCHAR	42
+
+# a field added to a struct keeps the text of its default, the rows that exist read it
+statement ok
+CREATE TABLE lake.t3 (i INTEGER, s STRUCT(a INTEGER))
+
+statement ok
+INSERT INTO lake.t3 VALUES (1, {'a': 1})
+
+statement ok
+ALTER TABLE lake.t3 ADD COLUMN s.v VARIANT DEFAULT 42
+
+query II
+SELECT c.column_name, c.initial_default FROM __ducklake_metadata_lake.ducklake_column c
+JOIN __ducklake_metadata_lake.ducklake_table t USING (table_id)
+WHERE t.table_name = 't3' AND c.column_name = 'v' AND c.end_snapshot IS NULL
+----
+v	42
+
+query II
+SELECT i, s.v::VARCHAR FROM lake.t3
+----
+1	42

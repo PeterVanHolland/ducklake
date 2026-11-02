@@ -1028,9 +1028,22 @@ bool IsSimpleCast(const ParsedExpression &expr) {
 	return true;
 }
 
+//! Whether a cast to the type reads an instant in the time zone of the session
+static bool CastReadsTimeZone(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_TZ_NS:
+	case LogicalTypeId::TIME_TZ:
+		return true;
+	default:
+		return false;
+	}
+}
+
 unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::GetNestedEvolution(const DuckLakeFieldId &source_id,
                                                                    const LogicalType &target, ColumnChangeInfo &result,
-                                                                   optional_idx parent_idx) {
+                                                                   optional_idx parent_idx,
+                                                                   optional_ptr<ClientContext> context) {
 	auto &source_type = source_id.Type();
 	if (source_type.id() != target.id()) {
 		throw NotImplementedException("Type evolution is not supported from type %s to type %s", source_type, target);
@@ -1073,7 +1086,7 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::GetNestedEvolution(const DuckLak
 		// the name exists in both the source and target
 		// recursively perform type promotion
 		promoted_children[source_idx] =
-		    TypePromotion(*source_children[source_idx], target_type, result, column_data.id.index);
+		    TypePromotion(*source_children[source_idx], target_type, result, column_data.id.index, context);
 		// erase from the source map to indicate this field has been handled
 		source_type_map.erase(target_name);
 	}
@@ -1098,9 +1111,10 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::GetNestedEvolution(const DuckLak
 
 unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFieldId &source_id,
                                                               const LogicalType &target, ColumnChangeInfo &result,
-                                                              optional_idx parent_idx) {
+                                                              optional_idx parent_idx,
+                                                              optional_ptr<ClientContext> context) {
 	if (!source_id.Children().empty()) {
-		return GetNestedEvolution(source_id, target, result, parent_idx);
+		return GetNestedEvolution(source_id, target, result, parent_idx, context);
 	}
 	auto &source_type = source_id.Type();
 	if (source_type == target) {
@@ -1130,8 +1144,12 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFiel
 
 	// re-create with the new type
 	auto column_data = source_id.GetColumnData().Copy();
+	// a time zone type reads the default in the session, like the rows of the files, and stores the instant it gives
+	bool session_cast = context && CastReadsTimeZone(target);
 	if (column_data.initial_default.IsNull()) {
 		column_data.initial_default = Value(target);
+	} else if (session_cast) {
+		column_data.initial_default = Value(column_data.initial_default.ToString()).CastAs(*context, target);
 	} else {
 		// the catalog stores the default as text and casts it to the type of the column
 		column_data.initial_default = Value(column_data.initial_default.ToString()).DefaultCastAs(target);
@@ -1140,6 +1158,9 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFiel
 	if (!parent_idx.IsValid()) {
 		// root column - get the info from the table directly
 		new_col.column_info = GetColumnInfo(column_data.id);
+		if (session_cast) {
+			new_col.column_info.initial_default = column_data.initial_default;
+		}
 	} else {
 		// nested column - generate the info here
 		new_col.column_info.id = column_data.id;
@@ -1173,7 +1194,8 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	if (info.target_type.IsNested()) {
 		RequireNextColumnId(transaction);
 	}
-	auto new_field_id = TypePromotion(field_id, info.target_type, *change_info, optional_idx());
+	auto new_field_id =
+	    TypePromotion(field_id, info.target_type, *change_info, optional_idx(), transaction.context.lock());
 	ValidateAddedFieldsCanSkipStats(field_id, *new_field_id);
 	col.SetType(new_field_id->Type());
 	CheckSupportedType(col.Type());

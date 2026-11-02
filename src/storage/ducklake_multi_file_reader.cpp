@@ -716,7 +716,7 @@ static optional_idx RemapDeletionScanOutputColumn(const ExpressionExecutor &exec
 void DuckLakeMultiFileReader::GatherDeletionScanSnapshots(BaseFileReader &reader, const Vector &file_row_numbers,
                                                           Vector &snapshot_vector, idx_t count) const {
 	auto &delete_filter = static_cast<DuckLakeDeleteFilter &>(*reader.deletion_filter);
-	if (delete_filter.delete_data->scan_snapshot_map.empty()) {
+	if (!delete_filter.delete_data->HasScanSnapshots()) {
 		// We don't have anything to gather
 		return;
 	}

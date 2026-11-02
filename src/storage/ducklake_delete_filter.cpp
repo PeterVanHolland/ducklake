@@ -5,6 +5,8 @@
 #include "storage/ducklake_puffin.hpp"
 #include "common/parquet_file_scanner.hpp"
 #include "duckdb/common/algorithm.hpp"
+#include "duckdb/common/pair.hpp"
+#include <iterator>
 #include "duckdb/common/map.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
 #include "duckdb/planner/table_filter.hpp"
@@ -19,6 +21,16 @@ DuckLakeDeleteFilter::DuckLakeDeleteFilter() : delete_data(make_shared_ptr<DuckL
 idx_t DuckLakeDeleteData::Filter(row_t start_row_index, idx_t count, SelectionVector &result_sel,
                                  optional_idx snapshot_filter) const {
 	auto entry = std::lower_bound(deleted_rows.begin(), deleted_rows.end(), start_row_index);
+	if (select_rows) {
+		// return the listed rows of this range only
+		idx_t end_pos = start_row_index + count;
+		result_sel.Initialize(STANDARD_VECTOR_SIZE);
+		idx_t result_count = 0;
+		for (; entry != deleted_rows.end() && *entry < end_pos; entry++) {
+			result_sel.set_index(result_count++, *entry - start_row_index);
+		}
+		return result_count;
+	}
 	if (entry == deleted_rows.end()) {
 		// no filter found for this entry
 		return count;
@@ -54,10 +66,14 @@ bool DuckLakeDeleteData::HasEmbeddedSnapshots() const {
 	return !snapshot_ids.empty();
 }
 
+bool DuckLakeDeleteData::HasScanSnapshots() const {
+	return !scan_snapshot_positions.empty();
+}
+
 optional_idx DuckLakeDeleteData::GetSnapshotForPosition(idx_t position) const {
-	auto it = scan_snapshot_map.find(position);
-	if (it != scan_snapshot_map.end()) {
-		return it->second;
+	auto it = std::lower_bound(scan_snapshot_positions.begin(), scan_snapshot_positions.end(), position);
+	if (it != scan_snapshot_positions.end() && *it == position) {
+		return scan_snapshot_ids[NumericCast<idx_t>(it - scan_snapshot_positions.begin())];
 	}
 	return optional_idx();
 }
@@ -288,63 +304,59 @@ void DuckLakeDeleteFilter::Initialize(const DuckLakeInlinedDataDeletes &inlined_
 	delete_data->snapshot_ids = std::move(merged_snapshot_ids);
 }
 
+static void SortUnique(vector<idx_t> &positions) {
+	std::sort(positions.begin(), positions.end());
+	positions.erase(std::unique(positions.begin(), positions.end()), positions.end());
+}
+
+static void CheckDeleteIndex(idx_t delete_idx, const DuckLakeDeleteScanEntry &delete_scan,
+                             const DuckLakeFileData &delete_file) {
+	if (delete_idx >= delete_scan.row_count) {
+		throw InvalidInputException(
+		    "Invalid delete data - delete index read from file %s is out of range for data file %s", delete_file.path,
+		    delete_scan.file.path);
+	}
+}
+
 void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDeleteScanEntry &delete_scan) {
 	// Scanning deletes - we need to scan the opposite (i.e. only the rows that were deleted)
-	// rows_to_scan[i] = true means row i was deleted and should be returned
-	auto rows_to_scan = make_unsafe_uniq_array<bool>(delete_scan.row_count);
+	// a whole file delete returns every row but the excluded ones, any other source lists the rows to return
+	bool whole_file = delete_scan.delete_file.path.empty() && delete_scan.file_deleted;
+	vector<idx_t> included;
+	vector<idx_t> excluded;
+	// the rows whose deleting snapshot is not the snapshot of the file, later entries override earlier ones
+	vector<pair<idx_t, idx_t>> snapshot_overrides;
 	bool has_embedded_snapshots = false;
 
-	auto &position_to_snapshot = delete_data->scan_snapshot_map;
-
-	// Handle the primary deletion source (delete file OR full file delete)
 	if (!delete_scan.delete_file.path.empty()) {
 		// Partial delete, read deletions from the delete file
 		auto current_deletes =
 		    ScanDeleteFile(context, delete_scan.delete_file, delete_scan.start_snapshot, delete_scan.end_snapshot);
 		has_embedded_snapshots = current_deletes.has_embedded_snapshots;
-
-		memset(rows_to_scan.get(), 0, sizeof(bool) * delete_scan.row_count);
 		for (idx_t i = 0; i < current_deletes.deleted_rows.size(); i++) {
 			auto delete_idx = current_deletes.deleted_rows[i];
-			if (delete_idx >= delete_scan.row_count) {
-				throw InvalidInputException(
-				    "Invalid delete data - delete index read from file %s is out of range for data file %s",
-				    delete_scan.delete_file.path, delete_scan.file.path);
-			}
+			CheckDeleteIndex(delete_idx, delete_scan, delete_scan.delete_file);
 			bool has_snapshot = i < current_deletes.snapshot_ids.size();
 			auto delete_snapshot = has_snapshot ? current_deletes.snapshot_ids[i] : delete_scan.snapshot_id.GetIndex();
 			if (delete_scan.insert_snapshot.IsValid() && delete_snapshot == delete_scan.insert_snapshot.GetIndex()) {
 				// a row deleted in the snapshot that inserted it was never visible
 				continue;
 			}
-			rows_to_scan[delete_idx] = true;
+			included.push_back(delete_idx);
 			if (has_snapshot) {
-				position_to_snapshot[delete_idx] = delete_snapshot;
+				snapshot_overrides.emplace_back(delete_idx, delete_snapshot);
 			}
 		}
-	} else if (delete_scan.file_deleted) {
-		// Full file delete, all rows are being scanned
-		memset(rows_to_scan.get(), 1, sizeof(bool) * delete_scan.row_count);
-		auto snapshot_id = delete_scan.snapshot_id.GetIndex();
-		for (idx_t i = 0; i < delete_scan.row_count; i++) {
-			position_to_snapshot[i] = snapshot_id;
-		}
-	} else {
-		// No delete file and no full file delete
-		memset(rows_to_scan.get(), 0, sizeof(bool) * delete_scan.row_count);
 	}
 
-	// Add inlined file deletions to the combined map
-	if (!delete_scan.inlined_file_deletions.empty()) {
-		for (auto &inlined_delete : delete_scan.inlined_file_deletions) {
-			if (inlined_delete.second < delete_scan.start_snapshot.GetIndex()) {
-				rows_to_scan[inlined_delete.first] = false;
-				continue;
-			}
-			rows_to_scan[inlined_delete.first] = true;
-			// Add to combined map (inlined deletions may override or add to existing)
-			position_to_snapshot[inlined_delete.first] = inlined_delete.second;
+	// inlined file deletions add rows, or exclude rows deleted before the scanned range
+	for (auto &inlined_delete : delete_scan.inlined_file_deletions) {
+		if (inlined_delete.second < delete_scan.start_snapshot.GetIndex()) {
+			excluded.push_back(inlined_delete.first);
+			continue;
 		}
+		included.push_back(inlined_delete.first);
+		snapshot_overrides.emplace_back(inlined_delete.first, inlined_delete.second);
 	}
 
 	if (!delete_scan.previous_delete_file.path.empty() && !has_embedded_snapshots) {
@@ -354,21 +366,35 @@ void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDele
 		    ScanDeleteFile(context, delete_scan.previous_delete_file, optional_idx(), optional_idx());
 		// these deletes are not new - we should not scan them
 		for (auto delete_idx : previous_deletes.deleted_rows) {
-			if (delete_idx >= delete_scan.row_count) {
-				throw InvalidInputException(
-				    "Invalid delete data - delete index read from file %s is out of range for data file %s",
-				    delete_scan.previous_delete_file.path, delete_scan.file.path);
-			}
-			rows_to_scan[delete_idx] = false;
+			CheckDeleteIndex(delete_idx, delete_scan, delete_scan.previous_delete_file);
+			excluded.push_back(delete_idx);
 		}
 	}
 
 	// now construct the delete filter based on the rows we want to scan
-	auto &deleted = delete_data->deleted_rows;
-	for (idx_t i = 0; i < delete_scan.row_count; i++) {
-		if (!rows_to_scan[i]) {
-			deleted.push_back(i);
+	SortUnique(excluded);
+	auto &rows = delete_data->deleted_rows;
+	if (whole_file) {
+		rows = std::move(excluded);
+	} else {
+		SortUnique(included);
+		std::set_difference(included.begin(), included.end(), excluded.begin(), excluded.end(),
+		                    std::back_inserter(rows));
+		delete_data->select_rows = true;
+	}
+
+	std::stable_sort(
+	    snapshot_overrides.begin(), snapshot_overrides.end(),
+	    [](const pair<idx_t, idx_t> &lhs, const pair<idx_t, idx_t> &rhs) { return lhs.first < rhs.first; });
+	auto &positions = delete_data->scan_snapshot_positions;
+	auto &snapshots = delete_data->scan_snapshot_ids;
+	for (auto &entry : snapshot_overrides) {
+		if (!positions.empty() && positions.back() == entry.first) {
+			snapshots.back() = entry.second;
+			continue;
 		}
+		positions.push_back(entry.first);
+		snapshots.push_back(entry.second);
 	}
 }
 

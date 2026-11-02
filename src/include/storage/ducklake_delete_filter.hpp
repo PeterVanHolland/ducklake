@@ -14,15 +14,22 @@
 namespace duckdb {
 
 struct DuckLakeDeleteData {
+	//! The sorted positions of the rows to skip, or of the rows to return when select_rows is set
 	vector<idx_t> deleted_rows;
 	vector<idx_t> snapshot_ids;
-	//! The snapshot that deleted the row at each file position, used in deletion scans
-	unordered_map<idx_t, idx_t> scan_snapshot_map;
+	//! Whether deleted_rows holds the rows to return (a deletion scan of a partially deleted file)
+	bool select_rows = false;
+	//! The sorted positions whose deleting snapshot differs from the snapshot of the file, used in deletion scans
+	vector<idx_t> scan_snapshot_positions;
+	//! The deleting snapshot of each position in scan_snapshot_positions
+	vector<idx_t> scan_snapshot_ids;
 
 	idx_t Filter(row_t start_row_index, idx_t count, SelectionVector &result_sel,
 	             optional_idx snapshot_filter = optional_idx()) const;
 
 	bool HasEmbeddedSnapshots() const;
+
+	bool HasScanSnapshots() const;
 
 	optional_idx GetSnapshotForPosition(idx_t position) const;
 };

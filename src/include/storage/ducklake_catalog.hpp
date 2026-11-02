@@ -30,6 +30,7 @@
 
 namespace duckdb {
 struct DuckLakeCopyInput;
+struct DuckLakeMetadataProfile;
 struct DuckLakeGlobalStatsInfo;
 class DuckLakeCatalog;
 class ColumnList;
@@ -151,7 +152,7 @@ public:
 	string GetCatalogType() override {
 		return "ducklake";
 	}
-	const string &MetadataDatabaseName() const {
+	const Identifier &MetadataDatabaseName() const {
 		return options.metadata_database;
 	}
 	const Identifier &MetadataSchemaName() const {
@@ -169,6 +170,9 @@ public:
 	const string &MetadataType() const {
 		return metadata_type;
 	}
+	const DuckLakeMetadataProfile &MetadataProfile() const;
+	//! Set once the metadata database is attached, when its extension has had the chance to register the profile
+	void SetMetadataProfile(shared_ptr<const DuckLakeMetadataProfile> profile);
 	bool IsInitialized() const {
 		return initialized;
 	}
@@ -323,6 +327,9 @@ public:
 	bool SupportsV1_1Metadata() const {
 		return ducklake_version >= DuckLakeVersion::V1_1;
 	}
+	bool SupportsSnapshotTags() const {
+		return ducklake_version >= DuckLakeVersion::V2_0_DEV1;
+	}
 
 	void OnDetach(ClientContext &context) override;
 
@@ -386,6 +393,12 @@ public:
 	InlinedDeletionCacheResult CheckInlinedDeletionTableCache(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! Cache the result of an inlined deletion table existence check
 	void CacheInlinedDeletionTableResult(TableIndex table_id, DuckLakeSnapshot snapshot, bool exists);
+	//! The rewrite snapshots of the table in the range, unless the snapshot changes were not read up to its end
+	bool TryGetRewriteSnapshots(TableIndex table_id, idx_t start_snapshot, idx_t end_snapshot, set<idx_t> &result);
+	//! The first snapshot whose changes were not read for rewrites yet
+	idx_t GetFirstUnreadRewriteSnapshot();
+	//! Cache the rewrite snapshots of every table, read from the snapshot changes up to end_snapshot
+	void CacheRewriteSnapshots(const vector<pair<TableIndex, idx_t>> &rewrites, idx_t end_snapshot);
 	//! The inlined deletion tables at the snapshot, list runs once per snapshot even for concurrent callers
 	shared_ptr<const unordered_set<string>>
 	GetInlinedDeletionTables(idx_t snapshot_id, const std::function<unordered_set<string>()> &list);
@@ -406,6 +419,8 @@ public:
 
 	//! Invalidate the cached table stats entry for a given stats cache key.
 	void InvalidateTableStatsCache(idx_t next_file_id, TableIndex table_id);
+	//! Invalidate the cached table stats entries of this DuckLake for the given next file ids.
+	void InvalidateTableStatsCaches(const unordered_set<idx_t> &next_file_ids);
 	//! Invalidate the cached schema entry for a given schema_version.
 	void InvalidateSchemaCache(idx_t schema_version);
 	//! Invalidate a cached name map for a deleted mapping ID.
@@ -461,6 +476,8 @@ private:
 	atomic<idx_t> last_uncommitted_catalog_version;
 	//! The metadata server type
 	string metadata_type;
+	//! The profile of the metadata database, nullptr if it has none
+	shared_ptr<const DuckLakeMetadataProfile> metadata_profile;
 	//! The resolved DuckLake spec version of the attached catalog
 	DuckLakeVersion ducklake_version = DuckLakeVersion::V1_0;
 	//! A per-instance identifier used to scope ObjectCache keys.
@@ -483,6 +500,10 @@ private:
 	//! Table IDs where the inlined deletion table is known to NOT exist, with the snapshot_id at which we checked
 	//! Valid as long as current snapshot.snapshot_id <= cached snapshot_id
 	unordered_map<idx_t, idx_t> inlined_deletion_not_exists;
+	//! The rewrite snapshots of each table, read from the snapshot changes of committed snapshots
+	mutex rewrite_snapshots_lock;
+	optional_idx rewrite_snapshots_read_until;
+	unordered_map<idx_t, set<idx_t>> rewrite_snapshots;
 	//! The inlined deletion tables of the metadata catalog, listed per snapshot id for the latest snapshots
 	map<idx_t, shared_ptr<const unordered_set<string>>> inlined_deletion_tables;
 	//! Held while the inlined deletion tables are listed

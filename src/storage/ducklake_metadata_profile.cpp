@@ -77,7 +77,7 @@ private:
 				ExpectObject(key, value);
 				profile.stored_types.clear();
 				value.IterateObject([&](const string &name, JSONValue stored_type) {
-					profile.stored_types[GetTypeId(name)] = GetCompleteType(name, stored_type);
+					profile.stored_types[GetTypeId(name)] = GetString(name, stored_type);
 				});
 			} else {
 				throw InvalidInputException("unknown field \"types.%s\"", key);
@@ -134,15 +134,6 @@ private:
 			ErrorData error(ex);
 			throw InvalidInputException("unknown type \"%s\": %s", name, error.RawMessage());
 		}
-	}
-
-	//! A type that is complete without parameters
-	static LogicalType GetCompleteType(const string &key, JSONValue value) {
-		LogicalType type(GetTypeId(GetString(key, value)));
-		if (!type.IsComplete()) {
-			throw InvalidInputException("\"%s\" must be a type without parameters", key);
-		}
-		return type;
 	}
 
 	static void ExpectObject(const string &key, JSONValue value) {

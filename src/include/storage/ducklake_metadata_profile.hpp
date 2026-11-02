@@ -39,7 +39,7 @@ struct DuckLakeMetadataProfile {
 	//! The type a column of the metadata tables is created with
 	map<LogicalTypeId, string> column_type_overrides;
 	//! The type a column of the metadata tables created with the given type is read back as
-	map<LogicalTypeId, LogicalType> stored_types;
+	map<LogicalTypeId, string> stored_types;
 	idx_t max_column_count = NumericLimits<idx_t>::Maximum();
 	vector<string> system_column_names;
 	bool dropped_tables_stay_readable = true;

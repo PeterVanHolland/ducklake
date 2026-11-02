@@ -618,7 +618,7 @@ public:
 	//! Checks the columns of every metadata table against the tables that this catalog version creates
 	void ValidateMetadataTables();
 	//! The type that a metadata column created with the given type is read back as
-	LogicalType StoredMetadataType(const LogicalType &type) const;
+	string StoredMetadataType(const LogicalType &type) const;
 	//! Column names and types of the given metadata tables that exist
 	virtual map<Identifier, vector<pair<Identifier, string>>>
 	GetMetadataTableColumns(const vector<Identifier> &table_names);

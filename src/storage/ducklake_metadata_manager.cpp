@@ -110,10 +110,10 @@ vector<string> DuckLakeMetadataManager::SystemColumnNames() const {
 	return GetMetadataProfile().system_column_names;
 }
 
-LogicalType DuckLakeMetadataManager::StoredMetadataType(const LogicalType &type) const {
+string DuckLakeMetadataManager::StoredMetadataType(const LogicalType &type) const {
 	auto &stored_types = GetMetadataProfile().stored_types;
 	auto entry = stored_types.find(type.id());
-	return entry == stored_types.end() ? type : entry->second;
+	return entry == stored_types.end() ? type.ToString() : entry->second;
 }
 
 bool DuckLakeMetadataManager::IsRetryableCommitError(const string &message) const {
@@ -614,7 +614,7 @@ void DuckLakeMetadataManager::ValidateMetadataTables() {
 		idx_t column_idx = 0;
 		for (auto &expected : info.columns.Logical()) {
 			auto &expected_name = expected.Name();
-			auto expected_type = StoredMetadataType(UnboundType::TryDefaultBind(expected.Type())).ToString();
+			auto expected_type = StoredMetadataType(UnboundType::TryDefaultBind(expected.Type()));
 			if (column_idx >= actual_columns.size()) {
 				throw InvalidInputException("Failed to load DuckLake: metadata table %s has no column %s", table_name,
 				                            expected_name);

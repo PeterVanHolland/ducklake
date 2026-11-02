@@ -37,6 +37,11 @@ CALL ducklake_register_metadata_profile('x', '{"types": {"stored_types": {"BOOLE
 "BOOLEAN" must be a string
 
 statement error
+CALL ducklake_register_metadata_profile('x', '{"types": {"stored_types": {"BOOLEAN": "ENUM"}}}')
+----
+"BOOLEAN" must be a type without parameters
+
+statement error
 CALL ducklake_register_metadata_profile('x', '{"max_column_count": -1}')
 ----
 "max_column_count" must be a non-negative integer

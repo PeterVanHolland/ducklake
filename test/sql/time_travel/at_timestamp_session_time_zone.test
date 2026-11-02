@@ -1,0 +1,75 @@
+# name: test/sql/time_travel/at_timestamp_session_time_zone.test
+# description: AT (TIMESTAMP => ...) reads a timestamp in the session time zone also after it changed in a transaction
+# group: [time_travel]
+
+require ducklake
+
+require parquet
+
+require icu
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/at_timestamp_session_time_zone')
+
+statement ok
+CREATE TABLE lake.t (id INTEGER)
+
+statement ok
+INSERT INTO lake.t VALUES (1)
+
+statement ok
+SET TimeZone = 'UTC'
+
+statement ok
+BEGIN
+
+# the first query of the transaction creates the metadata connection with the UTC time zone
+query I
+SELECT count(*) FROM lake.t
+----
+1
+
+# east of UTC, the local time read as UTC would lie in the future
+statement ok
+SET TimeZone = 'Asia/Kolkata'
+
+query I
+SELECT id FROM lake.t AT (TIMESTAMP => strftime(now(), '%Y-%m-%d %H:%M:%S.%f'))
+----
+1
+
+# west of UTC, the local time read as UTC would lie before the first snapshot
+statement ok
+SET TimeZone = 'America/Los_Angeles'
+
+query I
+SELECT id FROM lake.t AT (TIMESTAMP => strftime(now(), '%Y-%m-%d %H:%M:%S.%f'))
+----
+1
+
+# the same text names another instant in another time zone, so the cached snapshot does not apply
+statement ok
+SET VARIABLE local_now = strftime(now(), '%Y-%m-%d %H:%M:%S.%f')
+
+query I
+SELECT id FROM lake.t AT (TIMESTAMP => getvariable('local_now'))
+----
+1
+
+statement ok
+SET TimeZone = 'Asia/Kolkata'
+
+statement error
+SELECT id FROM lake.t AT (TIMESTAMP => getvariable('local_now'))
+----
+No snapshot found at timestamp
+
+statement ok
+ROLLBACK
+
+statement ok
+RESET TimeZone

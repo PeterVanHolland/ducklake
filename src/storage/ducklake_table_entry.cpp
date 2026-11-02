@@ -1144,12 +1144,12 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFiel
 
 	// re-create with the new type
 	auto column_data = source_id.GetColumnData().Copy();
-	// a time zone type reads the default in the session, like the rows of the files, and stores the instant it gives
+	// a time zone type casts the default like the scan casts the stored values, and keeps the instant it gives
 	bool session_cast = context && CastReadsTimeZone(target);
 	if (column_data.initial_default.IsNull()) {
 		column_data.initial_default = Value(target);
 	} else if (session_cast) {
-		column_data.initial_default = Value(column_data.initial_default.ToString()).CastAs(*context, target);
+		column_data.initial_default = column_data.initial_default.CastAs(*context, target);
 	} else {
 		// the catalog stores the default as text and casts it to the type of the column
 		column_data.initial_default = Value(column_data.initial_default.ToString()).DefaultCastAs(target);

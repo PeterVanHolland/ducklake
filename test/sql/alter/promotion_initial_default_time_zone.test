@@ -102,6 +102,71 @@ SELECT id, v.d = TIMESTAMPTZ '2024-01-01 08:00:00+00' FROM l.s ORDER BY id
 1	true
 2	true
 
+# a promotion the session has no cast for reads the stored dates and the default both in UTC
+statement ok
+CREATE TABLE l.n(id INTEGER)
+
+statement ok
+INSERT INTO l.n VALUES (1)
+
+statement ok
+ALTER TABLE l.n ADD COLUMN d DATE DEFAULT DATE '2024-01-01'
+
+statement ok
+INSERT INTO l.n(id) VALUES (2)
+
+statement ok
+ALTER TABLE l.n ALTER COLUMN d TYPE TIMESTAMPTZ_NS
+
+query II
+SELECT id, d = TIMESTAMPTZ_NS '2024-01-01 00:00:00+00' FROM l.n ORDER BY id
+----
+1	true
+2	true
+
+# the same with the rows in Parquet files
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}_files' AS p (DATA_PATH '{DATA_PATH}/promotion_initial_default_time_zone_files', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE p.t(id INTEGER)
+
+statement ok
+INSERT INTO p.t VALUES (1)
+
+statement ok
+ALTER TABLE p.t ADD COLUMN d DATE DEFAULT DATE '2024-01-01'
+
+statement ok
+INSERT INTO p.t(id) VALUES (2)
+
+statement ok
+ALTER TABLE p.t ALTER COLUMN d TYPE TIMESTAMPTZ
+
+query II
+SELECT id, d = TIMESTAMPTZ '2024-01-01 08:00:00+00' FROM p.t ORDER BY id
+----
+1	true
+2	true
+
+# another session keeps the instant of the promotion for the default
+statement ok
+SET TimeZone = 'Asia/Tokyo'
+
+statement ok
+DETACH p
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}_files' AS p (DATA_PATH '{DATA_PATH}/promotion_initial_default_time_zone_files', DATA_INLINING_ROW_LIMIT 0)
+
+query I
+SELECT d = TIMESTAMPTZ '2024-01-01 08:00:00+00' FROM p.t WHERE id = 1
+----
+true
+
+statement ok
+SET TimeZone = 'America/Los_Angeles'
+
 # a type without time zone promotes as before
 statement ok
 CREATE TABLE l.w(id INTEGER)

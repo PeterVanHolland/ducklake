@@ -42,9 +42,9 @@ SELECT id FROM lake.t AT (TIMESTAMP => strftime(now(), '%Y-%m-%d %H:%M:%S.%f'))
 ----
 1
 
-# west of UTC, the local time read as UTC would lie before the first snapshot
+# west of UTC, the local time read as UTC would lie before the first snapshot, a fixed offset avoids DST gaps
 statement ok
-SET TimeZone = 'America/Los_Angeles'
+SET TimeZone = 'Etc/GMT+8'
 
 query I
 SELECT id FROM lake.t AT (TIMESTAMP => strftime(now(), '%Y-%m-%d %H:%M:%S.%f'))

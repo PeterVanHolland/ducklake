@@ -2244,7 +2244,7 @@ DuckLakeSnapshot DuckLakeTransaction::GetSnapshot(optional_ptr<BoundAtClause> at
 	}
 	// snapshots committed after the transaction started are not visible to it
 	auto newest_snapshot_id = GetNewestVisibleSnapshotId();
-	// the time zone of the session reads a timestamp, the metadata connection copied it when it was created
+	// a timestamp reads in the current time zone of the session, the metadata connection copied an older one
 	unique_ptr<BoundAtClause> timestamp_clause;
 	auto caller_context = context.lock();
 	if (caller_context && at_clause->Unit() == "timestamp" && version.type().id() != LogicalTypeId::TIMESTAMP_TZ) {

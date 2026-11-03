@@ -2831,6 +2831,18 @@ WHERE begin_snapshot < %d AND file_id IN (%s)
 	return files;
 }
 
+//! The tables and snapshots of the rewrites in rows of snapshot ids and their changes
+static vector<pair<TableIndex, idx_t>> ReadRewrites(QueryResult &result) {
+	vector<pair<TableIndex, idx_t>> rewrites;
+	for (auto &row : result) {
+		auto changes = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(1));
+		for (auto &rewritten_table : changes.tables_rewrite_delete) {
+			rewrites.emplace_back(rewritten_table, row.GetValue<idx_t>(0));
+		}
+	}
+	return rewrites;
+}
+
 set<idx_t> DuckLakeMetadataManager::GetTableRewriteSnapshots(TableIndex table_id, DuckLakeSnapshot start_snapshot,
                                                              DuckLakeSnapshot snapshot) {
 	auto &catalog = transaction.GetCatalog();
@@ -2840,14 +2852,7 @@ set<idx_t> DuckLakeMetadataManager::GetTableRewriteSnapshots(TableIndex table_id
 		// the changes of committed snapshots never change, so the catalog caches them
 		auto result = Query(GetRewriteSnapshotsQuery(catalog.GetFirstUnreadRewriteSnapshot(), snapshot.snapshot_id));
 		result->ThrowIfError("Failed to get rewrite snapshots from DuckLake: ");
-		vector<pair<TableIndex, idx_t>> rewrites;
-		for (auto &row : *result) {
-			auto changes = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(1));
-			for (auto &rewritten_table : changes.tables_rewrite_delete) {
-				rewrites.emplace_back(rewritten_table, row.GetValue<idx_t>(0));
-			}
-		}
-		catalog.CacheRewriteSnapshots(rewrites, snapshot.snapshot_id);
+		catalog.CacheRewriteSnapshots(ReadRewrites(*result), snapshot.snapshot_id);
 		catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id, rewrite_snapshots);
 	}
 	if (rewrite_snapshots.empty()) {
@@ -5754,8 +5759,7 @@ string DuckLakeMetadataManager::WriteCompactions(const vector<DuckLakeCompactedF
 	}
 }
 
-//! Selects the files the filter matches or whose range no remaining snapshot lies in, with whether the filter matched
-//! and whether the first remaining snapshot at or after the begin is the end
+//! Selects the files the filter matches or whose range no remaining snapshot lies in, with the two reasons as flags
 static string UnusedFilesQuery(const string &file_table, const string &file_id_column, const string &filter) {
 	// only the first remaining snapshot at or after begin_snapshot matters
 	return StringUtil::Format(R"(
@@ -5926,11 +5930,8 @@ AND NOT EXISTS (
 			    "IN (%s)",
 			    StringUtil::Join(end_snapshots, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); })));
 			result->ThrowIfError("Failed to get the changes of the snapshots that ended files from DuckLake: ");
-			for (auto &row : *result) {
-				auto changes = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(1));
-				for (auto &table_id : changes.tables_rewrite_delete) {
-					rewrites.emplace(row.GetValue<idx_t>(0), table_id.index);
-				}
+			for (auto &rewrite : ReadRewrites(*result)) {
+				rewrites.emplace(rewrite.second, rewrite.first.index);
 			}
 		}
 		vector<DuckLakeFileForCleanup> cleanup_files;

@@ -482,9 +482,8 @@ public:
 	                                      const vector<string> &cells_per_row);
 	//! Static deterministic name of the per-table inlined deletion table.
 	static Identifier InlinedFileDeletionTableName(TableIndex table_id);
-	//! Pure SQL builder for inlined file deletions (CREATE TABLE IF NOT EXISTS + INSERT). Sets
-	//! created_new_table when a new ducklake_inlined_delete_<id> table was emitted.
-	//! The manager, when given, follows every created table with its AfterCreateTableSql
+	//! The CREATE TABLE IF NOT EXISTS and INSERT statements of inlined file deletions, created_new_table is set when
+	//! a table statement was emitted, which the given manager follows with its AfterCreateTableSql
 	static string WriteNewInlinedFileDeletesSql(const vector<DuckLakeInlinedFileDeletionInfo> &new_deletes,
 	                                            bool &created_new_table,
 	                                            optional_ptr<const DuckLakeMetadataManager> manager = nullptr);

@@ -99,7 +99,14 @@ statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS old (DATA_PATH '{DATA_PATH}/pub_identity_old', METADATA_SCHEMA 'pub_identity_old', DUCKLAKE_VERSION '1.0', DATA_INLINING_ROW_LIMIT 10)
 
 statement ok
-CREATE TABLE old.t AS SELECT 1 AS i
+CREATE TABLE old.t (i INTEGER, s VARCHAR)
+
+statement ok
+INSERT INTO old.t VALUES (1, 'one')
+
+# DuckLake 0.3 stored the text natively, the migration rewrites such an inlined table
+statement ok
+CALL postgres_execute('__ducklake_metadata_old', 'ALTER TABLE pub_identity_old.ducklake_inlined_data_1_1 ALTER COLUMN s TYPE VARCHAR USING convert_from(s, ''UTF8'')')
 
 statement ok
 CALL postgres_execute('__ducklake_metadata_old', 'ALTER PUBLICATION ducklake_pub_identity ADD TABLES IN SCHEMA pub_identity_old')
@@ -113,10 +120,10 @@ DETACH old
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS old (DATA_PATH '{DATA_PATH}/pub_identity_old', METADATA_SCHEMA 'pub_identity_old', AUTOMATIC_MIGRATION TRUE)
 
-query I
-SELECT i FROM old.t
+query II
+SELECT i, s FROM old.t
 ----
-1
+1	one
 
 query I
 SELECT count(*) FROM postgres_query('__ducklake_metadata_old', 'SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity_old'' AND c.relkind = ''r'' AND c.relreplident = ''d'' AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)')
@@ -124,7 +131,16 @@ SELECT count(*) FROM postgres_query('__ducklake_metadata_old', 'SELECT c.relname
 0
 
 statement ok
-INSERT INTO old.t VALUES (2)
+INSERT INTO old.t VALUES (2, 'two')
+
+# the rewritten inlined table takes the delete
+statement ok
+DELETE FROM old.t WHERE i = 1
+
+query II
+SELECT i, s FROM old.t
+----
+2	two
 
 statement ok
 CALL postgres_execute('__ducklake_metadata_lake', 'DROP PUBLICATION ducklake_pub_identity')

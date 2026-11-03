@@ -453,14 +453,19 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 }
 
 //! Gives the matching tables without a replica identity the full row as one, where the session may alter them
+//! now, a locked table or one the client may not alter waits for the next attach
 static string ReplicaIdentityBlock(const string &table_condition) {
-	auto body = StringUtil::Format(R"(DECLARE t regclass; BEGIN
+	auto body = StringUtil::Format(R"(DECLARE t regclass; lock_wait text; BEGIN
 IF current_setting('transaction_read_only') = 'on' THEN RETURN; END IF;
+lock_wait := current_setting('lock_timeout');
+PERFORM set_config('lock_timeout', '1s', true);
 FOR t IN SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE %s
 AND c.relkind = 'r' AND c.relreplident = 'd'
 AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary) LOOP
-BEGIN EXECUTE format('ALTER TABLE %%s REPLICA IDENTITY FULL', t); EXCEPTION WHEN insufficient_privilege THEN NULL; END;
-END LOOP; END)",
+BEGIN EXECUTE format('ALTER TABLE %%s REPLICA IDENTITY FULL', t);
+EXCEPTION WHEN insufficient_privilege OR lock_not_available THEN NULL; END;
+END LOOP;
+PERFORM set_config('lock_timeout', lock_wait, true); END)",
 	                               table_condition);
 	return "DO " + SQLString::ToString(body) + ";";
 }

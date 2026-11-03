@@ -176,7 +176,7 @@ public:
 				}
 			}
 		}
-		// a path the table already holds adds nothing, like a path repeated within one call
+		// adding a path the table already holds is an error
 		auto &fs = FileSystem::GetFileSystem(context);
 		if (!IsTransactionLocal(table.GetTableId())) {
 			auto &metadata_manager = transaction.GetMetadataManager();
@@ -316,9 +316,12 @@ FROM parquet_full_metadata(%s)
 		auto canonical_filepath = fs.CanonicalizePath(filepath);
 
 		// Check if we've already processed this file (can happen with overlapping globs)
-		if (processed_files.count(canonical_filepath) || existing_files.count(canonical_filepath)) {
-			// File already processed in a previous glob or held by the table, skip
+		if (processed_files.count(canonical_filepath)) {
+			// File already processed in a previous glob, skip
 			continue;
+		}
+		if (existing_files.count(canonical_filepath)) {
+			throw InvalidInputException("File \"%s\" is already a data file of table %s", filepath, table.name);
 		}
 		processed_files.insert(canonical_filepath);
 

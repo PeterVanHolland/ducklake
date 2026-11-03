@@ -1,5 +1,5 @@
 # name: test/sql/metadata/mysql_metadata_catalog.test
-# description: a MySQL metadata catalog runs every metadata write of a table's life, including the column stats updates of repeated inserts
+# description: a MySQL metadata catalog runs the writes of a table's life without inlining, including the column stats updates of repeated inserts
 # group: [metadata]
 
 require ducklake

@@ -3152,11 +3152,12 @@ static constexpr idx_t MAX_TERMS_PER_UPDATE = 512;
 static string EndRowsSql(const string &metadata_table, const vector<string> &conditions) {
 	string result;
 	for (idx_t start = 0; start < conditions.size(); start += MAX_TERMS_PER_UPDATE) {
-		auto end = MinValue<idx_t>(start + MAX_TERMS_PER_UPDATE, conditions.size());
-		vector<string> chunk(conditions.begin() + start, conditions.begin() + end);
+		auto count = MinValue<idx_t>(MAX_TERMS_PER_UPDATE, conditions.size() - start);
+		auto chunk = StringUtil::Join(conditions.data() + start, count, " OR ",
+		                              [](const string &condition) { return condition; });
 		result += StringUtil::Format(
 		    R"(UPDATE {METADATA_CATALOG}.%s SET end_snapshot = {SNAPSHOT_ID} WHERE end_snapshot IS NULL AND (%s);)",
-		    metadata_table, StringUtil::Join(chunk, " OR "));
+		    metadata_table, chunk);
 	}
 	return result;
 }

@@ -452,8 +452,7 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 	CompleteMetadataTables();
 }
 
-//! Gives the matching tables without a replica identity the full row as one, where the session may alter them
-//! now, a locked table or one the client may not alter waits for the next attach
+//! Gives the matching tables without a replica identity the full row as one, a locked or protected table waits
 static string ReplicaIdentityBlock(const string &table_condition) {
 	auto body = StringUtil::Format(R"(DECLARE t regclass; lock_wait text; BEGIN
 IF current_setting('transaction_read_only') = 'on' THEN RETURN; END IF;

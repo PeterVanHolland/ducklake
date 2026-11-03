@@ -507,7 +507,9 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
                                                                           TableIndex table_id, idx_t schema_version) {
 	DuckLakeSnapshot snapshot(GetBeginSnapshotForSchemaVersion(table_id, schema_version, transaction), schema_version,
 	                          0, 0);
-	auto entry = GetEntryById(transaction, snapshot, table_id);
+	// in catalogs migrated by DuckDB 1.5.0 and 1.5.1 the begin snapshot of a table's schema version lies before the
+	// version, so the schema loaded there is not shared with the snapshots of the version
+	auto entry = GetSchemaForSnapshot(transaction, snapshot, true).GetEntryById(table_id);
 	if (!entry) {
 		// LCOV_EXCL_START
 		return nullptr;
@@ -517,9 +519,10 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
 }
 
 shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeCatalog::GetSchemaCacheEntry(DuckLakeTransaction &transaction,
-                                                                          DuckLakeSnapshot snapshot) {
+                                                                          DuckLakeSnapshot snapshot, bool at_snapshot) {
 	auto &cache = GetObjectCacheInstance();
-	auto key = SchemaCacheKey(snapshot.schema_version);
+	auto key =
+	    SchemaCacheKey(snapshot.schema_version, at_snapshot ? optional_idx(snapshot.snapshot_id) : optional_idx());
 	auto cached = cache.Get<DuckLakeSchemaCacheEntry>(key);
 	if (cached) {
 		return cached;
@@ -528,11 +531,15 @@ shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeCatalog::GetSchemaCacheEntry(DuckLa
 	lock_guard<mutex> guard(cache_entries_lock);
 	auto entry = cache.GetOrCreate<DuckLakeSchemaCacheEntry>(key, std::move(catalog_set));
 	TrackCacheEntry(key, entry);
+	if (at_snapshot) {
+		snapshot_schema_cache_keys[snapshot.schema_version].push_back(key);
+	}
 	return entry;
 }
 
-DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
-	auto entry = GetSchemaCacheEntry(transaction, snapshot);
+DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
+                                                          bool at_snapshot) {
+	auto entry = GetSchemaCacheEntry(transaction, snapshot, at_snapshot);
 	auto &catalog_set = entry->catalog_set;
 	transaction.PinSchemaCacheEntry(std::move(entry));
 	return catalog_set;
@@ -1574,9 +1581,13 @@ string DuckLakeCatalog::RecordCountCacheKey(idx_t snapshot_id) const {
 	return StringUtil::Format("ducklake:%s:record_counts:%llu", instance_id, snapshot_id);
 }
 
-string DuckLakeCatalog::SchemaCacheKey(idx_t schema_version) const {
+string DuckLakeCatalog::SchemaCacheKey(idx_t schema_version, optional_idx snapshot_id) const {
 	// a loaded schema holds the name of the DuckLake, its macros for one, so a new name loads it again
-	return StringUtil::Format("ducklake:%s:%s:schema:%llu", instance_id, GetName(), schema_version);
+	auto key = StringUtil::Format("ducklake:%s:%s:schema:%llu", instance_id, GetName(), schema_version);
+	if (snapshot_id.IsValid()) {
+		key += StringUtil::Format(":snapshot:%llu", snapshot_id.GetIndex());
+	}
+	return key;
 }
 
 void DuckLakeCatalog::InvalidateTableStatsCache(idx_t next_file_id, TableIndex table_id) {
@@ -1601,7 +1612,17 @@ void DuckLakeCatalog::InvalidateTableStatsCaches(const unordered_set<idx_t> &nex
 }
 
 void DuckLakeCatalog::InvalidateSchemaCache(idx_t schema_version) {
-	GetObjectCacheInstance().Delete(SchemaCacheKey(schema_version));
+	auto &cache = GetObjectCacheInstance();
+	cache.Delete(SchemaCacheKey(schema_version));
+	lock_guard<mutex> guard(cache_entries_lock);
+	auto entry = snapshot_schema_cache_keys.find(schema_version);
+	if (entry == snapshot_schema_cache_keys.end()) {
+		return;
+	}
+	for (auto &key : entry->second) {
+		cache.Delete(key);
+	}
+	snapshot_schema_cache_keys.erase(entry);
 }
 
 void DuckLakeCatalog::InvalidateNameMapCache(MappingIndex mapping_id) {

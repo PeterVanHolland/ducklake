@@ -1,0 +1,99 @@
+# name: test/sql/compaction/merge_adjacent_migrated_schema_versions.test
+# description: compaction of tables whose schema versions share begin snapshots, as DuckDB 1.5.0 and 1.5.1 migrated them
+# group: [compaction]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/merge_adjacent_migrated_schema_versions', DATA_INLINING_ROW_LIMIT 0)
+
+loop i 0 4
+
+statement ok
+CREATE TABLE dl.t{i} (id INTEGER)
+
+statement ok
+INSERT INTO dl.t{i} VALUES (1)
+
+statement ok
+INSERT INTO dl.t{i} VALUES (2)
+
+endloop
+
+# DuckDB 1.5.0 and 1.5.1 gave every table a row for every later schema version with the snapshot of its creation
+statement ok
+INSERT INTO __ducklake_metadata_dl.ducklake_schema_versions (table_id, begin_snapshot, schema_version)
+SELECT t.table_id, t.begin_snapshot, v.schema_version
+FROM __ducklake_metadata_dl.ducklake_table t
+JOIN (SELECT DISTINCT schema_version FROM __ducklake_metadata_dl.ducklake_snapshot) v
+	ON v.schema_version > (SELECT MAX(sv.schema_version) FROM __ducklake_metadata_dl.ducklake_schema_versions sv WHERE sv.table_id = t.table_id)
+
+query I
+SELECT string_agg(begin_snapshot || ':' || schema_version, ' ' ORDER BY schema_version) FROM __ducklake_metadata_dl.ducklake_schema_versions WHERE table_id = 2
+----
+4:2 4:3 4:4
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/merge_adjacent_migrated_schema_versions', DATA_INLINING_ROW_LIMIT 0)
+
+# a schema change, so that the files were written at an older schema version than the latest
+statement ok
+CREATE VIEW dl.v AS SELECT 1 AS one
+
+# the oldest table first, which loads the shared schema version at its own creation snapshot
+query IIII
+CALL ducklake_merge_adjacent_files('dl', 't0')
+----
+main	t0	2	1
+
+query IIII
+CALL ducklake_merge_adjacent_files('dl', 't1')
+----
+main	t1	2	1
+
+query I
+SELECT count(*) FROM ducklake_merge_adjacent_files('dl')
+----
+2
+
+statement ok
+CHECKPOINT dl
+
+loop i 0 4
+
+query I
+SELECT count(*) FROM ducklake_list_files('dl', 't{i}')
+----
+1
+
+query I
+SELECT sum(id) FROM dl.t{i}
+----
+3
+
+endloop
+
+# the older snapshots still read every table of their time
+query I
+SELECT count(*) FROM dl.t1 AT (VERSION => 6)
+----
+2
+
+statement error
+SELECT count(*) FROM dl.t3 AT (VERSION => 6)
+----
+does not exist
+
+query I
+SELECT count(*) FROM dl.t3 AT (VERSION => 12)
+----
+2

@@ -17,6 +17,7 @@
 #include "common/ducklake_options.hpp"
 #include "common/ducklake_name_map.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/main/client_context_state.hpp"
 #include "duckdb/storage/object_cache.hpp"
 #include "storage/ducklake_catalog_set.hpp"
@@ -30,6 +31,7 @@
 
 namespace duckdb {
 struct DuckLakeCopyInput;
+struct DuckLakeMetadataProfile;
 struct DuckLakeGlobalStatsInfo;
 class DuckLakeCatalog;
 class ColumnList;
@@ -151,7 +153,7 @@ public:
 	string GetCatalogType() override {
 		return "ducklake";
 	}
-	const string &MetadataDatabaseName() const {
+	const Identifier &MetadataDatabaseName() const {
 		return options.metadata_database;
 	}
 	const Identifier &MetadataSchemaName() const {
@@ -169,6 +171,9 @@ public:
 	const string &MetadataType() const {
 		return metadata_type;
 	}
+	const DuckLakeMetadataProfile &MetadataProfile() const;
+	//! Set once the metadata database is attached, when its extension has had the chance to register the profile
+	void SetMetadataProfile(shared_ptr<const DuckLakeMetadataProfile> profile);
 	bool IsInitialized() const {
 		return initialized;
 	}
@@ -251,8 +256,10 @@ public:
 	                                              unique_ptr<AlterTableInfo> alter_info) override;
 	DatabaseSize GetDatabaseSize(ClientContext &context) override;
 	shared_ptr<DuckLakeTableStats> GetTableStats(DuckLakeTransaction &transaction, TableIndex table_id);
+	//! With load_tables, caches the stats of table_id and load_tables from one query instead of every table
 	shared_ptr<DuckLakeTableStats> GetTableStats(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
-	                                             TableIndex table_id);
+	                                             TableIndex table_id,
+	                                             optional_ptr<const vector<TableIndex>> load_tables = nullptr);
 	//! Returns zero when the table has no stats
 	idx_t GetTableRecordCount(DuckLakeTransaction &transaction, TableIndex table_id);
 
@@ -321,6 +328,9 @@ public:
 	bool SupportsV1_1Metadata() const {
 		return ducklake_version >= DuckLakeVersion::V1_1;
 	}
+	bool SupportsSnapshotTags() const {
+		return ducklake_version >= DuckLakeVersion::V2_0_DEV1;
+	}
 
 	void OnDetach(ClientContext &context) override;
 
@@ -343,6 +353,13 @@ public:
 	}
 	void SetRetrialsServerSide(bool value) {
 		retrials_server_side = value;
+	}
+	//! Whether the metadata backend clears the cache of the metadata catalog alone
+	bool ScopedCacheClear() const {
+		return scoped_cache_clear;
+	}
+	void SetScopedCacheClear(bool value) {
+		scoped_cache_clear = value;
 	}
 
 	Value GetLastCommittedSnapshotId() const {
@@ -384,6 +401,15 @@ public:
 	InlinedDeletionCacheResult CheckInlinedDeletionTableCache(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! Cache the result of an inlined deletion table existence check
 	void CacheInlinedDeletionTableResult(TableIndex table_id, DuckLakeSnapshot snapshot, bool exists);
+	//! The rewrite snapshots of the table in the range, unless the snapshot changes were not read up to its end
+	bool TryGetRewriteSnapshots(TableIndex table_id, idx_t start_snapshot, idx_t end_snapshot, set<idx_t> &result);
+	//! The first snapshot whose changes were not read for rewrites yet
+	idx_t GetFirstUnreadRewriteSnapshot();
+	//! Cache the rewrite snapshots of every table, read from the snapshot changes up to end_snapshot
+	void CacheRewriteSnapshots(const vector<pair<TableIndex, idx_t>> &rewrites, idx_t end_snapshot);
+	//! The inlined deletion tables at the snapshot, list runs once per snapshot even for concurrent callers
+	shared_ptr<const unordered_set<string>>
+	GetInlinedDeletionTables(idx_t snapshot_id, const std::function<unordered_set<string>()> &list);
 
 	//! The schema versions of the table at the snapshot of the transaction
 	DuckLakeTableSchemaVersions GetTableSchemaVersions(DuckLakeTransaction &transaction, TableIndex table_id);
@@ -401,6 +427,8 @@ public:
 
 	//! Invalidate the cached table stats entry for a given stats cache key.
 	void InvalidateTableStatsCache(idx_t next_file_id, TableIndex table_id);
+	//! Invalidate the cached table stats entries of this DuckLake for the given next file ids.
+	void InvalidateTableStatsCaches(const unordered_set<idx_t> &next_file_ids);
 	//! Invalidate the cached schema entry for a given schema_version.
 	void InvalidateSchemaCache(idx_t schema_version);
 	//! Invalidate a cached name map for a deleted mapping ID.
@@ -417,6 +445,19 @@ private:
 	string RecordCountCacheKey(idx_t snapshot_id) const;
 	string SchemaCacheKey(idx_t schema_version) const;
 	ObjectCache &GetObjectCacheInstance();
+	//! A table stats entry this DuckLake put in the object cache, kept without its key as there is one per table
+	struct TrackedStatsEntry {
+		idx_t next_file_id;
+		TableIndex table_id;
+		weak_ptr<ObjectCacheEntry> entry;
+	};
+	//! Puts entries in the object cache and remembers them, under one lock so the entry kept is the one remembered
+	void PutCacheEntry(string key, shared_ptr<ObjectCacheEntry> entry);
+	void PutStatsCacheEntries(idx_t next_file_id, vector<pair<TableIndex, shared_ptr<ObjectCacheEntry>>> entries);
+	//! Requires cache_entries_lock
+	void TrackCacheEntry(const string &key, const shared_ptr<ObjectCacheEntry> &entry);
+	//! Removes the entries of this DuckLake from the object cache, as their keys belong to this instance only
+	void EvictCacheEntries();
 	//! Fails when the name or the metadata catalog of this DuckLake belongs to another DuckLake
 	void RegisterCatalog();
 	//! Returns whether no other DuckLake uses the metadata catalog
@@ -443,14 +484,24 @@ private:
 	atomic<idx_t> last_uncommitted_catalog_version;
 	//! The metadata server type
 	string metadata_type;
+	//! The profile of the metadata database, nullptr if it has none
+	shared_ptr<const DuckLakeMetadataProfile> metadata_profile;
 	//! The resolved DuckLake spec version of the attached catalog
 	DuckLakeVersion ducklake_version = DuckLakeVersion::V1_0;
 	//! A per-instance identifier used to scope ObjectCache keys.
 	string instance_id;
+	mutex cache_entries_lock;
+	//! The schema and record count entries this DuckLake put in the object cache, an expired one was evicted
+	unordered_map<string, weak_ptr<ObjectCacheEntry>> cache_entries;
+	vector<TrackedStatsEntry> stats_cache_entries;
+	//! The number of tracked entries at which the evicted ones are forgotten
+	idx_t cache_entries_prune_size = 64;
+	idx_t stats_cache_entries_prune_size = 512;
 	//! Whether or not the catalog is initialized
 	bool initialized = false;
 	//! Whether or not the metadata server can execute the commit retry loop server-side.
 	bool retrials_server_side = false;
+	atomic<bool> scoped_cache_clear {true};
 	//! Cache for inlined deletion table existence checks
 	mutex inlined_deletion_cache_lock;
 	//! Table IDs where the inlined deletion table is known to exist (permanent - never invalidated)
@@ -458,6 +509,14 @@ private:
 	//! Table IDs where the inlined deletion table is known to NOT exist, with the snapshot_id at which we checked
 	//! Valid as long as current snapshot.snapshot_id <= cached snapshot_id
 	unordered_map<idx_t, idx_t> inlined_deletion_not_exists;
+	//! The rewrite snapshots of each table, read from the snapshot changes of committed snapshots
+	mutex rewrite_snapshots_lock;
+	optional_idx rewrite_snapshots_read_until;
+	unordered_map<idx_t, set<idx_t>> rewrite_snapshots;
+	//! The inlined deletion tables of the metadata catalog, listed per snapshot id for the latest snapshots
+	map<idx_t, shared_ptr<const unordered_set<string>>> inlined_deletion_tables;
+	//! Held while the inlined deletion tables are listed
+	mutex inlined_deletion_listing_lock;
 	//! Cache of (table_id, schema_version) -> begin_snapshot. The backing row is written once when the schema
 	//! version is created and is never updated, so entries are permanent (only committed rows are cached)
 	mutex schema_version_snapshot_lock;

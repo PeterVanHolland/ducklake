@@ -780,7 +780,22 @@ void DuckLakeUtil::ValidateConfigOptionScope(const string &option, bool has_sche
 	}
 }
 
-bool DuckLakeUtil::TryGetLiteralValue(const ParsedExpression &expr, Value &result) {
+//! Whether a cast to or from the type reads an instant in the time zone of the session, also in a nested type
+static bool DependsOnTimeZone(const LogicalType &type) {
+	return TypeVisitor::Contains(type, [](const LogicalType &child) {
+		switch (child.id()) {
+		case LogicalTypeId::TIMESTAMP_TZ:
+		case LogicalTypeId::TIMESTAMP_TZ_NS:
+		case LogicalTypeId::TIME_TZ:
+			return true;
+		default:
+			return false;
+		}
+	});
+}
+
+bool DuckLakeUtil::TryGetLiteralValue(const ParsedExpression &expr, Value &result,
+                                      optional_ptr<ClientContext> context) {
 	if (expr.GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
 		result = expr.Cast<ConstantExpression>().GetLiteral().ToValue();
 		return true;
@@ -796,7 +811,16 @@ bool DuckLakeUtil::TryGetLiteralValue(const ParsedExpression &expr, Value &resul
 	if (target_type.id() == LogicalTypeId::INVALID || target_type.id() == LogicalTypeId::UNBOUND) {
 		return false;
 	}
-	auto value = cast.Child().Cast<ConstantExpression>().GetLiteral().ToValue().DefaultTryCastAs(target_type);
+	auto literal = cast.Child().Cast<ConstantExpression>().GetLiteral().ToValue();
+	optional<Value> value;
+	if (context) {
+		value = literal.TryCastAs(*context, target_type);
+	} else if (DependsOnTimeZone(target_type) || DependsOnTimeZone(literal.type())) {
+		// the session decides what the cast gives, so it stays an expression
+		return false;
+	} else {
+		value = literal.DefaultTryCastAs(target_type);
+	}
 	if (!value) {
 		return false;
 	}
@@ -814,8 +838,8 @@ bool DuckLakeUtil::LiteralKeepsTypeAsText(const Value &literal, const LogicalTyp
 }
 
 bool DuckLakeUtil::TryGetColumnDefaultLiteral(const ParsedExpression &expr, const LogicalType &column_type,
-                                              Value &result) {
-	return TryGetLiteralValue(expr, result) && LiteralKeepsTypeAsText(result, column_type);
+                                              Value &result, optional_ptr<ClientContext> context) {
+	return TryGetLiteralValue(expr, result, context) && LiteralKeepsTypeAsText(result, column_type);
 }
 
 optional<Value> DuckLakeUtil::TryParseSnapshotId(const Value &version) {

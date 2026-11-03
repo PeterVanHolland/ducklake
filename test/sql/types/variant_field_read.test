@@ -106,25 +106,30 @@ SELECT v.n::BIGINT FROM dl.t WHERE v.k::VARCHAR = 'key-new'
 
 # fields of inlined rows read back too
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}_inlined' AS dli (DATA_PATH '{DATA_PATH}/variant_field_read_inlined', DATA_INLINING_ROW_LIMIT 1000)
+CREATE TABLE dl.ti(id INTEGER, v VARIANT)
 
 statement ok
-CREATE TABLE dli.t(id INTEGER, v VARIANT)
+CALL dl.set_option('data_inlining_row_limit', 1000, table_name => 'ti')
 
 statement ok
-INSERT INTO dli.t SELECT i, {'k': 'key-' || i::VARCHAR, 'n': i}::VARIANT FROM range(10) t(i)
+INSERT INTO dl.ti SELECT i, {'k': 'key-' || i::VARCHAR, 'n': i}::VARIANT FROM range(10) t(i)
 
 statement ok
-DELETE FROM dli.t WHERE id = 3
+DELETE FROM dl.ti WHERE id = 3
+
+query I
+SELECT count(*) FROM ducklake_list_files('dl', 'ti')
+----
+0
 
 query II
-SELECT id, v.k::VARCHAR FROM dli.t WHERE v.n::INTEGER > 6 ORDER BY id
+SELECT id, v.k::VARCHAR FROM dl.ti WHERE v.n::INTEGER > 6 ORDER BY id
 ----
 7	key-7
 8	key-8
 9	key-9
 
 query I
-SELECT sum(v.n::BIGINT) FROM dli.t
+SELECT sum(v.n::BIGINT) FROM dl.ti
 ----
 42

@@ -464,9 +464,6 @@ private:
 	optional_idx expiry_snapshot_id;
 	//! Whether statements wrote to the metadata transaction, which a retried commit rolls back
 	bool metadata_written = false;
-	bool snapshots_expired = false;
-	//! Whether statements removed files after expiring snapshots, which a rollback restores without their files
-	bool removed_files_after_expiry = false;
 	//! The start of the transaction, which judges the expiry times of tags as now() does
 	timestamp_tz_t start_time;
 	DuckLakeSnapshot GetLatestSnapshot();

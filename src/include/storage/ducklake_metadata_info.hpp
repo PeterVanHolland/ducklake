@@ -84,6 +84,8 @@ struct DuckLakeColumnInfo {
 	Value initial_default;
 	Value default_value;
 	string default_value_type;
+	//! The SQL dialect of the default, DuckDB's when empty
+	string default_value_dialect;
 	bool nulls_allowed {};
 	vector<DuckLakeColumnInfo> children;
 	vector<DuckLakeTag> tags;

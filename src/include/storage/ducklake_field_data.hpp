@@ -25,6 +25,19 @@ struct DuckLakeColumnData {
 	FieldIndex id;
 	Value initial_default;
 	unique_ptr<ParsedExpression> default_value;
+	//! A default DuckDB cannot evaluate (another dialect, an unparsable expression or an unknown type), as stored
+	Value stored_default_value;
+	string stored_default_type;
+	string stored_default_dialect;
+
+	bool KeepsStoredDefault() const {
+		return !stored_default_type.empty();
+	}
+	void DropStoredDefault() {
+		stored_default_value = Value();
+		stored_default_type.clear();
+		stored_default_dialect.clear();
+	}
 	DuckLakeColumnData Copy() const {
 		DuckLakeColumnData copy;
 		copy.id = id;
@@ -33,6 +46,9 @@ struct DuckLakeColumnData {
 		if (default_value) {
 			copy.default_value = default_value->Copy();
 		}
+		copy.stored_default_value = stored_default_value;
+		copy.stored_default_type = stored_default_type;
+		copy.stored_default_dialect = stored_default_dialect;
 		return copy;
 	}
 };

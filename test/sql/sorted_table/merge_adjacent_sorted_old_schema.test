@@ -364,10 +364,7 @@ statement ok
 ALTER TABLE lake.sq SET SORTED BY (sq_key(v))
 
 statement ok
-DROP MACRO lake.sq_key
-
-statement ok
-CREATE MACRO lake.sq_key(x) AS (SELECT x)
+CREATE OR REPLACE MACRO lake.sq_key(x) AS (SELECT x)
 
 statement error
 SELECT files_processed, files_created FROM ducklake_merge_adjacent_files('lake', 'sq')
@@ -399,10 +396,7 @@ statement ok
 ALTER TABLE lake.nq SET SORTED BY (nq_key(v), id)
 
 statement ok
-DROP MACRO lake.nq_key
-
-statement ok
-CREATE MACRO lake.nq_key(x) AS ((SELECT x) = ANY (SELECT 10))
+CREATE OR REPLACE MACRO lake.nq_key(x) AS ((SELECT x) = ANY (SELECT 10))
 
 statement error
 SELECT files_processed, files_created FROM ducklake_merge_adjacent_files('lake', 'nq')
@@ -433,10 +427,7 @@ statement ok
 ALTER TABLE lake.uq SET SORTED BY (uq_key(v))
 
 statement ok
-DROP MACRO lake.uq_key
-
-statement ok
-CREATE MACRO lake.uq_key(x) AS x + (SELECT 0)
+CREATE OR REPLACE MACRO lake.uq_key(x) AS x + (SELECT 0)
 
 statement error
 SELECT files_processed, files_created FROM ducklake_merge_adjacent_files('lake', 'uq')

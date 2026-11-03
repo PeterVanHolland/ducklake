@@ -1554,7 +1554,7 @@ void DuckLakeTableEntry::CheckSortStillBinds(ClientContext &context, DuckLakeTab
 	for (idx_t i = 0; i < orders.size() && i < altered_orders.size(); i++) {
 		vector<OrderByNode> key;
 		key.push_back(std::move(orders[i]));
-		// a sort key that already does not bind, e.g. after its macro was dropped, does not hold up the ALTER
+		// a sort key that already does not bind, e.g. after its macro was replaced, does not hold up the ALTER
 		if (!GetSortBindError(context, ParentSchema(), GetColumns(), name, key).empty()) {
 			continue;
 		}

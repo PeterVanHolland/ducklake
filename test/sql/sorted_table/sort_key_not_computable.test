@@ -119,7 +119,7 @@ statement ok
 CREATE TABLE lake.q (n INTEGER, s VARCHAR) SORTED BY (q_key(s))
 
 statement ok
-DROP MACRO lake.q_key
+CREATE OR REPLACE MACRO lake.q_key(x) AS (SELECT x)
 
 statement ok
 ALTER TABLE lake.q ALTER COLUMN n TYPE BIGINT
@@ -132,7 +132,7 @@ statement ok
 CREATE TABLE lake.v (n INTEGER) SORTED BY (v_key(n), chr(n))
 
 statement ok
-DROP MACRO lake.v_key
+CREATE OR REPLACE MACRO lake.v_key(x) AS (SELECT x)
 
 statement error
 ALTER TABLE lake.v ALTER COLUMN n TYPE BIGINT

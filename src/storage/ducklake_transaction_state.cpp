@@ -2808,7 +2808,6 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			wrote_snapshot = context.write_snapshot &&
 			                 (!expired_snapshots.empty() || !expiry.tags.empty() || !context.only_expires_snapshots);
 			if (!wrote_snapshot && !context.locks_config_options) {
-				// the options that wait for the commit are written without a snapshot
 				auto option_changes = context.write_config_options();
 				if (!option_changes.empty()) {
 					context.execute_commit_batch(commit_snapshot, option_changes)

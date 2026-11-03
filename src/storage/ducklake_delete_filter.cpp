@@ -6,7 +6,6 @@
 #include "common/parquet_file_scanner.hpp"
 #include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/pair.hpp"
-#include <iterator>
 #include "duckdb/common/map.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
 #include "duckdb/planner/table_filter.hpp"
@@ -18,19 +17,37 @@ namespace duckdb {
 DuckLakeDeleteFilter::DuckLakeDeleteFilter() : delete_data(make_shared_ptr<DuckLakeDeleteData>()) {
 }
 
+idx_t DuckLakeDeleteData::FilterScanRows(row_t start_row_index, idx_t count, SelectionVector &result_sel) const {
+	// return the rows of this range whose bit is set, skipping empty entries of 64 rows
+	auto start = NumericCast<idx_t>(start_row_index);
+	auto end = start + count;
+	result_sel.Initialize(STANDARD_VECTOR_SIZE);
+	idx_t result_count = 0;
+	idx_t row = start;
+	while (row < end) {
+		idx_t entry_idx, idx_in_entry;
+		ValidityMask::GetEntryIndex(row, entry_idx, idx_in_entry);
+		auto entry = scan_rows.GetValidityEntryUnsafe(entry_idx);
+		auto entry_end = MinValue<idx_t>(end, row + ValidityMask::BITS_PER_VALUE - idx_in_entry);
+		if (ValidityMask::NoneValid(entry)) {
+			row = entry_end;
+			continue;
+		}
+		for (; row < entry_end; row++, idx_in_entry++) {
+			if (ValidityMask::RowIsValid(entry, idx_in_entry)) {
+				result_sel.set_index(result_count++, row - start);
+			}
+		}
+	}
+	return result_count;
+}
+
 idx_t DuckLakeDeleteData::Filter(row_t start_row_index, idx_t count, SelectionVector &result_sel,
                                  optional_idx snapshot_filter) const {
-	auto entry = std::lower_bound(deleted_rows.begin(), deleted_rows.end(), start_row_index);
-	if (select_rows) {
-		// return the listed rows of this range only
-		idx_t end_pos = start_row_index + count;
-		result_sel.Initialize(STANDARD_VECTOR_SIZE);
-		idx_t result_count = 0;
-		for (; entry != deleted_rows.end() && *entry < end_pos; entry++) {
-			result_sel.set_index(result_count++, *entry - start_row_index);
-		}
-		return result_count;
+	if (scan_rows.IsMaskSet()) {
+		return FilterScanRows(start_row_index, count, result_sel);
 	}
+	auto entry = std::lower_bound(deleted_rows.begin(), deleted_rows.end(), start_row_index);
 	if (entry == deleted_rows.end()) {
 		// no filter found for this entry
 		return count;
@@ -304,11 +321,6 @@ void DuckLakeDeleteFilter::Initialize(const DuckLakeInlinedDataDeletes &inlined_
 	delete_data->snapshot_ids = std::move(merged_snapshot_ids);
 }
 
-static void SortUnique(vector<idx_t> &positions) {
-	std::sort(positions.begin(), positions.end());
-	positions.erase(std::unique(positions.begin(), positions.end()), positions.end());
-}
-
 static void CheckDeleteIndex(idx_t delete_idx, const DuckLakeDeleteScanEntry &delete_scan,
                              const DuckLakeFileData &delete_file) {
 	if (delete_idx >= delete_scan.row_count) {
@@ -320,9 +332,14 @@ static void CheckDeleteIndex(idx_t delete_idx, const DuckLakeDeleteScanEntry &de
 
 void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDeleteScanEntry &delete_scan) {
 	// Scanning deletes - we need to scan the opposite (i.e. only the rows that were deleted)
-	// a whole file delete returns every row but the excluded ones, any other source lists the rows to return
+	// a whole file delete returns every row but the excluded ones, any other source marks the rows to return
 	bool whole_file = delete_scan.delete_file.path.empty() && delete_scan.file_deleted;
-	vector<idx_t> included;
+	auto &rows = delete_data->scan_rows;
+	rows.Reset(delete_scan.row_count);
+	if (!whole_file) {
+		rows.SetAllInvalid(delete_scan.row_count);
+	}
+	// the rows deleted before the scanned range, cleared after every source has added its rows
 	vector<idx_t> excluded;
 	// the rows whose deleting snapshot is not the snapshot of the file, later entries override earlier ones
 	vector<pair<idx_t, idx_t>> snapshot_overrides;
@@ -342,7 +359,7 @@ void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDele
 				// a row deleted in the snapshot that inserted it was never visible
 				continue;
 			}
-			included.push_back(delete_idx);
+			rows.SetValidUnsafe(delete_idx);
 			if (has_snapshot) {
 				snapshot_overrides.emplace_back(delete_idx, delete_snapshot);
 			}
@@ -355,7 +372,7 @@ void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDele
 			excluded.push_back(inlined_delete.first);
 			continue;
 		}
-		included.push_back(inlined_delete.first);
+		rows.SetValid(inlined_delete.first);
 		snapshot_overrides.emplace_back(inlined_delete.first, inlined_delete.second);
 	}
 
@@ -371,16 +388,9 @@ void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDele
 		}
 	}
 
-	// now construct the delete filter based on the rows we want to scan
-	SortUnique(excluded);
-	auto &rows = delete_data->deleted_rows;
-	if (whole_file) {
-		rows = std::move(excluded);
-	} else {
-		SortUnique(included);
-		std::set_difference(included.begin(), included.end(), excluded.begin(), excluded.end(),
-		                    std::back_inserter(rows));
-		delete_data->select_rows = true;
+	// the mask of a wholly deleted file is only allocated when a row is excluded
+	for (auto excluded_idx : excluded) {
+		rows.SetInvalid(excluded_idx);
 	}
 
 	std::stable_sort(

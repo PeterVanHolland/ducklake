@@ -9,16 +9,17 @@
 #pragma once
 
 #include "duckdb/common/multi_file/multi_file_reader.hpp"
+#include "duckdb/common/types/validity_mask.hpp"
 #include "storage/ducklake_metadata_info.hpp"
 
 namespace duckdb {
 
 struct DuckLakeDeleteData {
-	//! The sorted positions of the rows to skip, or of the rows to return when select_rows is set
+	//! The sorted positions of the rows to skip
 	vector<idx_t> deleted_rows;
 	vector<idx_t> snapshot_ids;
-	//! Whether deleted_rows holds the rows to return (a deletion scan of a partially deleted file)
-	bool select_rows = false;
+	//! The rows a deletion scan returns, one bit per row of the data file, unset when it returns every row
+	ValidityMask scan_rows;
 	//! The sorted positions whose deleting snapshot differs from the snapshot of the file, used in deletion scans
 	vector<idx_t> scan_snapshot_positions;
 	//! The deleting snapshot of each position in scan_snapshot_positions
@@ -26,6 +27,8 @@ struct DuckLakeDeleteData {
 
 	idx_t Filter(row_t start_row_index, idx_t count, SelectionVector &result_sel,
 	             optional_idx snapshot_filter = optional_idx()) const;
+
+	idx_t FilterScanRows(row_t start_row_index, idx_t count, SelectionVector &result_sel) const;
 
 	bool HasEmbeddedSnapshots() const;
 

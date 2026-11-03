@@ -30,6 +30,7 @@ struct DuckLakeColumnData {
 	Value stored_default_value;
 	Value stored_default_type;
 	Value stored_default_dialect;
+	string stored_default_reason;
 
 	bool KeepsStoredDefault() const {
 		return keeps_stored_default;
@@ -39,6 +40,7 @@ struct DuckLakeColumnData {
 		stored_default_value = Value();
 		stored_default_type = Value();
 		stored_default_dialect = Value();
+		stored_default_reason.clear();
 	}
 	DuckLakeColumnData Copy() const {
 		DuckLakeColumnData copy;
@@ -52,6 +54,7 @@ struct DuckLakeColumnData {
 		copy.stored_default_value = stored_default_value;
 		copy.stored_default_type = stored_default_type;
 		copy.stored_default_dialect = stored_default_dialect;
+		copy.stored_default_reason = stored_default_reason;
 		return copy;
 	}
 };

@@ -843,6 +843,12 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 		auto copy = col.Copy();
 		if (copy.Name() == info.old_name) {
 			copy.SetName(info.new_name);
+			auto &column_data = field_id.GetColumnData();
+			if (column_data.KeepsStoredDefault()) {
+				// the error of the unusable default names the column
+				copy.SetDefaultValue(
+				    DuckLakeUtil::UnusableDefaultExpression(info.new_name, column_data.stored_default_reason));
+			}
 		}
 		new_columns.AddColumn(std::move(copy));
 	}

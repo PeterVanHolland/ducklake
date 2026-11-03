@@ -75,9 +75,12 @@ SELECT id, a, b FROM lake.t ORDER BY id
 1	5	NULL
 2	7	NULL
 
-# a macro of the same name as the built-in error function does not stand in for it
+# a macro of the same name as the built-in error function does not stand in for it, and can be dropped
 statement ok
 CREATE MACRO error(x) AS 99
+
+statement ok
+CREATE MACRO lake.error(x) AS 99
 
 statement error
 INSERT INTO lake.t (id) VALUES (3)
@@ -86,6 +89,24 @@ it is written in the spark dialect (7 DIV 2)
 
 statement ok
 DROP MACRO error
+
+statement ok
+DROP MACRO lake.error
+
+# the error names the column by its current name, before the catalog is read again as well
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a TO renamed
+
+statement error
+INSERT INTO lake.t (id) VALUES (3)
+----
+DuckLake cannot use the default of column renamed: it is written in the spark dialect (7 DIV 2)
+
+statement ok
+ROLLBACK
 
 # renaming and promoting the column keeps the default as the other engine wrote it
 statement ok

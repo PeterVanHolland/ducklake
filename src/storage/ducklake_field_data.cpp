@@ -165,6 +165,11 @@ unique_ptr<DuckLakeFieldId> DuckLakeFieldId::Copy() const {
 unique_ptr<DuckLakeFieldId> DuckLakeFieldId::Rename(const DuckLakeFieldId &field_id, const Identifier &new_name) {
 	auto result = field_id.Copy();
 	result->name = new_name;
+	if (result->column_data.KeepsStoredDefault()) {
+		// the error of the unusable default names the column
+		result->column_data.default_value =
+		    DuckLakeUtil::UnusableDefaultExpression(new_name, result->column_data.stored_default_reason);
+	}
 	return result;
 }
 

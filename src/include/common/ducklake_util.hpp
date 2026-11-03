@@ -50,6 +50,10 @@ public:
 	static optional<Value> TryParseSnapshotId(const Value &version);
 	//! The expression of a literal default stored as text, for a column of the given type
 	static unique_ptr<ParsedExpression> LiteralDefaultExpression(const Value &text, const LogicalType &type);
+	//! The default of a column DuckDB cannot evaluate: an error that names the column and the reason
+	static unique_ptr<ParsedExpression> UnusableDefaultExpression(const Identifier &column_name, const string &reason);
+	//! Whether an expression calls a built-in function by its full name, as UnusableDefaultExpression does
+	static bool CallsBuiltinFunction(const ParsedExpression &expr);
 	//! Extracts a macro parameter default that can be stored as a literal of its DuckLake type
 	static bool TryGetMacroDefaultLiteral(const ParsedExpression &expr, Value &result);
 	static string ParseQuotedValue(const string &input, idx_t &pos);

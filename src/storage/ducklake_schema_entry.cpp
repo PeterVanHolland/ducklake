@@ -528,7 +528,8 @@ void DuckLakeSchemaEntry::Scan(CatalogType type, const std::function<void(Catalo
 //! Matches the name alone, as a default resolves through the table schema and the search path, and x.f() can be f(x)
 static bool CallsFunctionNamed(const ParsedExpression &expr, const Identifier &name) {
 	if (expr.GetExpressionClass() == ExpressionClass::FUNCTION &&
-	    expr.Cast<FunctionExpression>().GetQualifiedName().Name() == name) {
+	    expr.Cast<FunctionExpression>().GetQualifiedName().Name() == name &&
+	    !DuckLakeUtil::CallsBuiltinFunction(expr)) {
 		return true;
 	}
 	bool calls = false;

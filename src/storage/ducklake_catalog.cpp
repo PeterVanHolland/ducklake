@@ -552,14 +552,8 @@ static void KeepStoredDefault(DuckLakeColumnData &col_data, const DuckLakeColumn
 	col_data.stored_default_value = col.default_value;
 	col_data.stored_default_type = col.stored_default_type;
 	col_data.stored_default_dialect = col.stored_default_dialect;
-	auto message = StringUtil::Format("DuckLake cannot use the default of column %s: %s. Supply a value for the "
-	                                  "column, or set its default in DuckDB",
-	                                  SQLIdentifier::ToString(col.name.GetIdentifierName()), reason);
-	vector<unique_ptr<ParsedExpression>> children;
-	children.push_back(ConstantExpression::FromValue(Value(message)));
-	// the built-in function by its full name, so that a macro of the same name cannot stand in for it
-	QualifiedName error_function(Identifier("system"), Identifier("main"), Identifier("error"));
-	col_data.default_value = make_uniq<FunctionExpression>(error_function, std::move(children));
+	col_data.stored_default_reason = reason;
+	col_data.default_value = DuckLakeUtil::UnusableDefaultExpression(col.name, reason);
 }
 
 static void TransformColumnDefault(DuckLakeColumnData &col_data, const DuckLakeColumnInfo &col,

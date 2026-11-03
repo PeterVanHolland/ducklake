@@ -342,6 +342,7 @@ void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDele
 	// the rows deleted before the scanned range, cleared after every source has added its rows
 	vector<idx_t> excluded;
 	// the rows whose deleting snapshot is not the snapshot of the file, later entries override earlier ones
+	auto file_snapshot = delete_scan.snapshot_id.GetIndex();
 	vector<pair<idx_t, idx_t>> snapshot_overrides;
 	bool has_embedded_snapshots = false;
 
@@ -353,14 +354,14 @@ void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDele
 		for (idx_t i = 0; i < current_deletes.deleted_rows.size(); i++) {
 			auto delete_idx = current_deletes.deleted_rows[i];
 			CheckDeleteIndex(delete_idx, delete_scan, delete_scan.delete_file);
-			bool has_snapshot = i < current_deletes.snapshot_ids.size();
-			auto delete_snapshot = has_snapshot ? current_deletes.snapshot_ids[i] : delete_scan.snapshot_id.GetIndex();
+			auto delete_snapshot =
+			    i < current_deletes.snapshot_ids.size() ? current_deletes.snapshot_ids[i] : file_snapshot;
 			if (delete_scan.insert_snapshot.IsValid() && delete_snapshot == delete_scan.insert_snapshot.GetIndex()) {
 				// a row deleted in the snapshot that inserted it was never visible
 				continue;
 			}
 			rows.SetValidUnsafe(delete_idx);
-			if (has_snapshot) {
+			if (delete_snapshot != file_snapshot) {
 				snapshot_overrides.emplace_back(delete_idx, delete_snapshot);
 			}
 		}
@@ -373,7 +374,9 @@ void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDele
 			continue;
 		}
 		rows.SetValid(inlined_delete.first);
-		snapshot_overrides.emplace_back(inlined_delete.first, inlined_delete.second);
+		if (inlined_delete.second != file_snapshot) {
+			snapshot_overrides.emplace_back(inlined_delete.first, inlined_delete.second);
+		}
 	}
 
 	if (!delete_scan.previous_delete_file.path.empty() && !has_embedded_snapshots) {

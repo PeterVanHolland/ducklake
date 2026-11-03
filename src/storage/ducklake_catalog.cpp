@@ -507,9 +507,7 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
                                                                           TableIndex table_id, idx_t schema_version) {
 	DuckLakeSnapshot snapshot(GetBeginSnapshotForSchemaVersion(table_id, schema_version, transaction), schema_version,
 	                          0, 0);
-	// a cached schema version holds the table, otherwise a version that created or altered few tables loads one table
-	// at a time, so that flushing or compacting many tables of their own versions does not keep a whole catalog per
-	// version, and a version of several tables loads whole as before
+	// a cached version holds the table, a version of few tables loads one table at a time, a bigger one loads whole
 	auto entry = GetObjectCacheInstance().Get<DuckLakeSchemaCacheEntry>(SchemaCacheKey(schema_version));
 	if (!entry) {
 		entry = LoadsVersionWhole(transaction, snapshot) ? GetSchemaCacheEntry(transaction, snapshot)

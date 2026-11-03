@@ -24,6 +24,25 @@ INSERT INTO lake.t${i} VALUES (${i}, 'x'), (${i} * 10, 'y')
 
 endloop
 
+# v1 and v2 share one schema version, which created two tables
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE lake.v1(a INT)
+
+statement ok
+CREATE TABLE lake.v2(a INT)
+
+statement ok
+COMMIT
+
+statement ok
+INSERT INTO lake.v1 VALUES (6)
+
+statement ok
+INSERT INTO lake.v2 VALUES (7)
+
 # u1 to u4 share one schema version, which created four tables
 statement ok
 BEGIN
@@ -84,15 +103,17 @@ u1	2
 u2	1
 u3	1
 u4	1
+v1	1
+v2	1
 
-# an old schema version that created one table is loaded for that table alone, the whole catalog is loaded for the
+# an old schema version that created one or two tables is loaded table by table, the whole catalog is loaded for the
 # current version and for the version that created u1 to u4
 query II
 SELECT count(*) FILTER (WHERE query NOT LIKE '%tbl.table_id = %'), count(*) FILTER (WHERE query LIKE '%tbl.table_id = %')
 FROM duckdb_logs_parsed('DuckLakeMetadata')
 WHERE query LIKE '%ducklake_table tbl%'
 ----
-2	6
+2	8
 
 statement ok
 CALL disable_logging()

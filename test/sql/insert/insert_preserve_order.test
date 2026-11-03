@@ -65,3 +65,23 @@ query II
 SELECT count(*), sum(id) FROM lake.u
 ----
 400000	79999800000
+
+# with data inlining the rows pass an operator that buffers them across batches, so the write stays parallel
+statement ok
+SET preserve_insertion_order = true
+
+statement ok
+CALL lake.set_option('data_inlining_row_limit', 350000)
+
+statement ok
+CREATE TABLE lake.v AS SELECT * FROM read_parquet('{DATA_PATH}/insert_preserve_order_src.parquet')
+
+query II
+SELECT count(*), sum(id) FROM lake.v
+----
+400000	79999800000
+
+query I
+SELECT count(*) > 1 FROM ducklake_list_files('lake', 'v')
+----
+true

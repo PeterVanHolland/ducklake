@@ -196,7 +196,7 @@ struct DuckLakeCopyInput {
 	optional_idx get_table_index;
 	//! Whether the rows reach the copy in the order they must be written in
 	bool ordered_input = false;
-	//! Whether the write keeps the insertion order when the session asks for it; the rewrites of DuckLake do not
+	//! Whether the write keeps the insertion order when the session asks for it, which the rewrites of DuckLake skip
 	bool preserve_insertion_order = false;
 };
 

@@ -448,12 +448,14 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 		result->ThrowIfError(
 		    StringUtil::Format("Failed to migrate the column types of inlined-data table %s: ", table_name));
 	}
+	// the rewritten tables start without an identity
+	CompleteMetadataTables();
 }
 
-//! A PL/pgSQL block that gives the tables without a replica identity the full row as one, which a publication needs
-//! for their updates, and skips an ALTER the client may not run
+//! Gives the matching tables without a replica identity the full row as one, where the session may alter them
 static string ReplicaIdentityBlock(const string &table_condition) {
 	auto body = StringUtil::Format(R"(DECLARE t regclass; BEGIN
+IF current_setting('transaction_read_only') = 'on' THEN RETURN; END IF;
 FOR t IN SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE %s
 AND c.relkind = 'r' AND c.relreplident = 'd'
 AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary) LOOP
@@ -470,7 +472,7 @@ string PostgresMetadataManager::AfterCreateTableSql(const Identifier &table_name
 }
 
 void PostgresMetadataManager::CompleteMetadataTables() {
-	// every DuckLake table of the schema, Postgres runs the block since DuckDB does not parse it
+	// Postgres runs the block, DuckDB does not parse it
 	auto schema = SQLString::ToString(transaction.GetCatalog().MetadataSchemaName().GetIdentifierName());
 	ExecuteOnServer(
 	    ReplicaIdentityBlock(StringUtil::Format("n.nspname = %s AND c.relname LIKE 'ducklake\\_%%'", schema)))

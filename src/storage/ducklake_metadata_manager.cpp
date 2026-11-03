@@ -4017,7 +4017,8 @@ Identifier DuckLakeMetadataManager::InlinedFileDeletionTableName(TableIndex tabl
 
 string
 DuckLakeMetadataManager::WriteNewInlinedFileDeletesSql(const vector<DuckLakeInlinedFileDeletionInfo> &new_deletes,
-                                                       bool &created_new_table) {
+                                                       bool &created_new_table,
+                                                       optional_ptr<const DuckLakeMetadataManager> manager) {
 	created_new_table = false;
 	string batch_queries;
 	if (new_deletes.empty()) {
@@ -4030,6 +4031,9 @@ DuckLakeMetadataManager::WriteNewInlinedFileDeletesSql(const vector<DuckLakeInli
 			batch_queries += StringUtil::Format("CREATE TABLE IF NOT EXISTS {METADATA_CATALOG}.%s"
 			                                    "(file_id BIGINT, row_id BIGINT, begin_snapshot BIGINT);\n",
 			                                    table_name);
+			if (manager) {
+				batch_queries += manager->AfterCreateTableSql(table_name);
+			}
 			created_new_table = true;
 		}
 		vector<string> tuples;
@@ -4047,16 +4051,10 @@ DuckLakeMetadataManager::WriteNewInlinedFileDeletesSql(const vector<DuckLakeInli
 string DuckLakeMetadataManager::WriteNewInlinedFileDeletesSqlBatch(
     const vector<DuckLakeInlinedFileDeletionInfo> &new_deletes) {
 	bool created_new_table = false;
-	auto batch_queries = WriteNewInlinedFileDeletesSql(new_deletes, created_new_table);
+	auto batch_queries = WriteNewInlinedFileDeletesSql(new_deletes, created_new_table, this);
 	if (created_new_table) {
 		// We create a table here, flag we need to clear our cache at commit
 		MarkPendingCacheClear();
-		set<idx_t> tables;
-		for (auto &entry : new_deletes) {
-			if (tables.insert(entry.table_id.index).second) {
-				batch_queries += AfterCreateTableSql(InlinedFileDeletionTableName(entry.table_id));
-			}
-		}
 	}
 	return batch_queries;
 }

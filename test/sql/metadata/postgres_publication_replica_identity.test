@@ -45,9 +45,12 @@ CREATE TABLE lake.p AS SELECT range AS i FROM range(100)
 statement ok
 INSERT INTO lake.p SELECT range FROM range(100, 200)
 
-# deleted rows of a data file go to an inlined delete table, which is only inserted into
+# deleted rows of a data file go to an inlined delete table, which the flush deletes from
 statement ok
 DELETE FROM lake.p WHERE i = 5
+
+statement ok
+CALL ducklake_flush_inlined_data('lake')
 
 # the second comment ends the first tag
 statement ok
@@ -65,10 +68,9 @@ SELECT count(*), max(i), (SELECT comment FROM duckdb_tables() WHERE database_nam
 ----
 199	199	b
 
-# every metadata table has a replica identity, a primary key or the full row, except the inlined delete table that
-# only takes inserts until the next attach completes it
+# every metadata table has a replica identity, a primary key or the full row
 query I
-SELECT count(*) FROM postgres_query('__ducklake_metadata_lake', 'SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity'' AND c.relkind = ''r'' AND c.relreplident = ''d'' AND c.relname NOT LIKE ''ducklake\_inlined\_delete\_%'' AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)')
+SELECT count(*) FROM postgres_query('__ducklake_metadata_lake', 'SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity'' AND c.relkind = ''r'' AND c.relreplident = ''d'' AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)')
 ----
 0
 

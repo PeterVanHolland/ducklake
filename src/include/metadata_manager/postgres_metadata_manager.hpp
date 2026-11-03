@@ -45,6 +45,8 @@ public:
 	void MigrateInlinedDataTypes() override;
 	string AfterCreateTableSql(const Identifier &table_name) const override;
 	void CompleteMetadataTables() override;
+	void ExecuteMigration(string migrate_query, bool allow_failures, const string &from_version,
+	                      const string &to_version) override;
 	bool IsRetryableCommitError(const string &message) const override;
 	string ConfigOptionLockSql() const override;
 

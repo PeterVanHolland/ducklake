@@ -4051,6 +4051,12 @@ string DuckLakeMetadataManager::WriteNewInlinedFileDeletesSqlBatch(
 	if (created_new_table) {
 		// We create a table here, flag we need to clear our cache at commit
 		MarkPendingCacheClear();
+		set<idx_t> tables;
+		for (auto &entry : new_deletes) {
+			if (tables.insert(entry.table_id.index).second) {
+				batch_queries += AfterCreateTableSql(InlinedFileDeletionTableName(entry.table_id));
+			}
+		}
 	}
 	return batch_queries;
 }

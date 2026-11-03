@@ -450,23 +450,38 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 	}
 }
 
+//! A PL/pgSQL block that gives the tables without a replica identity the full row as one, which a publication needs
+//! for their updates, and skips an ALTER the client may not run
+static string ReplicaIdentityBlock(const string &table_condition) {
+	auto body = StringUtil::Format(R"(DECLARE t regclass; BEGIN
+FOR t IN SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE %s
+AND c.relkind = 'r' AND c.relreplident = 'd'
+AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary) LOOP
+BEGIN EXECUTE format('ALTER TABLE %%s REPLICA IDENTITY FULL', t); EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+END LOOP; END)",
+	                               table_condition);
+	return "DO " + SQLString::ToString(body) + ";";
+}
+
 string PostgresMetadataManager::AfterCreateTableSql(const Identifier &table_name) const {
-	// a table in a publication needs a replica identity for its updates
-	return StringUtil::Format("ALTER TABLE {METADATA_CATALOG}.%s REPLICA IDENTITY FULL;", table_name);
+	auto schema = SQLString::ToString(transaction.GetCatalog().MetadataSchemaName().GetIdentifierName());
+	return ReplicaIdentityBlock(StringUtil::Format("n.nspname = %s AND c.relname = %s", schema,
+	                                               SQLString::ToString(table_name.GetIdentifierName())));
 }
 
 void PostgresMetadataManager::CompleteMetadataTables() {
-	// the DuckLake tables without a primary key get the full row as replica identity, an ALTER a client may not run
-	// is skipped, and Postgres runs the block since DuckDB does not parse it
+	// every DuckLake table of the schema, Postgres runs the block since DuckDB does not parse it
 	auto schema = SQLString::ToString(transaction.GetCatalog().MetadataSchemaName().GetIdentifierName());
-	ExecuteOnServer(StringUtil::Format(R"(DO $ducklake_identity$ DECLARE t regclass; BEGIN
-FOR t IN SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = %s
-AND c.relname LIKE 'ducklake\_%%' AND c.relkind = 'r' AND c.relreplident = 'd'
-AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary) LOOP
-BEGIN EXECUTE format('ALTER TABLE %%s REPLICA IDENTITY FULL', t); EXCEPTION WHEN OTHERS THEN NULL; END;
-END LOOP; END $ducklake_identity$;)",
-	                                   schema))
+	ExecuteOnServer(
+	    ReplicaIdentityBlock(StringUtil::Format("n.nspname = %s AND c.relname LIKE 'ducklake\\_%%'", schema)))
 	    ->ThrowIfError("Failed to complete the metadata tables of DuckLake: ");
+}
+
+void PostgresMetadataManager::ExecuteMigration(string migrate_query, bool allow_failures, const string &from_version,
+                                               const string &to_version) {
+	DuckLakeMetadataManager::ExecuteMigration(std::move(migrate_query), allow_failures, from_version, to_version);
+	// the tables this step created, before the next step updates them
+	CompleteMetadataTables();
 }
 
 string PostgresMetadataManager::ConfigOptionLockSql() const {

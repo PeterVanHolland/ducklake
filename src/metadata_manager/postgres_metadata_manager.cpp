@@ -452,8 +452,8 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 	CompleteMetadataTables();
 }
 
-//! Gives the matching tables without a replica identity the full row as one, a protected or locked table is skipped
-//! at once, since waiting for a lock inside an attach deadlocks with other attaches
+//! Gives the matching tables without a replica identity the full row as one, a locked table is skipped since a wait
+//! inside an attach deadlocks with other attaches
 static string ReplicaIdentityBlock(const string &table_condition) {
 	auto body = StringUtil::Format(R"(DECLARE t regclass; lock_wait text; BEGIN
 IF current_setting('transaction_read_only') = 'on' THEN RETURN; END IF;
@@ -477,7 +477,6 @@ string PostgresMetadataManager::AfterCreateTableSql(const Identifier &table_name
 }
 
 void PostgresMetadataManager::CompleteMetadataTables() {
-	// Postgres runs the block, DuckDB does not parse it
 	auto schema = SQLString::ToString(transaction.GetCatalog().MetadataSchemaName().GetIdentifierName());
 	ExecuteOnServer(
 	    ReplicaIdentityBlock(StringUtil::Format("n.nspname = %s AND c.relname LIKE 'ducklake\\_%%'", schema)))

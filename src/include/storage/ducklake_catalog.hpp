@@ -495,6 +495,8 @@ private:
 	unordered_map<string, weak_ptr<ObjectCacheEntry>> cache_entries;
 	//! The table loaded alone per schema version
 	unordered_map<idx_t, TableIndex> single_table_loads;
+	//! The cache keys of the tables loaded alone per schema version
+	unordered_map<idx_t, unordered_set<string>> table_cache_keys;
 	vector<TrackedStatsEntry> stats_cache_entries;
 	//! The number of tracked entries at which the evicted ones are forgotten
 	idx_t cache_entries_prune_size = 64;

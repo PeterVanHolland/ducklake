@@ -557,6 +557,7 @@ DuckLakeCatalog::GetTableCacheEntry(DuckLakeTransaction &transaction, DuckLakeSn
 	lock_guard<mutex> guard(cache_entries_lock);
 	auto entry = cache.GetOrCreate<DuckLakeSchemaCacheEntry>(key, std::move(catalog_set));
 	TrackCacheEntry(key, entry);
+	table_cache_keys[snapshot.schema_version].insert(key);
 	return entry;
 }
 
@@ -1649,20 +1650,19 @@ void DuckLakeCatalog::InvalidateTableStatsCaches(const unordered_set<idx_t> &nex
 
 void DuckLakeCatalog::InvalidateSchemaCache(idx_t schema_version) {
 	auto &cache = GetObjectCacheInstance();
-	auto key = SchemaCacheKey(schema_version);
-	cache.Delete(key);
+	cache.Delete(SchemaCacheKey(schema_version));
 	// the tables of the version loaded alone go with it
-	auto table_prefix = key + ":table:";
 	lock_guard<mutex> guard(cache_entries_lock);
 	single_table_loads.erase(schema_version);
-	for (auto it = cache_entries.begin(); it != cache_entries.end();) {
-		if (StringUtil::StartsWith(it->first, table_prefix)) {
-			cache.Delete(it->first);
-			it = cache_entries.erase(it);
-		} else {
-			++it;
-		}
+	auto keys = table_cache_keys.find(schema_version);
+	if (keys == table_cache_keys.end()) {
+		return;
 	}
+	for (auto &key : keys->second) {
+		cache.Delete(key);
+		cache_entries.erase(key);
+	}
+	table_cache_keys.erase(keys);
 }
 
 void DuckLakeCatalog::InvalidateNameMapCache(MappingIndex mapping_id) {
@@ -1691,6 +1691,13 @@ void DuckLakeCatalog::TrackCacheEntry(const string &key, const shared_ptr<Object
 		} else {
 			++it;
 		}
+	}
+	for (auto version = table_cache_keys.begin(); version != table_cache_keys.end();) {
+		auto &keys = version->second;
+		for (auto it = keys.begin(); it != keys.end();) {
+			it = cache_entries.count(*it) ? std::next(it) : keys.erase(it);
+		}
+		version = keys.empty() ? table_cache_keys.erase(version) : std::next(version);
 	}
 	cache_entries_prune_size = MaxValue<idx_t>(cache_entries_prune_size, cache_entries.size() * 2);
 }
@@ -1730,6 +1737,8 @@ void DuckLakeCatalog::EvictCacheEntries() {
 	}
 	cache_entries.clear();
 	stats_cache_entries.clear();
+	table_cache_keys.clear();
+	single_table_loads.clear();
 }
 
 void DuckLakeCatalog::RegisterCatalog() {

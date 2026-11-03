@@ -154,6 +154,40 @@ SELECT COUNT(*) FROM table_changes('w', 18, 18)
 ----
 0
 
+# a table named like the rewrite marker does not keep a deleted file
+statement ok
+CREATE TABLE z(a INT)
+
+statement ok
+INSERT INTO z VALUES (1), (2)
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM z
+
+statement ok
+CREATE TABLE "rewrite_delete:"(x INT)
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM ducklake_meta.ducklake_data_file
+WHERE table_id = (SELECT table_id FROM ducklake_meta.ducklake_table WHERE table_name = 'z')
+----
+1
+
+statement ok
+CALL ducklake_expire_snapshots('ducklake', versions => [21])
+
+query I
+SELECT count(*) FROM ducklake_meta.ducklake_data_file
+WHERE table_id = (SELECT table_id FROM ducklake_meta.ducklake_table WHERE table_name = 'z')
+----
+0
+
 # the rewrite snapshot itself is expired, so a later update of its output keeps its delete
 statement ok
 CREATE TABLE v(id INTEGER, v VARCHAR)
@@ -174,23 +208,23 @@ statement ok
 UPDATE v SET v = 'x' WHERE id = 3
 
 query IIIII
-SELECT snapshot_id, rowid, change_type, id, v FROM table_changes('v', 23, 25) ORDER BY ALL
+SELECT snapshot_id, rowid, change_type, id, v FROM table_changes('v', 27, 29) ORDER BY ALL
 ----
-23	1	delete	2	b
-25	2	update_postimage	3	x
-25	2	update_preimage	3	c
+27	1	delete	2	b
+29	2	update_postimage	3	x
+29	2	update_preimage	3	c
 
 statement ok
-CALL ducklake_expire_snapshots('ducklake', versions => [24])
+CALL ducklake_expire_snapshots('ducklake', versions => [28])
 
 query IIIII
-SELECT snapshot_id, rowid, change_type, id, v FROM table_changes('v', 23, 25) ORDER BY ALL
+SELECT snapshot_id, rowid, change_type, id, v FROM table_changes('v', 27, 29) ORDER BY ALL
 ----
-23	1	delete	2	b
-24	2	delete	3	c
-25	2	insert	3	x
+27	1	delete	2	b
+28	2	delete	3	c
+29	2	insert	3	x
 
 query I
-SELECT list((id, v) ORDER BY id) FROM v AT (VERSION => 25)
+SELECT list((id, v) ORDER BY id) FROM v AT (VERSION => 29)
 ----
 [(3, x)]

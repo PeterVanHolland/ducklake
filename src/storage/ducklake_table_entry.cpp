@@ -986,9 +986,16 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 static void ExtractDefaultValue(const DuckLakeColumnData &col_data, DuckLakeColumnInfo &info) {
 	info.initial_default = col_data.initial_default;
 	if (col_data.KeepsStoredDefault()) {
+		info.default_as_stored = true;
 		info.default_value = col_data.stored_default_value;
-		info.default_value_type = col_data.stored_default_type;
-		info.default_value_dialect = col_data.stored_default_dialect;
+		info.stored_default_type = col_data.stored_default_type;
+		info.stored_default_dialect = col_data.stored_default_dialect;
+		if (!info.stored_default_type.IsNull()) {
+			info.default_value_type = StringValue::Get(info.stored_default_type);
+		}
+		if (!info.stored_default_dialect.IsNull()) {
+			info.default_value_dialect = StringValue::Get(info.stored_default_dialect);
+		}
 	} else if (col_data.default_value) {
 		Value literal_value;
 		if (DuckLakeUtil::TryGetLiteralValue(*col_data.default_value, literal_value)) {

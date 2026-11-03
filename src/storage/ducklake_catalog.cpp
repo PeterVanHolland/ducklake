@@ -158,8 +158,8 @@ idx_t EstimateFieldIdMemory(const DuckLakeFieldId &field_id) {
 	}
 	if (column_data.KeepsStoredDefault()) {
 		estimate += EstimateValueMemory(column_data.stored_default_value) +
-		            EstimateStringMemory(column_data.stored_default_type) +
-		            EstimateStringMemory(column_data.stored_default_dialect);
+		            EstimateValueMemory(column_data.stored_default_type) +
+		            EstimateValueMemory(column_data.stored_default_dialect);
 	}
 	for (const auto &child : field_id.Children()) {
 		estimate += EstimateFieldIdMemory(*child);
@@ -550,8 +550,8 @@ DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &t
 static void KeepStoredDefault(DuckLakeColumnData &col_data, const DuckLakeColumnInfo &col, const string &reason) {
 	col_data.keeps_stored_default = true;
 	col_data.stored_default_value = col.default_value;
-	col_data.stored_default_type = col.default_value_type;
-	col_data.stored_default_dialect = col.default_value_dialect;
+	col_data.stored_default_type = col.stored_default_type;
+	col_data.stored_default_dialect = col.stored_default_dialect;
 	auto message = StringUtil::Format("DuckLake cannot use the default of column %s: %s. Supply a value for the "
 	                                  "column, or set its default in DuckDB",
 	                                  SQLIdentifier::ToString(col.name.GetIdentifierName()), reason);
@@ -584,7 +584,8 @@ static void TransformColumnDefault(DuckLakeColumnData &col_data, const DuckLakeC
 	auto expression = col.default_value.GetValue<string>();
 	try {
 		col_data.default_value = Parser::GetBuiltinParser().ParseSingleExpression(expression);
-	} catch (ParserException &ex) {
+	} catch (std::exception &ex) {
+		// the parser or the transformer rejects the text
 		KeepStoredDefault(
 		    col_data, col,
 		    StringUtil::Format("it cannot be parsed as DuckDB SQL (%s): %s", expression, ErrorData(ex).RawMessage()));

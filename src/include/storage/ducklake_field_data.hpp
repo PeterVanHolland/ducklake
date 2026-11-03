@@ -28,8 +28,8 @@ struct DuckLakeColumnData {
 	//! A default DuckDB cannot evaluate (another dialect, an unparsable expression or an unknown type), as stored
 	bool keeps_stored_default = false;
 	Value stored_default_value;
-	string stored_default_type;
-	string stored_default_dialect;
+	Value stored_default_type;
+	Value stored_default_dialect;
 
 	bool KeepsStoredDefault() const {
 		return keeps_stored_default;
@@ -37,8 +37,8 @@ struct DuckLakeColumnData {
 	void DropStoredDefault() {
 		keeps_stored_default = false;
 		stored_default_value = Value();
-		stored_default_type.clear();
-		stored_default_dialect.clear();
+		stored_default_type = Value();
+		stored_default_dialect = Value();
 	}
 	DuckLakeColumnData Copy() const {
 		DuckLakeColumnData copy;

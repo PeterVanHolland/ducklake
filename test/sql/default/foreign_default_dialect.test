@@ -141,7 +141,7 @@ statement ok
 ALTER TABLE lake.t RENAME COLUMN a2 TO a
 
 statement ok
-UPDATE __ducklake_metadata_lake.ducklake_column SET default_value = '3', default_value_type = NULL, default_value_dialect = 'duckdb' WHERE column_name = 'a'
+UPDATE __ducklake_metadata_lake.ducklake_column SET default_value = '3', default_value_type = NULL, default_value_dialect = NULL WHERE column_name = 'a'
 
 statement ok
 DETACH lake
@@ -158,9 +158,9 @@ statement ok
 ALTER TABLE lake.t RENAME COLUMN a TO a2
 
 query III
-SELECT default_value, default_value_type IS NULL, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
+SELECT default_value, default_value_type IS NULL, default_value_dialect IS NULL FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
 ----
-3	true	duckdb
+3	true	true
 
 statement ok
 ALTER TABLE lake.t RENAME COLUMN a2 TO a
@@ -237,10 +237,42 @@ it cannot be parsed as DuckDB SQL (7 DIV 2)
 statement ok
 ALTER TABLE lake.t DROP COLUMN b
 
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a TO a2
+
 query III
-SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a' AND end_snapshot IS NULL
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
 ----
 7 DIV 2	expression	duckdb
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a2 TO a
+
+# an expression the transformer rejects is kept the same way, with the spelling of its dialect
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_column SET default_value = 'ARRAY(SELECT 1, 2)', default_value_type = 'expression', default_value_dialect = 'DuckDB' WHERE column_name = 'a'
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/foreign_default_dialect', DATA_INLINING_ROW_LIMIT 0)
+
+statement error
+INSERT INTO lake.t (id) VALUES (3)
+----
+it cannot be parsed as DuckDB SQL (ARRAY(SELECT 1, 2))
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a TO a2
+
+query III
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
+----
+ARRAY(SELECT 1, 2)	expression	DuckDB
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a2 TO a
 
 # a default set in DuckDB works again
 statement ok

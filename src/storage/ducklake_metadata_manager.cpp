@@ -5815,11 +5815,10 @@ idx_t DuckLakeMetadataManager::ResolveSnapshotVersion(const Value &version) {
 
 string DuckLakeMetadataManager::EndSnapshotTagSql(const DuckLakeSnapshotTagInfo &tag) {
 	// the collation of the catalog can fold names, so they compare byte for byte
-	return StringUtil::Format(
-	    "UPDATE {METADATA_CATALOG}.ducklake_snapshot_tag SET end_snapshot = {SNAPSHOT_ID} WHERE end_snapshot IS "
-	    "NULL AND %s = %s AND snapshot_id = %d AND begin_snapshot = %d;\n",
-	    DuckLakeUtil::WithBinaryCollation("tag_name"), SQLString(tag.name), tag.snapshot_id,
-	    tag.created_snapshot_id.GetIndex());
+	return EndRowsSql("ducklake_snapshot_tag",
+	                  {StringUtil::Format("%s = %s AND snapshot_id = %d AND begin_snapshot = %d",
+	                                      DuckLakeUtil::WithBinaryCollation("tag_name"), SQLString(tag.name),
+	                                      tag.snapshot_id, tag.created_snapshot_id.GetIndex())});
 }
 
 string

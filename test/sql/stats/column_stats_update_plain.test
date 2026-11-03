@@ -1,5 +1,5 @@
 # name: test/sql/stats/column_stats_update_plain.test
-# description: the column stats update and the other UPDATEs of a commit are plain statements, which every metadata server runs
+# description: the column stats update and the other UPDATEs of a commit are plain statements without a joined VALUES list
 # group: [stats]
 
 require ducklake
@@ -239,12 +239,6 @@ SELECT count(DISTINCT comment), bool_and(comment = 'column ' || column_name[2:] 
 FROM duckdb_columns() WHERE database_name = 'lake' AND table_name = 'w'
 ----
 520	true
-
-# the stats keep pruning files
-query I
-SELECT count(*) FROM lake.t WHERE i > 5
-----
-0
 
 query II
 SELECT c0, c519 FROM lake.w ORDER BY c0

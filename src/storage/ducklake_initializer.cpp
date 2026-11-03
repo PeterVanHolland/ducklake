@@ -248,6 +248,12 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 	// load the data path from the existing duck lake
 	auto &metadata_manager = transaction.GetMetadataManager();
 	auto metadata = metadata_manager.LoadDuckLake();
+	// an older version or another backend's client may have left the tables incomplete, before a migration updates them
+	auto completes_tables = !catalog.GetAttached().IsReadOnly();
+	if (completes_tables) {
+		metadata_manager.CompleteMetadataTables();
+	}
+	bool migrated = false;
 	DuckLakeVersion resolved_version = DuckLakeVersion::UNSET;
 	for (auto &tag : metadata.tags) {
 		if (tag.key == "version") {
@@ -268,6 +274,7 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 			}
 			if (catalog_version < target_version) {
 				catalog.VerifyWritable();
+				migrated = true;
 			}
 			if (catalog_version == DuckLakeVersion::V0_1) {
 				metadata_manager.MigrateV01();
@@ -348,8 +355,8 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 	if (resolved_version != DuckLakeVersion::UNSET) {
 		SetVersionedMetadataManager(transaction, resolved_version);
 	}
-	// an older version or another backend's client may have left the tables incomplete
-	if (!catalog.GetAttached().IsReadOnly()) {
+	// the tables a migration added
+	if (completes_tables && migrated) {
 		transaction.GetMetadataManager().CompleteMetadataTables();
 	}
 }

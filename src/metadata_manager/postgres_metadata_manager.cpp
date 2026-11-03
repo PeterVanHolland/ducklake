@@ -456,21 +456,17 @@ string PostgresMetadataManager::AfterCreateTableSql(const Identifier &table_name
 }
 
 void PostgresMetadataManager::CompleteMetadataTables() {
-	// every table without a primary key gets the full row as replica identity, a client that may not alter the
-	// tables keeps going, and the block runs on the server since DuckDB does not parse it
-	auto &ducklake_catalog = transaction.GetCatalog();
-	auto schema = SQLString::ToString(ducklake_catalog.MetadataSchemaName().GetIdentifierName());
-	auto block = StringUtil::Format(R"(DO $$ DECLARE t regclass; BEGIN
+	// the DuckLake tables without a primary key get the full row as replica identity, an ALTER a client may not run
+	// is skipped, and Postgres runs the block since DuckDB does not parse it
+	auto schema = SQLString::ToString(transaction.GetCatalog().MetadataSchemaName().GetIdentifierName());
+	ExecuteOnServer(StringUtil::Format(R"(DO $ducklake_identity$ DECLARE t regclass; BEGIN
 FOR t IN SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = %s
-AND c.relkind = 'r' AND c.relreplident = 'd'
+AND c.relname LIKE 'ducklake\_%%' AND c.relkind = 'r' AND c.relreplident = 'd'
 AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary) LOOP
 BEGIN EXECUTE format('ALTER TABLE %%s REPLICA IDENTITY FULL', t); EXCEPTION WHEN OTHERS THEN NULL; END;
-END LOOP; END $$;)",
-	                                schema);
-	auto catalog_literal = SQLString::ToString(ducklake_catalog.MetadataDatabaseName().GetIdentifierName());
-	auto result = transaction.ExecuteRaw(
-	    StringUtil::Format("CALL postgres_execute(%s, %s, prepare=FALSE)", catalog_literal, SQLString(block)));
-	result->ThrowIfError("Failed to complete the metadata tables of DuckLake: ");
+END LOOP; END $ducklake_identity$;)",
+	                                   schema))
+	    ->ThrowIfError("Failed to complete the metadata tables of DuckLake: ");
 }
 
 string PostgresMetadataManager::ConfigOptionLockSql() const {
@@ -486,9 +482,13 @@ unique_ptr<QueryResult> PostgresMetadataManager::Execute(DuckLakeSnapshot snapsh
 		throw InvalidInputException("A DuckLake catalog on PostgreSQL cannot store text that contains a NUL byte, "
 		                            "such as a partition value, a name or a commit message");
 	}
-	auto catalog_literal = SQLString::ToString(ducklake_catalog.MetadataDatabaseName().GetIdentifierName());
 	// casts of float bounds to text keep their exact value
 	query = "SET LOCAL extra_float_digits = 3;" + query;
+	return ExecuteOnServer(query);
+}
+
+unique_ptr<QueryResult> PostgresMetadataManager::ExecuteOnServer(const string &query) {
+	auto catalog_literal = SQLString::ToString(transaction.GetCatalog().MetadataDatabaseName().GetIdentifierName());
 	return transaction.ExecuteRaw(
 	    StringUtil::Format("CALL postgres_execute(%s, %s, prepare=FALSE)", catalog_literal, SQLString(query)));
 }

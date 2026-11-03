@@ -20,6 +20,11 @@ DuckLakeDeleteFilter::DuckLakeDeleteFilter() : delete_data(make_shared_ptr<DuckL
 idx_t DuckLakeDeleteData::FilterScanRows(row_t start_row_index, idx_t count, SelectionVector &result_sel) const {
 	// return the rows of this range whose bit is set, skipping empty entries of 64 rows
 	auto start = NumericCast<idx_t>(start_row_index);
+	auto row_count = scan_rows.Capacity();
+	if (count > row_count || start > row_count - count) {
+		throw InvalidInputException("Invalid data file - a deletion scan read past the %llu rows recorded for the file",
+		                            row_count);
+	}
 	auto end = start + count;
 	result_sel.Initialize(STANDARD_VECTOR_SIZE);
 	idx_t result_count = 0;

@@ -1,0 +1,69 @@
+# name: test/sql/stats/column_stats_update_plain.test
+# description: the column stats update of a commit is a plain UPDATE, which every metadata server runs
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/column_stats_update_plain', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t (i INTEGER, d DOUBLE, s VARCHAR, n INTEGER, st STRUCT(a INTEGER, b VARCHAR))
+
+statement ok
+INSERT INTO lake.t VALUES (1, 1.5, 'b', NULL, {'a': 1, 'b': 'x'})
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+INSERT INTO lake.t VALUES (2, 'nan', 'a', NULL, {'a': 2, 'b': 'y'}), (3, 2.5, 'c', NULL, {'a': NULL, 'b': 'z'})
+
+statement ok
+CALL disable_logging()
+
+# one UPDATE of the column stats, without a VALUES list joined in, as a metadata server that plans the update itself
+# does not accept the join
+query II
+SELECT count(*), count(*) FILTER (WHERE contains(message, 'VALUES') OR contains(message, ' FROM '))
+FROM duckdb_logs WHERE type = 'QueryLog' AND regexp_matches(message, 'UPDATE\s+\S*ducklake_table_column_stats')
+----
+1	0
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
+
+# the stats of every column kept their meaning
+query IIIII
+SELECT col.column_name, stats.contains_null::BOOLEAN, stats.contains_nan::BOOLEAN, stats.min_value, stats.max_value
+FROM __ducklake_metadata_lake.ducklake_table_column_stats stats
+JOIN __ducklake_metadata_lake.ducklake_column col USING (table_id, column_id)
+WHERE col.end_snapshot IS NULL
+ORDER BY col.column_id
+----
+i	false	NULL	1	3
+d	false	true	1.5	2.5
+s	false	NULL	a	c
+n	true	NULL	NULL	NULL
+a	true	NULL	1	2
+b	false	NULL	x	z
+
+query IIII
+SELECT count(*), min(i), max(s), count(n) FROM lake.t WHERE i >= 1
+----
+3	1	c	0
+
+# the stats keep pruning files
+query I
+SELECT count(*) FROM lake.t WHERE i > 3
+----
+0

@@ -3736,19 +3736,17 @@ static string ExpireDroppedColumns(const vector<DuckLakeDroppedColumn> &dropped_
 	if (dropped_columns.empty()) {
 		return {};
 	}
-	auto values = StringUtil::Join(dropped_columns, dropped_columns.size(), ", ", [](const DuckLakeDroppedColumn &col) {
-		return StringUtil::Format("(%d, %d)", col.table_id.index, col.field_id.index);
-	});
+	// a plain UPDATE, a VALUES list joined in is not pushed down to every metadata server
+	auto conditions =
+	    StringUtil::Join(dropped_columns, dropped_columns.size(), " OR ", [](const DuckLakeDroppedColumn &col) {
+		    return StringUtil::Format("(table_id=%d AND column_id=%d)", col.table_id.index, col.field_id.index);
+	    });
 	return StringUtil::Format(R"(
-WITH dropped_cols(tid, cid) AS (
-VALUES %s
-)
 UPDATE {METADATA_CATALOG}.%s
 SET end_snapshot = {SNAPSHOT_ID}
-FROM dropped_cols
-WHERE table_id=tid AND column_id=cid AND end_snapshot IS NULL
+WHERE end_snapshot IS NULL AND (%s)
 ;)",
-	                          values, metadata_table);
+	                          metadata_table, conditions);
 }
 
 string DuckLakeMetadataManager::WriteDroppedColumns(const vector<DuckLakeDroppedColumn> &dropped_columns) {
@@ -3990,20 +3988,16 @@ string DuckLakeMetadataManager::WriteNewInlinedDeletes(const vector<DuckLakeDele
 		vector<string> row_ids;
 		row_ids.reserve(entry.deleted_row_ids.size());
 		for (auto &deleted_id : entry.deleted_row_ids) {
-			row_ids.push_back(StringUtil::Format("(%d)", deleted_id));
+			row_ids.push_back(to_string(deleted_id));
 		}
-		// overwrite the snapshot for the old tags
+		// end the rows in chunks of plain UPDATEs, a VALUES list joined in is not pushed down to every metadata server
 		batch_queries += ChunkValuesStatements(row_ids, [&](const string &row_id_list) {
 			return StringUtil::Format(R"(
-WITH deleted_row_list(deleted_row_id) AS (
-VALUES %s
-)
 UPDATE {METADATA_CATALOG}.%s
 SET %s = {SNAPSHOT_ID}
-FROM deleted_row_list
-WHERE %s=deleted_row_id AND %s IS NULL AND %s != {SNAPSHOT_ID};
+WHERE %s IN (%s) AND %s IS NULL AND %s != {SNAPSHOT_ID};
 )",
-			                          row_id_list, entry.table_name, col_names.end_snapshot, col_names.row_id,
+			                          entry.table_name, col_names.end_snapshot, col_names.row_id, row_id_list,
 			                          col_names.end_snapshot, col_names.begin_snapshot);
 		});
 	}
@@ -5297,24 +5291,20 @@ string DuckLakeMetadataManager::WriteNewTableOptions(const vector<DuckLakeConfig
 	return InsertValuesSql("ducklake_metadata", values);
 }
 
-template <class T, class OverwrittenValues, class NewValues>
-static string WriteNewColumnTagBatch(const vector<T> &new_tags, const string &cte_columns, const string &metadata_table,
-                                     const string &update_condition, OverwrittenValues overwritten_values,
-                                     NewValues new_values) {
+template <class T, class OverwrittenCondition, class NewValues>
+static string WriteNewColumnTagBatch(const vector<T> &new_tags, const string &metadata_table,
+                                     OverwrittenCondition overwritten_condition, NewValues new_values) {
 	if (new_tags.empty()) {
 		return {};
 	}
-	auto tags_list = StringUtil::Join(new_tags, new_tags.size(), ", ", overwritten_values);
+	// a plain UPDATE ends the overwritten tags, a VALUES list joined in is not pushed down to every metadata server
+	auto conditions = StringUtil::Join(new_tags, new_tags.size(), " OR ", overwritten_condition);
 	string batch_query = StringUtil::Format(R"(
-WITH overwritten_tags(%s) AS (
-VALUES %s
-)
 UPDATE {METADATA_CATALOG}.%s
 SET end_snapshot = {SNAPSHOT_ID}
-FROM overwritten_tags
-WHERE %s AND end_snapshot IS NULL
+WHERE end_snapshot IS NULL AND (%s)
 ;)",
-	                                        cte_columns, tags_list, metadata_table, update_condition);
+	                                        metadata_table, conditions);
 	vector<string> new_tag_values;
 	for (auto &tag : new_tags) {
 		new_tag_values.push_back(new_values(tag));
@@ -5324,8 +5314,10 @@ WHERE %s AND end_snapshot IS NULL
 
 string DuckLakeMetadataManager::WriteNewTags(const vector<DuckLakeTagInfo> &new_tags) {
 	return WriteNewColumnTagBatch(
-	    new_tags, "tid, key", "ducklake_tag", "object_id=tid AND ducklake_tag.key=overwritten_tags.key",
-	    [](const DuckLakeTagInfo &tag) { return StringUtil::Format("(%d, %s)", tag.id, SQLString(tag.key)); },
+	    new_tags, "ducklake_tag",
+	    [](const DuckLakeTagInfo &tag) {
+		    return StringUtil::Format("(object_id=%d AND key=%s)", tag.id, SQLString(tag.key));
+	    },
 	    [](const DuckLakeTagInfo &tag) {
 		    return StringUtil::Format("(%d, {SNAPSHOT_ID}, NULL, %s, %s)", tag.id, SQLString(tag.key),
 		                              DuckLakeUtil::TextLiteralOrNull(tag.value));
@@ -5334,10 +5326,10 @@ string DuckLakeMetadataManager::WriteNewTags(const vector<DuckLakeTagInfo> &new_
 
 string DuckLakeMetadataManager::WriteNewColumnTags(const vector<DuckLakeColumnTagInfo> &new_tags) {
 	return WriteNewColumnTagBatch(
-	    new_tags, "tid, cid, key", "ducklake_column_tag",
-	    "table_id=tid AND column_id=cid AND ducklake_column_tag.key=overwritten_tags.key",
+	    new_tags, "ducklake_column_tag",
 	    [](const DuckLakeColumnTagInfo &tag) {
-		    return StringUtil::Format("(%d, %d, %s)", tag.table_id.index, tag.field_index.index, SQLString(tag.key));
+		    return StringUtil::Format("(table_id=%d AND column_id=%d AND key=%s)", tag.table_id.index,
+		                              tag.field_index.index, SQLString(tag.key));
 	    },
 	    [](const DuckLakeColumnTagInfo &tag) {
 		    return StringUtil::Format("(%d, %d, {SNAPSHOT_ID}, NULL, %s, %s)", tag.table_id.index,
@@ -5348,12 +5340,10 @@ string DuckLakeMetadataManager::WriteNewColumnTags(const vector<DuckLakeColumnTa
 
 string DuckLakeMetadataManager::WriteNewViewColumnTags(const vector<DuckLakeViewColumnTagInfo> &new_tags) {
 	return WriteNewColumnTagBatch(
-	    new_tags, "vid, col, k", "ducklake_view_column_tag",
-	    "view_id=vid AND ducklake_view_column_tag.column_name=overwritten_tags.col AND "
-	    "ducklake_view_column_tag.key=overwritten_tags.k",
+	    new_tags, "ducklake_view_column_tag",
 	    [](const DuckLakeViewColumnTagInfo &tag) {
-		    return StringUtil::Format("(%d, %s, %s)", tag.view_id.index, SQLString(tag.column_name.GetIdentifierName()),
-		                              SQLString(tag.key));
+		    return StringUtil::Format("(view_id=%d AND column_name=%s AND key=%s)", tag.view_id.index,
+		                              SQLString(tag.column_name.GetIdentifierName()), SQLString(tag.key));
 	    },
 	    [](const DuckLakeViewColumnTagInfo &tag) {
 		    return StringUtil::Format("(%d, %s, {SNAPSHOT_ID}, NULL, %s, %s)", tag.view_id.index,
@@ -5418,34 +5408,38 @@ string DuckLakeMetadataManager::UpdateGlobalTableStatsSql(const DuckLakeGlobalSt
 		    "next_row_id=%d WHERE table_id=%d;",
 		    record_count, stats.table_size_bytes, stats.next_row_id, stats.table_id.index);
 		// One UPDATE for all columns, which only changes existing rows: a column without a stats row, such as a struct
-		// container, stays without one. ANSI CAST(... AS BOOLEAN) works on DuckDB, Postgres and SQLite, where `::` does
-		// not parse.
+		// container, stays without one. A plain UPDATE with a CASE per column, a VALUES list joined in or a cast to
+		// BOOLEAN is not pushed down to every metadata server. The ELSE keeps the column, it never applies and only
+		// gives a CASE of NULL values the type of the column.
 		if (!stats.column_stats.empty()) {
-			vector<string> new_values;
+			vector<string> column_ids;
+			vector<string> contains_null, contains_nan, min_values, max_values, extra_stats, min_is_exact, max_is_exact;
 			for (auto &col_stats : stats.column_stats) {
 				auto sql = ColumnStatsSQL::FromColumnStats(col_stats);
-				auto value = StringUtil::Format("(%d, CAST(%s AS BOOLEAN), CAST(%s AS BOOLEAN), %s, %s, %s",
-				                                col_stats.column_id.index, sql.contains_null, sql.contains_nan,
-				                                sql.min_val, sql.max_val, sql.extra_stats);
-				if (write_stats_exactness) {
-					value += StringUtil::Format(", CAST(%s AS BOOLEAN), CAST(%s AS BOOLEAN)", sql.min_is_exact,
-					                            sql.max_is_exact);
-				}
-				new_values.push_back(value + ")");
+				auto column_id = to_string(col_stats.column_id.index);
+				column_ids.push_back(column_id);
+				auto when = "WHEN " + column_id + " THEN ";
+				contains_null.push_back(when + sql.contains_null);
+				contains_nan.push_back(when + sql.contains_nan);
+				min_values.push_back(when + sql.min_val);
+				max_values.push_back(when + sql.max_val);
+				extra_stats.push_back(when + sql.extra_stats);
+				min_is_exact.push_back(when + sql.min_is_exact);
+				max_is_exact.push_back(when + sql.max_is_exact);
 			}
-			string exactness_columns;
-			string exactness_set;
+			auto by_column = [](const string &column, const vector<string> &cases) {
+				return column + "=CASE column_id " + StringUtil::Join(cases, " ") + " ELSE " + column + " END";
+			};
+			vector<string> assignments {by_column("contains_null", contains_null),
+			                            by_column("contains_nan", contains_nan), by_column("min_value", min_values),
+			                            by_column("max_value", max_values), by_column("extra_stats", extra_stats)};
 			if (write_stats_exactness) {
-				exactness_columns = ", new_min_is_exact, new_max_is_exact";
-				exactness_set = ", min_is_exact=new_min_is_exact, max_is_exact=new_max_is_exact";
+				assignments.push_back(by_column("min_is_exact", min_is_exact));
+				assignments.push_back(by_column("max_is_exact", max_is_exact));
 			}
 			batch_query += StringUtil::Format(
-			    "WITH new_values(cid, new_contains_null, new_contains_nan, new_min, new_max, new_extra_stats%s) AS "
-			    "(VALUES %s) UPDATE {METADATA_CATALOG}.ducklake_table_column_stats SET "
-			    "contains_null=new_contains_null, "
-			    "contains_nan=new_contains_nan, min_value=new_min, max_value=new_max, extra_stats=new_extra_stats%s "
-			    "FROM new_values WHERE table_id=%d AND column_id=cid;",
-			    exactness_columns, StringUtil::Join(new_values, ", "), exactness_set, stats.table_id.index);
+			    "UPDATE {METADATA_CATALOG}.ducklake_table_column_stats SET %s WHERE table_id=%d AND column_id IN (%s);",
+			    StringUtil::Join(assignments, ", "), stats.table_id.index, StringUtil::Join(column_ids, ", "));
 		}
 	}
 	return batch_query;

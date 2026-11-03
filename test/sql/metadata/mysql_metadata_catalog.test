@@ -1,0 +1,76 @@
+# name: test/sql/metadata/mysql_metadata_catalog.test
+# description: a MySQL metadata catalog runs every metadata write of a table's life, including the column stats updates of repeated inserts
+# group: [metadata]
+
+require ducklake
+
+require parquet
+
+require mysql_scanner
+
+require-env DUCKLAKE_MYSQL_CONNECTION
+
+require-env DUCKLAKE_MYSQL_METADATA_SCHEMA
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_MYSQL_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/mysql_metadata_catalog', DATA_INLINING_ROW_LIMIT 0, METADATA_SCHEMA '{DUCKLAKE_MYSQL_METADATA_SCHEMA}')
+
+statement ok
+CREATE TABLE lake.t (i INTEGER, s VARCHAR, dropped INTEGER)
+
+statement ok
+INSERT INTO lake.t VALUES (1, 'a', 1)
+
+# the second insert updates the column stats
+statement ok
+INSERT INTO lake.t VALUES (2, 'b', 2)
+
+statement ok
+INSERT INTO lake.t VALUES (3, NULL, 3)
+
+query IIII
+SELECT col.column_name, stats.contains_null::BOOLEAN, stats.min_value, stats.max_value
+FROM __ducklake_metadata_lake.{DUCKLAKE_MYSQL_METADATA_SCHEMA}.ducklake_table_column_stats stats
+JOIN __ducklake_metadata_lake.{DUCKLAKE_MYSQL_METADATA_SCHEMA}.ducklake_column col USING (table_id, column_id)
+WHERE col.end_snapshot IS NULL
+ORDER BY col.column_id
+----
+i	false	1	3
+s	true	a	b
+dropped	false	1	3
+
+statement ok
+ALTER TABLE lake.t DROP COLUMN dropped
+
+statement ok
+COMMENT ON COLUMN lake.t.i IS 'the id'
+
+statement ok
+COMMENT ON COLUMN lake.t.i IS 'the identifier'
+
+statement ok
+CREATE VIEW lake.v AS SELECT i FROM lake.t
+
+statement ok
+DROP VIEW lake.v
+
+statement ok
+CALL ducklake_expire_snapshots('lake', older_than => now())
+
+statement ok
+CALL ducklake_cleanup_old_files('lake', cleanup_all => true)
+
+query III
+SELECT count(*), min(i), max(s) FROM lake.t
+----
+3	1	b
+
+query I
+SELECT comment FROM duckdb_columns() WHERE database_name = 'lake' AND table_name = 't' AND column_name = 'i'
+----
+the identifier
+
+statement ok
+DROP TABLE lake.t

@@ -452,15 +452,16 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 	CompleteMetadataTables();
 }
 
-//! Gives the matching tables without a replica identity the full row as one, a locked or protected table is skipped
+//! Gives the matching tables without a replica identity the full row as one, a protected or locked table is skipped
+//! at once, since waiting for a lock inside an attach deadlocks with other attaches
 static string ReplicaIdentityBlock(const string &table_condition) {
 	auto body = StringUtil::Format(R"(DECLARE t regclass; lock_wait text; BEGIN
 IF current_setting('transaction_read_only') = 'on' THEN RETURN; END IF;
 lock_wait := current_setting('lock_timeout');
-PERFORM set_config('lock_timeout', '1s', true);
+PERFORM set_config('lock_timeout', '1', true);
 FOR t IN SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE %s
 AND c.relkind = 'r' AND c.relreplident = 'd'
-AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary) LOOP
+AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary) ORDER BY c.oid LOOP
 BEGIN EXECUTE format('ALTER TABLE %%s REPLICA IDENTITY FULL', t);
 EXCEPTION WHEN insufficient_privilege OR lock_not_available THEN NULL; END;
 END LOOP;

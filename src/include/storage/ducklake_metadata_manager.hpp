@@ -304,7 +304,7 @@ public:
 	virtual string AfterCreateTableSql(const Identifier &table_name) const {
 		return string();
 	}
-	//! Completes the metadata tables of a new or an existing catalog that this client may write
+	//! Completes the metadata tables of a catalog this client may write, a locked table waits for the next attach
 	virtual void CompleteMetadataTables() {
 	}
 

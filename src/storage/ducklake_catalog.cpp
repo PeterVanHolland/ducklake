@@ -1652,6 +1652,18 @@ void DuckLakeCatalog::TrackCacheEntry(const string &key, const shared_ptr<Object
 			++it;
 		}
 	}
+	// the keys of evicted schemas cached by snapshot go with their entries
+	for (auto it = snapshot_schema_cache_keys.begin(); it != snapshot_schema_cache_keys.end();) {
+		auto &keys = it->second;
+		for (auto key_it = keys.begin(); key_it != keys.end();) {
+			if (cache_entries.find(*key_it) == cache_entries.end()) {
+				key_it = keys.erase(key_it);
+			} else {
+				++key_it;
+			}
+		}
+		it = keys.empty() ? snapshot_schema_cache_keys.erase(it) : std::next(it);
+	}
 	cache_entries_prune_size = MaxValue<idx_t>(cache_entries_prune_size, cache_entries.size() * 2);
 }
 
@@ -1690,6 +1702,7 @@ void DuckLakeCatalog::EvictCacheEntries() {
 	}
 	cache_entries.clear();
 	stats_cache_entries.clear();
+	snapshot_schema_cache_keys.clear();
 }
 
 void DuckLakeCatalog::RegisterCatalog() {

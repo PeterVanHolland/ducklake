@@ -46,6 +46,7 @@ public:
 	bool IsRetryableCommitError(const string &message) const override;
 	bool IsDroppedInlinedTableError(const string &message,
 	                                const map<TableIndex, vector<Identifier>> &inlined_tables) override;
+	string ConfigOptionLockSql() const override;
 
 	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query) override;
 	unique_ptr<QueryResult> ExecuteDropInTransaction(string &query) override;

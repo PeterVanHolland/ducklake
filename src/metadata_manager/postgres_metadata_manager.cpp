@@ -23,10 +23,6 @@ static bool IsInfinityLiteral(const string &value) {
 	return value == "infinity" || value == "-infinity";
 }
 
-static string WithPostgresBinaryCollation(const string &expression) {
-	return "(" + expression + " COLLATE \"C\")";
-}
-
 static bool IsPostgresTemporalStatsType(const LogicalType &type) {
 	switch (type.id()) {
 	case LogicalTypeId::DATE:
@@ -120,7 +116,7 @@ string PostgresMetadataManager::CastValueToTarget(const Value &value, const Logi
 	}
 	if (type.id() == LogicalTypeId::UUID) {
 		// canonical text sorts like the bytes
-		return WithPostgresBinaryCollation(SQLString::ToString(value.ToString()));
+		return DuckLakeUtil::WithBinaryCollation(SQLString::ToString(value.ToString()));
 	}
 	if (!RequiresValueComparison(type) && type.id() != LogicalTypeId::VARCHAR) {
 		return string();
@@ -158,7 +154,7 @@ string PostgresMetadataManager::CastValueToTarget(const Value &value, const Logi
 	}
 	auto literal = SQLString::ToString(value.ToString());
 	if (type.id() == LogicalTypeId::VARCHAR) {
-		return WithPostgresBinaryCollation(literal);
+		return DuckLakeUtil::WithBinaryCollation(literal);
 	}
 	if (IsPostgresTemporalStatsType(type)) {
 		return literal + "::" + GetPostgresStatsType(type);
@@ -225,7 +221,7 @@ string PostgresMetadataManager::CastStatsToTarget(const string &stats, const Log
 		return stats + "::" + GetPostgresStatsType(type);
 	}
 	if (type.id() == LogicalTypeId::VARCHAR || type.id() == LogicalTypeId::UUID) {
-		return WithPostgresBinaryCollation(stats);
+		return DuckLakeUtil::WithBinaryCollation(stats);
 	}
 	return string();
 }
@@ -371,11 +367,12 @@ bool PostgresMetadataManager::IsRetryableCommitError(const string &message) cons
 	return false;
 }
 
-bool PostgresMetadataManager::InlinedDeletionTableExists(const string &table_name) {
+bool PostgresMetadataManager::InlinedDeletionTableExists(const Identifier &table_name) {
 	auto &catalog = transaction.GetCatalog();
-	auto remote_query = StringUtil::Format(
-	    "SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = %s AND tablename = %s LIMIT 1",
-	    SQLString::ToString(catalog.MetadataSchemaName().GetIdentifierName()), SQLString::ToString(table_name));
+	auto remote_query =
+	    StringUtil::Format("SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = %s AND tablename = %s LIMIT 1",
+	                       SQLString::ToString(catalog.MetadataSchemaName().GetIdentifierName()),
+	                       SQLString::ToString(table_name.GetIdentifierName()));
 	auto query =
 	    StringUtil::Format("SELECT 1 FROM postgres_query({METADATA_CATALOG_NAME_LITERAL}, %s, use_transaction = true)",
 	                       SQLString::ToString(remote_query));
@@ -387,32 +384,31 @@ bool PostgresMetadataManager::InlinedDeletionTableExists(const string &table_nam
 void PostgresMetadataManager::MigrateInlinedDataTypes() {
 	auto columns = DuckLakeMetadataManager::Query(GetInlinedTableColumnsSql());
 	columns->ThrowIfError("Failed to read the columns of inlined-data tables while migrating: ");
-	map<string, case_insensitive_map_t<string>> inlined_tables;
+	map<Identifier, identifier_map_t<string>> inlined_tables;
 	for (auto &row : *columns) {
-		inlined_tables[row.GetValue<string>(0)][row.GetValue<string>(1)] = row.GetValue<string>(2);
+		inlined_tables[row.GetValue<Identifier>(0)][row.GetValue<Identifier>(1)] = row.GetValue<string>(2);
 	}
 	for (auto &inlined_table : inlined_tables) {
 		auto &table_name = inlined_table.first;
 		auto probe = DuckLakeMetadataManager::Query(
-		    StringUtil::Format("SELECT * FROM {METADATA_CATALOG}.%s LIMIT 0", SQLIdentifier(table_name)));
+		    StringUtil::Format("SELECT * FROM {METADATA_CATALOG}.%s LIMIT 0", table_name));
 		if (probe->HasError() || probe->GetNames().size() < 3) {
 			continue;
 		}
 		// the metadata columns are always the first three columns, user columns follow
 		auto &names = probe->GetNames();
 		DuckLakeInlinedColNames col_names(false);
-		col_names.row_id = names[0].GetIdentifierName();
-		col_names.begin_snapshot = names[1].GetIdentifierName();
-		col_names.end_snapshot = names[2].GetIdentifierName();
+		col_names.row_id = names[0];
+		col_names.begin_snapshot = names[1];
+		col_names.end_snapshot = names[2];
 		vector<string> select_list;
 		for (idx_t i = 0; i < 3; i++) {
-			select_list.push_back(SQLQuotedIdentifier::ToString(names[i].GetIdentifierName()));
+			select_list.push_back(SQLQuotedIdentifier::ToString(names[i]));
 		}
 		string column_defs;
 		bool rewrite = false;
 		for (idx_t i = 3; i < names.size(); i++) {
-			auto name = names[i].GetIdentifierName();
-			auto column_type = inlined_table.second.find(name);
+			auto column_type = inlined_table.second.find(names[i]);
 			if (column_type == inlined_table.second.end()) {
 				rewrite = false;
 				break;
@@ -431,7 +427,7 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 				auto storage_type = UnboundType::TryParseAndDefaultBind(storage_type_name);
 				convert = stored_type != storage_type && stored_type == native_type;
 			}
-			auto column_name = SQLQuotedIdentifier::ToString(name);
+			auto column_name = SQLQuotedIdentifier::ToString(names[i]);
 			column_defs += StringUtil::Format("%s%s %s", column_defs.empty() ? "" : ", ", column_name,
 			                                  convert ? storage_type_name : stored_type.ToString());
 			select_list.push_back(convert ? DuckLakeUtil::InlinedStorageExpression(*this, column_name, type)
@@ -441,18 +437,22 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 		if (!rewrite) {
 			continue;
 		}
-		auto migrated_name = table_name + "_migrated";
+		auto migrated_name = Identifier(table_name + "_migrated");
 		auto migrate_query = InlinedTableDdlSql(migrated_name, column_defs, col_names);
 		migrate_query += StringUtil::Format("INSERT INTO {METADATA_CATALOG}.%s SELECT %s FROM {METADATA_CATALOG}.%s;",
-		                                    SQLIdentifier(migrated_name), StringUtil::Join(select_list, ", "),
-		                                    SQLIdentifier(table_name));
-		migrate_query += StringUtil::Format("DROP TABLE {METADATA_CATALOG}.%s;", SQLIdentifier(table_name));
-		migrate_query += StringUtil::Format("ALTER TABLE {METADATA_CATALOG}.%s RENAME TO %s;",
-		                                    SQLIdentifier(migrated_name), SQLIdentifier(table_name));
+		                                    migrated_name, StringUtil::Join(select_list, ", "), table_name);
+		migrate_query += StringUtil::Format("DROP TABLE {METADATA_CATALOG}.%s;", table_name);
+		migrate_query +=
+		    StringUtil::Format("ALTER TABLE {METADATA_CATALOG}.%s RENAME TO %s;", migrated_name, table_name);
 		auto result = DuckLakeMetadataManager::Execute(migrate_query);
 		result->ThrowIfError(
-		    StringUtil::Format("Failed to migrate the column types of inlined-data table \"%s\": ", table_name));
+		    StringUtil::Format("Failed to migrate the column types of inlined-data table %s: ", table_name));
 	}
+}
+
+string PostgresMetadataManager::ConfigOptionLockSql() const {
+	// every such commit updates the version row, so of two concurrent ones the later fails or waits for the other
+	return "UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = value WHERE key = 'version' AND scope IS NULL;\n";
 }
 
 unique_ptr<QueryResult> PostgresMetadataManager::Execute(DuckLakeSnapshot snapshot, string &query) {
@@ -463,15 +463,36 @@ unique_ptr<QueryResult> PostgresMetadataManager::Execute(DuckLakeSnapshot snapsh
 		throw InvalidInputException("A DuckLake catalog on PostgreSQL cannot store text that contains a NUL byte, "
 		                            "such as a partition value, a name or a commit message");
 	}
-	auto catalog_literal = SQLString::ToString(ducklake_catalog.MetadataDatabaseName());
+	auto catalog_literal = SQLString::ToString(ducklake_catalog.MetadataDatabaseName().GetIdentifierName());
 	// casts of float bounds to text keep their exact value
 	query = "SET LOCAL extra_float_digits = 3;" + query;
-	auto result = transaction.GetConnection().Query(
+	return transaction.ExecuteRaw(
 	    StringUtil::Format("CALL postgres_execute(%s, %s, prepare=FALSE)", catalog_literal, SQLString(query)));
-	return std::move(result);
+}
+
+unique_ptr<QueryResult> PostgresMetadataManager::ExecuteDropInTransaction(string &query) {
+	// DROP TABLE waits for every open transaction that read the table and the readers queued behind it fail, so it
+	// gives up instead and leaves the table to a later cleanup
+	auto batch = "CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, 'SET LOCAL lock_timeout = 1');\n" + query;
+	return ExecuteInTransaction(batch);
 }
 
 void PostgresMetadataManager::ClearCache() {
+	// clear the cache of the metadata catalog alone, a global clear breaks queries running in other Postgres catalogs
+	auto &catalog = transaction.GetCatalog();
+	if (catalog.ScopedCacheClear()) {
+		auto catalog_literal = SQLString::ToString(catalog.MetadataDatabaseName().GetIdentifierName());
+		auto result = transaction.ExecuteRaw(StringUtil::Format(
+		    "SELECT * FROM postgres_query(%s, 'SELECT 1', clear_catalog_cache = true);", catalog_literal));
+		if (!result->HasError()) {
+			return;
+		}
+		// the error of a postgres_scanner from before the option, which can only clear every catalog
+		if (!StringUtil::Contains(result->GetError(), "Invalid named parameter \"clear_catalog_cache\"")) {
+			result->ThrowIfError("Failed to clear the PostgreSQL metadata cache: ");
+		}
+		catalog.SetScopedCacheClear(false);
+	}
 	auto result = transaction.ExecuteRaw("CALL postgres_clear_cache();");
 	result->ThrowIfError("Failed to clear the PostgreSQL metadata cache: ");
 }
@@ -496,6 +517,11 @@ string PostgresMetadataManager::GetSnapshotAndStatsAndChangesQuery(DuckLakeSnaps
 	                              SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName()));
 	SubstituteSnapshotPlaceholders(snapshot, remote_query);
 	return PostgresQuery(remote_query);
+}
+
+bool PostgresMetadataManager::MaterializeStatsCTEs() const {
+	// Postgres misplans several inlined stats joins and rescans the stats for every surviving file
+	return true;
 }
 
 string PostgresMetadataManager::GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,

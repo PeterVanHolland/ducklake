@@ -1,5 +1,5 @@
 # name: test/sql/stats/column_stats_update_plain.test
-# description: the column stats update of a commit is a plain UPDATE, which every metadata server runs
+# description: the column stats update and the other UPDATEs of a commit are plain statements, which every metadata server runs
 # group: [stats]
 
 require ducklake
@@ -12,6 +12,16 @@ test-env DATA_PATH {TEST_DIR}
 
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/column_stats_update_plain', DATA_INLINING_ROW_LIMIT 0)
+
+# the UPDATE statements of the logged commits, a commit that runs on the server logs none
+statement ok
+CREATE VIEW updates AS
+SELECT unnest(regexp_extract_all(message, 'UPDATE\s+\S*ducklake_\w+[^;]*')) AS stmt
+FROM duckdb_logs WHERE type = 'QueryLog'
+
+statement ok
+CREATE VIEW logged_commits AS
+SELECT count(*) AS n FROM duckdb_logs WHERE type = 'QueryLog' AND regexp_matches(message, 'INSERT INTO\s+\S*ducklake_snapshot\s')
 
 statement ok
 CREATE TABLE lake.t (i INTEGER, d DOUBLE, s VARCHAR, n INTEGER, st STRUCT(a INTEGER, b VARCHAR))
@@ -28,14 +38,92 @@ INSERT INTO lake.t VALUES (2, 'nan', 'a', NULL, {'a': 2, 'b': 'y'}), (3, 2.5, 'c
 statement ok
 CALL disable_logging()
 
-# at most one UPDATE of the column stats (a server side commit runs it on the server), without a VALUES list joined
-# in, as a metadata server that plans the update itself does not accept the join
+# one column stats UPDATE per logged commit, without a VALUES list or FROM clause
 query II
-SELECT count(*) <= 1, count(*) FILTER (WHERE contains(stmt, 'VALUES') OR contains(stmt, ' FROM '))
-FROM (
-	SELECT regexp_extract(message, 'UPDATE\s+\S*ducklake_table_column_stats[^;]*') AS stmt
-	FROM duckdb_logs WHERE type = 'QueryLog' AND regexp_matches(message, 'UPDATE\s+\S*ducklake_table_column_stats')
-)
+SELECT count(*) = (SELECT n FROM logged_commits), count(*) FILTER (WHERE contains(stmt, 'VALUES') OR contains(stmt, ' FROM '))
+FROM updates WHERE regexp_matches(stmt, 'ducklake_table_column_stats\s')
+----
+true	0
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+CALL lake.set_option('data_inlining_row_limit', 10, table_name => 't')
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+ALTER TABLE lake.t DROP COLUMN n
+
+statement ok
+COMMENT ON COLUMN lake.t.i IS 'a number'
+
+statement ok
+COMMENT ON COLUMN lake.t.i IS 'the number'
+
+statement ok
+COMMENT ON TABLE lake.t IS 'a table'
+
+statement ok
+COMMENT ON TABLE lake.t IS 'the table'
+
+statement ok
+INSERT INTO lake.t VALUES (4, 4.5, 'd', {'a': 4, 'b': 'w'}), (5, 5.5, 'e', {'a': 5, 'b': 'v'})
+
+statement ok
+DELETE FROM lake.t WHERE i = 4
+
+statement ok
+CALL disable_logging()
+
+# the dropped column, the overwritten comments and the deleted inlined row end with plain UPDATEs
+query II
+SELECT count(*) FILTER (WHERE contains(stmt, 'VALUES') OR contains(stmt, ' FROM ')),
+       coalesce(list_sort(list(DISTINCT regexp_extract(stmt, 'UPDATE\s+\S*?(ducklake_[a-z_]+?)(_\d+_\d+)?"?\s', 1))), [])
+       = CASE WHEN (SELECT n > 0 FROM logged_commits)
+              THEN ['ducklake_column', 'ducklake_column_tag', 'ducklake_inlined_data', 'ducklake_table_column_stats', 'ducklake_table_stats', 'ducklake_tag']
+              ELSE [] END
+FROM updates
+----
+0	true
+
+# a table of 520 columns updates its stats in two statements of at most 512 columns
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+CREATE TABLE lake.w (c0 INTEGER)
+
+statement ok
+BEGIN
+
+loop i 1 520
+
+statement ok
+ALTER TABLE lake.w ADD COLUMN c{i} INTEGER
+
+endloop
+
+statement ok
+COMMIT
+
+statement ok
+INSERT INTO lake.w (c0, c519) VALUES (1, 1)
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+INSERT INTO lake.w (c0, c511, c512, c519) VALUES (2, 7, 8, 9)
+
+statement ok
+CALL disable_logging()
+
+query II
+SELECT count(*) = 2 * (SELECT n FROM logged_commits), count(*) FILTER (WHERE contains(stmt, 'VALUES') OR contains(stmt, ' FROM '))
+FROM updates WHERE regexp_matches(stmt, 'ducklake_table_column_stats\s')
 ----
 true	0
 
@@ -50,23 +138,39 @@ query IIIII
 SELECT col.column_name, stats.contains_null::BOOLEAN, stats.contains_nan::BOOLEAN, stats.min_value, stats.max_value
 FROM __ducklake_metadata_lake.ducklake_table_column_stats stats
 JOIN __ducklake_metadata_lake.ducklake_column col USING (table_id, column_id)
-WHERE col.end_snapshot IS NULL
-ORDER BY col.column_id
+WHERE col.end_snapshot IS NULL AND col.column_name IN ('i', 'd', 's', 'n', 'a', 'b', 'c0', 'c1', 'c511', 'c512', 'c519')
+ORDER BY col.table_id, col.column_id
 ----
-i	false	NULL	1	3
-d	false	true	1.5	2.5
-s	false	NULL	a	c
-n	true	NULL	NULL	NULL
-a	true	NULL	1	2
-b	false	NULL	x	z
+i	false	NULL	1	5
+d	false	true	1.5	5.5
+s	false	NULL	a	e
+a	true	NULL	1	5
+b	false	NULL	v	z
+c0	false	NULL	1	2
+c1	true	NULL	NULL	NULL
+c511	true	NULL	7	7
+c512	true	NULL	8	8
+c519	false	NULL	1	9
 
 query IIII
-SELECT count(*), min(i), max(s), count(n) FROM lake.t WHERE i >= 1
+SELECT count(*), min(i), max(s), count(*) FILTER (WHERE i > 3) FROM lake.t WHERE i >= 1
 ----
-3	1	c	0
+4	1	e	1
+
+query II
+SELECT comment, (SELECT comment FROM duckdb_tables() WHERE database_name = 'lake' AND table_name = 't')
+FROM duckdb_columns() WHERE database_name = 'lake' AND table_name = 't' AND column_name = 'i'
+----
+the number	the table
 
 # the stats keep pruning files
 query I
-SELECT count(*) FROM lake.t WHERE i > 3
+SELECT count(*) FROM lake.t WHERE i > 5
 ----
 0
+
+query II
+SELECT c0, c519 FROM lake.w ORDER BY c0
+----
+1	1
+2	9

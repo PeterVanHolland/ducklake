@@ -3145,11 +3145,23 @@ ORDER BY data.begin_snapshot ASC, data.row_id_start ASC, data.data_file_id ASC, 
 	return files;
 }
 
-//! Ends the matching rows with a plain UPDATE, a MySQL metadata server runs no joined VALUES list or cast
-static string EndRowsSql(const string &metadata_table, const string &condition) {
-	return StringUtil::Format(
-	    R"(UPDATE {METADATA_CATALOG}.%s SET end_snapshot = {SNAPSHOT_ID} WHERE end_snapshot IS NULL AND %s;)",
-	    metadata_table, condition);
+//! Bounds the CASE or OR terms of one UPDATE, every row of the table tests all of them
+static constexpr idx_t MAX_TERMS_PER_UPDATE = 512;
+
+//! Ends the rows that match any of the conditions, in plain UPDATEs that every metadata server runs
+static string EndRowsSql(const string &metadata_table, const vector<string> &conditions) {
+	string result;
+	for (idx_t start = 0; start < conditions.size(); start += MAX_TERMS_PER_UPDATE) {
+		auto end = MinValue<idx_t>(start + MAX_TERMS_PER_UPDATE, conditions.size());
+		string condition;
+		for (idx_t i = start; i < end; i++) {
+			condition += (i == start ? "" : " OR ") + conditions[i];
+		}
+		result += StringUtil::Format(
+		    R"(UPDATE {METADATA_CATALOG}.%s SET end_snapshot = {SNAPSHOT_ID} WHERE end_snapshot IS NULL AND (%s);)",
+		    metadata_table, condition);
+	}
+	return result;
 }
 
 template <class T>
@@ -3158,7 +3170,8 @@ string DuckLakeMetadataManager::FlushDrop(const string &metadata_table_name, con
 	if (dropped_entries.empty()) {
 		return {};
 	}
-	return EndRowsSql(metadata_table_name, StringUtil::Format("%s IN (%s)", id_name, GenerateIDList(dropped_entries)));
+	return EndRowsSql(metadata_table_name,
+	                  {StringUtil::Format("%s IN (%s)", id_name, GenerateIDList(dropped_entries))});
 }
 
 string DuckLakeMetadataManager::DropSchemas(const set<SchemaIndex> &ids) {
@@ -3501,8 +3514,6 @@ string DuckLakeMetadataManager::GetInlinedTableQuery(const DuckLakeTableInfo &ta
 }
 
 static constexpr idx_t MAX_VALUES_LIST_LENGTH = 65536;
-//! Bounds the CASE expressions of one column stats UPDATE, every row tests all of them
-static constexpr idx_t MAX_STATS_COLUMNS_PER_UPDATE = 512;
 
 static string ChunkValuesStatements(const vector<string> &tuples,
                                     const std::function<string(const string &values)> &make_statement) {
@@ -3741,11 +3752,12 @@ static string ExpireDroppedColumns(const vector<DuckLakeDroppedColumn> &dropped_
 	if (dropped_columns.empty()) {
 		return {};
 	}
-	auto conditions =
-	    StringUtil::Join(dropped_columns, dropped_columns.size(), " OR ", [](const DuckLakeDroppedColumn &col) {
-		    return StringUtil::Format("(table_id=%d AND column_id=%d)", col.table_id.index, col.field_id.index);
-	    });
-	return EndRowsSql(metadata_table, "(" + conditions + ")");
+	vector<string> conditions;
+	for (auto &col : dropped_columns) {
+		conditions.push_back(
+		    StringUtil::Format("(table_id=%d AND column_id=%d)", col.table_id.index, col.field_id.index));
+	}
+	return EndRowsSql(metadata_table, conditions);
 }
 
 string DuckLakeMetadataManager::WriteDroppedColumns(const vector<DuckLakeDroppedColumn> &dropped_columns) {
@@ -5296,12 +5308,13 @@ static string WriteNewColumnTagBatch(const vector<T> &new_tags, const string &me
 	if (new_tags.empty()) {
 		return {};
 	}
-	auto conditions = StringUtil::Join(new_tags, new_tags.size(), " OR ", overwritten_condition);
-	string batch_query = EndRowsSql(metadata_table, "(" + conditions + ")");
+	vector<string> conditions;
 	vector<string> new_tag_values;
 	for (auto &tag : new_tags) {
+		conditions.push_back(overwritten_condition(tag));
 		new_tag_values.push_back(new_values(tag));
 	}
+	string batch_query = EndRowsSql(metadata_table, conditions);
 	return batch_query + DuckLakeMetadataManager::InsertValuesSql(metadata_table, new_tag_values);
 }
 
@@ -5401,9 +5414,8 @@ string DuckLakeMetadataManager::UpdateGlobalTableStatsSql(const DuckLakeGlobalSt
 		    "next_row_id=%d WHERE table_id=%d;",
 		    record_count, stats.table_size_bytes, stats.next_row_id, stats.table_id.index);
 		// a plain UPDATE per chunk of columns only changes existing rows, a struct container has no stats row
-		for (idx_t chunk_start = 0; chunk_start < stats.column_stats.size();
-		     chunk_start += MAX_STATS_COLUMNS_PER_UPDATE) {
-			auto chunk_end = MinValue<idx_t>(chunk_start + MAX_STATS_COLUMNS_PER_UPDATE, stats.column_stats.size());
+		for (idx_t chunk_start = 0; chunk_start < stats.column_stats.size(); chunk_start += MAX_TERMS_PER_UPDATE) {
+			auto chunk_end = MinValue<idx_t>(chunk_start + MAX_TERMS_PER_UPDATE, stats.column_stats.size());
 			vector<string> column_ids;
 			vector<string> contains_null, contains_nan, min_values, max_values, extra_stats, min_is_exact, max_is_exact;
 			for (idx_t col_idx = chunk_start; col_idx < chunk_end; col_idx++) {

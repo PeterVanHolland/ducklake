@@ -179,7 +179,7 @@ public:
 		// the files the transaction wrote or added for the table are not in the catalog yet
 		auto &fs = FileSystem::GetFileSystem(context);
 		for (auto &path : transaction.GetWrittenFiles(table.GetTableId())) {
-			transaction_files.insert(fs.CanonicalizePath(path));
+			transaction_files.insert(DuckLakeUtil::CanonicalPathKey(fs, path));
 		}
 	}
 
@@ -307,13 +307,14 @@ FROM parquet_full_metadata(%s)
 		// Use canonicalize path to detect duplicate files
 		auto &fs = FileSystem::GetFileSystem(context);
 		auto canonical_filepath = fs.CanonicalizePath(filepath);
+		auto file_key = DuckLakeUtil::CanonicalPathKey(fs, filepath);
 
 		// Check if we've already processed this file (can happen with overlapping globs)
-		if (processed_files.count(canonical_filepath)) {
+		if (processed_files.count(file_key)) {
 			// File already processed in a previous glob, skip
 			continue;
 		}
-		processed_files.insert(canonical_filepath);
+		processed_files.insert(file_key);
 
 		// Keep paths inside the DuckLake data directory in the configured path namespace. Canonicalization can rewrite
 		// a symlinked prefix (for example /tmp to /private/tmp), while orphan cleanup scans the configured data path.
@@ -330,7 +331,7 @@ FROM parquet_full_metadata(%s)
 				persisted_filepath = data_path + canonical_filepath.substr(canonical_data_path.size());
 			}
 		}
-		if (transaction_files.count(canonical_filepath) ||
+		if (transaction_files.count(file_key) ||
 		    transaction.GetMetadataManager().HasDataFile(table, transaction.GetSnapshot(), persisted_filepath)) {
 			throw InvalidInputException("File \"%s\" is already a data file of table %s", filepath, table.name);
 		}

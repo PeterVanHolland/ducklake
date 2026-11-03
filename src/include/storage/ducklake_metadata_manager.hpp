@@ -522,8 +522,12 @@ public:
 	//! Selects the given tables or views renamed after the snapshot
 	static string GetRenamedAfterSnapshotSql(const string &metadata_table_name, const string &id_name,
 	                                         const set<TableIndex> &ids);
-	//! Selects the stored paths of the table's files named like the file, visible at the snapshot or committed after it
-	static string GetDataFilesNamedSql(TableIndex table_id, const string &file_name, bool committed_after_snapshot);
+	//! Selects the table's files named like the path, of every snapshot or committed after the snapshot
+	static string GetDataFilesNamedSql(TableIndex table_id, const string &path, bool committed_after_snapshot);
+	//! Selects the files scheduled for deletion named like the path, their relative paths start at the data path
+	static string GetScheduledFilesNamedSql(const string &path);
+	//! The LIKE literal that matches every stored path ending like the path
+	static string FileNamePattern(const string &path);
 	//! Whether a stored path of the result resolves to the canonical path
 	static bool HasCanonicalPath(QueryResult &result, FileSystem &fs, const string &canonical_path,
 	                             const string &table_path, const string &separator);

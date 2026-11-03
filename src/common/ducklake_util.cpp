@@ -12,6 +12,7 @@
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/path.hpp"
 #include "storage/ducklake_metadata_manager.hpp"
 #include "functions/ducklake_table_functions.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -235,6 +236,24 @@ void DuckLakeUtil::EnsureDirectoryExists(FileSystem &fs, const string &data_path
 		} catch (...) {
 		}
 	}
+}
+
+string DuckLakeUtil::CanonicalPathKey(FileSystem &fs, const string &path) {
+	if (Path::FromString(path).IsLocal()) {
+		return fs.CanonicalizePath(path);
+	}
+	// scheme aliases name the same remote object, the object name itself stays as it is
+	auto scheme_end = path.find("://");
+	if (scheme_end == string::npos) {
+		return path;
+	}
+	auto scheme = StringUtil::Lower(path.substr(0, scheme_end));
+	if (scheme == "s3a" || scheme == "s3n") {
+		scheme = "s3";
+	} else if (scheme == "gcs") {
+		scheme = "gs";
+	}
+	return scheme + path.substr(scheme_end);
 }
 
 string DuckLakeUtil::PathSeparator(FileSystem &fs, const string &path) {

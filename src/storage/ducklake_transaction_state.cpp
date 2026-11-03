@@ -2670,13 +2670,23 @@ void DuckLakeTransactionState::CheckAddedFileConflicts(const DuckLakeCommitConte
 		for (auto &file_ref : entry.second) {
 			auto &file_name = file_ref.get();
 			auto result = context.conflict_query_executor(
-			    DuckLakeMetadataManager::GetDataFilesNamedSql(table_id, StringUtil::GetFileName(file_name), true));
+			    DuckLakeMetadataManager::GetDataFilesNamedSql(table_id, file_name, true));
 			result->ThrowIfError("Failed to commit DuckLake transaction - failed to get the data files added for "
 			                     "conflict resolution:");
-			if (DuckLakeMetadataManager::HasCanonicalPath(*result, fs, fs.CanonicalizePath(file_name), table_path,
-			                                              separator)) {
+			auto key = DuckLakeUtil::CanonicalPathKey(fs, file_name);
+			if (DuckLakeMetadataManager::HasCanonicalPath(*result, fs, key, table_path, separator)) {
 				throw TransactionException("Transaction conflict - attempting to add data file \"%s\" to a table - but "
 				                           "another transaction has added it already",
+				                           file_name);
+			}
+			// a merge or an expiry of another transaction can have scheduled the file for deletion meanwhile
+			auto scheduled =
+			    context.conflict_query_executor(DuckLakeMetadataManager::GetScheduledFilesNamedSql(file_name));
+			scheduled->ThrowIfError("Failed to commit DuckLake transaction - failed to get the files scheduled for "
+			                        "deletion for conflict resolution:");
+			if (DuckLakeMetadataManager::HasCanonicalPath(*scheduled, fs, key, data_path, separator)) {
+				throw TransactionException("Transaction conflict - attempting to add data file \"%s\" to a table - but "
+				                           "another transaction has scheduled it for deletion",
 				                           file_name);
 			}
 		}

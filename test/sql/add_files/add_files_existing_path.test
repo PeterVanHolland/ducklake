@@ -373,3 +373,164 @@ query I
 SELECT COUNT(*) FROM local_metadata.ducklake_data_file WHERE end_snapshot IS NULL AND table_id = (SELECT table_id FROM local_metadata.ducklake_table WHERE table_name = 'm')
 ----
 1
+
+# a file a merge scheduled for deletion cannot be added again before the cleanup removes it
+statement ok
+CREATE TABLE ducklake.m(i INTEGER)
+
+statement ok
+COPY (SELECT 1::INT AS i) TO '{LOCAL_DATA_PATH}/merge_one.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 2::INT AS i) TO '{LOCAL_DATA_PATH}/merge_two.parquet' (FORMAT parquet)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'm', '{LOCAL_DATA_PATH}/merge_one.parquet')
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'm', '{LOCAL_DATA_PATH}/merge_two.parquet')
+
+statement ok
+CALL ducklake_merge_adjacent_files('ducklake', 'm')
+
+statement error
+CALL ducklake_add_data_files('ducklake', 'm', '{LOCAL_DATA_PATH}/merge_one.parquet')
+----
+merge_one.parquet" is already a data file of table "m"
+
+query I
+SELECT i FROM ducklake.m ORDER BY i
+----
+1
+2
+
+# the same for a table the transaction creates
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE ducklake.n(i INTEGER)
+
+statement error
+CALL ducklake_add_data_files('ducklake', 'n', '{LOCAL_DATA_PATH}/merge_one.parquet')
+----
+merge_one.parquet" is already a data file of table "n"
+
+statement ok
+ROLLBACK
+
+# a merged file DuckLake wrote is scheduled with a path relative to the data path
+statement ok
+CREATE TABLE ducklake.rm(i INTEGER)
+
+statement ok
+INSERT INTO ducklake.rm VALUES (1)
+
+statement ok
+INSERT INTO ducklake.rm VALUES (2)
+
+statement ok
+CALL ducklake_merge_adjacent_files('ducklake', 'rm')
+
+statement ok
+SET VARIABLE scheduled_file = (SELECT '{DATA_PATH}/add_files_existing_path/' || path FROM metadata.ducklake_files_scheduled_for_deletion WHERE path_is_relative AND path LIKE '%/rm/%' LIMIT 1)
+
+statement error
+CALL ducklake_add_data_files('ducklake', 'rm', getvariable('scheduled_file'))
+----
+is already a data file of table "rm"
+
+query I
+SELECT i FROM ducklake.rm ORDER BY i
+----
+1
+2
+
+# a file whose rows were all deleted keeps its path until the cleanup after the expiry removed it
+statement ok
+CREATE TABLE ducklake.e(i INTEGER)
+
+statement ok
+COPY (SELECT 7::INT AS i) TO '{LOCAL_DATA_PATH}/ended.parquet' (FORMAT parquet)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'e', '{LOCAL_DATA_PATH}/ended.parquet')
+
+statement ok
+DELETE FROM ducklake.e
+
+statement error
+CALL ducklake_add_data_files('ducklake', 'e', '{LOCAL_DATA_PATH}/ended.parquet')
+----
+ended.parquet" is already a data file of table "e"
+
+# a merge in another transaction schedules a path a transaction is adding
+statement ok
+COPY (SELECT 8::INT AS i) TO '{LOCAL_DATA_PATH}/merged_a.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 9::INT AS i) TO '{LOCAL_DATA_PATH}/merged_b.parquet' (FORMAT parquet)
+
+statement ok
+CREATE TABLE ducklake.cm(i INTEGER)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+CALL ducklake_add_data_files('ducklake', 'cm', '{LOCAL_DATA_PATH}/merged_a.parquet')
+
+statement ok con2
+CALL ducklake_add_data_files('ducklake', 'cm', ['{LOCAL_DATA_PATH}/merged_a.parquet', '{LOCAL_DATA_PATH}/merged_b.parquet'])
+
+statement ok con2
+CALL ducklake_merge_adjacent_files('ducklake', 'cm')
+
+statement error con1
+COMMIT
+----
+Transaction conflict
+
+query I
+SELECT i FROM ducklake.cm ORDER BY i
+----
+8
+9
+
+# a rewrite in another transaction ends a file a transaction is adding, the file keeps its path until its expiry
+statement ok
+COPY (SELECT i FROM range(10) t(i)) TO '{LOCAL_DATA_PATH}/rewritten.parquet' (FORMAT parquet)
+
+statement ok
+CREATE TABLE ducklake.rw(i BIGINT)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+CALL ducklake_add_data_files('ducklake', 'rw', '{LOCAL_DATA_PATH}/rewritten.parquet')
+
+statement ok con2
+BEGIN
+
+statement ok con2
+CALL ducklake_add_data_files('ducklake', 'rw', '{LOCAL_DATA_PATH}/rewritten.parquet')
+
+statement ok con2
+DELETE FROM ducklake.rw WHERE i = 1
+
+statement ok con2
+COMMIT
+
+statement ok con2
+CALL ducklake_rewrite_data_files('ducklake', 'rw', delete_threshold => 0.0)
+
+statement error con1
+COMMIT
+----
+Transaction conflict
+
+query I
+SELECT count(*) FROM ducklake.rw
+----
+9

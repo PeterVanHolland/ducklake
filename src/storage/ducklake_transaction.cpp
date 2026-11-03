@@ -1641,6 +1641,9 @@ void DuckLakeTransaction::ReportPostCommitError(const string &message) {
 void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
                                         const TransactionChangeInformation &transaction_changes,
                                         const DuckLakeRetryConfig &retry_config) {
+	// the catalog's data path is known after its initialization, which can follow the start of this transaction
+	state->data_path = ducklake_catalog.DataPath();
+	state->separator = ducklake_catalog.Separator();
 	vector<unique_ptr<SQLStatement>> inlined_inserts;
 	DuckLakeCommitContext context;
 	context.conflict_query_executor = [&](string q) -> unique_ptr<QueryResult> {

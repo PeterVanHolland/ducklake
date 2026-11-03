@@ -60,6 +60,10 @@
         "test/sql/data_inlining/inlined_superseded_drop_failure_postgres.test",
         "test/sql/compaction/compaction_idle_metadata_transaction.test",
         "test/sql/compaction/postgres_expire_snapshots_time_zone.test",
+        "test/sql/settings/set_option_concurrent_insert.test",
+        "test/sql/settings/set_option_concurrent_insert_read_committed.test",
+        "test/sql/settings/set_option_concurrent_insert_expiry.test",
+        "test/sql/settings/set_option_read_committed_reset_race.test",
         "test/sql/tags/postgres_tags_read_committed.test",
         "test/sql/general/postgres_nul_byte_text.test",
         "test/sql/data_inlining/postgres_new_inlined_table_keeps_cache.test",
@@ -225,6 +229,13 @@
       "reason": "Quack expires snapshots when the transaction commits, so a change feed of that transaction still sees them",
       "paths": [
         "test/sql/table_changes/table_changes_start_timestamp_expired_transaction.test"
+      ]
+    },
+    {
+      "reason": "Quack expires snapshots when the transaction commits, so a cleanup in that transaction finds none of their files and a concurrent commit keeps the expiry",
+      "paths": [
+        "test/sql/cleanup/expire_cleanup_in_transaction.test",
+        "test/sql/cleanup/expire_cleanup_concurrent_commit.test"
       ]
     }
   ]

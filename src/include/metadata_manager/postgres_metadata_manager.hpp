@@ -45,6 +45,7 @@ public:
 	void MigrateInlinedDataTypes() override;
 	identifier_set_t GetLegacyNamedInlinedTables() override;
 	bool IsRetryableCommitError(const string &message) const override;
+	string ConfigOptionLockSql() const override;
 
 	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query) override;
 	unique_ptr<QueryResult> ExecuteDropInTransaction(string &query) override;

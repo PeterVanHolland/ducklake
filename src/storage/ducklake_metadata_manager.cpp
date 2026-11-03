@@ -3998,7 +3998,6 @@ string DuckLakeMetadataManager::WriteNewInlinedDeletes(const vector<DuckLakeDele
 		for (auto &deleted_id : entry.deleted_row_ids) {
 			row_ids.push_back(to_string(deleted_id));
 		}
-		// end the deleted rows in chunks of plain UPDATEs
 		batch_queries += ChunkValuesStatements(row_ids, [&](const string &row_id_list) {
 			return StringUtil::Format(R"(
 UPDATE {METADATA_CATALOG}.%s

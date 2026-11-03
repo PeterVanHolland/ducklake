@@ -129,7 +129,20 @@ FROM updates WHERE regexp_matches(stmt, 'ducklake_table_column_stats\b')
 ----
 0	true
 
-# 520 new column comments of one commit end the overwritten tags in statements of at most 512 conditions
+# 520 column comments of one commit end the old tags in statements of at most 512 conditions
+statement ok
+BEGIN
+
+loop i 0 520
+
+statement ok
+COMMENT ON COLUMN lake.w.c{i} IS 'column {i}'
+
+endloop
+
+statement ok
+COMMIT
+
 statement ok
 CALL truncate_duckdb_logs()
 
@@ -142,7 +155,7 @@ BEGIN
 loop i 0 520
 
 statement ok
-COMMENT ON COLUMN lake.w.c{i} IS 'column {i}'
+COMMENT ON COLUMN lake.w.c{i} IS 'column {i} again'
 
 endloop
 
@@ -196,10 +209,36 @@ FROM duckdb_columns() WHERE database_name = 'lake' AND table_name = 't' AND colu
 ----
 the number	the table
 
-query II
-SELECT min(comment), max(comment) FROM duckdb_columns() WHERE database_name = 'lake' AND table_name = 'w'
+# every first comment ended and every second one is current, on both sides of the 512 boundary
+query III
+SELECT col.column_name, tag.value, tag.end_snapshot IS NULL
+FROM __ducklake_metadata_lake.ducklake_column_tag tag
+JOIN __ducklake_metadata_lake.ducklake_column col USING (table_id, column_id)
+WHERE col.end_snapshot IS NULL AND col.column_name IN ('c0', 'c511', 'c512', 'c519')
+ORDER BY col.column_id, tag.begin_snapshot
 ----
-column 0	column 99
+c0	column 0	false
+c0	column 0 again	true
+c511	column 511	false
+c511	column 511 again	true
+c512	column 512	false
+c512	column 512 again	true
+c519	column 519	false
+c519	column 519 again	true
+
+query II
+SELECT count(*) FILTER (WHERE tag.end_snapshot IS NOT NULL), count(*) FILTER (WHERE tag.end_snapshot IS NULL)
+FROM __ducklake_metadata_lake.ducklake_column_tag tag
+JOIN __ducklake_metadata_lake.ducklake_column col USING (table_id, column_id)
+WHERE col.end_snapshot IS NULL AND col.column_name LIKE 'c%'
+----
+520	520
+
+query II
+SELECT count(DISTINCT comment), bool_and(comment = 'column ' || column_name[2:] || ' again')
+FROM duckdb_columns() WHERE database_name = 'lake' AND table_name = 'w'
+----
+520	true
 
 # the stats keep pruning files
 query I

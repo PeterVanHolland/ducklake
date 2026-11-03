@@ -176,17 +176,10 @@ public:
 				}
 			}
 		}
-		// adding a path the table already holds is an error
+		// the files the transaction wrote or added for the table are not in the catalog yet
 		auto &fs = FileSystem::GetFileSystem(context);
-		if (!IsTransactionLocal(table.GetTableId())) {
-			auto &metadata_manager = transaction.GetMetadataManager();
-			for (const auto &entry :
-			     metadata_manager.GetFilesForTable(table, transaction.GetSnapshot(), nullptr, false)) {
-				existing_files.insert(fs.CanonicalizePath(entry.file.path));
-			}
-		}
-		for (const auto &path : transaction.GetTransactionLocalFilePaths(table.GetTableId())) {
-			existing_files.insert(fs.CanonicalizePath(path));
+		for (auto &path : transaction.GetWrittenFiles(table.GetTableId())) {
+			transaction_files.insert(fs.CanonicalizePath(path));
 		}
 	}
 
@@ -230,8 +223,8 @@ private:
 	map<string, string> hive_partitions;
 	HivePartitioningType hive_partitioning;
 	unordered_set<string> processed_files;
-	//! The canonical paths of the data files the table holds before this call
-	unordered_set<string> existing_files;
+	//! The canonical paths of the files the transaction wrote or added for the table
+	unordered_set<string> transaction_files;
 	unordered_set<idx_t> skipped_fields;
 	//! The types bound from the DuckDB type strings of the files
 	unordered_map<string, LogicalType> bound_types;
@@ -320,9 +313,6 @@ FROM parquet_full_metadata(%s)
 			// File already processed in a previous glob, skip
 			continue;
 		}
-		if (existing_files.count(canonical_filepath)) {
-			throw InvalidInputException("File \"%s\" is already a data file of table %s", filepath, table.name);
-		}
 		processed_files.insert(canonical_filepath);
 
 		// Keep paths inside the DuckLake data directory in the configured path namespace. Canonicalization can rewrite
@@ -339,6 +329,11 @@ FROM parquet_full_metadata(%s)
 			if (StringUtil::StartsWith(canonical_filepath, canonical_data_path)) {
 				persisted_filepath = data_path + canonical_filepath.substr(canonical_data_path.size());
 			}
+		}
+		// a path the table holds, in the transaction or at its snapshot
+		if (transaction_files.count(canonical_filepath) ||
+		    transaction.GetMetadataManager().HasDataFile(table, transaction.GetSnapshot(), persisted_filepath)) {
+			throw InvalidInputException("File \"%s\" is already a data file of table %s", filepath, table.name);
 		}
 
 		ParquetFileMetadata file;

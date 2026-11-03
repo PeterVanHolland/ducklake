@@ -193,9 +193,8 @@ public:
 	void CheckTaggedSnapshotsExist(const DuckLakeCommitContext &context) const;
 	//! The ids of the snapshots the tags point at, as a SQL list
 	static string TaggedSnapshotIdList(const case_insensitive_map_t<DuckLakeSnapshotTagInfo> &tags);
-	//! Conflicts of the data files the transaction added with the files other transactions added since the snapshot
-	void CheckAddedFileConflicts(const SnapshotChangeInformation &other_changes,
-	                             const DuckLakeCommitContext &context) const;
+	//! Fails when another transaction committed a data file at the path of a file the transaction registered
+	void CheckAddedFileConflicts(const DuckLakeCommitContext &context) const;
 	void CheckFileConflicts(const TransactionChangeInformation &changes, const SnapshotChangeInformation &other_changes,
 	                        const DuckLakeCommitContext &context) const;
 

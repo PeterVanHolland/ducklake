@@ -2522,6 +2522,19 @@ vector<DuckLakeFileListEntry> DuckLakeMetadataManager::GetFilesForTable(DuckLake
 	return files;
 }
 
+bool DuckLakeMetadataManager::HasDataFile(const DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
+                                          const string &path) {
+	auto table_id = table.GetTableId();
+	// a table the transaction created has no files in the catalog
+	if (IsTransactionLocal(table_id)) {
+		return false;
+	}
+	auto &fs = GetFileSystem();
+	auto result = Query(snapshot, GetDataFilesNamedSql(table_id, StringUtil::GetFileName(path), false));
+	result->ThrowIfError("Failed to look up a data file in DuckLake: ");
+	return HasCanonicalPath(*result, fs, fs.CanonicalizePath(path), table.DataPath(), GetPathSeparator(path));
+}
+
 vector<DuckLakeFileListEntry> DuckLakeMetadataManager::GetTableInsertions(DuckLakeTableEntry &table,
                                                                           DuckLakeSnapshot start_snapshot,
                                                                           DuckLakeSnapshot end_snapshot) {
@@ -4738,6 +4751,33 @@ string DuckLakeMetadataManager::GetRenamedAfterSnapshotSql(const string &metadat
 	return StringUtil::Format(
 	    "SELECT %s FROM {METADATA_CATALOG}.%s WHERE begin_snapshot > {SNAPSHOT_ID} AND %s IN (%s)", id_name,
 	    metadata_table_name, id_name, GenerateIDList(ids));
+}
+
+string DuckLakeMetadataManager::GetDataFilesNamedSql(TableIndex table_id, const string &file_name,
+                                                     bool committed_after_snapshot) {
+	// a compaction output keeps the begin snapshot of its sources, so the file id tells when a file was committed
+	auto snapshot_filter = committed_after_snapshot
+	                           ? "data_file_id >= {NEXT_FILE_ID} AND end_snapshot IS NULL"
+	                           : "data_file_id < {NEXT_FILE_ID} AND {SNAPSHOT_ID} >= begin_snapshot AND "
+	                             "({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)";
+	// every stored form of a path ends with the file name
+	auto pattern = file_name;
+	for (auto wildcard : {"\\", "%", "_"}) {
+		pattern = StringUtil::Replace(pattern, wildcard, string("\\") + wildcard);
+	}
+	return StringUtil::Format("SELECT path, path_is_relative FROM {METADATA_CATALOG}.ducklake_data_file WHERE "
+	                          "table_id = %d AND path LIKE %s ESCAPE '\\' AND %s",
+	                          table_id.index, SQLString("%" + pattern), snapshot_filter);
+}
+
+bool DuckLakeMetadataManager::HasCanonicalPath(QueryResult &result, FileSystem &fs, const string &canonical_path,
+                                               const string &table_path, const string &separator) {
+	for (auto &row : result) {
+		if (fs.CanonicalizePath(FromRelativePath(ReadPath(row, 0), table_path, separator)) == canonical_path) {
+			return true;
+		}
+	}
+	return false;
 }
 
 string DuckLakeMetadataManager::GetColumnsWithRecordedValuesSql(TableIndex table_id,

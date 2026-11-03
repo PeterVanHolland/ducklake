@@ -2853,28 +2853,17 @@ set<idx_t> DuckLakeMetadataManager::GetTableRewriteSnapshots(TableIndex table_id
 	if (rewrite_snapshots.empty()) {
 		return rewrite_snapshots;
 	}
-	// a rewrite stays out of the change feed only while its snapshot and the one before it exist, since the expiry of
-	// either removes delete files or output files that record the rows it rewrote
-	vector<idx_t> needed_snapshots;
-	for (auto rewrite_snapshot : rewrite_snapshots) {
-		needed_snapshots.push_back(rewrite_snapshot - 1);
-		needed_snapshots.push_back(rewrite_snapshot);
-	}
+	// a rewrite stays out of the change feed while its snapshot exists, the files it ended stay until then and the
+	// expiry of the snapshot can remove the output files that record later changes of its rows
 	auto result = Query(StringUtil::Format(
 	    "SELECT snapshot_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id IN (%s)",
-	    StringUtil::Join(needed_snapshots, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); })));
+	    StringUtil::Join(rewrite_snapshots, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); })));
 	result->ThrowIfError("Failed to get the snapshots of rewrites from DuckLake: ");
-	set<idx_t> existing_snapshots;
+	set<idx_t> existing_rewrites;
 	for (auto &row : *result) {
-		existing_snapshots.insert(row.GetValue<idx_t>(0));
+		existing_rewrites.insert(row.GetValue<idx_t>(0));
 	}
-	set<idx_t> visible_rewrites;
-	for (auto rewrite_snapshot : rewrite_snapshots) {
-		if (existing_snapshots.count(rewrite_snapshot) && existing_snapshots.count(rewrite_snapshot - 1)) {
-			visible_rewrites.insert(rewrite_snapshot);
-		}
-	}
-	return visible_rewrites;
+	return existing_rewrites;
 }
 
 string DuckLakeMetadataManager::GetRewriteSnapshotsQuery(idx_t first_snapshot, idx_t last_snapshot) const {
@@ -5769,11 +5758,15 @@ string DuckLakeMetadataManager::WriteCompactions(const vector<DuckLakeCompactedF
 //! Selects the files that the filter matches or whose range no remaining snapshot lies in
 static string UnusedFilesQuery(const string &file_table, const string &file_id_column, const string &filter) {
 	// only the first remaining snapshot at or after begin_snapshot matters
+	// a file that a rewrite ended records the changes of its rows for the change feed while the rewrite snapshot exists
 	return StringUtil::Format(R"(
 SELECT f.%s, f.table_id, f.path, f.path_is_relative
 FROM {METADATA_CATALOG}.%s f
 ASOF LEFT JOIN {METADATA_CATALOG}.ducklake_snapshot s ON f.begin_snapshot <= s.snapshot_id
-WHERE %s(f.end_snapshot IS NOT NULL AND (s.snapshot_id IS NULL OR s.snapshot_id >= f.end_snapshot));)",
+WHERE %s(f.end_snapshot IS NOT NULL AND (s.snapshot_id IS NULL OR s.snapshot_id > f.end_snapshot OR
+	(s.snapshot_id = f.end_snapshot AND NOT EXISTS (
+		SELECT 1 FROM {METADATA_CATALOG}.ducklake_snapshot_changes c
+		WHERE c.snapshot_id = f.end_snapshot AND c.changes_made LIKE '%%rewrite_delete:%%'))));)",
 	                          file_id_column, file_table, filter);
 }
 

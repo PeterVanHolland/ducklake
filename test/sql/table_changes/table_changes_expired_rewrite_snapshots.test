@@ -11,7 +11,7 @@ test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
 test-env DATA_PATH {TEST_DIR}
 
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/table_changes_expired_rewrite_snapshots', DATA_INLINING_ROW_LIMIT 0)
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/table_changes_expired_rewrite_snapshots', METADATA_CATALOG 'ducklake_meta', DATA_INLINING_ROW_LIMIT 0)
 
 statement ok
 USE ducklake
@@ -47,9 +47,35 @@ SELECT snapshot_id, rowid, change_type, a FROM table_changes('t', 3, 5) ORDER BY
 statement ok
 CALL ducklake_expire_snapshots('ducklake', versions => [4])
 
-# the delete file is gone, so the rewrite reports what it ended and wrote
+# the rewritten file and its delete file stay while the rewrite snapshot exists, so the feed is unchanged
+query I
+SELECT count(*) FROM ducklake_meta.ducklake_delete_file WHERE table_id = 1
+----
+1
+
 query IIII
 SELECT snapshot_id, rowid, change_type, a FROM table_changes('t', 3, 5) ORDER BY ALL
+----
+3	2	insert	3
+3	3	insert	4
+4	2	delete	3
+
+query I
+SELECT COUNT(*) FROM table_changes('t', 5, 5)
+----
+0
+
+# once the rewrite snapshot is expired too, the delete file goes and the rewrite reports what it ended and wrote
+statement ok
+CALL ducklake_expire_snapshots('ducklake', versions => [5])
+
+query I
+SELECT count(*) FROM ducklake_meta.ducklake_delete_file WHERE table_id = 1
+----
+0
+
+query IIII
+SELECT snapshot_id, rowid, change_type, a FROM table_changes('t', 3, 7) ORDER BY ALL
 ----
 3	2	insert	3
 3	3	insert	4
@@ -58,17 +84,11 @@ SELECT snapshot_id, rowid, change_type, a FROM table_changes('t', 3, 5) ORDER BY
 5	3	update_preimage	4
 
 query I
-SELECT list(a ORDER BY a) FROM t AT (VERSION => 5)
+SELECT list(a ORDER BY a) FROM t AT (VERSION => 7)
 ----
 [1, 2, 4]
 
-query I
-SELECT COUNT(*) FROM table_changes('t', 5, 5)
-----
-3
-
-# the snapshot of the insert is expired too, so the rewritten file is gone and its output is the insert (the expiry
-# above is snapshot 6)
+# the snapshots of the insert and the delete are expired, the rewritten file stays and reports both
 statement ok
 CREATE TABLE u(a INT)
 
@@ -85,19 +105,54 @@ statement ok
 CALL ducklake_rewrite_data_files('ducklake', 'u', delete_threshold => 0)
 
 statement ok
-CALL ducklake_expire_snapshots('ducklake', versions => [9, 10])
+CALL ducklake_expire_snapshots('ducklake', versions => [10, 11])
 
 query IIII
-SELECT snapshot_id, rowid, change_type, a FROM table_changes('u', 8, 11) ORDER BY ALL
+SELECT snapshot_id, rowid, change_type, a FROM table_changes('u', 9, 12) ORDER BY ALL
 ----
-8	0	insert	1
-8	1	insert	2
-11	3	insert	4
+9	0	insert	1
+9	1	insert	2
+10	2	insert	3
+10	3	insert	4
+11	2	delete	3
 
 query I
-SELECT list(a ORDER BY a) FROM u AT (VERSION => 11)
+SELECT list(a ORDER BY a) FROM u AT (VERSION => 12)
 ----
 [1, 2, 4]
+
+# an expired snapshot of another table before the rewrite changes nothing
+statement ok
+CREATE TABLE w(a INT)
+
+statement ok
+INSERT INTO w VALUES (1), (2), (3), (4)
+
+statement ok
+DELETE FROM w WHERE a = 3
+
+statement ok
+CREATE TABLE unrelated(x INT)
+
+statement ok
+CALL ducklake_rewrite_data_files('ducklake', 'w', delete_threshold => 0)
+
+statement ok
+CALL ducklake_expire_snapshots('ducklake', versions => [17])
+
+query IIII
+SELECT snapshot_id, rowid, change_type, a FROM table_changes('w', 15, 18) ORDER BY ALL
+----
+15	0	insert	1
+15	1	insert	2
+15	2	insert	3
+15	3	insert	4
+16	2	delete	3
+
+query I
+SELECT COUNT(*) FROM table_changes('w', 18, 18)
+----
+0
 
 # the rewrite snapshot itself is expired, so a later update of its output keeps its delete
 statement ok
@@ -119,23 +174,23 @@ statement ok
 UPDATE v SET v = 'x' WHERE id = 3
 
 query IIIII
-SELECT snapshot_id, rowid, change_type, id, v FROM table_changes('v', 16, 18) ORDER BY ALL
+SELECT snapshot_id, rowid, change_type, id, v FROM table_changes('v', 23, 25) ORDER BY ALL
 ----
-16	1	delete	2	b
-18	2	update_postimage	3	x
-18	2	update_preimage	3	c
+23	1	delete	2	b
+25	2	update_postimage	3	x
+25	2	update_preimage	3	c
 
 statement ok
-CALL ducklake_expire_snapshots('ducklake', versions => [17])
+CALL ducklake_expire_snapshots('ducklake', versions => [24])
 
 query IIIII
-SELECT snapshot_id, rowid, change_type, id, v FROM table_changes('v', 16, 18) ORDER BY ALL
+SELECT snapshot_id, rowid, change_type, id, v FROM table_changes('v', 23, 25) ORDER BY ALL
 ----
-16	1	delete	2	b
-17	2	delete	3	c
-18	2	insert	3	x
+23	1	delete	2	b
+24	2	delete	3	c
+25	2	insert	3	x
 
 query I
-SELECT list((id, v) ORDER BY id) FROM v AT (VERSION => 18)
+SELECT list((id, v) ORDER BY id) FROM v AT (VERSION => 25)
 ----
 [(3, x)]

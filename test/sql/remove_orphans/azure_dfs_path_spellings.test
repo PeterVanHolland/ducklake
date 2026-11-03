@@ -1,0 +1,73 @@
+# name: test/sql/remove_orphans/azure_dfs_path_spellings.test
+# description: ducklake_delete_orphaned_files keeps live files when the Azure listing spells an abfss path account-first
+# group: [remove_orphans]
+
+require ducklake
+
+require parquet
+
+require azure
+
+# an ADLS Gen2 account (or a mock of its DFS endpoint) and a data path in the abfss://<container>@<account>.<endpoint>/ form
+require-env AZURE_STORAGE_CONNECTION_STRING
+
+require-env DUCKLAKE_AZURE_DFS_DATA_PATH
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+statement ok
+CREATE SECRET azure_dfs (TYPE AZURE, CONNECTION_STRING '{AZURE_STORAGE_CONNECTION_STRING}')
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DUCKLAKE_AZURE_DFS_DATA_PATH}', DATA_INLINING_ROW_LIMIT 0)
+
+# clear objects left under the prefix by an interrupted run
+statement ok
+CALL ducklake_delete_orphaned_files('ducklake', cleanup_all => true)
+
+statement ok
+CREATE TABLE ducklake.t(i INTEGER)
+
+statement ok
+INSERT INTO ducklake.t VALUES (1), (2)
+
+statement ok
+INSERT INTO ducklake.t VALUES (3)
+
+# the same path in the abfss://<account>.<endpoint>/<container>/ form, which the Azure listing returns
+statement ok
+SET VARIABLE account_first = regexp_replace('{DUCKLAKE_AZURE_DFS_DATA_PATH}', '^(abfss?://)([^@/]+)@([^/]+)/', '\1\3/\2/')
+
+statement ok
+COPY (SELECT 4 AS i) TO '{DUCKLAKE_AZURE_DFS_DATA_PATH}main/t/added.parquet'
+
+# a file registered in the other form
+statement ok
+CALL ducklake_add_data_files('ducklake', 't', getvariable('account_first') || 'main/t/added.parquet')
+
+# live files are no orphans, whichever form the listing uses
+query I
+SELECT count(*) FROM ducklake_delete_orphaned_files('ducklake', dry_run => true, cleanup_all => true)
+----
+0
+
+statement ok
+COPY (SELECT 5 AS i) TO '{DUCKLAKE_AZURE_DFS_DATA_PATH}main/t/orphan.parquet'
+
+query I
+SELECT count(*) FROM ducklake_delete_orphaned_files('ducklake', cleanup_all => true)
+----
+1
+
+query I
+SELECT count(*) FROM glob('{DUCKLAKE_AZURE_DFS_DATA_PATH}main/t/*.parquet')
+----
+3
+
+query I
+SELECT i FROM ducklake.t ORDER BY i
+----
+1
+2
+3
+4

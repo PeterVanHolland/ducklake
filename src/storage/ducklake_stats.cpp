@@ -180,13 +180,42 @@ void DuckLakeColumnStats::WidenFloatBounds() {
 	if (type.id() != LogicalTypeId::FLOAT) {
 		return;
 	}
-	if (has_min) {
-		min = Value(min).DefaultCastAs(type).DefaultCastAs(LogicalType::DOUBLE).ToString();
-	}
-	if (has_max) {
-		max = Value(max).DefaultCastAs(type).DefaultCastAs(LogicalType::DOUBLE).ToString();
-	}
 	type = LogicalType::DOUBLE;
+	CastBoundsFrom(LogicalType::FLOAT);
+}
+
+static bool TryCastBound(string &bound, const LogicalType &source, const LogicalType &target) {
+	auto source_value = TryCastStatsBound(bound, source);
+	if (!source_value) {
+		return false;
+	}
+	auto target_value = source_value->DefaultTryCastAs(target);
+	if (!target_value) {
+		return false;
+	}
+	bound = target_value->ToString();
+	return true;
+}
+
+optional<string> DuckLakeColumnStats::CastBoundsFrom(const LogicalType &source) {
+	optional<string> dropped_value;
+	if (has_min && !TryCastBound(min, source, type)) {
+		if (min_is_exact) {
+			dropped_value = min;
+		}
+		min.clear();
+		has_min = false;
+		min_is_exact = false;
+	}
+	if (has_max && !TryCastBound(max, source, type)) {
+		if (!dropped_value && max_is_exact) {
+			dropped_value = max;
+		}
+		max.clear();
+		has_max = false;
+		max_is_exact = false;
+	}
+	return dropped_value;
 }
 
 bool DuckLakeColumnStats::BoundsSurviveTypePromotion(const LogicalType &source, const LogicalType &target) {
@@ -211,6 +240,13 @@ optional<Value> TryCastStatsBound(const string &bound, const LogicalType &type) 
 	return Value(bound).DefaultTryCastAs(type);
 }
 
+bool StatsBoundLessThan(const Value &left, const Value &right) {
+	if (left.type().id() == LogicalTypeId::TIME_TZ) {
+		return left.GetValue<dtime_tz_t>() < right.GetValue<dtime_tz_t>();
+	}
+	return left < right;
+}
+
 //! Returns false when either bound is unknown
 static bool TryCompareBounds(const LogicalType &type, const string &left, const string &right, int32_t &result) {
 	if (!RequiresValueComparison(type)) {
@@ -224,7 +260,7 @@ static bool TryCompareBounds(const LogicalType &type, const string &left, const 
 	if (!left_value || !right_value) {
 		return false;
 	}
-	result = *left_value < *right_value ? -1 : (*left_value == *right_value ? 0 : 1);
+	result = StatsBoundLessThan(*left_value, *right_value) ? -1 : (*left_value == *right_value ? 0 : 1);
 	return true;
 }
 
@@ -446,7 +482,7 @@ unique_ptr<BaseStatistics> DuckLakeColumnStats::ToStats() const {
 	case LogicalTypeId::DOUBLE: {
 		if (!has_contains_nan) {
 			// we only create stats if we know whether there are NaN values
-			auto stats = NumericStats::CreateEmpty(type);
+			auto stats = NumericStats::CreateUnknown(type);
 			SetValidity(stats);
 			return stats.ToUnique();
 		}

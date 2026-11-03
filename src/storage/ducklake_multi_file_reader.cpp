@@ -183,11 +183,21 @@ static bool CanSkipFileByRuntimeFilter(const DuckLakeFileListEntry &file_entry, 
 	return false;
 }
 
+static MultiFileColumnDefinition RowIdColumn() {
+	MultiFileColumnDefinition column("_ducklake_internal_row_id", LogicalType::BIGINT);
+	column.identifier = Value::INTEGER(MultiFileReader::ROW_ID_FIELD_ID);
+	return column;
+}
+
+static MultiFileColumnDefinition SnapshotIdColumn() {
+	MultiFileColumnDefinition column("_ducklake_internal_snapshot_id", LogicalType::BIGINT);
+	column.identifier = Value::INTEGER(MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID);
+	return column;
+}
+
 DuckLakeMultiFileReader::DuckLakeMultiFileReader(DuckLakeFunctionInfo &read_info) : read_info(read_info) {
-	row_id_column = make_uniq<MultiFileColumnDefinition>("_ducklake_internal_row_id", LogicalType::BIGINT);
-	row_id_column->identifier = Value::INTEGER(MultiFileReader::ROW_ID_FIELD_ID);
-	snapshot_id_column = make_uniq<MultiFileColumnDefinition>("_ducklake_internal_snapshot_id", LogicalType::BIGINT);
-	snapshot_id_column->identifier = Value::INTEGER(MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID);
+	row_id_column = make_uniq<MultiFileColumnDefinition>(RowIdColumn());
+	snapshot_id_column = make_uniq<MultiFileColumnDefinition>(SnapshotIdColumn());
 }
 
 DuckLakeMultiFileReader::~DuckLakeMultiFileReader() {
@@ -274,6 +284,7 @@ DuckLakeMultiFileReader::InitializeGlobalState(ClientContext &context, const Mul
 	// Materialize the file list here, while we are still single-threaded. It is otherwise first touched from
 	// the scan tasks, where every worker piles into DuckLakeMultiFileList::GetFiles() and blocks on its lock
 	// while one of them runs the metadata query - which costs far more in scheduler churn than the scan itself.
+	file_list.Cast<DuckLakeMultiFileList>().SetScanColumns(global_columns, global_column_ids);
 	file_list.Cast<DuckLakeMultiFileList>().GetFiles();
 
 	optional_idx deletion_scan_snapshot_col;
@@ -301,6 +312,9 @@ ReaderInitializeType DuckLakeMultiFileReader::InitializeReader(MultiFileReaderDa
 	auto file_idx = reader.file_list_idx.GetIndex();
 
 	auto &file_entry = file_list.GetFileEntry(file_idx);
+	if (file_entry.inlined_rows) {
+		reader.Cast<DuckLakeInlinedDataReader>().SetCommittedRows(file_entry.inlined_rows);
+	}
 	if (file_list.GetFilterInfo()) {
 		auto &filter_info = *file_list.GetFilterInfo();
 		if (CanSkipFileByRuntimeFilter(file_entry, filter_info, context)) {
@@ -313,7 +327,7 @@ ReaderInitializeType DuckLakeMultiFileReader::InitializeReader(MultiFileReaderDa
 			auto transaction = read_info.GetTransaction();
 			auto inlined_deletes =
 			    read_info.include_local_changes
-			        ? transaction->GetInlinedDeletes(read_info.table.GetTableId(), file_entry.file.path)
+			        ? transaction->GetInlinedDeletes(read_info.table.GetTableId(), Identifier(file_entry.file.path))
 			        : nullptr;
 			// the flush source query already excludes these rows
 			if (inlined_deletes && read_info.scan_type != DuckLakeScanType::SCAN_FOR_FLUSH) {
@@ -367,7 +381,8 @@ ReaderInitializeType DuckLakeMultiFileReader::InitializeReader(MultiFileReaderDa
 	                                 gstate.file_list, bind_data.reader_bind, bind_data.virtual_columns, global_state);
 
 	// Handle snapshot filters for files with multiple snapshots (partial_max set)
-	if (file_entry.snapshot_filter_max.IsValid() || file_entry.snapshot_filter_min.IsValid()) {
+	if (file_entry.snapshot_filter_max.IsValid() || file_entry.snapshot_filter_min.IsValid() ||
+	    !file_entry.snapshot_filter_excluded.empty()) {
 		// we have a snapshot filter - add it to the filter list
 		// find the column we need to filter on
 		auto &reader = *reader_data.reader;
@@ -408,8 +423,35 @@ ReaderInitializeType DuckLakeMultiFileReader::InitializeReader(MultiFileReaderDa
 			AddSnapshotFilter(reader, snapshot_col_idx, snapshot_col_type, file_entry.snapshot_filter_min.GetIndex(),
 			                  ExpressionType::COMPARE_GREATERTHANOREQUALTO, snapshot_filter_identity);
 		}
+
+		for (auto snapshot_id : file_entry.snapshot_filter_excluded) {
+			AddSnapshotFilter(reader, snapshot_col_idx, snapshot_col_type, snapshot_id,
+			                  ExpressionType::COMPARE_NOTEQUAL, snapshot_filter_identity);
+		}
 	}
 	return result;
+}
+
+bool DuckLakeMultiFileReader::GetInlinedTableColumns(DuckLakeFunctionInfo &read_info, optional_idx schema_version,
+                                                     vector<MultiFileColumnDefinition> &columns) {
+	reference<DuckLakeTableEntry> schema_table = read_info.table;
+	if (schema_version.IsValid()) {
+		// read the table at the specified version
+		auto transaction = read_info.GetTransaction();
+		auto &catalog = transaction->GetCatalog();
+		auto entry =
+		    catalog.GetTableAtSchemaVersion(*transaction, read_info.table.GetTableId(), schema_version.GetIndex());
+		if (!entry) {
+			// LCOV_EXCL_START
+			return false;
+			// LCOV_EXCL_STOP
+		}
+		schema_table = *entry;
+	}
+	columns = DuckLakeMultiFileReader::ColumnsFromFieldData(schema_table.get().GetFieldData(), true);
+	columns.insert(columns.begin(), SnapshotIdColumn());
+	columns.insert(columns.begin(), RowIdColumn());
+	return true;
 }
 
 shared_ptr<BaseFileReader> DuckLakeMultiFileReader::TryCreateInlinedDataReader(const OpenFileInfo &file) {
@@ -431,24 +473,18 @@ shared_ptr<BaseFileReader> DuckLakeMultiFileReader::TryCreateInlinedDataReader(c
 		return make_shared_ptr<DuckLakeInlinedDataReader>(read_info, file, transaction_local_data, std::move(columns));
 	}
 	idx_t schema_version;
-	reference<DuckLakeTableEntry> schema_table = read_info.table;
+	optional_idx table_schema_version;
 	if (file.extended_info->TryGetOption("schema_version", schema_version)) {
-		// read the table at the specified version
-		auto transaction = read_info.GetTransaction();
-		auto &catalog = transaction->GetCatalog();
-		auto entry = catalog.GetTableAtSchemaVersion(*transaction, read_info.table.GetTableId(), schema_version);
-		if (!entry) {
-			// LCOV_EXCL_START
-			return nullptr;
-			// LCOV_EXCL_STOP
-		}
-		schema_table = *entry;
+		table_schema_version = schema_version;
 	}
 	// we are reading from a table - set up the inlined data reader that will read this data when requested
-	auto columns = DuckLakeMultiFileReader::ColumnsFromFieldData(schema_table.get().GetFieldData(), true);
-	columns.insert(columns.begin(), *snapshot_id_column);
-	columns.insert(columns.begin(), *row_id_column);
-	return make_shared_ptr<DuckLakeInlinedDataReader>(read_info, file, std::move(inlined_table_name),
+	vector<MultiFileColumnDefinition> columns;
+	if (!GetInlinedTableColumns(read_info, table_schema_version, columns)) {
+		// LCOV_EXCL_START
+		return nullptr;
+		// LCOV_EXCL_STOP
+	}
+	return make_shared_ptr<DuckLakeInlinedDataReader>(read_info, file, Identifier(std::move(inlined_table_name)),
 	                                                  std::move(columns));
 }
 

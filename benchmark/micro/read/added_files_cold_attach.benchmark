@@ -18,7 +18,7 @@ COPY (SELECT i::BIGINT AS part, (i * 0.5)::DOUBLE AS val, TIMESTAMP '2024-01-01'
 FROM range(4096) t(i))
 TO '${BENCHMARK_DIR}/added_files_cold_attach_source' (FORMAT PARQUET, PARTITION_BY (part), WRITE_PARTITION_COLUMNS true, OVERWRITE);
 @create added_files_cold_attach
-@attach added_files_cold_attach AS lake (DATA_PATH '${BENCHMARK_DIR}/added_files_cold_attach_files')
+@attach added_files_cold_attach AS lake (DATA_PATH '${BENCHMARK_DIR}/added_files_cold_attach_files', DUCKLAKE_VERSION '1.1')
 CREATE TABLE lake.added (part BIGINT, val DOUBLE, ts TIMESTAMP);
 CALL ducklake_add_data_files('lake', 'added', '${BENCHMARK_DIR}/added_files_cold_attach_source/**/*.parquet');
 DETACH lake;

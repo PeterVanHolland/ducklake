@@ -103,6 +103,27 @@ r	false
 i2f	false
 dc	NULL
 
+# a copy of the catalog that the attach migrates to 2.0-dev1 is repaired before the migration
+unzip data/old_ducklake/migrate_bounds_v200.db.gz {TEST_DIR}/v11_unrepaired_bounds_migrated.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v11_unrepaired_bounds_migrated.db' AS migrated (DATA_PATH 'data/old_ducklake/migrate_bounds/', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'migrated_meta', AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT value FROM migrated_meta.ducklake_metadata WHERE key = 'version'
+----
+2.0-dev1
+
+query IIII
+SELECT (SELECT count(*) FROM migrated.ts WHERE t = (SELECT t FROM migrated.ts)), (SELECT count(*) FROM migrated.tz WHERE t = (SELECT t FROM migrated.tz)), (SELECT count(*) FROM migrated.r WHERE f = 0.10000000149011612), (SELECT count(*) FROM migrated.dc AT (VERSION => 22) WHERE f = 0.10000000149011612)
+----
+1	1	1	1
+
+query II
+SELECT count(*) FILTER (WHERE min_value IS NULL), count(*) FILTER (WHERE min_is_exact = false) FROM migrated_meta.ducklake_file_column_stats
+----
+8	2
+
 # the same rows on the metadata catalog of the test config
 test-env DUCKLAKE_CONNECTION {TEST_DIR}/v11_unrepaired_bounds_config.db
 

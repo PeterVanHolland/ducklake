@@ -605,6 +605,10 @@ DuckLakeCopyOptions DuckLakeInsert::GetCopyOptions(ClientContext &context, DuckL
 	auto &copy = *result.copy;
 	copy.use_tmp_file = false;
 	copy.filename_pattern.SetFilenamePattern("ducklake-{uuidv7}");
+	// an insert keeps the order of its input as a DuckDB table does, through the batch copy that rotates files by
+	// size; the rewrites of DuckLake write in parallel
+	copy.preserve_order =
+	    copy_input.preserve_insertion_order ? PreserveOrderType::AUTOMATIC : PreserveOrderType::DONT_PRESERVE_ORDER;
 	static constexpr idx_t MINIMUM_WRITE_FILE_SIZE = 4096;
 	copy.file_size_bytes = MaxValue<idx_t>(target_file_size, MINIMUM_WRITE_FILE_SIZE);
 	copy.rotate = true;
@@ -676,9 +680,10 @@ PhysicalOperator &DuckLakeInsert::PlanCopyForInsert(ClientContext &context, Phys
 
 	copy.SetEstimatedCardinality(1);
 	copy.ResolveOperatorTypes();
-	auto &physical_copy = planner.CreatePlan(copy, *plan).Cast<PhysicalCopyToFile>();
-	if (copy_input.ordered_input) {
-		PreserveSortedOrder(physical_copy);
+	auto &physical_copy = planner.CreatePlan(copy, *plan);
+	if (copy_input.ordered_input && physical_copy.type == PhysicalOperatorType::COPY_TO_FILE) {
+		// the batch copy keeps the order by itself
+		PreserveSortedOrder(physical_copy.Cast<PhysicalCopyToFile>());
 	}
 	return physical_copy;
 }
@@ -687,7 +692,7 @@ void DuckLakeInsert::PreserveSortedOrder(PhysicalCopyToFile &physical_copy) {
 	if (!physical_copy.function.execution_mode) {
 		return;
 	}
-	// the rows are sorted and the batch copy operator does not rotate files by size
+	// the rows are sorted, so this copy must not write them in parallel
 	auto execution_mode = physical_copy.function.execution_mode(true, false);
 	physical_copy.parallel = execution_mode == CopyFunctionExecutionMode::PARALLEL_COPY_TO_FILE;
 }
@@ -891,6 +896,7 @@ PhysicalOperator &DuckLakeCatalog::PlanInsert(ClientContext &context, PhysicalPl
 
 	DuckLakeCopyInput copy_input(context, ducklake_table);
 	copy_input.ordered_input = pipeline.sorted;
+	copy_input.preserve_insertion_order = true;
 	auto &physical_copy = DuckLakeInsert::PlanCopyForInsert(context, planner, copy_input, pipeline.root.get());
 	auto &insert = DuckLakeInsert::PlanInsert(context, planner, ducklake_table, std::move(copy_input.encryption_key));
 	return pipeline.AttachInsert(insert, physical_copy);
@@ -929,6 +935,7 @@ PhysicalOperator &DuckLakeCatalog::PlanCreateTableAs(ClientContext &context, Phy
 	DuckLakeCopyInput copy_input(context, duck_schema, columns, table_data_path, *field_data, partition_data.get());
 	copy_input.table_options = table_options;
 	copy_input.ordered_input = pipeline.sorted;
+	copy_input.preserve_insertion_order = true;
 	auto &physical_copy = DuckLakeInsert::PlanCopyForInsert(context, planner, copy_input, pipeline.root.get());
 
 	auto &insert =

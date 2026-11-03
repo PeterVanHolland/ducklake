@@ -1,0 +1,67 @@
+# name: test/sql/insert/insert_preserve_order.test
+# description: CREATE TABLE AS and INSERT keep the order of their input when preserve_insertion_order is set
+# group: [insert]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/insert_preserve_order', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+SET threads = 4
+
+statement ok
+SET preserve_insertion_order = true
+
+# a Parquet source scanned in parallel, written to several files
+statement ok
+COPY (SELECT range AS id, 'row' || range AS s FROM range(400000)) TO '{DATA_PATH}/insert_preserve_order_src.parquet' (ROW_GROUP_SIZE 20000)
+
+statement ok
+CALL lake.set_option('target_file_size', '400KB')
+
+statement ok
+CREATE TABLE lake.t AS SELECT * FROM read_parquet('{DATA_PATH}/insert_preserve_order_src.parquet')
+
+query I
+SELECT count(*) > 1 FROM ducklake_list_files('lake', 't')
+----
+true
+
+# every row sits where the input put it
+query I
+SELECT count(*) FILTER (WHERE id <> rowid) FROM lake.t
+----
+0
+
+# an insert appends in input order too
+statement ok
+INSERT INTO lake.t SELECT id + 400000, s FROM read_parquet('{DATA_PATH}/insert_preserve_order_src.parquet')
+
+query I
+SELECT count(*) FILTER (WHERE id <> rowid) FROM lake.t
+----
+0
+
+query I
+SELECT count(*) FROM lake.t
+----
+800000
+
+# without the setting the write runs in parallel and the rows are intact
+statement ok
+SET preserve_insertion_order = false
+
+statement ok
+CREATE TABLE lake.u AS SELECT * FROM read_parquet('{DATA_PATH}/insert_preserve_order_src.parquet')
+
+query II
+SELECT count(*), sum(id) FROM lake.u
+----
+400000	79999800000

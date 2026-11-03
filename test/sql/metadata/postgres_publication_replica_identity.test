@@ -1,0 +1,94 @@
+# name: test/sql/metadata/postgres_publication_replica_identity.test
+# description: a Postgres catalog whose metadata schema is in a publication still commits its updates
+# group: [metadata]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require-env DUCKLAKE_CI
+
+require-env DUCKLAKE_CONNECTION
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/pub_identity', METADATA_SCHEMA 'pub_identity', DATA_INLINING_ROW_LIMIT 10)
+
+# Postgres refuses an UPDATE or DELETE on a published table without a replica identity
+statement ok
+CALL postgres_execute('__ducklake_metadata_lake', 'DROP PUBLICATION IF EXISTS ducklake_pub_identity')
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_lake', 'CREATE PUBLICATION ducklake_pub_identity FOR TABLES IN SCHEMA pub_identity')
+
+statement ok
+CREATE TABLE lake.t (i INTEGER)
+
+# the inlined data table is created under the publication
+statement ok
+INSERT INTO lake.t VALUES (1)
+
+# the second insert updates the table stats
+statement ok
+INSERT INTO lake.t VALUES (2)
+
+# the delete ends an inlined row
+statement ok
+DELETE FROM lake.t WHERE i = 1
+
+statement ok
+CREATE TABLE lake.p AS SELECT range AS i FROM range(100)
+
+statement ok
+INSERT INTO lake.p SELECT range FROM range(100, 200)
+
+# the second comment ends the first tag
+statement ok
+COMMENT ON TABLE lake.p IS 'a'
+
+statement ok
+COMMENT ON TABLE lake.p IS 'b'
+
+# the drop ends the table row
+statement ok
+DROP TABLE lake.t
+
+query III
+SELECT count(*), max(i), (SELECT comment FROM duckdb_tables() WHERE database_name = 'lake' AND table_name = 'p') FROM lake.p
+----
+200	199	b
+
+# every metadata table has a replica identity, a primary key or the full row
+query I
+SELECT count(*) FROM postgres_query('__ducklake_metadata_lake', 'SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity'' AND c.relkind = ''r'' AND c.relreplident = ''d'' AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)')
+----
+0
+
+# a catalog written by an older DuckLake has no identities, the next attach that can write sets them
+statement ok
+CALL postgres_execute('__ducklake_metadata_lake', 'DO $$ DECLARE r record; BEGIN FOR r IN SELECT c.oid::regclass AS tbl FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity'' AND c.relkind = ''r'' LOOP EXECUTE format(''ALTER TABLE %s REPLICA IDENTITY DEFAULT'', r.tbl); END LOOP; END $$')
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/pub_identity', METADATA_SCHEMA 'pub_identity', DATA_INLINING_ROW_LIMIT 10)
+
+query I
+SELECT count(*) FROM postgres_query('__ducklake_metadata_lake', 'SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity'' AND c.relkind = ''r'' AND c.relreplident = ''d'' AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)')
+----
+0
+
+statement ok
+INSERT INTO lake.p VALUES (200)
+
+query II
+SELECT count(*), max(i) FROM lake.p
+----
+201	200
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_lake', 'DROP PUBLICATION ducklake_pub_identity')

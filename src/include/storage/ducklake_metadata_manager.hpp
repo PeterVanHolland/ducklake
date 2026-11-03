@@ -300,6 +300,13 @@ public:
 	//! Get the version string written to ducklake_metadata
 	virtual string GetVersionString();
 	virtual DuckLakeMetadata LoadDuckLake();
+	//! Statements that follow the creation of one metadata table on this backend
+	virtual string AfterCreateTableSql(const Identifier &table_name) const {
+		return string();
+	}
+	//! Completes the metadata tables of a new or an existing catalog that this client may write
+	virtual void CompleteMetadataTables() {
+	}
 
 	virtual unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query);
 	virtual unique_ptr<QueryResult> Execute(string &query);

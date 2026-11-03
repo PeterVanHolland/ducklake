@@ -304,6 +304,7 @@ INSERT INTO {METADATA_CATALOG}.ducklake_schema (schema_id, schema_uuid, begin_sn
 	                                       initial_schema_uuid);
 	auto result = Execute(initialize_query);
 	result->ThrowIfError("Failed to initialize DuckLake: ");
+	CompleteMetadataTables();
 }
 
 string DuckLakeMetadataManager::GetSchemaTableStatement() {
@@ -3494,7 +3495,7 @@ string DuckLakeMetadataManager::GetInlinedTableQuery(const DuckLakeTableInfo &ta
 	auto column_defs = GetColumnDefinitions(table.columns);
 	// We created a table here, flag we need to clear our cache at commit
 	MarkPendingCacheClear();
-	return InlinedTableDdlSql(table_name, column_defs, InlinedColNames());
+	return InlinedTableDdlSql(table_name, column_defs, InlinedColNames()) + AfterCreateTableSql(table_name);
 }
 
 static constexpr idx_t MAX_VALUES_LIST_LENGTH = 65536;
@@ -4050,6 +4051,12 @@ string DuckLakeMetadataManager::WriteNewInlinedFileDeletesSqlBatch(
 	if (created_new_table) {
 		// We create a table here, flag we need to clear our cache at commit
 		MarkPendingCacheClear();
+		set<idx_t> tables;
+		for (auto &entry : new_deletes) {
+			if (tables.insert(entry.table_id.index).second) {
+				batch_queries += AfterCreateTableSql(InlinedFileDeletionTableName(entry.table_id));
+			}
+		}
 	}
 	return batch_queries;
 }

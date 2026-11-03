@@ -43,6 +43,8 @@ public:
 	string GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot snapshot, bool include_exactness) const override;
 	bool InlinedDeletionTableExists(const Identifier &table_name) override;
 	void MigrateInlinedDataTypes() override;
+	string AfterCreateTableSql(const Identifier &table_name) const override;
+	void CompleteMetadataTables() override;
 	bool IsRetryableCommitError(const string &message) const override;
 	string ConfigOptionLockSql() const override;
 

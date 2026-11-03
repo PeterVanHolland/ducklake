@@ -450,6 +450,29 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 	}
 }
 
+string PostgresMetadataManager::AfterCreateTableSql(const Identifier &table_name) const {
+	// a table in a publication needs a replica identity for its updates
+	return StringUtil::Format("ALTER TABLE {METADATA_CATALOG}.%s REPLICA IDENTITY FULL;", table_name);
+}
+
+void PostgresMetadataManager::CompleteMetadataTables() {
+	// every table without a primary key gets the full row as replica identity, a client that may not alter the
+	// tables keeps going, and the block runs on the server since DuckDB does not parse it
+	auto &ducklake_catalog = transaction.GetCatalog();
+	auto schema = SQLString::ToString(ducklake_catalog.MetadataSchemaName().GetIdentifierName());
+	auto block = StringUtil::Format(R"(DO $$ DECLARE t regclass; BEGIN
+FOR t IN SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = %s
+AND c.relkind = 'r' AND c.relreplident = 'd'
+AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary) LOOP
+BEGIN EXECUTE format('ALTER TABLE %%s REPLICA IDENTITY FULL', t); EXCEPTION WHEN OTHERS THEN NULL; END;
+END LOOP; END $$;)",
+	                                schema);
+	auto catalog_literal = SQLString::ToString(ducklake_catalog.MetadataDatabaseName().GetIdentifierName());
+	auto result = transaction.ExecuteRaw(
+	    StringUtil::Format("CALL postgres_execute(%s, %s, prepare=FALSE)", catalog_literal, SQLString(block)));
+	result->ThrowIfError("Failed to complete the metadata tables of DuckLake: ");
+}
+
 string PostgresMetadataManager::ConfigOptionLockSql() const {
 	// every such commit updates the version row, so of two concurrent ones the later fails or waits for the other
 	return "UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = value WHERE key = 'version' AND scope IS NULL;\n";

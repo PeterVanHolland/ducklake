@@ -348,6 +348,10 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 	if (resolved_version != DuckLakeVersion::UNSET) {
 		SetVersionedMetadataManager(transaction, resolved_version);
 	}
+	// an older version or another backend's client may have left the tables incomplete
+	if (!catalog.GetAttached().IsReadOnly()) {
+		transaction.GetMetadataManager().CompleteMetadataTables();
+	}
 }
 
 DuckLakeVersion DuckLakeInitializer::ResolveTargetVersion(DuckLakeVersion catalog_version,

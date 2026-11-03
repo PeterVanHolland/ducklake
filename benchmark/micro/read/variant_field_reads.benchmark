@@ -1,0 +1,26 @@
+# name: benchmark/micro/read/variant_field_reads.benchmark
+# description: Filter and sum one field of a wide VARIANT column of 500000 rows, which reads that field only
+# group: [read]
+
+name Variant Field Reads
+group micro
+subgroup read
+
+require ducklake
+
+require parquet
+
+argument work variant_fields_work
+
+# Five keys filtered and summed through one field, with the external file cache off so that every run reads the file
+init
+SET enable_external_file_cache = false;
+
+include benchmark/micro/fixtures/variant_fields.benchmark.in
+
+run benchmark/micro/queries/variant_field_reads.sql
+
+result_query II
+SELECT * FROM __answer
+----
+500	124771000

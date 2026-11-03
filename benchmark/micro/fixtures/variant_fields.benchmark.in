@@ -1,0 +1,32 @@
+# name: benchmark/micro/fixtures/variant_fields.benchmark.in
+# description: Lake with one table of 500000 rows whose VARIANT column has a key, a number and three wide padding fields
+# group: [fixtures]
+
+argument lake variant_fields
+
+cache_file ${lake}_ready.marker
+
+load
+@create ${lake}_pristine
+@attach ${lake}_pristine AS lake (DATA_PATH '${BENCHMARK_DIR}/${lake}_files')
+CALL lake.set_option('data_inlining_row_limit', 0);
+CREATE TABLE lake.v AS
+SELECT i AS id, {'k': 'key-' || (i % 1000)::VARCHAR, 'pad1': repeat(md5(i::VARCHAR), 4), 'pad2': repeat(md5((i + 1)::VARCHAR), 4),
+'pad3': repeat(md5((i + 2)::VARCHAR), 4), 'n': i}::VARIANT AS v
+FROM range(500000) t(i);
+SELECT CASE WHEN (SELECT count(*) FROM lake.v) <> 500000
+OR (SELECT count(*) FROM ducklake_list_files('lake', 'v')) <> 1
+THEN error('unexpected variant fields fixture') END;
+DETACH lake;
+COPY (SELECT count(*) FROM glob('${BENCHMARK_DIR}/${lake}_files/**'))
+TO '${BENCHMARK_DIR}/${lake}_filecount.csv' (FORMAT CSV, HEADER false);
+@seal ${lake}_pristine
+COPY (SELECT 1) TO '${BENCHMARK_DIR}/${lake}_ready.marker' (FORMAT CSV);
+DETACH DATABASE IF EXISTS lake;
+@copy ${lake}_pristine TO ${work}
+@attach ${work} AS lake
+SELECT CASE WHEN (SELECT count(*) FROM glob('${BENCHMARK_DIR}/${lake}_files/**'))
+<> (SELECT column0 FROM read_csv('${BENCHMARK_DIR}/${lake}_filecount.csv', header = false))
+THEN error('the fixture files were not restored') END;
+
+include benchmark/micro/fixtures/restore_reload.benchmark.in

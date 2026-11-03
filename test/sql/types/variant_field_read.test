@@ -1,0 +1,130 @@
+# name: test/sql/types/variant_field_read.test
+# description: reading one field of a VARIANT column reads that field only, from data files and from inlined rows
+# group: [types]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/variant_field_read', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t AS
+SELECT i AS id, {'k': 'key-' || (i % 1000)::VARCHAR, 'pad': repeat(md5(i::VARCHAR), 4), 'n': i}::VARIANT AS v
+FROM range(100000) t(i)
+
+statement ok
+SET VARIABLE f = (SELECT data_file FROM ducklake_list_files('dl', 't'))
+
+statement ok
+SET enable_external_file_cache = false
+
+statement ok
+CREATE MACRO parquet_bytes_read() AS (
+	SELECT coalesce(sum(bytes), 0) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'READ' AND path LIKE '%.parquet')
+
+statement ok
+CALL enable_logging('FileSystem')
+
+# a filter on one field reads about what read_parquet reads for it
+query I
+SELECT count(*) FROM read_parquet(getvariable('f')) WHERE v.k::VARCHAR = 'key-42'
+----
+100
+
+statement ok
+SET VARIABLE field_bytes = parquet_bytes_read()
+
+statement ok
+CALL truncate_duckdb_logs()
+
+query I
+SELECT count(*) FROM dl.t WHERE v.k::VARCHAR = 'key-42'
+----
+100
+
+query I
+SELECT parquet_bytes_read() <= 2 * getvariable('field_bytes')
+----
+true
+
+# so does a projection of one field
+statement ok
+CALL truncate_duckdb_logs()
+
+query I
+SELECT sum(v.n::BIGINT) FROM read_parquet(getvariable('f'))
+----
+4999950000
+
+statement ok
+SET VARIABLE field_bytes = parquet_bytes_read()
+
+statement ok
+CALL truncate_duckdb_logs()
+
+query I
+SELECT sum(v.n::BIGINT) FROM dl.t
+----
+4999950000
+
+query I
+SELECT parquet_bytes_read() <= 2 * getvariable('field_bytes')
+----
+true
+
+statement ok
+CALL disable_logging()
+
+# the whole column still reads back
+query IIII
+SELECT id, v.k::VARCHAR, v.n::BIGINT, length(v.pad::VARCHAR) FROM dl.t WHERE id = 42
+----
+42	key-42	42	128
+
+# a column added later is read from files that lack it
+statement ok
+ALTER TABLE dl.t ADD COLUMN w VARIANT
+
+statement ok
+INSERT INTO dl.t VALUES (100000, {'k': 'key-new', 'n': -1}::VARIANT, {'k': 'w-new'}::VARIANT)
+
+query II
+SELECT count(*) FILTER (WHERE w.k::VARCHAR IS NULL), count(*) FILTER (WHERE w.k::VARCHAR = 'w-new') FROM dl.t
+----
+100000	1
+
+query I
+SELECT v.n::BIGINT FROM dl.t WHERE v.k::VARCHAR = 'key-new'
+----
+-1
+
+# fields of inlined rows read back too
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}_inlined' AS dli (DATA_PATH '{DATA_PATH}/variant_field_read_inlined', DATA_INLINING_ROW_LIMIT 1000)
+
+statement ok
+CREATE TABLE dli.t(id INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO dli.t SELECT i, {'k': 'key-' || i::VARCHAR, 'n': i}::VARIANT FROM range(10) t(i)
+
+statement ok
+DELETE FROM dli.t WHERE id = 3
+
+query II
+SELECT id, v.k::VARCHAR FROM dli.t WHERE v.n::INTEGER > 6 ORDER BY id
+----
+7	key-7
+8	key-8
+9	key-9
+
+query I
+SELECT sum(v.n::BIGINT) FROM dli.t
+----
+42

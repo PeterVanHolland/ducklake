@@ -13,15 +13,15 @@ test-env DATA_PATH {TEST_DIR}
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/column_stats_update_plain', DATA_INLINING_ROW_LIMIT 0)
 
-# the UPDATE statements of the logged commits, a commit that runs on the server logs none
+# the whole UPDATE statements of the logged commits, a commit that runs on the server logs none
 statement ok
 CREATE VIEW updates AS
-SELECT unnest(regexp_extract_all(message, 'UPDATE\s+\S*ducklake_\w+[^;]*')) AS stmt
-FROM duckdb_logs WHERE type = 'QueryLog'
+SELECT stmt, regexp_matches(stmt, '\bVALUES\b|\sFROM\s') AS joined
+FROM (SELECT unnest(regexp_extract_all(message, '[^;]*UPDATE\s+\S*ducklake_\w+[^;]*')) AS stmt FROM duckdb_logs WHERE type = 'QueryLog')
 
 statement ok
 CREATE VIEW logged_commits AS
-SELECT count(*) AS n FROM duckdb_logs WHERE type = 'QueryLog' AND regexp_matches(message, 'INSERT INTO\s+\S*ducklake_snapshot\s')
+SELECT count(*) AS n FROM duckdb_logs WHERE type = 'QueryLog' AND regexp_matches(message, 'INSERT INTO\s+\S*ducklake_snapshot\b')
 
 statement ok
 CREATE TABLE lake.t (i INTEGER, d DOUBLE, s VARCHAR, n INTEGER, st STRUCT(a INTEGER, b VARCHAR))
@@ -40,8 +40,8 @@ CALL disable_logging()
 
 # one column stats UPDATE per logged commit, without a VALUES list or FROM clause
 query II
-SELECT count(*) = (SELECT n FROM logged_commits), count(*) FILTER (WHERE contains(stmt, 'VALUES') OR contains(stmt, ' FROM '))
-FROM updates WHERE regexp_matches(stmt, 'ducklake_table_column_stats\s')
+SELECT count(*) = (SELECT n FROM logged_commits), count(*) FILTER (WHERE joined)
+FROM updates WHERE regexp_matches(stmt, 'ducklake_table_column_stats\b')
 ----
 true	0
 
@@ -80,7 +80,7 @@ CALL disable_logging()
 
 # the dropped column, the overwritten comments and the deleted inlined row end with plain UPDATEs
 query II
-SELECT count(*) FILTER (WHERE contains(stmt, 'VALUES') OR contains(stmt, ' FROM ')),
+SELECT count(*) FILTER (WHERE joined),
        coalesce(list_sort(list(DISTINCT regexp_extract(stmt, 'UPDATE\s+\S*?(ducklake_[a-z_]+?)(_\d+_\d+)?"?\s', 1))), [])
        = CASE WHEN (SELECT n > 0 FROM logged_commits)
               THEN ['ducklake_column', 'ducklake_column_tag', 'ducklake_inlined_data', 'ducklake_table_column_stats', 'ducklake_table_stats', 'ducklake_tag']
@@ -89,7 +89,7 @@ FROM updates
 ----
 0	true
 
-# a table of 520 columns updates its stats in two statements of at most 512 columns
+# a table of 520 columns updates its stats in statements of at most 512 columns
 statement ok
 CALL truncate_duckdb_logs()
 
@@ -122,10 +122,43 @@ statement ok
 CALL disable_logging()
 
 query II
-SELECT count(*) = 2 * (SELECT n FROM logged_commits), count(*) FILTER (WHERE contains(stmt, 'VALUES') OR contains(stmt, ' FROM '))
-FROM updates WHERE regexp_matches(stmt, 'ducklake_table_column_stats\s')
+SELECT count(*) FILTER (WHERE joined),
+       coalesce(list_sort(list(len(regexp_extract_all(regexp_extract(stmt, 'column_id IN \(([^)]*)\)', 1), '\d+')))), [])
+       = CASE WHEN (SELECT n > 0 FROM logged_commits) THEN [8, 512]::BIGINT[] ELSE [] END
+FROM updates WHERE regexp_matches(stmt, 'ducklake_table_column_stats\b')
 ----
-true	0
+0	true
+
+# 520 new column comments of one commit end the overwritten tags in statements of at most 512 conditions
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+BEGIN
+
+loop i 0 520
+
+statement ok
+COMMENT ON COLUMN lake.w.c{i} IS 'column {i}'
+
+endloop
+
+statement ok
+COMMIT
+
+statement ok
+CALL disable_logging()
+
+query II
+SELECT count(*) FILTER (WHERE joined),
+       coalesce(list_sort(list(len(regexp_extract_all(stmt, 'column_id=')))), [])
+       = CASE WHEN (SELECT n > 0 FROM logged_commits) THEN [8, 512]::BIGINT[] ELSE [] END
+FROM updates WHERE regexp_matches(stmt, 'ducklake_column_tag\b')
+----
+0	true
 
 statement ok
 DETACH lake
@@ -162,6 +195,11 @@ SELECT comment, (SELECT comment FROM duckdb_tables() WHERE database_name = 'lake
 FROM duckdb_columns() WHERE database_name = 'lake' AND table_name = 't' AND column_name = 'i'
 ----
 the number	the table
+
+query II
+SELECT min(comment), max(comment) FROM duckdb_columns() WHERE database_name = 'lake' AND table_name = 'w'
+----
+column 0	column 99
 
 # the stats keep pruning files
 query I

@@ -3145,21 +3145,18 @@ ORDER BY data.begin_snapshot ASC, data.row_id_start ASC, data.data_file_id ASC, 
 	return files;
 }
 
-//! Bounds the CASE or OR terms of one UPDATE, every row of the table tests all of them
+//! Bounds the CASE or OR terms of one UPDATE
 static constexpr idx_t MAX_TERMS_PER_UPDATE = 512;
 
-//! Ends the rows that match any of the conditions, in plain UPDATEs that every metadata server runs
+//! Ends the rows that match any of the conditions with plain UPDATEs
 static string EndRowsSql(const string &metadata_table, const vector<string> &conditions) {
 	string result;
 	for (idx_t start = 0; start < conditions.size(); start += MAX_TERMS_PER_UPDATE) {
 		auto end = MinValue<idx_t>(start + MAX_TERMS_PER_UPDATE, conditions.size());
-		string condition;
-		for (idx_t i = start; i < end; i++) {
-			condition += (i == start ? "" : " OR ") + conditions[i];
-		}
+		vector<string> chunk(conditions.begin() + start, conditions.begin() + end);
 		result += StringUtil::Format(
 		    R"(UPDATE {METADATA_CATALOG}.%s SET end_snapshot = {SNAPSHOT_ID} WHERE end_snapshot IS NULL AND (%s);)",
-		    metadata_table, condition);
+		    metadata_table, StringUtil::Join(chunk, " OR "));
 	}
 	return result;
 }

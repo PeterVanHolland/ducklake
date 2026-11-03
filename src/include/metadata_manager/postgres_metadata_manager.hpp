@@ -47,6 +47,7 @@ public:
 	optional_idx GetCommitTransactionId() override;
 	DuckLakeCommitOutcome GetCommitOutcome(optional_idx transaction_id,
 	                                       const DuckLakeRetryConfig &retry_config) override;
+	string ConfigOptionLockSql() const override;
 
 	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query) override;
 	unique_ptr<QueryResult> ExecuteDropInTransaction(string &query) override;

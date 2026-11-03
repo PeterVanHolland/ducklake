@@ -1,3 +1,4 @@
+SELECT count(*), sum(v.n::BIGINT) FROM lake.v WHERE v.k::VARCHAR = 'key-42';
 SELECT count(*) FROM lake.v WHERE v.k::VARCHAR = 'key-42';
 SELECT sum(v.n::BIGINT) FROM lake.v WHERE v.k::VARCHAR = 'key-42';
 SELECT count(*) FROM lake.v WHERE v.k::VARCHAR = 'key-137';
@@ -8,4 +9,3 @@ SELECT count(*) FROM lake.v WHERE v.k::VARCHAR = 'key-512';
 SELECT sum(v.n::BIGINT) FROM lake.v WHERE v.k::VARCHAR = 'key-512';
 SELECT count(*) FROM lake.v WHERE v.k::VARCHAR = 'key-999';
 SELECT sum(v.n::BIGINT) FROM lake.v WHERE v.k::VARCHAR = 'key-999';
-SELECT count(*), sum(v.n::BIGINT) FROM lake.v WHERE v.k::VARCHAR = 'key-42';

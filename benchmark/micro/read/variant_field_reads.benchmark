@@ -12,7 +12,8 @@ require parquet
 
 argument work variant_fields_work
 
-# Five keys filtered and summed through one field, with the external file cache off so that every run reads the file
+# Five keys filtered and summed through one field, the first statement checked, with the external file cache off so that
+# every run reads the file
 init
 SET enable_external_file_cache = false;
 

@@ -452,7 +452,7 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 	CompleteMetadataTables();
 }
 
-//! Gives the matching tables without a replica identity the full row as one, a locked or protected table waits
+//! Gives the matching tables without a replica identity the full row as one, a locked or protected table is skipped
 static string ReplicaIdentityBlock(const string &table_condition) {
 	auto body = StringUtil::Format(R"(DECLARE t regclass; lock_wait text; BEGIN
 IF current_setting('transaction_read_only') = 'on' THEN RETURN; END IF;

@@ -2651,7 +2651,7 @@ void DuckLakeTransactionState::CheckFileConflicts(const TransactionChangeInforma
 
 void DuckLakeTransactionState::CheckAddedFileConflicts(const SnapshotChangeInformation &other_changes,
                                                        const DuckLakeCommitContext &context) const {
-	// ducklake_add_data_files rejects the paths the table holds at the snapshot, a file written since escapes it
+	// ducklake_add_data_files rejects the paths held at its snapshot, so check the paths committed since
 	auto other_wrote_files = [&](TableIndex table_id) {
 		for (auto tables :
 		     {&other_changes.inserted_tables, &other_changes.tables_compacted, &other_changes.tables_merge_adjacent,

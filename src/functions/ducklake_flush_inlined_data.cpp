@@ -524,8 +524,8 @@ static void LoadSharedSchemaVersions(DuckLakeCatalog &catalog, DuckLakeTransacti
 			inlined_tables++;
 		}
 	}
-	// at least two tables and a sixteenth of them, so that a lake of many versions keeps the single table loads
-	auto shared_limit = MaxValue<idx_t>(2, inlined_tables / 16);
+	// at least two tables and a sixteenth of them rounded up, so at most sixteen versions load whole
+	auto shared_limit = MaxValue<idx_t>(2, (inlined_tables + 15) / 16);
 	for (auto &version : versions) {
 		if (version.second.second < shared_limit) {
 			continue;

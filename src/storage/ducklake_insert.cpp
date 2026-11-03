@@ -11,6 +11,7 @@
 #include "storage/ducklake_schema_entry.hpp"
 #include "storage/ducklake_field_data.hpp"
 #include "storage/ducklake_insert.hpp"
+#include "common/ducklake_interval.hpp"
 #include "common/ducklake_timetz.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "storage/ducklake_table_entry.hpp"
@@ -195,6 +196,8 @@ void DuckLakeInsert::AddWrittenFiles(DuckLakeInsertGlobalState &global_state, Da
 		// the time and offset fields of the stored TIMETZ columns
 		map<FieldIndex, pair<string, DuckLakeColumnStats>> timetz_times;
 		map<FieldIndex, DuckLakeColumnStats> timetz_offsets;
+		// the fields of the stored INTERVAL columns, whose stats only count the values
+		map<FieldIndex, pair<string, DuckLakeColumnStats>> interval_fields;
 		auto add_column_stats = [&](const DuckLakeFieldId &field_id, const string &base_column,
 		                            DuckLakeColumnStats column_stats) {
 			if (data_file.row_count > 0 && column_stats.has_num_values && column_stats.num_values == 0) {
@@ -260,6 +263,26 @@ void DuckLakeInsert::AddWrittenFiles(DuckLakeInsertGlobalState &global_state, Da
 					}
 					continue;
 				}
+				if (parent.Type().id() == LogicalTypeId::INTERVAL) {
+					auto field_type =
+					    column_names[1] == DuckLakeInterval::MICROS_FIELD ? LogicalType::BIGINT : LogicalType::INTEGER;
+					auto field_stats = ParseColumnStats(field_type, col_stats);
+					auto entry = interval_fields.find(parent.GetFieldIndex());
+					if (entry == interval_fields.end()) {
+						// the bounds of the fields say nothing about the order of the intervals
+						DuckLakeColumnStats interval_stats(parent.Type());
+						interval_stats.has_null_count = field_stats.has_null_count;
+						interval_stats.null_count = field_stats.null_count;
+						interval_stats.has_num_values = field_stats.has_num_values;
+						interval_stats.num_values = field_stats.num_values;
+						interval_stats.column_size_bytes = field_stats.column_size_bytes;
+						interval_fields.emplace(parent.GetFieldIndex(),
+						                        make_pair(column_names[0], std::move(interval_stats)));
+					} else {
+						entry->second.second.column_size_bytes += field_stats.column_size_bytes;
+					}
+					continue;
+				}
 			}
 			optional_idx name_offset;
 			auto &field_id = table.GetFieldId(StringsToIdentifiers(column_names), &name_offset);
@@ -283,6 +306,10 @@ void DuckLakeInsert::AddWrittenFiles(DuckLakeInsertGlobalState &global_state, Da
 			}
 			add_column_stats(field_id, column_names.size() == 1 ? column_names[0] : string(),
 			                 ParseColumnStats(field_id.Type(), col_stats));
+		}
+		for (auto &entry : interval_fields) {
+			add_column_stats(table.GetFieldId(StringsToIdentifiers({entry.second.first})), entry.second.first,
+			                 std::move(entry.second.second));
 		}
 		for (auto &entry : timetz_times) {
 			auto &time_stats = entry.second.second;
@@ -522,14 +549,16 @@ static idx_t VirtualColumnCount(DuckLakeCopyInput &copy_input) {
 	       static_cast<idx_t>(WriteSnapshotId(copy_input.virtual_columns));
 }
 
-//! Projects the columns to write, with the TIMETZ columns in their storage struct when they are encoded
+//! Projects the columns to write, with the TIMETZ and INTERVAL columns in their storage struct when encoded
 static void PushWrittenColumns(ClientContext &context, DuckLakeCopyInput &copy_input, DuckLakeCopyOptions &copy_options,
-                               bool encode_timetz) {
+                               bool encode_timetz, bool encode_interval) {
 	idx_t col_idx = 0;
 	for (auto &col : copy_input.columns.Physical()) {
 		auto expr = CreateColumnReference(copy_input, col.Type(), col_idx++);
 		if (encode_timetz && col.Type().id() == LogicalTypeId::TIME_TZ) {
 			expr = DuckLakeTimeTZ::ToStorage(context, std::move(expr));
+		} else if (encode_interval && col.Type().id() == LogicalTypeId::INTERVAL) {
+			expr = DuckLakeInterval::ToStorage(context, std::move(expr));
 		}
 		copy_options.projection_list.push_back(std::move(expr));
 	}
@@ -540,14 +569,15 @@ static void PushWrittenColumns(ClientContext &context, DuckLakeCopyInput &copy_i
 }
 
 static void GeneratePartitionExpressions(ClientContext &context, DuckLakeCopyInput &copy_input,
-                                         DuckLakeCopyOptions &copy_options, bool encode_timetz) {
+                                         DuckLakeCopyOptions &copy_options, bool encode_timetz, bool encode_interval) {
 	bool all_identity = true;
 	for (auto &field : copy_input.partition_data->fields) {
 		optional_idx col_idx;
 		auto &column = DuckLakeInsert::GetTopLevelColumn(copy_input, field.field_id, col_idx);
 		// an encoded TIMETZ is written as a struct, so its partition values are computed from the column
 		if (field.transform.type != DuckLakeTransformType::IDENTITY ||
-		    (encode_timetz && column.Type().id() == LogicalTypeId::TIME_TZ)) {
+		    (encode_timetz && column.Type().id() == LogicalTypeId::TIME_TZ) ||
+		    (encode_interval && column.Type().id() == LogicalTypeId::INTERVAL)) {
 			all_identity = false;
 			break;
 		}
@@ -560,8 +590,8 @@ static void GeneratePartitionExpressions(ClientContext &context, DuckLakeCopyInp
 			DuckLakeInsert::GetTopLevelColumn(copy_input, field.field_id, col_idx);
 			copy_options.copy->partition_columns.push_back(col_idx.GetIndex());
 		}
-		if (encode_timetz) {
-			PushWrittenColumns(context, copy_input, copy_options, encode_timetz);
+		if (encode_timetz || encode_interval) {
+			PushWrittenColumns(context, copy_input, copy_options, encode_timetz, encode_interval);
 		}
 		return;
 	}
@@ -572,7 +602,7 @@ static void GeneratePartitionExpressions(ClientContext &context, DuckLakeCopyInp
 	}
 	copy_options.copy->write_partition_columns = false;
 
-	PushWrittenColumns(context, copy_input, copy_options, encode_timetz);
+	PushWrittenColumns(context, copy_input, copy_options, encode_timetz, encode_interval);
 	// push the partition expressions
 	auto &fields = copy_input.partition_data->fields;
 	auto key_names = DuckLakePartitionUtils::GetPartitionKeyNames(*copy_input.partition_data, *copy_input.field_data);
@@ -644,11 +674,16 @@ DuckLakeCopyOptions DuckLakeInsert::GetCopyOptions(ClientContext &context, DuckL
 	auto types_to_write = copy_input.columns.GetColumnTypes();
 	// the Parquet TIME of a TIMETZ has no offset, so 1.1 catalogs write a struct that keeps it
 	bool encode_timetz = false;
+	// the Parquet INTERVAL keeps milliseconds only, so 1.1 catalogs write a struct that keeps the microseconds
+	bool encode_interval = false;
 	if (catalog.SupportsV1_1Metadata()) {
 		for (auto &type : types_to_write) {
 			if (type.id() == LogicalTypeId::TIME_TZ) {
 				type = DuckLakeTimeTZ::StorageType();
 				encode_timetz = true;
+			} else if (type.id() == LogicalTypeId::INTERVAL) {
+				type = DuckLakeInterval::StorageType();
+				encode_interval = true;
 			}
 		}
 	}
@@ -706,13 +741,13 @@ DuckLakeCopyOptions DuckLakeInsert::GetCopyOptions(ClientContext &context, DuckL
 
 	if (copy.partition_output) {
 		// generate the partition expressions
-		GeneratePartitionExpressions(context, copy_input, result, encode_timetz);
+		GeneratePartitionExpressions(context, copy_input, result, encode_timetz, encode_interval);
 		if (copy.hive_file_pattern && !copy.partition_columns.empty()) {
 			copy.partition_path_expression = DuckLakePartitionUtils::CreatePartitionPathExpression(context, copy);
 			copy.hive_file_pattern = !copy.partition_path_expression;
 		}
-	} else if (encode_timetz) {
-		PushWrittenColumns(context, copy_input, result, encode_timetz);
+	} else if (encode_timetz || encode_interval) {
+		PushWrittenColumns(context, copy_input, result, encode_timetz, encode_interval);
 	}
 	return result;
 }

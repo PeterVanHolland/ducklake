@@ -140,10 +140,12 @@
       ]
     },
     {
-      "reason": "TIMETZ files that keep the offset were added in 1.1, a catalog pinned to 1.0 writes TIMETZ as a Parquet TIME without the offset",
+      "reason": "TIMETZ and INTERVAL files that keep the offset and the microseconds were added in 1.1, a catalog pinned to 1.0 writes the Parquet TIME and INTERVAL without them",
       "paths": [
         "test/sql/types/timetz_offset.test",
-        "test/sql/types/timetz_offset_version.test"
+        "test/sql/types/timetz_offset_version.test",
+        "test/sql/types/interval_micros.test",
+        "test/sql/types/interval_micros_version.test"
       ]
     },
     {

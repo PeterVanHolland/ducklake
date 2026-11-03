@@ -1,0 +1,196 @@
+# name: test/sql/types/interval_micros.test
+# description: INTERVAL values keep their microseconds in the data files of DuckLake 1.1 catalogs
+# group: [types]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/interval_micros.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/interval_micros', METADATA_CATALOG 'ducklake_meta', DATA_INLINING_ROW_LIMIT 0)
+
+# a flush keeps the microseconds of inlined values, also for time travel
+statement ok
+CREATE TABLE ducklake.i (x INTERVAL) WITH (data_inlining_row_limit = 10);
+
+statement ok
+INSERT INTO ducklake.i VALUES (INTERVAL '1500 microseconds'), (INTERVAL '2 milliseconds');
+
+statement ok
+SET VARIABLE insert_snapshot = (SELECT max(snapshot_id) FROM ducklake_snapshots('ducklake'));
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake');
+
+query I
+SELECT x::VARCHAR FROM ducklake.i ORDER BY x
+----
+00:00:00.0015
+00:00:00.002
+
+query I
+SELECT count(*) FROM ducklake.i WHERE x = INTERVAL '1500 microseconds'
+----
+1
+
+query I
+SELECT x::VARCHAR FROM ducklake.i AT (VERSION => getvariable('insert_snapshot')) ORDER BY x
+----
+00:00:00.0015
+00:00:00.002
+
+# a data file keeps every component, also negative and large intervals
+statement ok
+CREATE TABLE ducklake.t (id INTEGER, x INTERVAL);
+
+statement ok
+INSERT INTO ducklake.t VALUES (1, INTERVAL '1500 microseconds'), (2, NULL), (3, -INTERVAL '14 months 40 days 30 hours 61 minutes 1500 microseconds'), (4, INTERVAL '999999 years'), (6, INTERVAL '-1 month 1 day -1 microsecond');
+
+query II
+SELECT id, x::VARCHAR FROM ducklake.t ORDER BY id
+----
+1	00:00:00.0015
+2	NULL
+3	-1 year -2 months -40 days -31:01:00.0015
+4	999999 years
+6	-1 month 1 day -00:00:00.000001
+
+query I
+SELECT id FROM ducklake.t WHERE x > INTERVAL '1 millisecond' ORDER BY id
+----
+1
+4
+
+query I
+SELECT id FROM ducklake.t WHERE x IS NULL
+----
+2
+
+# the file stores a struct of the components
+statement ok
+SET VARIABLE data_file = (SELECT data_file FROM ducklake_list_files('ducklake', 't') LIMIT 1)
+
+query I
+SELECT list_sort(list(name)) FROM parquet_schema(getvariable('data_file')) WHERE name IN ('months', 'days', 'micros')
+----
+[days, micros, months]
+
+# the stats of the column count its values and NULLs, without bounds that the components cannot give
+query III
+SELECT value_count, null_count, min_value IS NULL AND max_value IS NULL FROM ducklake_meta.ducklake_file_column_stats WHERE table_id = (SELECT table_id FROM ducklake_meta.ducklake_table WHERE table_name = 't') AND column_id = 2
+----
+4	1	true
+
+# compaction rewrites the struct
+statement ok
+INSERT INTO ducklake.t VALUES (5, INTERVAL '2 milliseconds');
+
+statement ok
+CALL ducklake_merge_adjacent_files('ducklake', 't');
+
+query II
+SELECT id, x::VARCHAR FROM ducklake.t ORDER BY id
+----
+1	00:00:00.0015
+2	NULL
+3	-1 year -2 months -40 days -31:01:00.0015
+4	999999 years
+5	00:00:00.002
+6	-1 month 1 day -00:00:00.000001
+
+# a partition by an interval column
+statement ok
+CREATE TABLE ducklake.p (x INTERVAL, v INTEGER);
+
+statement ok
+ALTER TABLE ducklake.p SET PARTITIONED BY (x);
+
+statement ok
+INSERT INTO ducklake.p VALUES (INTERVAL '1500 microseconds', 1), (INTERVAL '2 days', 2);
+
+query II
+SELECT x::VARCHAR, v FROM ducklake.p ORDER BY v
+----
+00:00:00.0015	1
+2 days	2
+
+query I
+SELECT v FROM ducklake.p WHERE x = INTERVAL '2 days'
+----
+2
+
+# a file added from outside keeps the Parquet INTERVAL of its writer, which has milliseconds
+statement ok
+COPY (SELECT 7 AS id, INTERVAL '1500 microseconds' AS x) TO '{DATA_PATH}/interval_micros_external.parquet' (FORMAT parquet)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 't', '{DATA_PATH}/interval_micros_external.parquet')
+
+query II
+SELECT id, x::VARCHAR FROM ducklake.t WHERE id = 7
+----
+7	00:00:00.001
+
+# inlined rows take negative intervals, which the struct of their flush holds
+statement ok
+CREATE TABLE ducklake.neg (x INTERVAL) WITH (data_inlining_row_limit = 10);
+
+statement ok
+INSERT INTO ducklake.neg VALUES (INTERVAL '-3 days'), (-INTERVAL '1500 microseconds');
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake', table_name => 'neg');
+
+query I
+SELECT x::VARCHAR FROM ducklake.neg ORDER BY x
+----
+-3 days
+-00:00:00.0015
+
+# an update to a negative value, inlined and flushed
+statement ok
+INSERT INTO ducklake.neg VALUES (INTERVAL '2 days');
+
+statement ok
+UPDATE ducklake.neg SET x = -x WHERE x = INTERVAL '2 days';
+
+query I
+SELECT x::VARCHAR FROM ducklake.neg ORDER BY x
+----
+-3 days
+-2 days
+-00:00:00.0015
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake', table_name => 'neg');
+
+query I
+SELECT x::VARCHAR FROM ducklake.neg ORDER BY x
+----
+-3 days
+-2 days
+-00:00:00.0015
+
+# intervals nested in other types still go through the Parquet INTERVAL
+statement ok
+CREATE TABLE ducklake.n (v STRUCT(a INTERVAL), l INTERVAL[]);
+
+statement ok
+INSERT INTO ducklake.n VALUES ({'a': INTERVAL '1500 microseconds'}, [INTERVAL '1500 microseconds']);
+
+query II
+SELECT v::VARCHAR, l::VARCHAR FROM ducklake.n
+----
+{'a': '00:00:00.001'}	['00:00:00.001']
+
+statement ok
+CREATE TABLE ducklake.nn (v STRUCT(a INTERVAL)) WITH (data_inlining_row_limit = 10);
+
+statement error
+INSERT INTO ducklake.nn VALUES ({'a': INTERVAL '-1 day'});
+----
+Parquet files do not support negative intervals

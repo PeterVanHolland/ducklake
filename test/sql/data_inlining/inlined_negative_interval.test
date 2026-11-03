@@ -1,5 +1,5 @@
 # name: test/sql/data_inlining/inlined_negative_interval.test
-# description: inlined rows refuse negative intervals like Parquet files do, so the catalog can still be flushed
+# description: inlined rows of a 1.0 catalog refuse negative intervals like its Parquet files do, so the catalog can still be flushed
 # group: [data_inlining]
 
 require ducklake
@@ -11,7 +11,7 @@ test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
 test-env DATA_PATH {TEST_DIR}
 
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/inlined_negative_interval')
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/inlined_negative_interval', DUCKLAKE_VERSION '1.0')
 
 statement ok
 CREATE TABLE lake.t (i INTEGER, iv INTERVAL);

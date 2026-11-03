@@ -1010,6 +1010,18 @@ WHERE table_id = {TABLE_ID} AND schema_version = {SCHEMA_VERSION})";
 	return GetBeginSnapshotForTable(table_id);
 }
 
+idx_t DuckLakeMetadataManager::GetSchemaVersionTableCount(idx_t schema_version, idx_t begin_snapshot) {
+	auto result = Query(StringUtil::Format(R"(
+SELECT (SELECT COUNT(*) FROM {METADATA_CATALOG}.ducklake_table WHERE begin_snapshot = %llu) +
+       (SELECT COUNT(*) FROM {METADATA_CATALOG}.ducklake_schema_versions WHERE schema_version = %llu);)",
+	                                       begin_snapshot, schema_version));
+	result->ThrowIfError("Failed to count the tables of a schema version in DuckLake: ");
+	for (auto &row : *result) {
+		return row.GetValue<idx_t>(0);
+	}
+	return 0;
+}
+
 string DuckLakeMetadataManager::GetNetDataFileRowCountSql(TableIndex table_id, const Identifier &inlined_deletion_table,
                                                           bool require_exact, bool exclude_new_files) {
 	// Compute sum(record_count) - sum(delete_count) - inlined_deletions in a single query.

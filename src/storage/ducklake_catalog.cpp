@@ -507,16 +507,13 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
                                                                           TableIndex table_id, idx_t schema_version) {
 	DuckLakeSnapshot snapshot(GetBeginSnapshotForSchemaVersion(table_id, schema_version, transaction), schema_version,
 	                          0, 0);
-	// a cached schema version holds the table, otherwise the first table of a version loads alone, so that flushing or
-	// compacting many tables of their own versions does not keep a whole catalog per version, and a second table of
-	// the version loads it whole for all of its tables
+	// a cached schema version holds the table, otherwise a version that created or altered few tables loads one table
+	// at a time, so that flushing or compacting many tables of their own versions does not keep a whole catalog per
+	// version, and a version of several tables loads whole as before
 	auto entry = GetObjectCacheInstance().Get<DuckLakeSchemaCacheEntry>(SchemaCacheKey(schema_version));
 	if (!entry) {
-		if (AnotherTableLoadedAlone(schema_version, table_id)) {
-			entry = GetSchemaCacheEntry(transaction, snapshot);
-		} else {
-			entry = GetTableCacheEntry(transaction, snapshot, table_id);
-		}
+		entry = LoadsVersionWhole(transaction, snapshot) ? GetSchemaCacheEntry(transaction, snapshot)
+		                                                 : GetTableCacheEntry(transaction, snapshot, table_id);
 	}
 	auto &catalog_set = entry->catalog_set;
 	transaction.PinSchemaCacheEntry(std::move(entry));
@@ -1617,14 +1614,20 @@ string DuckLakeCatalog::TableCacheKey(idx_t schema_version, TableIndex table_id)
 	return StringUtil::Format("%s:table:%llu", SchemaCacheKey(schema_version), table_id.index);
 }
 
-bool DuckLakeCatalog::AnotherTableLoadedAlone(idx_t schema_version, TableIndex table_id) {
-	lock_guard<mutex> guard(cache_entries_lock);
-	auto entry = single_table_loads.find(schema_version);
-	if (entry == single_table_loads.end()) {
-		single_table_loads.emplace(schema_version, table_id);
-		return false;
+bool DuckLakeCatalog::LoadsVersionWhole(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
+	{
+		lock_guard<mutex> guard(cache_entries_lock);
+		auto entry = whole_version_loads.find(snapshot.schema_version);
+		if (entry != whole_version_loads.end()) {
+			return entry->second;
+		}
 	}
-	return entry->second.index != table_id.index;
+	auto &metadata_manager = transaction.GetMetadataManager();
+	auto table_count = metadata_manager.GetSchemaVersionTableCount(snapshot.schema_version, snapshot.snapshot_id);
+	bool whole = table_count >= WHOLE_VERSION_TABLE_COUNT;
+	lock_guard<mutex> guard(cache_entries_lock);
+	whole_version_loads[snapshot.schema_version] = whole;
+	return whole;
 }
 
 void DuckLakeCatalog::InvalidateTableStatsCache(idx_t next_file_id, TableIndex table_id) {
@@ -1653,7 +1656,7 @@ void DuckLakeCatalog::InvalidateSchemaCache(idx_t schema_version) {
 	cache.Delete(SchemaCacheKey(schema_version));
 	// the tables of the version loaded alone go with it
 	lock_guard<mutex> guard(cache_entries_lock);
-	single_table_loads.erase(schema_version);
+	whole_version_loads.erase(schema_version);
 	auto keys = table_cache_keys.find(schema_version);
 	if (keys == table_cache_keys.end()) {
 		return;
@@ -1738,7 +1741,7 @@ void DuckLakeCatalog::EvictCacheEntries() {
 	cache_entries.clear();
 	stats_cache_entries.clear();
 	table_cache_keys.clear();
-	single_table_loads.clear();
+	whole_version_loads.clear();
 }
 
 void DuckLakeCatalog::RegisterCatalog() {

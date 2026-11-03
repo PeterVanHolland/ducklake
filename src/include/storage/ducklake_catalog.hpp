@@ -515,7 +515,7 @@ private:
 	mutex schema_version_snapshot_lock;
 	map<pair<idx_t, idx_t>, idx_t> schema_version_begin_snapshots;
 	//! The keys of the schemas cached by snapshot, per schema version, for their invalidation
-	unordered_map<idx_t, vector<string>> snapshot_schema_cache_keys;
+	unordered_map<idx_t, unordered_set<string>> snapshot_schema_cache_keys;
 	mutex columns_with_values_lock;
 	optional_idx columns_with_values_snapshot;
 	set<pair<idx_t, idx_t>> columns_with_values;

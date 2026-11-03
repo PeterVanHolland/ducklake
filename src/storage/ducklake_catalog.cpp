@@ -532,7 +532,7 @@ shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeCatalog::GetSchemaCacheEntry(DuckLa
 	auto entry = cache.GetOrCreate<DuckLakeSchemaCacheEntry>(key, std::move(catalog_set));
 	TrackCacheEntry(key, entry);
 	if (at_snapshot) {
-		snapshot_schema_cache_keys[snapshot.schema_version].push_back(key);
+		snapshot_schema_cache_keys[snapshot.schema_version].insert(key);
 	}
 	return entry;
 }

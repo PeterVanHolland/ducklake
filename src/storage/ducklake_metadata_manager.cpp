@@ -2865,19 +2865,6 @@ set<idx_t> DuckLakeMetadataManager::GetTableRewriteSnapshots(TableIndex table_id
 	return existing_rewrites;
 }
 
-set<idx_t> DuckLakeMetadataManager::GetRewriteSnapshots() {
-	auto result = Query(GetRewriteSnapshotsQuery(0, transaction.GetSnapshot().snapshot_id));
-	result->ThrowIfError("Failed to get rewrite snapshots from DuckLake: ");
-	set<idx_t> rewrite_snapshots;
-	for (auto &row : *result) {
-		auto changes = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(1));
-		if (!changes.tables_rewrite_delete.empty()) {
-			rewrite_snapshots.insert(row.GetValue<idx_t>(0));
-		}
-	}
-	return rewrite_snapshots;
-}
-
 string DuckLakeMetadataManager::GetRewriteSnapshotsQuery(idx_t first_snapshot, idx_t last_snapshot) const {
 	return StringUtil::Format(R"(
 SELECT snapshot_id, changes_made
@@ -5767,22 +5754,16 @@ string DuckLakeMetadataManager::WriteCompactions(const vector<DuckLakeCompactedF
 	}
 }
 
-//! Selects the files that the filter matches or whose range no remaining snapshot lies in, the files a rewrite ended
-//! stay for the change feed while the rewrite snapshot exists
-static string UnusedFilesQuery(const string &file_table, const string &file_id_column, const string &filter,
-                               const string &rewrite_snapshots) {
+//! Selects the files the filter matches or whose range no remaining snapshot lies in, with whether the filter matched
+//! and whether the first remaining snapshot at or after the begin is the end
+static string UnusedFilesQuery(const string &file_table, const string &file_id_column, const string &filter) {
 	// only the first remaining snapshot at or after begin_snapshot matters
-	string end_filter;
-	if (!rewrite_snapshots.empty()) {
-		end_filter = StringUtil::Format(" AND f.end_snapshot NOT IN (%s)", rewrite_snapshots);
-	}
 	return StringUtil::Format(R"(
-SELECT f.%s, f.table_id, f.path, f.path_is_relative
+SELECT f.%s, f.table_id, f.path, f.path_is_relative, f.end_snapshot, (%sfalse), s.snapshot_id = f.end_snapshot
 FROM {METADATA_CATALOG}.%s f
 ASOF LEFT JOIN {METADATA_CATALOG}.ducklake_snapshot s ON f.begin_snapshot <= s.snapshot_id
-WHERE %s(f.end_snapshot IS NOT NULL AND (s.snapshot_id IS NULL OR s.snapshot_id > f.end_snapshot OR
-	(s.snapshot_id = f.end_snapshot%s)));)",
-	                          file_id_column, file_table, filter, end_filter);
+WHERE %s(f.end_snapshot IS NOT NULL AND (s.snapshot_id IS NULL OR s.snapshot_id >= f.end_snapshot));)",
+	                          file_id_column, filter, file_table, filter);
 }
 
 vector<DuckLakeSnapshotTagInfo> DuckLakeMetadataManager::GetSnapshotTags(bool with_snapshot_time) {
@@ -5916,13 +5897,48 @@ AND NOT EXISTS (
 	}
 	auto deleted_table_ids = GenerateIDList(cleanup_tables);
 
+	// a file that a rewrite of its table ended stays while the rewrite snapshot remains, the change feed reads it
 	auto read_cleanup_files = [&](QueryResult &files) {
-		vector<DuckLakeFileForCleanup> cleanup_files;
-		for (auto &row : files) {
+		struct UnusedFile {
 			DuckLakeFileForCleanup info;
-			info.id = DataFileIndex(row.GetValue<idx_t>(0));
-			info.path = FromRelativePath(TableIndex(row.GetValue<idx_t>(1)), ReadPath(row, 2));
-			cleanup_files.push_back(std::move(info));
+			idx_t table_id = 0;
+			idx_t end_snapshot = 0;
+			bool ended_by_remaining_snapshot = false;
+		};
+		vector<UnusedFile> unused_files;
+		set<idx_t> end_snapshots;
+		for (auto &row : files) {
+			UnusedFile file;
+			file.info.id = DataFileIndex(row.GetValue<idx_t>(0));
+			file.table_id = row.GetValue<idx_t>(1);
+			file.info.path = FromRelativePath(TableIndex(file.table_id), ReadPath(row, 2));
+			if (!row.GetValue<bool>(5) && !row.IsNull(6) && row.GetValue<bool>(6)) {
+				file.end_snapshot = row.GetValue<idx_t>(4);
+				file.ended_by_remaining_snapshot = true;
+				end_snapshots.insert(file.end_snapshot);
+			}
+			unused_files.push_back(std::move(file));
+		}
+		set<pair<idx_t, idx_t>> rewrites;
+		if (!end_snapshots.empty()) {
+			auto result = Query(StringUtil::Format(
+			    "SELECT snapshot_id, changes_made FROM {METADATA_CATALOG}.ducklake_snapshot_changes WHERE snapshot_id "
+			    "IN (%s)",
+			    StringUtil::Join(end_snapshots, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); })));
+			result->ThrowIfError("Failed to get the changes of the snapshots that ended files from DuckLake: ");
+			for (auto &row : *result) {
+				auto changes = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(1));
+				for (auto &table_id : changes.tables_rewrite_delete) {
+					rewrites.emplace(row.GetValue<idx_t>(0), table_id.index);
+				}
+			}
+		}
+		vector<DuckLakeFileForCleanup> cleanup_files;
+		for (auto &file : unused_files) {
+			if (file.ended_by_remaining_snapshot && rewrites.count(make_pair(file.end_snapshot, file.table_id))) {
+				continue;
+			}
+			cleanup_files.push_back(std::move(file.info));
 		}
 		return cleanup_files;
 	};
@@ -5940,10 +5956,8 @@ AND NOT EXISTS (
 	if (!deleted_table_ids.empty()) {
 		table_id_filter = StringUtil::Format("f.table_id IN (%s) OR ", deleted_table_ids);
 	}
-	auto rewrite_snapshots =
-	    StringUtil::Join(GetRewriteSnapshots(), ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); });
 
-	result = Query(UnusedFilesQuery("ducklake_data_file", "data_file_id", table_id_filter, rewrite_snapshots));
+	result = Query(UnusedFilesQuery("ducklake_data_file", "data_file_id", table_id_filter));
 	auto cleanup_files = read_cleanup_files(*result);
 	auto deleted_file_ids = CleanupFileIdList(cleanup_files);
 	vector<string> tables_to_delete_from;
@@ -5968,8 +5982,7 @@ WHERE data_file_id IN (%s);
 		file_id_filter = StringUtil::Format("f.data_file_id IN (%s) OR ", deleted_file_ids);
 	}
 
-	result = Query(UnusedFilesQuery("ducklake_delete_file", "delete_file_id", table_id_filter + file_id_filter,
-	                                rewrite_snapshots));
+	result = Query(UnusedFilesQuery("ducklake_delete_file", "delete_file_id", table_id_filter + file_id_filter));
 	auto cleanup_deletes = read_cleanup_files(*result);
 	if (!cleanup_deletes.empty()) {
 		// delete the delete files

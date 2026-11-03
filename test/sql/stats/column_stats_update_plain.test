@@ -28,13 +28,16 @@ INSERT INTO lake.t VALUES (2, 'nan', 'a', NULL, {'a': 2, 'b': 'y'}), (3, 2.5, 'c
 statement ok
 CALL disable_logging()
 
-# one UPDATE of the column stats, without a VALUES list joined in, as a metadata server that plans the update itself
-# does not accept the join
+# at most one UPDATE of the column stats (a server side commit runs it on the server), without a VALUES list joined
+# in, as a metadata server that plans the update itself does not accept the join
 query II
-SELECT count(*), count(*) FILTER (WHERE contains(message, 'VALUES') OR contains(message, ' FROM '))
-FROM duckdb_logs WHERE type = 'QueryLog' AND regexp_matches(message, 'UPDATE\s+\S*ducklake_table_column_stats')
+SELECT count(*) <= 1, count(*) FILTER (WHERE contains(stmt, 'VALUES') OR contains(stmt, ' FROM '))
+FROM (
+	SELECT regexp_extract(message, 'UPDATE\s+\S*ducklake_table_column_stats[^;]*') AS stmt
+	FROM duckdb_logs WHERE type = 'QueryLog' AND regexp_matches(message, 'UPDATE\s+\S*ducklake_table_column_stats')
+)
 ----
-1	0
+true	0
 
 statement ok
 DETACH lake

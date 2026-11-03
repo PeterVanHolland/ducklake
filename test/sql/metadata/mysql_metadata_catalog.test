@@ -51,7 +51,25 @@ statement ok
 COMMENT ON COLUMN lake.t.i IS 'the identifier'
 
 statement ok
+COMMENT ON TABLE lake.t IS 'a table'
+
+statement ok
+COMMENT ON TABLE lake.t IS 'the table'
+
+statement ok
 CREATE VIEW lake.v AS SELECT i FROM lake.t
+
+statement ok
+COMMENT ON COLUMN lake.v.i IS 'a view column'
+
+statement ok
+COMMENT ON COLUMN lake.v.i IS 'the view column'
+
+query II
+SELECT (SELECT comment FROM duckdb_tables() WHERE database_name = 'lake' AND table_name = 't'),
+       (SELECT comment FROM duckdb_columns() WHERE database_name = 'lake' AND table_name = 'v' AND column_name = 'i')
+----
+the table	the view column
 
 statement ok
 DROP VIEW lake.v

@@ -3145,17 +3145,20 @@ ORDER BY data.begin_snapshot ASC, data.row_id_start ASC, data.data_file_id ASC, 
 	return files;
 }
 
+//! Ends the matching rows with a plain UPDATE, a MySQL metadata server runs no joined VALUES list or cast
+static string EndRowsSql(const string &metadata_table, const string &condition) {
+	return StringUtil::Format(
+	    R"(UPDATE {METADATA_CATALOG}.%s SET end_snapshot = {SNAPSHOT_ID} WHERE end_snapshot IS NULL AND %s;)",
+	    metadata_table, condition);
+}
+
 template <class T>
 string DuckLakeMetadataManager::FlushDrop(const string &metadata_table_name, const string &id_name,
                                           const set<T> &dropped_entries) {
 	if (dropped_entries.empty()) {
 		return {};
 	}
-	auto dropped_id_list = GenerateIDList(dropped_entries);
-
-	return StringUtil::Format(
-	    R"(UPDATE {METADATA_CATALOG}.%s SET end_snapshot = {SNAPSHOT_ID} WHERE end_snapshot IS NULL AND %s IN (%s);)",
-	    metadata_table_name, id_name, dropped_id_list);
+	return EndRowsSql(metadata_table_name, StringUtil::Format("%s IN (%s)", id_name, GenerateIDList(dropped_entries)));
 }
 
 string DuckLakeMetadataManager::DropSchemas(const set<SchemaIndex> &ids) {
@@ -3498,6 +3501,8 @@ string DuckLakeMetadataManager::GetInlinedTableQuery(const DuckLakeTableInfo &ta
 }
 
 static constexpr idx_t MAX_VALUES_LIST_LENGTH = 65536;
+//! Bounds the CASE expressions of one column stats UPDATE, every row tests all of them
+static constexpr idx_t MAX_STATS_COLUMNS_PER_UPDATE = 512;
 
 static string ChunkValuesStatements(const vector<string> &tuples,
                                     const std::function<string(const string &values)> &make_statement) {
@@ -3736,17 +3741,11 @@ static string ExpireDroppedColumns(const vector<DuckLakeDroppedColumn> &dropped_
 	if (dropped_columns.empty()) {
 		return {};
 	}
-	// a plain UPDATE, a VALUES list joined in is not pushed down to every metadata server
 	auto conditions =
 	    StringUtil::Join(dropped_columns, dropped_columns.size(), " OR ", [](const DuckLakeDroppedColumn &col) {
 		    return StringUtil::Format("(table_id=%d AND column_id=%d)", col.table_id.index, col.field_id.index);
 	    });
-	return StringUtil::Format(R"(
-UPDATE {METADATA_CATALOG}.%s
-SET end_snapshot = {SNAPSHOT_ID}
-WHERE end_snapshot IS NULL AND (%s)
-;)",
-	                          metadata_table, conditions);
+	return EndRowsSql(metadata_table, "(" + conditions + ")");
 }
 
 string DuckLakeMetadataManager::WriteDroppedColumns(const vector<DuckLakeDroppedColumn> &dropped_columns) {
@@ -3990,7 +3989,7 @@ string DuckLakeMetadataManager::WriteNewInlinedDeletes(const vector<DuckLakeDele
 		for (auto &deleted_id : entry.deleted_row_ids) {
 			row_ids.push_back(to_string(deleted_id));
 		}
-		// end the rows in chunks of plain UPDATEs, a VALUES list joined in is not pushed down to every metadata server
+		// end the deleted rows in chunks of plain UPDATEs
 		batch_queries += ChunkValuesStatements(row_ids, [&](const string &row_id_list) {
 			return StringUtil::Format(R"(
 UPDATE {METADATA_CATALOG}.%s
@@ -5297,14 +5296,8 @@ static string WriteNewColumnTagBatch(const vector<T> &new_tags, const string &me
 	if (new_tags.empty()) {
 		return {};
 	}
-	// a plain UPDATE ends the overwritten tags, a VALUES list joined in is not pushed down to every metadata server
 	auto conditions = StringUtil::Join(new_tags, new_tags.size(), " OR ", overwritten_condition);
-	string batch_query = StringUtil::Format(R"(
-UPDATE {METADATA_CATALOG}.%s
-SET end_snapshot = {SNAPSHOT_ID}
-WHERE end_snapshot IS NULL AND (%s)
-;)",
-	                                        metadata_table, conditions);
+	string batch_query = EndRowsSql(metadata_table, "(" + conditions + ")");
 	vector<string> new_tag_values;
 	for (auto &tag : new_tags) {
 		new_tag_values.push_back(new_values(tag));
@@ -5407,14 +5400,14 @@ string DuckLakeMetadataManager::UpdateGlobalTableStatsSql(const DuckLakeGlobalSt
 		    "UPDATE {METADATA_CATALOG}.ducklake_table_stats SET record_count=%s, file_size_bytes=%d, "
 		    "next_row_id=%d WHERE table_id=%d;",
 		    record_count, stats.table_size_bytes, stats.next_row_id, stats.table_id.index);
-		// One UPDATE for all columns, which only changes existing rows: a column without a stats row, such as a struct
-		// container, stays without one. A plain UPDATE with a CASE per column, a VALUES list joined in or a cast to
-		// BOOLEAN is not pushed down to every metadata server. The ELSE keeps the column, it never applies and only
-		// gives a CASE of NULL values the type of the column.
-		if (!stats.column_stats.empty()) {
+		// a plain UPDATE per chunk of columns only changes existing rows, a struct container has no stats row
+		for (idx_t chunk_start = 0; chunk_start < stats.column_stats.size();
+		     chunk_start += MAX_STATS_COLUMNS_PER_UPDATE) {
+			auto chunk_end = MinValue<idx_t>(chunk_start + MAX_STATS_COLUMNS_PER_UPDATE, stats.column_stats.size());
 			vector<string> column_ids;
 			vector<string> contains_null, contains_nan, min_values, max_values, extra_stats, min_is_exact, max_is_exact;
-			for (auto &col_stats : stats.column_stats) {
+			for (idx_t col_idx = chunk_start; col_idx < chunk_end; col_idx++) {
+				auto &col_stats = stats.column_stats[col_idx];
 				auto sql = ColumnStatsSQL::FromColumnStats(col_stats);
 				auto column_id = to_string(col_stats.column_id.index);
 				column_ids.push_back(column_id);
@@ -5427,6 +5420,7 @@ string DuckLakeMetadataManager::UpdateGlobalTableStatsSql(const DuckLakeGlobalSt
 				min_is_exact.push_back(when + sql.min_is_exact);
 				max_is_exact.push_back(when + sql.max_is_exact);
 			}
+			// the ELSE never applies and only gives a CASE of NULL values the type of the column
 			auto by_column = [](const string &column, const vector<string> &cases) {
 				return column + "=CASE column_id " + StringUtil::Join(cases, " ") + " ELSE " + column + " END";
 			};

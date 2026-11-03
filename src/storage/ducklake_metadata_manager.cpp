@@ -3345,7 +3345,8 @@ static void ColumnToSQLRecursive(const DuckLakeColumnInfo &column, TableIndex ta
 	string default_val = "'NULL'";
 	bool duckdb_dialect = DuckLakeMetadataManager::IsDuckDBDialect(column.default_value_dialect);
 	string default_val_system = duckdb_dialect ? "'duckdb'" : SQLString::ToString(column.default_value_dialect);
-	string default_val_type = "'" + column.default_value_type + "'";
+	string default_val_type =
+	    column.default_value_type.empty() ? string("NULL") : SQLString::ToString(column.default_value_type);
 
 	if (!column.default_value.IsNull()) {
 		auto value = column.default_value.GetValue<string>();

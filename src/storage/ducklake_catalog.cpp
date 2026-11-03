@@ -156,6 +156,11 @@ idx_t EstimateFieldIdMemory(const DuckLakeFieldId &field_id) {
 	if (column_data.default_value) {
 		estimate += EstimateExpressionMemory(*column_data.default_value);
 	}
+	if (column_data.KeepsStoredDefault()) {
+		estimate += EstimateValueMemory(column_data.stored_default_value) +
+		            EstimateStringMemory(column_data.stored_default_type) +
+		            EstimateStringMemory(column_data.stored_default_dialect);
+	}
 	for (const auto &child : field_id.Children()) {
 		estimate += EstimateFieldIdMemory(*child);
 		estimate += EstimateStringMemory(child->Name().GetIdentifierName()) + sizeof(idx_t) + MAP_NODE_OVERHEAD;
@@ -543,6 +548,7 @@ DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &t
 
 //! A default DuckDB cannot evaluate fails the insert that needs it, and is written back as the catalog stores it
 static void KeepStoredDefault(DuckLakeColumnData &col_data, const DuckLakeColumnInfo &col, const string &reason) {
+	col_data.keeps_stored_default = true;
 	col_data.stored_default_value = col.default_value;
 	col_data.stored_default_type = col.default_value_type;
 	col_data.stored_default_dialect = col.default_value_dialect;
@@ -551,7 +557,9 @@ static void KeepStoredDefault(DuckLakeColumnData &col_data, const DuckLakeColumn
 	                                  SQLIdentifier::ToString(col.name.GetIdentifierName()), reason);
 	vector<unique_ptr<ParsedExpression>> children;
 	children.push_back(ConstantExpression::FromValue(Value(message)));
-	col_data.default_value = make_uniq<FunctionExpression>("error", std::move(children));
+	// the built-in function by its full name, so that a macro of the same name cannot stand in for it
+	QualifiedName error_function(Identifier("system"), Identifier("main"), Identifier("error"));
+	col_data.default_value = make_uniq<FunctionExpression>(error_function, std::move(children));
 }
 
 static void TransformColumnDefault(DuckLakeColumnData &col_data, const DuckLakeColumnInfo &col,
@@ -567,7 +575,10 @@ static void TransformColumnDefault(DuckLakeColumnData &col_data, const DuckLakeC
 		return;
 	}
 	if (col.default_value_type != "expression") {
-		KeepStoredDefault(col_data, col, StringUtil::Format("its default type %s is unknown", col.default_value_type));
+		KeepStoredDefault(col_data, col,
+		                  col.default_value_type.empty()
+		                      ? string("it has no default type")
+		                      : StringUtil::Format("its default type %s is unknown", col.default_value_type));
 		return;
 	}
 	auto expression = col.default_value.GetValue<string>();

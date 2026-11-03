@@ -17,6 +17,20 @@ namespace duckdb {
 DuckLakeDeleteFilter::DuckLakeDeleteFilter() : delete_data(make_shared_ptr<DuckLakeDeleteData>()) {
 }
 
+static bool AllRowsSet(const ValidityMask &rows, idx_t start, idx_t end) {
+	for (idx_t row = start; row < end;) {
+		idx_t entry_idx, idx_in_entry;
+		ValidityMask::GetEntryIndex(row, entry_idx, idx_in_entry);
+		auto bits = MinValue<idx_t>(end - row, ValidityMask::BITS_PER_VALUE - idx_in_entry);
+		auto required = ValidityMask::EntryWithValidBits(bits) << idx_in_entry;
+		if ((rows.GetValidityEntryUnsafe(entry_idx) & required) != required) {
+			return false;
+		}
+		row += bits;
+	}
+	return true;
+}
+
 idx_t DuckLakeDeleteData::FilterScanRows(row_t start_row_index, idx_t count, SelectionVector &result_sel) const {
 	// return the rows of this range whose bit is set, skipping empty entries of 64 rows
 	auto start = NumericCast<idx_t>(start_row_index);
@@ -26,6 +40,10 @@ idx_t DuckLakeDeleteData::FilterScanRows(row_t start_row_index, idx_t count, Sel
 		                            row_count);
 	}
 	auto end = start + count;
+	if (AllRowsSet(scan_rows, start, end)) {
+		// every row of the range is returned, no selection needed
+		return count;
+	}
 	result_sel.Initialize(STANDARD_VECTOR_SIZE);
 	idx_t result_count = 0;
 	idx_t row = start;

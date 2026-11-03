@@ -518,10 +518,9 @@ public:
 	//! Selects the given tables or views renamed after the snapshot
 	static string GetRenamedAfterSnapshotSql(const string &metadata_table_name, const string &id_name,
 	                                         const set<TableIndex> &ids);
-	//! Selects the stored paths of the data files of the table named like the file, visible at the snapshot or
-	//! committed after it
+	//! Selects the stored paths of the table's files named like the file, visible at the snapshot or committed after it
 	static string GetDataFilesNamedSql(TableIndex table_id, const string &file_name, bool committed_after_snapshot);
-	//! Whether a stored path of the result resolves to the canonical path, the way the catalog resolves it
+	//! Whether a stored path of the result resolves to the canonical path
 	static bool HasCanonicalPath(QueryResult &result, FileSystem &fs, const string &canonical_path,
 	                             const string &table_path, const string &separator);
 	//! Caller supplies one resolved path per overwritten file, in the same order.

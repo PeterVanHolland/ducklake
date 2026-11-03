@@ -2649,7 +2649,7 @@ void DuckLakeTransactionState::CheckFileConflicts(const TransactionChangeInforma
 }
 
 void DuckLakeTransactionState::CheckAddedFileConflicts(const DuckLakeCommitContext &context) const {
-	// the files the transaction registered by table, files DuckLake wrote have unique names
+	// files DuckLake wrote have unique names
 	map<TableIndex, vector<reference<const string>>> registered_files;
 	for (auto &entry : local_changes.Changes()) {
 		// a table the transaction created is unknown to the other transactions

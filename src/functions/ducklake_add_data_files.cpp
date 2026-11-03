@@ -330,7 +330,6 @@ FROM parquet_full_metadata(%s)
 				persisted_filepath = data_path + canonical_filepath.substr(canonical_data_path.size());
 			}
 		}
-		// a path the table holds, in the transaction or at its snapshot
 		if (transaction_files.count(canonical_filepath) ||
 		    transaction.GetMetadataManager().HasDataFile(table, transaction.GetSnapshot(), persisted_filepath)) {
 			throw InvalidInputException("File \"%s\" is already a data file of table %s", filepath, table.name);

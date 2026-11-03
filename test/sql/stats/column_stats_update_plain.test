@@ -10,18 +10,162 @@ test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
 
 test-env DATA_PATH {TEST_DIR}
 
+# a DuckDB file catalog runs the statements of every commit locally, where the query log shows them
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/column_stats_update_plain', DATA_INLINING_ROW_LIMIT 0)
+ATTACH 'ducklake:{TEST_DIR}/{BASE_TEST_NAME}_logged.db' AS logged (DATA_PATH '{DATA_PATH}/column_stats_update_plain_logged', DATA_INLINING_ROW_LIMIT 0)
 
-# the whole UPDATE statements of the logged commits, a commit that runs on the server logs none
+# the whole UPDATE statements of the logged commits
 statement ok
 CREATE VIEW updates AS
 SELECT stmt, regexp_matches(stmt, '\bVALUES\b|\sFROM\s') AS joined
 FROM (SELECT unnest(regexp_extract_all(message, '[^;]*UPDATE\s+\S*ducklake_\w+[^;]*')) AS stmt FROM duckdb_logs WHERE type = 'QueryLog')
 
 statement ok
-CREATE VIEW logged_commits AS
-SELECT count(*) AS n FROM duckdb_logs WHERE type = 'QueryLog' AND regexp_matches(message, 'INSERT INTO\s+\S*ducklake_snapshot\b')
+CREATE TABLE logged.t (i INTEGER, d DOUBLE, s VARCHAR, n INTEGER, st STRUCT(a INTEGER, b VARCHAR))
+
+statement ok
+INSERT INTO logged.t VALUES (1, 1.5, 'b', NULL, {'a': 1, 'b': 'x'})
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+INSERT INTO logged.t VALUES (2, 'nan', 'a', NULL, {'a': 2, 'b': 'y'}), (3, 2.5, 'c', NULL, {'a': NULL, 'b': 'z'})
+
+statement ok
+CALL disable_logging()
+
+# one column stats UPDATE, without a VALUES list or FROM clause
+query II
+SELECT count(*), count(*) FILTER (WHERE joined) FROM updates WHERE regexp_matches(stmt, 'ducklake_table_column_stats\b')
+----
+1	0
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+CALL logged.set_option('data_inlining_row_limit', 10, table_name => 't')
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+ALTER TABLE logged.t DROP COLUMN n
+
+statement ok
+COMMENT ON COLUMN logged.t.i IS 'a number'
+
+statement ok
+COMMENT ON COLUMN logged.t.i IS 'the number'
+
+statement ok
+COMMENT ON TABLE logged.t IS 'a table'
+
+statement ok
+COMMENT ON TABLE logged.t IS 'the table'
+
+statement ok
+INSERT INTO logged.t VALUES (4, 4.5, 'd', {'a': 4, 'b': 'w'}), (5, 5.5, 'e', {'a': 5, 'b': 'v'})
+
+statement ok
+DELETE FROM logged.t WHERE i = 4
+
+statement ok
+CALL disable_logging()
+
+# the dropped column, the overwritten comments and the deleted inlined row end with plain UPDATEs
+query II
+SELECT count(*) FILTER (WHERE joined),
+       list_sort(list(DISTINCT regexp_extract(stmt, 'UPDATE\s+\S*?(ducklake_[a-z_]+?)(_\d+_\d+)?"?\s', 1)))
+FROM updates
+----
+0	[ducklake_column, ducklake_column_tag, ducklake_inlined_data, ducklake_table_column_stats, ducklake_table_stats, ducklake_tag]
+
+# a table of 520 columns updates its stats in statements of at most 512 columns
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+CREATE TABLE logged.w (c0 INTEGER)
+
+statement ok
+BEGIN
+
+loop i 1 520
+
+statement ok
+ALTER TABLE logged.w ADD COLUMN c{i} INTEGER
+
+endloop
+
+statement ok
+COMMIT
+
+statement ok
+INSERT INTO logged.w (c0, c519) VALUES (1, 1)
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+INSERT INTO logged.w (c0, c511, c512, c519) VALUES (2, 7, 8, 9)
+
+statement ok
+CALL disable_logging()
+
+query II
+SELECT count(*) FILTER (WHERE joined),
+       list_sort(list(len(regexp_extract_all(regexp_extract(stmt, 'column_id IN \(([^)]*)\)', 1), '\d+'))))
+FROM updates WHERE regexp_matches(stmt, 'ducklake_table_column_stats\b')
+----
+0	[8, 512]
+
+# 520 column comments of one commit end the old tags in statements of at most 512 conditions
+statement ok
+BEGIN
+
+loop i 0 520
+
+statement ok
+COMMENT ON COLUMN logged.w.c{i} IS 'column {i}'
+
+endloop
+
+statement ok
+COMMIT
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+BEGIN
+
+loop i 0 520
+
+statement ok
+COMMENT ON COLUMN logged.w.c{i} IS 'column {i} again'
+
+endloop
+
+statement ok
+COMMIT
+
+statement ok
+CALL disable_logging()
+
+query II
+SELECT count(*) FILTER (WHERE joined), list_sort(list(len(regexp_extract_all(stmt, 'column_id='))))
+FROM updates WHERE regexp_matches(stmt, 'ducklake_column_tag\b')
+----
+0	[8, 512]
+
+# the same changes on the configured catalog keep every stat, comment, tag row and row
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/column_stats_update_plain', DATA_INLINING_ROW_LIMIT 0)
 
 statement ok
 CREATE TABLE lake.t (i INTEGER, d DOUBLE, s VARCHAR, n INTEGER, st STRUCT(a INTEGER, b VARCHAR))
@@ -30,29 +174,10 @@ statement ok
 INSERT INTO lake.t VALUES (1, 1.5, 'b', NULL, {'a': 1, 'b': 'x'})
 
 statement ok
-CALL enable_logging('QueryLog', storage = 'memory')
-
-statement ok
 INSERT INTO lake.t VALUES (2, 'nan', 'a', NULL, {'a': 2, 'b': 'y'}), (3, 2.5, 'c', NULL, {'a': NULL, 'b': 'z'})
 
 statement ok
-CALL disable_logging()
-
-# one column stats UPDATE per logged commit, without a VALUES list or FROM clause
-query II
-SELECT count(*) = (SELECT n FROM logged_commits), count(*) FILTER (WHERE joined)
-FROM updates WHERE regexp_matches(stmt, 'ducklake_table_column_stats\b')
-----
-true	0
-
-statement ok
-CALL truncate_duckdb_logs()
-
-statement ok
 CALL lake.set_option('data_inlining_row_limit', 10, table_name => 't')
-
-statement ok
-CALL enable_logging('QueryLog', storage = 'memory')
 
 statement ok
 ALTER TABLE lake.t DROP COLUMN n
@@ -76,24 +201,6 @@ statement ok
 DELETE FROM lake.t WHERE i = 4
 
 statement ok
-CALL disable_logging()
-
-# the dropped column, the overwritten comments and the deleted inlined row end with plain UPDATEs
-query II
-SELECT count(*) FILTER (WHERE joined),
-       coalesce(list_sort(list(DISTINCT regexp_extract(stmt, 'UPDATE\s+\S*?(ducklake_[a-z_]+?)(_\d+_\d+)?"?\s', 1))), [])
-       = CASE WHEN (SELECT n > 0 FROM logged_commits)
-              THEN ['ducklake_column', 'ducklake_column_tag', 'ducklake_inlined_data', 'ducklake_table_column_stats', 'ducklake_table_stats', 'ducklake_tag']
-              ELSE [] END
-FROM updates
-----
-0	true
-
-# a table of 520 columns updates its stats in statements of at most 512 columns
-statement ok
-CALL truncate_duckdb_logs()
-
-statement ok
 CREATE TABLE lake.w (c0 INTEGER)
 
 statement ok
@@ -113,23 +220,8 @@ statement ok
 INSERT INTO lake.w (c0, c519) VALUES (1, 1)
 
 statement ok
-CALL enable_logging('QueryLog', storage = 'memory')
-
-statement ok
 INSERT INTO lake.w (c0, c511, c512, c519) VALUES (2, 7, 8, 9)
 
-statement ok
-CALL disable_logging()
-
-query II
-SELECT count(*) FILTER (WHERE joined),
-       coalesce(list_sort(list(len(regexp_extract_all(regexp_extract(stmt, 'column_id IN \(([^)]*)\)', 1), '\d+')))), [])
-       = CASE WHEN (SELECT n > 0 FROM logged_commits) THEN [8, 512]::BIGINT[] ELSE [] END
-FROM updates WHERE regexp_matches(stmt, 'ducklake_table_column_stats\b')
-----
-0	true
-
-# 520 column comments of one commit end the old tags in statements of at most 512 conditions
 statement ok
 BEGIN
 
@@ -144,12 +236,6 @@ statement ok
 COMMIT
 
 statement ok
-CALL truncate_duckdb_logs()
-
-statement ok
-CALL enable_logging('QueryLog', storage = 'memory')
-
-statement ok
 BEGIN
 
 loop i 0 520
@@ -161,17 +247,6 @@ endloop
 
 statement ok
 COMMIT
-
-statement ok
-CALL disable_logging()
-
-query II
-SELECT count(*) FILTER (WHERE joined),
-       coalesce(list_sort(list(len(regexp_extract_all(stmt, 'column_id=')))), [])
-       = CASE WHEN (SELECT n > 0 FROM logged_commits) THEN [8, 512]::BIGINT[] ELSE [] END
-FROM updates WHERE regexp_matches(stmt, 'ducklake_column_tag\b')
-----
-0	true
 
 statement ok
 DETACH lake

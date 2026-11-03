@@ -159,7 +159,8 @@ idx_t EstimateFieldIdMemory(const DuckLakeFieldId &field_id) {
 	if (column_data.KeepsStoredDefault()) {
 		estimate += EstimateValueMemory(column_data.stored_default_value) +
 		            EstimateValueMemory(column_data.stored_default_type) +
-		            EstimateValueMemory(column_data.stored_default_dialect);
+		            EstimateValueMemory(column_data.stored_default_dialect) +
+		            EstimateStringMemory(column_data.stored_default_reason);
 	}
 	for (const auto &child : field_id.Children()) {
 		estimate += EstimateFieldIdMemory(*child);

@@ -5,7 +5,6 @@
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/common/file_system.hpp"
-#include "duckdb/common/map.hpp"
 #include "storage/ducklake_transaction.hpp"
 #include "storage/ducklake_catalog.hpp"
 #include "storage/ducklake_schema_entry.hpp"
@@ -507,36 +506,6 @@ WHERE del.begin_snapshot <= {SNAPSHOT_ID}
 //===--------------------------------------------------------------------===//
 // Function
 //===--------------------------------------------------------------------===//
-//! Loads a schema version whole when many of the flushed tables share it, the other versions load table by table
-static void LoadSharedSchemaVersions(DuckLakeCatalog &catalog, DuckLakeTransaction &transaction,
-                                     const vector<reference<DuckLakeTableEntry>> &tables) {
-	map<idx_t, pair<TableIndex, idx_t>> versions;
-	idx_t inlined_tables = 0;
-	for (auto &table_ref : tables) {
-		auto &table = table_ref.get();
-		if (!catalog.AutoCompactEnabled(table)) {
-			continue;
-		}
-		for (auto &inlined_table : table.GetInlinedDataTables(transaction, transaction.GetSnapshot())) {
-			auto &version = versions[inlined_table.schema_version];
-			version.first = table.GetTableId();
-			version.second++;
-			inlined_tables++;
-		}
-	}
-	// at least two tables and a sixteenth of them rounded up, so at most sixteen versions load whole
-	auto shared_limit = MaxValue<idx_t>(2, (inlined_tables + 15) / 16);
-	for (auto &version : versions) {
-		if (version.second.second < shared_limit) {
-			continue;
-		}
-		DuckLakeSnapshot snapshot(
-		    catalog.GetBeginSnapshotForSchemaVersion(version.second.first, version.first, transaction), version.first,
-		    0, 0);
-		catalog.GetSchemaForSnapshot(transaction, snapshot);
-	}
-}
-
 static unique_ptr<LogicalOperator> FlushInlinedDataBind(ClientContext &context, TableFunctionBindInput &input,
                                                         TableIndex bind_index, vector<Identifier> &return_names) {
 	auto &ducklake_catalog = DuckLakeBaseMetadataFunction::GetCatalog(context, input);
@@ -546,9 +515,7 @@ static unique_ptr<LogicalOperator> FlushInlinedDataBind(ClientContext &context, 
 	auto schema = DuckLakeTableFunctionUtil::GetStringOption(input, "schema_name");
 	auto table = DuckLakeTableFunctionUtil::GetStringOption(input, "table_name");
 	vector<unique_ptr<LogicalOperator>> flushes;
-	auto tables_in_scope = DuckLakeBaseMetadataFunction::GetTablesInScope(context, ducklake_catalog, schema, table);
-	LoadSharedSchemaVersions(ducklake_catalog, transaction, tables_in_scope);
-	for (auto &table_ref : tables_in_scope) {
+	for (auto &table_ref : DuckLakeBaseMetadataFunction::GetTablesInScope(context, ducklake_catalog, schema, table)) {
 		auto &table_entry = table_ref.get();
 		if (!ducklake_catalog.AutoCompactEnabled(table_entry)) {
 			continue;

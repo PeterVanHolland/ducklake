@@ -1191,8 +1191,8 @@ DuckLakeCatalogInfo DuckLakeMetadataManager::BuildCatalogForSnapshot(
     const string &base_data_path, const string &separator, bool supports_v1_1_metadata, TableIndex only_table) {
 	DuckLakeCatalogInfo catalog;
 	// a given table is loaded alone with its partitions and sort keys, without the views and macros
-	auto table_filter = [&](const string &alias) {
-		return only_table.IsValid() ? StringUtil::Format(" AND %s.table_id = %llu", alias, only_table.index) : string();
+	auto table_filter = [&](const string &column) {
+		return only_table.IsValid() ? StringUtil::Format(" AND %s = %llu", column, only_table.index) : string();
 	};
 	// load the schema information
 	string parent_schema_select = supports_v1_1_metadata ? ", parent_schema_id" : "";
@@ -1258,13 +1258,14 @@ FROM {METADATA_CATALOG}.ducklake_table tbl
 LEFT JOIN (
 	SELECT *
 	FROM {METADATA_CATALOG}.ducklake_column
-	WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
+	WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)%s
 ) col USING (table_id)
 WHERE {SNAPSHOT_ID} >= tbl.begin_snapshot AND ({SNAPSHOT_ID} < tbl.end_snapshot OR tbl.end_snapshot IS NULL)%s
 ORDER BY table_id ASC, parent_column ASC NULLS FIRST, column_order ASC
 )",
 	                                           ListAggregation(TAG_FIELDS), ListAggregation(INLINED_DATA_TABLES_FIELDS),
-	                                           ListAggregation(TAG_FIELDS), table_filter("tbl")));
+	                                           ListAggregation(TAG_FIELDS), table_filter("table_id"),
+	                                           table_filter("tbl.table_id")));
 	result->ThrowIfError("Failed to get table information from DuckLake: ");
 	const idx_t COLUMN_INDEX_START = 8;
 	auto &tables = catalog.tables;
@@ -1444,7 +1445,7 @@ JOIN {METADATA_CATALOG}.ducklake_partition_column part_col USING (partition_id)
 WHERE {SNAPSHOT_ID} >= part.begin_snapshot AND ({SNAPSHOT_ID} < part.end_snapshot OR part.end_snapshot IS NULL)%s
 ORDER BY part.table_id ASC, partition_id ASC, partition_key_index ASC
 )",
-	                                                     table_filter("part")));
+	                                                     table_filter("part.table_id")));
 	result->ThrowIfError("Failed to get partition information from DuckLake: ");
 	auto &partitions = catalog.partitions;
 	for (auto &row : *result) {
@@ -1474,7 +1475,7 @@ JOIN {METADATA_CATALOG}.ducklake_sort_expression sort_expr USING (sort_id)
 WHERE {SNAPSHOT_ID} >= sort.begin_snapshot AND ({SNAPSHOT_ID} < sort.end_snapshot OR sort.end_snapshot IS NULL)%s
 ORDER BY sort.table_id ASC, sort.sort_id ASC, sort_expr.sort_key_index ASC
 )",
-	                                                     table_filter("sort")));
+	                                                     table_filter("sort.table_id")));
 	result->ThrowIfError("Failed to get sort information from DuckLake: ");
 	auto &sorts = catalog.sorts;
 	for (auto &row : *result) {

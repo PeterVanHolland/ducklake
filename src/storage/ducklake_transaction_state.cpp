@@ -369,10 +369,10 @@ void DuckLakeTransactionState::CheckForConflicts(const TransactionChangeInformat
 	}
 }
 
-string DuckLakeTransactionState::TaggedSnapshotIdList(const case_insensitive_map_t<idx_t> &tags) {
+string DuckLakeTransactionState::TaggedSnapshotIdList(const case_insensitive_map_t<DuckLakeSnapshotTagInfo> &tags) {
 	vector<string> snapshot_ids;
 	for (auto &tag : tags) {
-		snapshot_ids.push_back(to_string(tag.second));
+		snapshot_ids.push_back(to_string(tag.second.snapshot_id));
 	}
 	return StringUtil::Join(snapshot_ids, ", ");
 }
@@ -389,10 +389,10 @@ void DuckLakeTransactionState::CheckTaggedSnapshotsExist(const DuckLakeCommitCon
 		existing.insert(row.GetValue<idx_t>(0));
 	}
 	for (auto &tag : new_snapshot_tags) {
-		if (existing.find(tag.second) == existing.end()) {
+		if (existing.find(tag.second.snapshot_id) == existing.end()) {
 			throw TransactionException("Transaction conflict - attempting to create tag %s for snapshot %d"
 			                           " - but another transaction has expired the snapshot",
-			                           tag.first, tag.second);
+			                           tag.first, tag.second.snapshot_id);
 		}
 	}
 }
@@ -2792,24 +2792,37 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 				context.rewrite_before_retry();
 			}
 			// read after the latest snapshot, so a commit the expiry does not see takes the id of the new snapshot
-			auto expired_snapshots = context.get_expired_snapshots(i, commit_snapshot.snapshot_id - 1);
-			if (expired_snapshots.empty() && context.only_expires_snapshots) {
+			auto expiry = context.get_expired_snapshots(i, commit_snapshot.snapshot_id - 1);
+			auto &expired_snapshots = expiry.snapshots;
+			// a commit of options alone, or of an expiry with nothing left to expire, writes no snapshot
+			wrote_snapshot = context.write_snapshot &&
+			                 (!expired_snapshots.empty() || !expiry.tags.empty() || !context.only_expires_snapshots);
+			if (!wrote_snapshot && !context.locks_config_options) {
 				context.commit_connection();
-				wrote_snapshot = false;
 				break;
 			}
 			for (auto &snapshot : expired_snapshots) {
 				attempt_changes.expired_snapshots.insert(snapshot.id);
 			}
+			for (auto &tag : expiry.tags) {
+				attempt_changes.dropped_snapshot_tags.insert(tag.name);
+			}
 			context.set_delete_commit_snapshot(commit_snapshot.snapshot_id);
 			DuckLakeCommitState commit_state(commit_snapshot);
-			// write the new snapshot
-			string batch_queries = DuckLakeMetadataManager::InsertSnapshotSql();
-			if (!expired_snapshots.empty()) {
-				batch_queries += DuckLakeMetadataManager::DeleteSnapshotsSql(expired_snapshots);
+			string batch_queries;
+			if (wrote_snapshot) {
+				// write the new snapshot
+				batch_queries = DuckLakeMetadataManager::InsertSnapshotSql();
+				if (!expired_snapshots.empty()) {
+					batch_queries += DuckLakeMetadataManager::DeleteSnapshotsSql(expired_snapshots);
+				}
+				for (auto &tag : expiry.tags) {
+					batch_queries += DuckLakeMetadataManager::EndSnapshotTagSql(tag);
+				}
+				batch_queries +=
+				    CommitChanges(commit_state, attempt_changes, stats, context, attempt_dropped_file_stats);
+				batch_queries += WriteSnapshotChanges(commit_state, attempt_changes, context.commit_info);
 			}
-			batch_queries += CommitChanges(commit_state, attempt_changes, stats, context, attempt_dropped_file_stats);
-			batch_queries += WriteSnapshotChanges(commit_state, attempt_changes, context.commit_info);
 			auto res = context.execute_commit_batch(commit_snapshot, batch_queries);
 			if (res->HasError()) {
 				auto &commit_error = res->GetErrorObject();
@@ -2832,8 +2845,16 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			// an internal error is a bug that a retry cannot fix
 			// a retryable metadata error in the conflict check is retried, a conflict that it finds is not
 			bool retry_on_error =
-			    error.Type() != ExceptionType::INTERNAL &&
+			    error.Type() != ExceptionType::INTERNAL && !context.skip_retry() &&
 			    (retryable_metadata_error || (can_retry && DuckLakeTransaction::RetryOnError(error.RawMessage())));
+			if (retry_on_error) {
+				try {
+					context.verify_retry();
+				} catch (std::exception &retry_ex) {
+					error = ErrorData(retry_ex);
+					retry_on_error = false;
+				}
+			}
 			// We perform one initial attempt plus up to max_retry_count retries. Since i is the
 			// zero-based attempt index, we are done retrying once i reaches max_retry_count.
 			bool finished_retrying = i >= retry_config.max_retry_count;

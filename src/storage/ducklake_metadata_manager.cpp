@@ -1190,8 +1190,7 @@ DuckLakeCatalogInfo DuckLakeMetadataManager::BuildCatalogForSnapshot(
     DuckLakeSnapshot snapshot, const std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> &query_executor,
     const string &base_data_path, const string &separator, bool supports_v1_1_metadata, TableIndex only_table) {
 	DuckLakeCatalogInfo catalog;
-	// with a table given, the tables, partitions and sort keys are loaded for it alone and the views and macros not at
-	// all
+	// a given table is loaded alone with its partitions and sort keys, without the views and macros
 	auto table_filter = [&](const string &alias) {
 		return only_table.IsValid() ? StringUtil::Format(" AND %s.table_id = %llu", alias, only_table.index) : string();
 	};

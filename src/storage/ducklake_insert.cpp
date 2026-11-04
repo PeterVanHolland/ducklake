@@ -755,12 +755,13 @@ void DuckLakeInsert::ResolveSortOrders(vector<BoundOrderByNode> &orders, TableIn
 	}
 }
 
-//! Wrap the plan in an ORDER BY on the sort keys, usable before the table entry exists (CTAS)
+//! Wrap the plan in an ORDER BY on the sort keys, usable before the table entry exists (CTAS); with copy_sorts the
+//! keys only go to the copy, which sorts them itself
 static optional_ptr<PhysicalOperator> PlanInsertSort(ClientContext &context, PhysicalPlanGenerator &planner,
                                                      PhysicalOperator &plan, SchemaCatalogEntry &schema,
                                                      const ColumnList &columns, const Identifier &table_name,
                                                      const DuckLakeSort &sort_data, bool &requires_rebind,
-                                                     vector<BoundOrderByNode> &sort_orders) {
+                                                     vector<BoundOrderByNode> &sort_orders, bool copy_sorts) {
 	auto binder = Binder::CreateBinder(context);
 	TableIndex table_index(0);
 	auto orders = DuckLakeCompactor::BindSortOrders(*binder, schema, columns, table_name, table_index,
@@ -799,6 +800,10 @@ static optional_ptr<PhysicalOperator> PlanInsertSort(ClientContext &context, Phy
 		}
 		sort_orders.push_back(order.Copy());
 	}
+	if (copy_sorts) {
+		// a partitioned copy writes its partitions in the order of its sort keys whatever the input order
+		return nullptr;
+	}
 
 	auto projection_map = PhysicalJoin::FillProjectionMap(plan, {});
 	auto &order_op = planner.Make<PhysicalOrder>(plan.types, std::move(orders), std::move(projection_map),
@@ -811,11 +816,13 @@ DuckLakeInsertPipeline DuckLakeInsert::PlanInsertPipeline(ClientContext &context
                                                           PhysicalOperator &plan, SchemaCatalogEntry &schema,
                                                           const ColumnList &columns, const Identifier &table_name,
                                                           optional_ptr<DuckLakeSort> sort_data, bool sort_on_insert,
-                                                          idx_t data_inlining_row_limit) {
+                                                          idx_t data_inlining_row_limit, bool partitioned_copy) {
 	DuckLakeInsertPipeline result {plan, nullptr, false};
 	if (sort_data && sort_on_insert) {
+		// rows that are inlined first are sorted here, rows that all go to a partitioned copy are sorted by it
+		bool copy_sorts = partitioned_copy && data_inlining_row_limit == 0;
 		auto sorted_plan = PlanInsertSort(context, planner, result.root.get(), schema, columns, table_name, *sort_data,
-		                                  result.sort_requires_rebind, result.sort_orders);
+		                                  result.sort_requires_rebind, result.sort_orders, copy_sorts);
 		if (sorted_plan) {
 			result.root = *sorted_plan;
 			result.sorted = true;
@@ -828,8 +835,9 @@ DuckLakeInsertPipeline DuckLakeInsert::PlanInsertPipeline(ClientContext &context
 		result.root = inline_data;
 		// with sort_on_insert off only the Parquet bound overflow rows are sorted, after inlining
 		if (sort_data && !sort_on_insert) {
-			auto sorted_plan = PlanInsertSort(context, planner, result.root.get(), schema, columns, table_name,
-			                                  *sort_data, result.sort_requires_rebind, result.sort_orders);
+			auto sorted_plan =
+			    PlanInsertSort(context, planner, result.root.get(), schema, columns, table_name, *sort_data,
+			                   result.sort_requires_rebind, result.sort_orders, partitioned_copy);
 			if (sorted_plan) {
 				result.root = *sorted_plan;
 				result.sorted = true;
@@ -903,7 +911,8 @@ PhysicalOperator &DuckLakeCatalog::PlanInsert(ClientContext &context, PhysicalPl
 	auto &verified_plan = DuckLakeVerifyNotNull::Plan(planner, ducklake_table, *plan);
 	auto pipeline = DuckLakeInsert::PlanInsertPipeline(
 	    context, planner, verified_plan, ducklake_table.schema, ducklake_table.GetColumns(), ducklake_table.name,
-	    ducklake_table.GetSortData(), SortOnInsert(ducklake_table), GetInliningLimit(context, ducklake_table));
+	    ducklake_table.GetSortData(), SortOnInsert(ducklake_table), GetInliningLimit(context, ducklake_table),
+	    GetPartitionId(ducklake_table.GetPartitionData()).IsValid());
 
 	DuckLakeCopyInput copy_input(context, ducklake_table);
 	copy_input.ordered_input = pipeline.sorted;
@@ -936,7 +945,8 @@ PhysicalOperator &DuckLakeCatalog::PlanCreateTableAs(ClientContext &context, Phy
 	    context, planner, plan, op.schema, columns, create_info.GetTableName(), sort_data.get(),
 	    SortOnInsert(duck_schema.GetSchemaId(), TableIndex(), &table_options),
 	    GetInliningLimit(context, create_info.GetTableName(), duck_schema.GetSchemaId(), TableIndex(), columns,
-	                     &table_options));
+	                     &table_options),
+	    GetPartitionId(partition_data.get()).IsValid());
 
 	DuckLakeTypes::CheckSupportedTypes(columns, GetDuckLakeVersion());
 	auto table_uuid = duck_transaction.GenerateUUID();

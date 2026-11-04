@@ -338,7 +338,8 @@ unique_ptr<LogicalOperator> DuckLakeDataFlusher::GenerateFlushCommand() {
 	    context, binder, table, copy_input, true,
 	    [&](DuckLakeFunctionInfo &read_info) {
 		    read_info.scan_type = DuckLakeScanType::SCAN_FOR_FLUSH;
-		    read_info.flush_sort_order_sql = sort_order_sql;
+		    // a partitioned copy sorts its partitions itself, so the inlined rows are read unsorted for it
+		    read_info.flush_sort_order_sql = partition_data ? string() : sort_order_sql;
 		    return make_uniq<DuckLakeMultiFileList>(read_info, inlined_table);
 	    },
 	    copy);

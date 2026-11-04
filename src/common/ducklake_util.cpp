@@ -523,12 +523,26 @@ static string ChunkRowToSQL(DuckLakeMetadataManager &metadata_manager, ClientCon
 	return result;
 }
 
+bool DuckLakeUtil::InlinedNestedJSONAsText(DuckLakeMetadataManager &metadata_manager, const LogicalType &type) {
+	// a catalog that stores nested values as text writes their JSON leaves as plain strings, quoted like any string
+	return type.IsNested() && !metadata_manager.TypeIsNativelySupported(type) &&
+	       TypeVisitor::Contains(type, [](const LogicalType &child) { return child.IsJSONType(); });
+}
+
 LogicalType DuckLakeUtil::GetInlinedStorageType(DuckLakeMetadataManager &metadata_manager, const LogicalType &type) {
-	if (metadata_manager.TypeIsNativelySupported(LogicalType::VARIANT())) {
+	bool variant_native = metadata_manager.TypeIsNativelySupported(LogicalType::VARIANT());
+	bool json_as_text = InlinedNestedJSONAsText(metadata_manager, type);
+	if (variant_native && !json_as_text) {
 		return type;
 	}
-	return TypeVisitor::VisitReplace(type, [](const LogicalType &child) {
-		return child.id() == LogicalTypeId::VARIANT ? LogicalType::BLOB : child;
+	return TypeVisitor::VisitReplace(type, [&](const LogicalType &child) -> LogicalType {
+		if (!variant_native && child.id() == LogicalTypeId::VARIANT) {
+			return LogicalType::BLOB;
+		}
+		if (json_as_text && child.IsJSONType()) {
+			return LogicalType::VARCHAR;
+		}
+		return child;
 	});
 }
 
@@ -580,8 +594,13 @@ string DuckLakeUtil::InlinedVariantExpression(const string &expression, const Lo
 
 string DuckLakeUtil::InlinedStorageExpression(DuckLakeMetadataManager &metadata_manager, string expression,
                                               const LogicalType &type) {
-	if (GetInlinedStorageType(metadata_manager, type) != type) {
+	auto storage_type = GetInlinedStorageType(metadata_manager, type);
+	if (storage_type != type) {
 		expression = InlinedVariantExpression(expression, type, true);
+		if (InlinedNestedJSONAsText(metadata_manager, type)) {
+			// the JSON leaves become strings, so the text keeps them quoted and apart from missing values
+			expression = "CAST(" + expression + " AS " + storage_type.ToString() + ")";
+		}
 	}
 	if (!metadata_manager.TypeIsNativelySupported(type)) {
 		if (type.IsNested()) {

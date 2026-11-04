@@ -452,7 +452,7 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 	CompleteMetadataTables();
 }
 
-//! The matching tables without a replica identity, the default one of a table without a primary key
+//! Matches the tables with the default replica identity and no primary key
 static string TablesWithoutIdentity(const string &table_condition) {
 	return StringUtil::Format(R"(FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE %s
 AND c.relkind = 'r' AND c.relreplident = 'd'

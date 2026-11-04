@@ -90,10 +90,12 @@ SELECT count(*) FROM postgres_query('__ducklake_metadata_lake', 'SELECT c.relnam
 0
 
 # the attach read the identities, found tables without one and completed them in one statement
-query I
-SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%REPLICA IDENTITY FULL%'
+query II
+SELECT count(*) FILTER (WHERE query LIKE '%relreplident%'),
+	count(*) FILTER (WHERE query LIKE '%REPLICA IDENTITY FULL%')
+FROM duckdb_logs_parsed('DuckLakeMetadata')
 ----
-1
+2	1
 
 # an attach of a complete catalog reads the identities and alters nothing
 statement ok
@@ -106,7 +108,8 @@ statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/pub_identity', METADATA_SCHEMA 'pub_identity', DATA_INLINING_ROW_LIMIT 10)
 
 query II
-SELECT count(*) FILTER (WHERE query LIKE '%relreplident%'), count(*) FILTER (WHERE query LIKE '%REPLICA IDENTITY FULL%')
+SELECT count(*) FILTER (WHERE query LIKE '%relreplident%'),
+	count(*) FILTER (WHERE query LIKE '%REPLICA IDENTITY FULL%')
 FROM duckdb_logs_parsed('DuckLakeMetadata')
 ----
 1	0

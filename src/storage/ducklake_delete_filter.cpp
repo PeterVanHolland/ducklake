@@ -392,6 +392,11 @@ void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDele
 
 	// inlined file deletions add rows, or exclude rows deleted before the scanned range
 	for (auto &inlined_delete : delete_scan.inlined_file_deletions) {
+		if (inlined_delete.first >= delete_scan.row_count) {
+			throw InvalidInputException("Invalid delete data - inlined delete position %llu is out of range for data "
+			                            "file %s with %llu rows",
+			                            inlined_delete.first, delete_scan.file.path, delete_scan.row_count);
+		}
 		if (inlined_delete.second < delete_scan.start_snapshot.GetIndex()) {
 			excluded.push_back(inlined_delete.first);
 			continue;

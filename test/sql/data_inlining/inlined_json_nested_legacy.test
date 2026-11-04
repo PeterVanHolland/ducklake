@@ -1,0 +1,68 @@
+# name: test/sql/data_inlining/inlined_json_nested_legacy.test
+# description: Inlined JSON lists that older versions wrote as the JSON text itself read back and flush on SQLite
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+require json
+
+require sqlite_scanner
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/inlined_json_nested_legacy.sqlite' AS lk (DATA_PATH '{TEST_DIR}/inlined_json_nested_legacy/', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lk.t (id INTEGER, l JSON[], s STRUCT(j JSON, l JSON[]))
+
+statement ok
+INSERT INTO lk.t VALUES (1, ['{"id":1}'], {'j': '1', 'l': ['2']})
+
+# the current version keeps the JSON leaves quoted
+query II
+SELECT l, s FROM __ducklake_metadata_lk.ducklake_inlined_data_1_1
+----
+['{"id":1}']	{'j': '1', 'l': ['2']}
+
+# older versions wrote the JSON itself, with NULL for a missing element and null for a JSON null
+statement ok
+INSERT INTO __ducklake_metadata_lk.ducklake_inlined_data_1_1 VALUES
+	(1, 2, NULL, 2, '[NULL]', '{''j'': NULL, ''l'': [NULL, null]}'),
+	(2, 2, NULL, 3, '[{"id":1}, null, "[1, 2]", "it''s, a \"quote\"", "", "NULL", 1, true]', '{''j'': "null", ''l'': []}'),
+	(3, 2, NULL, 4, '[]', '{''j'': [1, {"k": "v, w"}], ''l'': [{"a": [null, "NULL"]}]}')
+
+query III
+SELECT id, l, s FROM lk.t ORDER BY id
+----
+1	[{"id":1}]	{'j': 1, 'l': [2]}
+2	[NULL]	{'j': NULL, 'l': [NULL, null]}
+3	[{"id":1}, null, "[1, 2]", "it's, a \"quote\"", "", "NULL", 1, true]	{'j': "null", 'l': []}
+4	[]	{'j': [1, {"k": "v, w"}], 'l': [{"a": [null, "NULL"]}]}
+
+query IIII
+SELECT l[2] IS NULL, l[3] IS NULL, s.l[1] IS NULL, s.l[2] IS NULL FROM lk.t WHERE id = 3
+----
+false	false	false	false
+
+query II
+SELECT l[1] IS NULL, s.l[2] IS NULL FROM lk.t WHERE id = 2
+----
+true	false
+
+# the flush writes the rows to a data file as they were read
+statement ok
+CALL ducklake_flush_inlined_data('lk')
+
+query I
+SELECT count(*) FROM ducklake_list_files('lk', 't')
+----
+1
+
+query III
+SELECT id, l, s FROM lk.t ORDER BY id
+----
+1	[{"id":1}]	{'j': 1, 'l': [2]}
+2	[NULL]	{'j': NULL, 'l': [NULL, null]}
+3	[{"id":1}, null, "[1, 2]", "it's, a \"quote\"", "", "NULL", 1, true]	{'j': "null", 'l': []}
+4	[]	{'j': [1, {"k": "v, w"}], 'l': [{"a": [null, "NULL"]}]}

@@ -1,0 +1,118 @@
+# name: test/sql/data_inlining/inlined_json_nested.test
+# description: Inlined nested values with JSON leaves read back exactly and flush on every metadata catalog
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+require json
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lk (DATA_PATH '{DATA_PATH}/inlined_json_nested', DATA_INLINING_ROW_LIMIT 1000)
+
+statement ok
+CREATE TABLE lk.t (id INTEGER, l JSON[], s STRUCT(j JSON, l JSON[]), m MAP(VARCHAR, JSON[]), n STRUCT(j JSON)[])
+
+# the values of the issue, missing elements, JSON nulls, strings that look like other values and NULL containers
+statement ok
+CREATE MACRO rows_of_t() AS TABLE
+SELECT * FROM (VALUES
+	(1, ['{"id":1}'], {'j': '{"k": "v"}', 'l': ['1', 'true']}, MAP {'a': ['{"x": [1, 2]}']}, [{'j': '[1, 2]'}]),
+	(2, [NULL], {'j': NULL, 'l': [NULL, 'null']}, MAP {'b': [NULL]}, [{'j': NULL}, NULL]),
+	(3, ['null', '"NULL"', '"[1, 2]"', '"it''s, a \"quote\""', '""'], {'j': '"null"', 'l': []}, MAP {'c, d': ['"e=f"'], 'q''s': []}, []),
+	(4, NULL, NULL, NULL, NULL),
+	(5, [], {'j': '[]', 'l': ['{}']}, MAP {}, [{'j': '{"a": {"b": [null, "NULL", ", "]}}'}])
+) t(id, l, s, m, n)
+
+statement ok
+CREATE TABLE expected AS SELECT id, l::JSON[] AS l, s::STRUCT(j JSON, l JSON[]) AS s, m::MAP(VARCHAR, JSON[]) AS m, n::STRUCT(j JSON)[] AS n FROM rows_of_t()
+
+statement ok
+INSERT INTO lk.t FROM expected
+
+statement ok
+CREATE MACRO differences() AS (
+	SELECT count(*) FROM ((SELECT * FROM lk.t EXCEPT ALL SELECT * FROM expected) UNION ALL (SELECT * FROM expected EXCEPT ALL SELECT * FROM lk.t)))
+
+query II
+SELECT count(*), differences() FROM lk.t
+----
+5	0
+
+query IIII
+SELECT l, s, m, n FROM lk.t WHERE id = 3
+----
+[null, "NULL", "[1, 2]", "it's, a \"quote\"", ""]	{'j': '"null"', 'l': []}	{'c, d'=["e=f"], 'q\'s'=[]}	[]
+
+query II
+SELECT l[2] IS NULL, s.l[2] FROM lk.t WHERE id = 2
+----
+true	null
+
+# the flush writes the same values to a data file
+statement ok
+CALL ducklake_flush_inlined_data('lk')
+
+query III
+SELECT (SELECT count(*) FROM ducklake_list_files('lk', 't')) > 0, count(*), differences() FROM lk.t
+----
+true	5	0
+
+# a commit of many rows takes the other write path on some catalogs
+statement ok
+INSERT INTO expected SELECT 100 + i, ['{"i": ' || i || '}', NULL, '"s' || i || '"']::JSON[], {'j': i::VARCHAR::JSON, 'l': ['null']::JSON[]}, MAP {'k' || i: [i::VARCHAR::JSON]}, [{'j': ('"' || i || '"')::JSON}] FROM range(150) t(i)
+
+statement ok
+INSERT INTO lk.t SELECT * FROM expected WHERE id >= 100
+
+query II
+SELECT count(*), differences() FROM lk.t
+----
+155	0
+
+statement ok
+CALL ducklake_flush_inlined_data('lk')
+
+query II
+SELECT count(*), differences() FROM lk.t
+----
+155	0
+
+# the reader accepts the quoted text and the text older versions wrote, which holds the JSON itself
+query I
+SELECT count(*) FROM expected WHERE NOT (
+	ducklake_inlined_value(CAST(CAST(l AS VARCHAR[]) AS VARCHAR), NULL::JSON[]) IS NOT DISTINCT FROM l
+	AND ducklake_inlined_value(CAST(CAST(s AS STRUCT(j VARCHAR, l VARCHAR[])) AS VARCHAR), NULL::STRUCT(j JSON, l JSON[])) IS NOT DISTINCT FROM s
+	AND ducklake_inlined_value(CAST(CAST(m AS MAP(VARCHAR, VARCHAR[])) AS VARCHAR), NULL::MAP(VARCHAR, JSON[])) IS NOT DISTINCT FROM m
+	AND ducklake_inlined_value(CAST(CAST(n AS STRUCT(j VARCHAR)[]) AS VARCHAR), NULL::STRUCT(j JSON)[]) IS NOT DISTINCT FROM n)
+----
+0
+
+query I
+SELECT count(*) FROM expected WHERE NOT (
+	ducklake_inlined_value(CAST(l AS VARCHAR), NULL::JSON[]) IS NOT DISTINCT FROM l
+	AND ducklake_inlined_value(CAST(s AS VARCHAR), NULL::STRUCT(j JSON, l JSON[])) IS NOT DISTINCT FROM s
+	AND ducklake_inlined_value(CAST(m AS VARCHAR), NULL::MAP(VARCHAR, JSON[])) IS NOT DISTINCT FROM m
+	AND ducklake_inlined_value(CAST(n AS VARCHAR), NULL::STRUCT(j JSON)[]) IS NOT DISTINCT FROM n)
+----
+0
+
+query I
+SELECT ducklake_inlined_value(NULL, NULL::JSON[]) IS NULL
+----
+true
+
+statement error
+SELECT ducklake_inlined_value('[1, 2', NULL::JSON[])
+----
+Cannot read the inlined value
+
+statement error
+SELECT ducklake_inlined_value('x', NULL)
+----
+typed NULL

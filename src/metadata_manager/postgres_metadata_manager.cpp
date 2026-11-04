@@ -452,6 +452,14 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 	CompleteMetadataTables();
 }
 
+//! The matching tables without a replica identity, the default one of a table without a primary key
+static string TablesWithoutIdentity(const string &table_condition) {
+	return StringUtil::Format(R"(FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE %s
+AND c.relkind = 'r' AND c.relreplident = 'd'
+AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary))",
+	                          table_condition);
+}
+
 //! Gives the matching tables without a replica identity the full row as one, a locked table is skipped since a wait
 //! inside an attach deadlocks with other attaches
 static string ReplicaIdentityBlock(const string &table_condition) {
@@ -459,14 +467,12 @@ static string ReplicaIdentityBlock(const string &table_condition) {
 IF current_setting('transaction_read_only') = 'on' THEN RETURN; END IF;
 lock_wait := current_setting('lock_timeout');
 PERFORM set_config('lock_timeout', '1', true);
-FOR t IN SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE %s
-AND c.relkind = 'r' AND c.relreplident = 'd'
-AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary) ORDER BY c.oid LOOP
+FOR t IN SELECT c.oid %s ORDER BY c.oid LOOP
 BEGIN EXECUTE format('ALTER TABLE %%s REPLICA IDENTITY FULL', t);
 EXCEPTION WHEN insufficient_privilege OR lock_not_available THEN NULL; END;
 END LOOP;
 PERFORM set_config('lock_timeout', lock_wait, true); END)",
-	                               table_condition);
+	                               TablesWithoutIdentity(table_condition));
 	return "DO " + SQLString::ToString(body) + ";";
 }
 
@@ -478,8 +484,17 @@ string PostgresMetadataManager::AfterCreateTableSql(const Identifier &table_name
 
 void PostgresMetadataManager::CompleteMetadataTables() {
 	auto schema = SQLString::ToString(transaction.GetCatalog().MetadataSchemaName().GetIdentifierName());
-	ExecuteOnServer(
-	    ReplicaIdentityBlock(StringUtil::Format("n.nspname = %s AND c.relname LIKE 'ducklake\\_%%'", schema)))
+	auto table_condition = StringUtil::Format("n.nspname = %s AND c.relname LIKE 'ducklake\\_%%'", schema);
+	// reading the identities needs no ownership, a complete catalog is left alone
+	auto probe = DuckLakeMetadataManager::Query(
+	    StringUtil::Format("SELECT 1 FROM postgres_query({METADATA_CATALOG_NAME_LITERAL}, %s, use_transaction = true)",
+	                       SQLString::ToString("SELECT 1 " + TablesWithoutIdentity(table_condition) + " LIMIT 1")));
+	probe->ThrowIfError("Failed to read the replica identities of the metadata tables of DuckLake: ");
+	auto incomplete = probe->Fetch();
+	if (!incomplete || incomplete->size() == 0) {
+		return;
+	}
+	ExecuteOnServer(ReplicaIdentityBlock(table_condition))
 	    ->ThrowIfError("Failed to complete the metadata tables of DuckLake: ");
 }
 

@@ -79,7 +79,40 @@ statement ok
 DETACH lake
 
 statement ok
+CALL enable_logging('DuckLakeMetadata')
+
+statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/pub_identity', METADATA_SCHEMA 'pub_identity', DATA_INLINING_ROW_LIMIT 10)
+
+query I
+SELECT count(*) FROM postgres_query('__ducklake_metadata_lake', 'SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity'' AND c.relkind = ''r'' AND c.relreplident = ''d'' AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)')
+----
+0
+
+# the attach read the identities, found tables without one and completed them in one statement
+query I
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%REPLICA IDENTITY FULL%'
+----
+1
+
+# an attach of a complete catalog reads the identities and alters nothing
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/pub_identity', METADATA_SCHEMA 'pub_identity', DATA_INLINING_ROW_LIMIT 10)
+
+query II
+SELECT count(*) FILTER (WHERE query LIKE '%relreplident%'), count(*) FILTER (WHERE query LIKE '%REPLICA IDENTITY FULL%')
+FROM duckdb_logs_parsed('DuckLakeMetadata')
+----
+1	0
+
+statement ok
+CALL disable_logging()
 
 query I
 SELECT count(*) FROM postgres_query('__ducklake_metadata_lake', 'SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity'' AND c.relkind = ''r'' AND c.relreplident = ''d'' AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)')

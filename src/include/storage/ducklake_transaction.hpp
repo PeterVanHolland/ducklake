@@ -289,10 +289,8 @@ public:
 	void RecordStatementDeleteFilter(TableIndex table_id, idx_t query_id,
 	                                 optional_ptr<const FilterPushdownInfo> filter);
 	void AddDeleteFilter(TableIndex table_id, idx_t query_id);
-	//! A delete of the table that can remove any row
 	void AddUnfilteredDelete(TableIndex table_id);
 	const map<TableIndex, DeleteConflictFilters> &GetDeleteFilters() const;
-	//! Record that the transaction scanned a table
 	void AddTableRead(TableIndex table_id);
 	const set<TableIndex> &GetTablesRead() const;
 

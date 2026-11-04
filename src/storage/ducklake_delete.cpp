@@ -17,8 +17,8 @@
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "storage/ducklake_scan.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
-#include "duckdb/planner/expression_iterator.hpp"
-#include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/optimizer/expression_rewriter.hpp"
+#include "duckdb/optimizer/rule/constant_folding.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
@@ -745,24 +745,12 @@ static optional_ptr<LogicalGet> FindDeleteScan(LogicalOperator &plan, vector<uni
 	}
 }
 
-//! Fold the constant parts of a filter the way the optimizer does before it pushes the filter into the scan
-static void FoldConstants(ClientContext &context, unique_ptr<Expression> &expr) {
-	if (expr->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT && expr->IsFoldable()) {
-		Value value;
-		if (ExpressionExecutor::TryEvaluateScalar(context, *expr, value)) {
-			expr = make_uniq<BoundConstantExpression>(std::move(value));
-		}
-		return;
-	}
-	ExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<Expression> &child) { FoldConstants(context, child); });
-}
-
 static optional_ptr<DuckLakeFunctionInfo> GetDuckLakeScanInfo(LogicalGet &get) {
 	auto definition = get.function.GetDefinition();
-	if (!definition || definition->name != "ducklake_scan" || !definition->function_info) {
+	if (!definition || definition->name != "ducklake_scan" || !get.function.function_info) {
 		return nullptr;
 	}
-	return &definition->function_info->Cast<DuckLakeFunctionInfo>();
+	return &get.function.function_info->Cast<DuckLakeFunctionInfo>();
 }
 
 void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
@@ -801,9 +789,13 @@ void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_
 	auto get = simple ? FindDeleteScan(*plan->children[0], filters) : nullptr;
 	auto scan_info = get ? GetDuckLakeScanInfo(*get) : nullptr;
 	if (scan_info && scan_info->table_id == table_id && !filters.empty()) {
-		for (auto &filter : filters) {
-			FoldConstants(context, filter);
-		}
+		// the constants are folded the way the optimizer does before it pushes the filters into the scan
+		LogicalFilter folded;
+		folded.expressions = std::move(filters);
+		ExpressionRewriter rewriter(context);
+		rewriter.rules.push_back(make_uniq<ConstantFoldingRule>(rewriter));
+		rewriter.VisitOperator(folded);
+		filters = std::move(folded.expressions);
 		auto &bind_data = get->bind_data->Cast<MultiFileBindData>();
 		auto &file_list = bind_data.file_list->Cast<DuckLakeMultiFileList>();
 		MultiFilePushdownInfo info(get->table_index, bind_data.names, get->GetColumnIds(), get->extra_info);

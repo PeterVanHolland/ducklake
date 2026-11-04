@@ -107,6 +107,20 @@ SELECT ducklake_inlined_value(NULL, NULL::JSON[]) IS NULL
 ----
 true
 
+# a NUL byte, spaces at the ends of a JSON text, a backslash in an unnamed struct and a fixed size array
+query IIII
+SELECT ducklake_inlined_value(MAP {chr(0): '1'::JSON}::VARCHAR, NULL::MAP(VARCHAR, JSON)) = MAP {chr(0): '1'::JSON},
+	length(ducklake_inlined_value([' 1 '::JSON]::VARCHAR, NULL::JSON[])[1]),
+	ducklake_inlined_value(row('1'::JSON, chr(92))::VARCHAR, NULL::TUPLE(JSON, VARCHAR)) = row('1'::JSON, chr(92)),
+	ducklake_inlined_value(['1'::JSON, '2'::JSON]::JSON[2]::VARCHAR, NULL::JSON[2]) = ['1'::JSON, '2'::JSON]::JSON[2]
+----
+true	3	true	true
+
+statement error
+SELECT ducklake_inlined_value('[]', NULL::JSON[2])
+----
+Cannot read the inlined value
+
 statement error
 SELECT ducklake_inlined_value('[1, 2', NULL::JSON[])
 ----

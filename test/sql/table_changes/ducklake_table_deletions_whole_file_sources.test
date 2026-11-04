@@ -28,7 +28,7 @@ DELETE FROM dl.t WHERE i = 30
 statement ok
 DELETE FROM dl.t WHERE i = 31
 
-# snapshot 5: the rest of the file, which deletes the file itself
+# snapshot 5: the rest of the file, which goes to a delete file since the file has deletes already
 statement ok
 DELETE FROM dl.t
 
@@ -50,7 +50,7 @@ SELECT snapshot_id, count(*), min(i), max(i) FROM ducklake_table_deletions('dl',
 3	1	30	30
 4	1	31	31
 
-# the file delete leaves out the rows of the delete file and the earlier inlined deletes
+# the delete of the rest leaves out the rows of the delete file and the earlier inlined deletes
 query IIII
 SELECT snapshot_id, count(*), min(i), max(i) FROM ducklake_table_deletions('dl', 'main', 't', 5, 5) GROUP BY ALL ORDER BY ALL
 ----
@@ -90,3 +90,56 @@ query I
 SELECT count(*) FROM dl.t
 ----
 0
+
+# a file without earlier deletes is ended as a whole, and the scan returns every row of it without a mask
+statement ok
+CREATE TABLE dl.w AS SELECT range::INTEGER AS i FROM range(3000)
+
+statement ok
+DELETE FROM dl.w
+
+query II
+SELECT (SELECT count(*) FROM ducklake_list_files('dl', 'w', snapshot_version => 6)), (SELECT count(*) FROM ducklake_list_files('dl', 'w', snapshot_version => 7))
+----
+1	0
+
+query III
+SELECT snapshot_id, count(*), sum(i) FROM ducklake_table_deletions('dl', 'main', 'w', 7, 7) GROUP BY ALL ORDER BY ALL
+----
+7	3000	4498500
+
+query I
+SELECT list(i ORDER BY i) FROM ducklake_table_deletions('dl', 'main', 'w', 6, 7) WHERE i < 2 OR i IN (63, 64) OR i > 2997
+----
+[0, 1, 63, 64, 2998, 2999]
+
+# inlined deletes at the ends of 64 row entries, then the rest of the file: a mask over 3000 rows with excluded rows
+statement ok
+CREATE TABLE dl.u AS SELECT range::INTEGER AS i FROM range(3000)
+
+statement ok
+DELETE FROM dl.u WHERE i IN (0, 63, 64, 2999)
+
+statement ok
+DELETE FROM dl.u
+
+query III
+SELECT snapshot_id, count(*), sum(i) FROM ducklake_table_deletions('dl', 'main', 'u', 9, 10) GROUP BY ALL ORDER BY ALL
+----
+9	4	3126
+10	2996	4495374
+
+query III
+SELECT snapshot_id, count(*), sum(i) FROM ducklake_table_deletions('dl', 'main', 'u', 10, 10) GROUP BY ALL ORDER BY ALL
+----
+10	2996	4495374
+
+query I
+SELECT list(i ORDER BY i) FROM ducklake_table_deletions('dl', 'main', 'u', 10, 10) WHERE i < 3 OR i BETWEEN 62 AND 66 OR i > 2996
+----
+[1, 2, 62, 65, 66, 2997, 2998]
+
+query I
+SELECT count(*) FROM ducklake_table_changes('dl', 'main', 'u', 8, 10)
+----
+6000

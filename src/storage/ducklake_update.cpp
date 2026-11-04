@@ -272,9 +272,8 @@ PhysicalOperator &DuckLakeCatalog::PlanUpdateInsert(ClientContext &context, Phys
                                                     DuckLakeTableEntry &table, PhysicalOperator &plan,
                                                     DuckLakeCopyInput &copy_input) {
 	// follow the insert path for inlining
-	auto pipeline =
-	    DuckLakeInsert::PlanInsertPipeline(context, planner, plan, table.schema, table.GetColumns(), table.name,
-	                                       nullptr, false, GetInliningLimit(context, table), false);
+	auto pipeline = DuckLakeInsert::PlanInsertPipeline(context, planner, plan, table.schema, table.GetColumns(),
+	                                                   table.name, nullptr, false, GetInliningLimit(context, table));
 	auto &physical_copy = DuckLakeInsert::PlanCopyForInsert(context, planner, copy_input, pipeline.root.get());
 	auto &insert_op = DuckLakeInsert::PlanInsert(context, planner, table, std::move(copy_input.encryption_key));
 	return pipeline.AttachInsert(insert_op, physical_copy);

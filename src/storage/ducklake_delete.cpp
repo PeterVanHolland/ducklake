@@ -7,6 +7,8 @@
 #include "duckdb/common/file_open_flags.hpp"
 #include "duckdb/planner/operator/logical_delete.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/operator/logical_update.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/common/multi_file/multi_file_function.hpp"
 #include "duckdb/common/multi_file/multi_file_reader.hpp"
 #include "duckdb/catalog/catalog_entry/copy_function_catalog_entry.hpp"
@@ -282,11 +284,10 @@ void DuckLakeDeleteFileWriter::SetCommitSnapshot(ClientContext &context, DuckLak
 //===--------------------------------------------------------------------===//
 DuckLakeDelete::DuckLakeDelete(PhysicalPlan &physical_plan, DuckLakeTableEntry &table, PhysicalOperator &child,
                                shared_ptr<DuckLakeDeleteMap> delete_map_p, vector<idx_t> row_id_indexes_p,
-                               string encryption_key_p, bool allow_duplicates, bool filters_bound_rows)
+                               string encryption_key_p, bool allow_duplicates)
     : PhysicalOperator(physical_plan, PhysicalOperatorType::EXTENSION, {LogicalType::BIGINT}, 1), table(table),
       delete_map(std::move(delete_map_p)), row_id_indexes(std::move(row_id_indexes_p)),
-      filters_bound_rows(filters_bound_rows), encryption_key(std::move(encryption_key_p)),
-      allow_duplicates(allow_duplicates) {
+      encryption_key(std::move(encryption_key_p)), allow_duplicates(allow_duplicates) {
 	children.push_back(child);
 }
 
@@ -591,12 +592,7 @@ SinkFinalizeType DuckLakeDelete::Finalize(Pipeline &pipeline, Event &event, Clie
 	auto &global_state = input.global_state.Cast<DuckLakeDeleteGlobalState>();
 	auto &transaction = DuckLakeTransaction::Get(context, table.catalog);
 	transaction.MarkDeleteAttempted(table.GetTableId());
-	if (!filters_bound_rows) {
-		transaction.AddDeleteFilter(table.GetTableId(), nullptr);
-	}
-	for (auto &file_list : filters_bound_rows ? delete_map->file_lists : vector<shared_ptr<MultiFileList>>()) {
-		transaction.AddDeleteFilter(table.GetTableId(), file_list->Cast<DuckLakeMultiFileList>().GetFilterInfo());
-	}
+	transaction.AddDeleteFilter(table.GetTableId(), MetaTransaction::Get(context).GetActiveQuery());
 	if (global_state.deleted_rows.empty()) {
 		return SinkFinalizeType::READY;
 	}
@@ -715,20 +711,78 @@ static void FindDeleteSources(PhysicalOperator &plan, DuckLakeTableEntry &table,
 	}
 }
 
-//! The sources of a plan, a merge counts its target and its source
-static idx_t CountSources(const PhysicalOperator &plan) {
-	if (plan.type == PhysicalOperatorType::MERGE_ACTION_SOURCE) {
-		return 2;
+//! The scan a delete or update removes rows from, with the filters above it, when nothing else feeds the plan
+static optional_ptr<LogicalGet> FindDeleteScan(LogicalOperator &plan, vector<unique_ptr<Expression>> &filters) {
+	reference<LogicalOperator> node(plan);
+	bool below_filter = false;
+	while (true) {
+		auto &current = node.get();
+		switch (current.type) {
+		case LogicalOperatorType::LOGICAL_PROJECTION:
+			// the filters above a projection refer to its columns, not to the scan
+			if (below_filter) {
+				return nullptr;
+			}
+			break;
+		case LogicalOperatorType::LOGICAL_FILTER:
+			for (auto &expr : current.expressions) {
+				filters.push_back(expr->Copy());
+			}
+			below_filter = true;
+			break;
+		case LogicalOperatorType::LOGICAL_GET:
+			return &current.Cast<LogicalGet>();
+		default:
+			return nullptr;
+		}
+		if (current.children.size() != 1) {
+			return nullptr;
+		}
+		node = *current.children[0];
 	}
-	auto children = plan.GetChildren();
-	if (children.empty()) {
-		return 1;
+}
+
+void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
+	optional_ptr<TableCatalogEntry> table;
+	switch (plan->type) {
+	case LogicalOperatorType::LOGICAL_DELETE:
+		table = plan->Cast<LogicalDelete>().table;
+		break;
+	case LogicalOperatorType::LOGICAL_UPDATE:
+		table = plan->Cast<LogicalUpdate>().table;
+		break;
+	default:
+		for (auto &child : plan->children) {
+			RecordDeleteFilters(input, child);
+		}
+		return;
 	}
-	idx_t result = 0;
-	for (auto &child : children) {
-		result += CountSources(child.get());
+	if (table->catalog.GetCatalogType() != "ducklake") {
+		return;
 	}
-	return result;
+	auto &ducklake_table = table->Cast<DuckLakeTableEntry>();
+	auto table_id = ducklake_table.GetTableId();
+	if (DuckLakeTransaction::IsTransactionLocal(table_id.index)) {
+		return;
+	}
+	auto &context = input.context;
+	vector<unique_ptr<Expression>> filters;
+	auto get = FindDeleteScan(*plan->children[0], filters);
+	optional_ptr<const FilterPushdownInfo> filter_info;
+	unique_ptr<MultiFileList> pushed;
+	auto definition = get ? get->function.GetDefinition() : nullptr;
+	if (definition && !filters.empty() && definition->name == "ducklake_scan" && definition->function_info &&
+	    definition->function_info->Cast<DuckLakeFunctionInfo>().table_id == table_id) {
+		auto &bind_data = get->bind_data->Cast<MultiFileBindData>();
+		auto &file_list = bind_data.file_list->Cast<DuckLakeMultiFileList>();
+		MultiFilePushdownInfo info(get->table_index, bind_data.names, get->GetColumnIds(), get->extra_info);
+		pushed = file_list.ComplexFilterPushdown(context, bind_data.file_options, info, filters);
+		if (pushed) {
+			filter_info = pushed->Cast<DuckLakeMultiFileList>().GetFilterInfo();
+		}
+	}
+	auto &transaction = DuckLakeTransaction::Get(context, table->catalog);
+	transaction.RecordStatementDeleteFilter(table_id, MetaTransaction::Get(context).GetActiveQuery(), filter_info);
 }
 
 PhysicalOperator &DuckLakeDelete::PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner,
@@ -737,8 +791,6 @@ PhysicalOperator &DuckLakeDelete::PlanDelete(ClientContext &context, PhysicalPla
                                              bool allow_duplicates) {
 	vector<reference<PhysicalTableScan>> delete_sources;
 	FindDeleteSources(child_plan, table, delete_sources);
-	// the statistics of another source can become filters of the scan, which later rows need not satisfy
-	const bool filters_bound_rows = delete_sources.size() == 1 && CountSources(child_plan) == 1;
 	auto delete_map = make_shared_ptr<DuckLakeDeleteMap>();
 	for (auto &delete_source : delete_sources) {
 		auto &bind_data = delete_source.get().bind_data->Cast<MultiFileBindData>();
@@ -752,7 +804,7 @@ PhysicalOperator &DuckLakeDelete::PlanDelete(ClientContext &context, PhysicalPla
 		reader.delete_map = delete_map;
 	}
 	return planner.Make<DuckLakeDelete>(table, child_plan, std::move(delete_map), std::move(row_id_indexes),
-	                                    std::move(encryption_key), allow_duplicates, filters_bound_rows);
+	                                    std::move(encryption_key), allow_duplicates);
 }
 
 PhysicalOperator &DuckLakeCatalog::PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner, LogicalDelete &op,

@@ -2711,18 +2711,26 @@ void DuckLakeTransaction::MarkDeleteAttempted(TableIndex table_id) {
 	state->tables_delete_attempted.insert(table_id);
 }
 
-void DuckLakeTransaction::AddDeleteFilter(TableIndex table_id, optional_ptr<const FilterPushdownInfo> filter) {
+void DuckLakeTransaction::RecordStatementDeleteFilter(TableIndex table_id, idx_t query_id,
+                                                      optional_ptr<const FilterPushdownInfo> filter) {
 	string query;
 	if (filter) {
 		query = metadata_manager->InsertedFilesMatchingSql(table_id, *filter);
 	}
 	lock_guard<mutex> guard(delete_attempted_lock);
+	state->statement_delete_filters[table_id][query_id] = std::move(query);
+}
+
+void DuckLakeTransaction::AddDeleteFilter(TableIndex table_id, idx_t query_id) {
+	lock_guard<mutex> guard(delete_attempted_lock);
 	auto &filters = state->delete_filters[table_id];
-	if (query.empty()) {
+	auto &statement_filters = state->statement_delete_filters[table_id];
+	auto entry = statement_filters.find(query_id);
+	if (entry == statement_filters.end() || entry->second.empty()) {
 		filters.unfiltered = true;
 		return;
 	}
-	filters.queries.push_back(std::move(query));
+	filters.queries.push_back(entry->second);
 }
 
 const map<TableIndex, DeleteConflictFilters> &DuckLakeTransaction::GetDeleteFilters() const {

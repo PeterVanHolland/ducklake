@@ -312,6 +312,8 @@ public:
 	set<TableIndex> tables_deleted_from;
 	set<TableIndex> tables_delete_attempted;
 	map<TableIndex, DeleteConflictFilters> delete_filters;
+	//! Per table and statement, the query of the delete filters, empty when they do not bound the rows
+	map<TableIndex, map<idx_t, string>> statement_delete_filters;
 	set<TableIndex> tables_read;
 	unique_ptr<DuckLakeCatalogSet> new_schemas;
 	map<SchemaIndex, reference<DuckLakeSchemaEntry>> dropped_schemas;

@@ -10,6 +10,7 @@
 
 #include "storage/ducklake_insert.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
+#include "duckdb/optimizer/optimizer_extension.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "storage/ducklake_delete_filter.hpp"
 #include "storage/ducklake_metadata_info.hpp"
@@ -129,7 +130,7 @@ class DuckLakeDelete : public PhysicalOperator {
 public:
 	DuckLakeDelete(PhysicalPlan &physical_plan, DuckLakeTableEntry &table, PhysicalOperator &child,
 	               shared_ptr<DuckLakeDeleteMap> delete_map, vector<idx_t> row_id_indexes, string encryption_key,
-	               bool allow_duplicates, bool filters_bound_rows);
+	               bool allow_duplicates);
 
 	//! The table to delete from
 	DuckLakeTableEntry &table;
@@ -137,8 +138,6 @@ public:
 	shared_ptr<DuckLakeDeleteMap> delete_map;
 	//! The column indexes for the relevant row-id columns
 	vector<idx_t> row_id_indexes;
-	//! Whether the filters of the scan bound the rows the delete removes, which other sources of the plan prevent
-	bool filters_bound_rows;
 	//! The encryption key used to encrypt the written files
 	string encryption_key;
 	//! Whether or not we allow duplicate deletes
@@ -153,6 +152,9 @@ public:
 		return true;
 	}
 
+	//! Records the filters of a delete or update that reads only its target table, before the optimizer derives
+	//! filters from statistics or removes sources
+	static void RecordDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan);
 	static PhysicalOperator &PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner,
 	                                    DuckLakeTableEntry &table, PhysicalOperator &child_plan,
 	                                    vector<idx_t> row_id_indexes, string encryption_key,

@@ -11,6 +11,7 @@
 #include "storage/ducklake_schema_entry.hpp"
 #include "storage/ducklake_field_data.hpp"
 #include "storage/ducklake_insert.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "storage/ducklake_table_entry.hpp"
 #include "storage/ducklake_transaction.hpp"
@@ -333,7 +334,7 @@ SinkFinalizeType DuckLakeInsert::Finalize(Pipeline &pipeline, Event &event, Clie
 	if (reads_table) {
 		// a concurrent insert could have produced rows that would have changed what we inserted
 		transaction.MarkDeleteAttempted(global_state.table.GetTableId());
-		transaction.AddDeleteFilter(global_state.table.GetTableId(), nullptr);
+		transaction.AddDeleteFilter(global_state.table.GetTableId(), MetaTransaction::Get(context).GetActiveQuery());
 	}
 
 	return SinkFinalizeType::READY;

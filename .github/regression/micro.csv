@@ -9,6 +9,7 @@ benchmark/micro/maintenance/expire_snapshots.benchmark
 benchmark/micro/maintenance/flush_inlined_data.benchmark
 benchmark/micro/maintenance/delete_orphaned_files.benchmark
 benchmark/micro/maintenance/flush_inlined_sorted.benchmark
+benchmark/micro/maintenance/flush_partitioned_sorted.benchmark
 benchmark/micro/maintenance/big_lake_checkpoint.benchmark
 benchmark/micro/maintenance/big_lake_expire_snapshots.benchmark
 benchmark/micro/time_travel/at_version_history.benchmark
@@ -33,6 +34,7 @@ benchmark/micro/write/update_transaction_local_rows.benchmark
 benchmark/micro/write/delete_fanout_commits.benchmark
 benchmark/micro/write/sorted_insert.benchmark
 benchmark/micro/write/sorted_ctas.benchmark
+benchmark/micro/write/insert_partitioned_sorted.benchmark
 benchmark/micro/write/big_lake_insert_commits.benchmark
 benchmark/micro/write/big_lake_ddl_commits.benchmark
 benchmark/micro/write/big_lake_create_tables.benchmark

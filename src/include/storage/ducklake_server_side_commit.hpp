@@ -84,6 +84,7 @@ private:
 	unique_ptr<QueryResult> RunQuery(const string &query, const char *what);
 	//! Scan a temporary staging table via the catalog API (no SQL, no lock).
 	unique_ptr<QueryResult> ScanStagedTable(DuckLakeStagedTableType kind);
+	bool StagedTableExists(DuckLakeStagedTableType kind);
 
 private:
 	ClientContext &context;
@@ -102,6 +103,8 @@ private:
 	//! The tables the commit writes, whose stats are read together
 	vector<TableIndex> commit_tables;
 	bool supports_v1_1_metadata = false;
+	//! Whether the client staged the tables it read, an older client did not
+	bool tables_read_staged = false;
 	bool staged_dropped_files_read = false;
 	vector<pair<string, idx_t>> staged_dropped_files;
 	map<TableIndex, DroppedDataFileStats> staged_dropped_file_stats;

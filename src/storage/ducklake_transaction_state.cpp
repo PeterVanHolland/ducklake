@@ -110,12 +110,17 @@ bool DuckLakeTransactionState::InlinedTableFlushed(const Identifier &table_name)
 
 namespace {
 
+template <class T>
+void ThrowConflict(T index, const char *action, const char *conflict_action) {
+	throw TransactionException("Transaction conflict - attempting to %s with index \"%d\""
+	                           " - but another transaction has %s",
+	                           action, index.index, conflict_action);
+}
+
 template <class T, class MAP>
 void ConflictCheck(T index, const MAP &conflict_map, const char *action, const char *conflict_action) {
 	if (conflict_map.find(index) != conflict_map.end()) {
-		throw TransactionException("Transaction conflict - attempting to %s with index \"%d\""
-		                           " - but another transaction has %s",
-		                           action, index.index, conflict_action);
+		ThrowConflict(index, action, conflict_action);
 	}
 }
 
@@ -277,30 +282,27 @@ void DuckLakeTransactionState::CheckForConflicts(const TransactionChangeInformat
 	ConflictCheck(changes.created_table_macros, other_changes.dropped_schemas, other_changes.created_table_macros);
 	ConflictCheck(changes.created_scalar_macros, other_changes.dropped_schemas, other_changes.created_scalar_macros);
 	ConflictCheck(changes.created_tables, other_changes.dropped_schemas, other_changes.created_tables);
-	for (auto &table_id : changes.tables_inserted_into) {
-		ConflictCheck(table_id, other_changes.dropped_tables, "insert into table", "dropped it");
-		ConflictCheck(table_id, other_changes.altered_tables, "insert into table", "altered it");
-		ConflictCheck(table_id, other_changes.tables_deleted_from, "insert into table", "deleted from it");
-		ConflictCheck(table_id, other_changes.tables_deleted_inlined, "insert into table",
-		              "deleted inlined data from it");
-	}
-	for (auto &table_id : changes.tables_inserted_inlined) {
-		ConflictCheck(table_id, other_changes.dropped_tables, "insert into table", "dropped it");
-		ConflictCheck(table_id, other_changes.altered_tables, "insert into table", "altered it");
-		ConflictCheck(table_id, other_changes.tables_deleted_from, "insert into table", "deleted from it");
-		ConflictCheck(table_id, other_changes.tables_deleted_inlined, "insert into table",
-		              "deleted inlined data from it");
+	// rows inserted without reading the table do not depend on the rows another transaction deleted
+	for (auto tables : {&changes.tables_inserted_into, &changes.tables_inserted_inlined}) {
+		for (auto &table_id : *tables) {
+			ConflictCheck(table_id, other_changes.dropped_tables, "insert into table", "dropped it");
+			ConflictCheck(table_id, other_changes.altered_tables, "insert into table", "altered it");
+			if (changes.tables_read.find(table_id) == changes.tables_read.end()) {
+				continue;
+			}
+			ConflictCheck(table_id, other_changes.tables_deleted_from, "insert into table", "deleted from it");
+			ConflictCheck(table_id, other_changes.tables_deleted_inlined, "insert into table",
+			              "deleted inlined data from it");
+		}
 	}
 	for (auto &table_id : changes.tables_deleted_from) {
 		ConflictCheck(table_id, other_changes.dropped_tables, "delete from table", "dropped it");
 		ConflictCheck(table_id, other_changes.altered_tables, "delete from table", "altered it");
-		ConflictCheck(table_id, other_changes.inserted_tables, "delete from table", "inserted into it");
-		ConflictCheck(table_id, other_changes.tables_inserted_inlined, "delete from table", "inserted into it");
+		DeleteInsertConflictCheck(table_id, changes, other_changes, context);
 	}
-	// a delete that matched no rows must still conflict with concurrent inserts to the same table
+	// a delete that matched no rows must still conflict with concurrent inserts its filters can match
 	for (auto &table_id : changes.tables_delete_attempted) {
-		ConflictCheck(table_id, other_changes.inserted_tables, "delete from table", "inserted into it");
-		ConflictCheck(table_id, other_changes.tables_inserted_inlined, "delete from table", "inserted into it");
+		DeleteInsertConflictCheck(table_id, changes, other_changes, context);
 	}
 	CheckFileConflicts(changes, other_changes, context);
 	// inlined deletes of data file rows conflict per file in CheckFileConflicts
@@ -317,8 +319,7 @@ void DuckLakeTransactionState::CheckForConflicts(const TransactionChangeInformat
 			ConflictCheck(table_id, other_changes.tables_deleted_inlined, "delete from table", "deleted from it");
 		}
 		ConflictCheck(table_id, other_changes.tables_flushed_inlined, "delete from table", "flushed the inlined data");
-		ConflictCheck(table_id, other_changes.inserted_tables, "delete from table", "inserted into it");
-		ConflictCheck(table_id, other_changes.tables_inserted_inlined, "delete from table", "inserted into it");
+		DeleteInsertConflictCheck(table_id, changes, other_changes, context);
 	}
 	for (auto &table_id : changes.tables_flushed_inlined) {
 		ConflictCheck(table_id, other_changes.dropped_tables, "flush inline data", "dropped it");
@@ -2562,6 +2563,29 @@ static void GetOtherFileChanges(const set<TableIndex> &tables, const SnapshotCha
 		deleted |= other_changes.tables_deleted_from.find(table_id) != other_changes.tables_deleted_from.end();
 		compacted |= other_changes.tables_merge_adjacent.find(table_id) != other_changes.tables_merge_adjacent.end() ||
 		             other_changes.tables_rewrite_delete.find(table_id) != other_changes.tables_rewrite_delete.end();
+	}
+}
+
+void DuckLakeTransactionState::DeleteInsertConflictCheck(TableIndex table_id,
+                                                         const TransactionChangeInformation &changes,
+                                                         const SnapshotChangeInformation &other_changes,
+                                                         const DuckLakeCommitContext &context) const {
+	// inlined rows have no file statistics to check the filters against
+	ConflictCheck(table_id, other_changes.tables_inserted_inlined, "delete from table", "inserted into it");
+	if (other_changes.inserted_tables.find(table_id) == other_changes.inserted_tables.end()) {
+		return;
+	}
+	auto entry = changes.delete_filters.find(table_id);
+	if (entry == changes.delete_filters.end() || entry->second.unfiltered) {
+		ThrowConflict(table_id, "delete from table", "inserted into it");
+	}
+	for (auto &query : entry->second.queries) {
+		auto result = context.conflict_query_executor(query);
+		result->ThrowIfError(
+		    "Failed to commit DuckLake transaction - failed to get the inserted files for conflict resolution:");
+		if (result->Fetch()) {
+			ThrowConflict(table_id, "delete from table", "inserted into it");
+		}
 	}
 }
 

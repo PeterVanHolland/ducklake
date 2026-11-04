@@ -590,6 +590,13 @@ SinkFinalizeType DuckLakeDelete::Finalize(Pipeline &pipeline, Event &event, Clie
 	auto &global_state = input.global_state.Cast<DuckLakeDeleteGlobalState>();
 	auto &transaction = DuckLakeTransaction::Get(context, table.catalog);
 	transaction.MarkDeleteAttempted(table.GetTableId());
+	// the filters of the scans bound the rows the delete can remove
+	if (delete_map->file_lists.empty()) {
+		transaction.AddDeleteFilter(table.GetTableId(), nullptr);
+	}
+	for (auto &file_list : delete_map->file_lists) {
+		transaction.AddDeleteFilter(table.GetTableId(), file_list->Cast<DuckLakeMultiFileList>().GetFilterInfo());
+	}
 	if (global_state.deleted_rows.empty()) {
 		return SinkFinalizeType::READY;
 	}

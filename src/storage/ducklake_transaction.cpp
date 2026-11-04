@@ -1197,6 +1197,8 @@ TransactionChangeInformation DuckLakeTransaction::GetTransactionChanges() const 
 	}
 	changes.tables_deleted_from = state->tables_deleted_from;
 	changes.tables_delete_attempted = state->tables_delete_attempted;
+	changes.delete_filters = state->delete_filters;
+	changes.tables_read = state->tables_read;
 	for (auto &entry : state->local_changes.Changes()) {
 		auto table_id = entry.first;
 		if (IsTransactionLocal(table_id.index)) {
@@ -2707,6 +2709,32 @@ void DuckLakeTransaction::DropFile(TableIndex table_id, DataFileIndex data_file_
 void DuckLakeTransaction::MarkDeleteAttempted(TableIndex table_id) {
 	lock_guard<mutex> guard(delete_attempted_lock);
 	state->tables_delete_attempted.insert(table_id);
+}
+
+void DuckLakeTransaction::AddDeleteFilter(TableIndex table_id, optional_ptr<const FilterPushdownInfo> filter) {
+	string query;
+	if (filter) {
+		query = metadata_manager->InsertedFilesMatchingSql(table_id, *filter);
+	}
+	lock_guard<mutex> guard(delete_attempted_lock);
+	auto &filters = state->delete_filters[table_id];
+	if (query.empty()) {
+		filters.unfiltered = true;
+		return;
+	}
+	filters.queries.push_back(std::move(query));
+}
+
+const map<TableIndex, DeleteConflictFilters> &DuckLakeTransaction::GetDeleteFilters() const {
+	return state->delete_filters;
+}
+
+void DuckLakeTransaction::AddTableRead(TableIndex table_id) {
+	state->tables_read.insert(table_id);
+}
+
+const set<TableIndex> &DuckLakeTransaction::GetTablesRead() const {
+	return state->tables_read;
 }
 
 bool DuckLakeTransaction::HasDroppedFiles() const {

@@ -118,6 +118,15 @@ DuckLakeServerSideCommitResult DuckLakeServerSideCommit::Run() {
 	                                               state->tables_deleted_from.end());
 	transaction_changes.tables_delete_attempted.insert(state->tables_delete_attempted.begin(),
 	                                                   state->tables_delete_attempted.end());
+	transaction_changes.delete_filters = state->delete_filters;
+	transaction_changes.tables_read = state->tables_read;
+	if (!tables_read_staged) {
+		// a client that does not stage its reads gets the table level rule
+		transaction_changes.tables_read.insert(transaction_changes.tables_inserted_into.begin(),
+		                                       transaction_changes.tables_inserted_into.end());
+		transaction_changes.tables_read.insert(transaction_changes.tables_inserted_inlined.begin(),
+		                                       transaction_changes.tables_inserted_inlined.end());
+	}
 	commit_tables = transaction_changes.GetChangedTables();
 
 	idx_t committed_snapshot_id = 0;
@@ -425,6 +434,24 @@ void DuckLakeServerSideCommit::ReadStagedDroppedFiles() {
 	auto delete_attempted = ScanStagedTable(DuckLakeStagedTableType::TABLES_DELETE_ATTEMPTED);
 	for (auto &row : *delete_attempted) {
 		state->tables_delete_attempted.insert(TableIndex(AsIdx(row, 0)));
+	}
+	tables_read_staged = StagedTableExists(DuckLakeStagedTableType::TABLES_READ);
+	if (!tables_read_staged) {
+		return;
+	}
+	auto tables_read = ScanStagedTable(DuckLakeStagedTableType::TABLES_READ);
+	for (auto &row : *tables_read) {
+		state->tables_read.insert(TableIndex(AsIdx(row, 0)));
+	}
+	auto delete_filters = ScanStagedTable(DuckLakeStagedTableType::DELETE_FILTER);
+	for (auto &row : *delete_filters) {
+		auto &filters = state->delete_filters[TableIndex(AsIdx(row, 0))];
+		if (row.IsNull(1)) {
+			filters.unfiltered = true;
+			continue;
+		}
+		filters.queries.push_back(
+		    StringUtil::Replace(row.GetValue<string>(1), "{STAGED_METADATA_CATALOG}", "{METADATA_CATALOG}"));
 	}
 }
 
@@ -760,6 +787,14 @@ unique_ptr<QueryResult> DuckLakeServerSideCommit::RunQuery(const string &query, 
 	auto result = fresh_conn.Query(query);
 	result->ThrowIfError(StringUtil::Format("Server-side ducklake_commit (%s) failed: ", what));
 	return result;
+}
+
+bool DuckLakeServerSideCommit::StagedTableExists(DuckLakeStagedTableType kind) {
+	auto &temp_catalog = Catalog::GetCatalog(context, TEMP_CATALOG);
+	return temp_catalog.GetEntry<TableCatalogEntry>(context,
+	                                                QualifiedName(temp_catalog.GetName(), Identifier(DEFAULT_SCHEMA),
+	                                                              Identifier(DuckLakeStagedTable::BaseName(kind))),
+	                                                OnEntryNotFound::RETURN_NULL) != nullptr;
 }
 
 unique_ptr<QueryResult> DuckLakeServerSideCommit::ScanStagedTable(DuckLakeStagedTableType kind) {

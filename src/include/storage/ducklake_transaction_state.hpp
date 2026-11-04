@@ -10,6 +10,7 @@
 
 #include "storage/ducklake_stats.hpp"
 #include "storage/ducklake_transaction.hpp"
+#include "storage/ducklake_transaction_changes.hpp"
 
 namespace duckdb {
 struct DuckLakeAddedFields;
@@ -204,6 +205,10 @@ public:
 	void CheckTaggedSnapshotsExist(const DuckLakeCommitContext &context) const;
 	//! The ids of the snapshots the tags point at, as a SQL list
 	static string TaggedSnapshotIdList(const case_insensitive_map_t<DuckLakeSnapshotTagInfo> &tags);
+	//! A delete conflicts with the inserts of other transactions only when its filters can match their rows
+	void DeleteInsertConflictCheck(TableIndex table_id, const TransactionChangeInformation &changes,
+	                               const SnapshotChangeInformation &other_changes,
+	                               const DuckLakeCommitContext &context) const;
 	void CheckFileConflicts(const TransactionChangeInformation &changes, const SnapshotChangeInformation &other_changes,
 	                        const DuckLakeCommitContext &context) const;
 
@@ -306,6 +311,8 @@ public:
 	map<TableIndex, DroppedDataFileStats> dropped_file_stats;
 	set<TableIndex> tables_deleted_from;
 	set<TableIndex> tables_delete_attempted;
+	map<TableIndex, DeleteConflictFilters> delete_filters;
+	set<TableIndex> tables_read;
 	unique_ptr<DuckLakeCatalogSet> new_schemas;
 	map<SchemaIndex, reference<DuckLakeSchemaEntry>> dropped_schemas;
 	LocalTableChanges local_changes;

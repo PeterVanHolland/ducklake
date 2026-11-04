@@ -340,6 +340,21 @@ SELECT hour, n FROM lk.plain ORDER BY hour
 2026-10-31 14:00:00	50
 2026-10-31 15:00:00	6
 
+# a delete with a correlated subquery on the table keeps the table rule as well
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE n >= (SELECT avg(n) FROM lk.plain AS p WHERE p.hour = lk.plain.hour)
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 22:00', 8)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
 # a delete with another source keeps the table rule, the statistics of that source become filters of the scan
 statement ok con1
 BEGIN
@@ -379,3 +394,4 @@ SELECT hour, n FROM lk.plain ORDER BY hour
 2026-10-31 14:00:00	50
 2026-10-31 15:00:00	6
 2026-10-31 21:00:00	7
+2026-10-31 22:00:00	8

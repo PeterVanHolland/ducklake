@@ -21,7 +21,7 @@ class DuckLakeSchemaEntry;
 
 //! What the deletes of a table can remove, checked against concurrent inserts at the commit
 struct DeleteConflictFilters {
-	//! Some delete can remove any row
+	//! Some delete needs the check of the whole table
 	bool unfiltered = false;
 	//! Per delete, the query for an inserted file its filters can match
 	vector<string> queries;

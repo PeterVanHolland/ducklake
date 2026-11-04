@@ -716,15 +716,16 @@ static void FindDeleteSources(PhysicalOperator &plan, DuckLakeTableEntry &table,
 }
 
 //! The sources of a plan, a merge counts its target and its source
-static idx_t CountSources(PhysicalOperator &plan) {
+static idx_t CountSources(const PhysicalOperator &plan) {
 	if (plan.type == PhysicalOperatorType::MERGE_ACTION_SOURCE) {
 		return 2;
 	}
-	if (plan.children.empty()) {
+	auto children = plan.GetChildren();
+	if (children.empty()) {
 		return 1;
 	}
 	idx_t result = 0;
-	for (auto &child : plan.children) {
+	for (auto &child : children) {
 		result += CountSources(child.get());
 	}
 	return result;

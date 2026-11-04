@@ -285,6 +285,7 @@ DuckLakeMultiFileReader::InitializeGlobalState(ClientContext &context, const Mul
 	// the scan tasks, where every worker piles into DuckLakeMultiFileList::GetFiles() and blocks on its lock
 	// while one of them runs the metadata query - which costs far more in scheduler churn than the scan itself.
 	file_list.Cast<DuckLakeMultiFileList>().SetScanColumns(global_columns, global_column_ids);
+	file_list.Cast<DuckLakeMultiFileList>().RecordRead();
 	file_list.Cast<DuckLakeMultiFileList>().GetFiles();
 
 	optional_idx deletion_scan_snapshot_col;

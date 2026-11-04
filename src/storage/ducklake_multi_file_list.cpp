@@ -746,13 +746,18 @@ vector<DuckLakeFileListEntry> DuckLakeMultiFileList::ReadCommittedFiles(
 	                           read_info.table.name);
 }
 
+void DuckLakeMultiFileList::RecordRead() const {
+	if (read_info.scan_type != DuckLakeScanType::SCAN_TABLE || !read_info.include_local_changes ||
+	    IsTransactionLocal(read_info.table_id)) {
+		return;
+	}
+	auto transaction_ref = read_info.GetTransaction();
+	transaction_ref->RecordScan(read_info.table_id, read_info.scan_id);
+}
+
 void DuckLakeMultiFileList::GetFilesForTable() const {
 	auto transaction_ref = read_info.GetTransaction();
 	auto &transaction = *transaction_ref;
-	if (read_info.include_local_changes && !IsTransactionLocal(read_info.table_id)) {
-		// a scan that runs without the optimizer is still a read of the table
-		transaction.RecordScan(read_info.table_id, read_info.scan_id);
-	}
 	inlined_data_tables =
 	    read_info.table.GetInlinedDataTables(transaction, read_info.snapshot, read_info.include_local_changes);
 	identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>> inlined_rows;

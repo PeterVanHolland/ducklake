@@ -2718,19 +2718,24 @@ void DuckLakeTransaction::RecordStatementDeleteFilter(TableIndex table_id, idx_t
 		query = metadata_manager->InsertedFilesMatchingSql(table_id, *filter);
 	}
 	lock_guard<mutex> guard(delete_attempted_lock);
-	state->statement_delete_filters[table_id][query_id] = std::move(query);
+	state->statement_delete_filters[table_id][query_id].push_back(std::move(query));
 }
 
 void DuckLakeTransaction::AddDeleteFilter(TableIndex table_id, idx_t query_id) {
 	lock_guard<mutex> guard(delete_attempted_lock);
 	auto &filters = state->delete_filters[table_id];
-	auto &statement_filters = state->statement_delete_filters[table_id];
-	auto entry = statement_filters.find(query_id);
-	if (entry == statement_filters.end() || entry->second.empty()) {
+	// a statement can delete from the table more than once, every delete takes all of its filters
+	auto &statement_filters = state->statement_delete_filters[table_id][query_id];
+	if (statement_filters.empty()) {
 		filters.unfiltered = true;
-		return;
 	}
-	filters.queries.push_back(entry->second);
+	for (auto &query : statement_filters) {
+		if (query.empty()) {
+			filters.unfiltered = true;
+		} else if (std::find(filters.queries.begin(), filters.queries.end(), query) == filters.queries.end()) {
+			filters.queries.push_back(query);
+		}
+	}
 }
 
 const map<TableIndex, DeleteConflictFilters> &DuckLakeTransaction::GetDeleteFilters() const {

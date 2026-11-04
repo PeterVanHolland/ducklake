@@ -84,6 +84,7 @@ private:
 	unique_ptr<QueryResult> RunQuery(const string &query, const char *what);
 	//! Scan a temporary staging table via the catalog API (no SQL, no lock).
 	unique_ptr<QueryResult> ScanStagedTable(DuckLakeStagedTableType kind);
+	optional_ptr<TableCatalogEntry> StagedTableEntry(DuckLakeStagedTableType kind);
 	bool StagedTableExists(DuckLakeStagedTableType kind);
 
 private:

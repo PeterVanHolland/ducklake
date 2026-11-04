@@ -340,6 +340,21 @@ SELECT hour, n FROM lk.plain ORDER BY hour
 2026-10-31 14:00:00	50
 2026-10-31 15:00:00	6
 
+# a statement that deletes twice from the table, once without filters, keeps the table rule
+statement ok con1
+BEGIN
+
+statement ok con1
+WITH d AS (DELETE FROM lk.plain) DELETE FROM lk.plain WHERE hour = '2026-10-31 14:00'
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 23:00', 9)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
 # a delete with a correlated subquery on the table keeps the table rule as well
 statement ok con1
 BEGIN
@@ -395,3 +410,4 @@ SELECT hour, n FROM lk.plain ORDER BY hour
 2026-10-31 15:00:00	6
 2026-10-31 21:00:00	7
 2026-10-31 22:00:00	8
+2026-10-31 23:00:00	9

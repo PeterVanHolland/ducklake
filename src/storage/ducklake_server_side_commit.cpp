@@ -788,22 +788,25 @@ unique_ptr<QueryResult> DuckLakeServerSideCommit::RunQuery(const string &query, 
 	return result;
 }
 
-bool DuckLakeServerSideCommit::StagedTableExists(DuckLakeStagedTableType kind) {
+optional_ptr<TableCatalogEntry> DuckLakeServerSideCommit::StagedTableEntry(DuckLakeStagedTableType kind) {
 	auto &temp_catalog = Catalog::GetCatalog(context, TEMP_CATALOG);
 	return temp_catalog.GetEntry<TableCatalogEntry>(context,
 	                                                QualifiedName(temp_catalog.GetName(), Identifier(DEFAULT_SCHEMA),
 	                                                              Identifier(DuckLakeStagedTable::BaseName(kind))),
-	                                                OnEntryNotFound::RETURN_NULL) != nullptr;
+	                                                OnEntryNotFound::RETURN_NULL);
+}
+
+bool DuckLakeServerSideCommit::StagedTableExists(DuckLakeStagedTableType kind) {
+	return StagedTableEntry(kind) != nullptr;
 }
 
 unique_ptr<QueryResult> DuckLakeServerSideCommit::ScanStagedTable(DuckLakeStagedTableType kind) {
-	string table_name = DuckLakeStagedTable::BaseName(kind);
+	auto entry = StagedTableEntry(kind);
+	if (!entry) {
+		throw InternalException("Staged table %s not found", DuckLakeStagedTable::BaseName(kind));
+	}
+	auto &table_entry = entry->Cast<DuckTableEntry>();
 	auto &temp_catalog = Catalog::GetCatalog(context, TEMP_CATALOG);
-	auto &table_entry =
-	    temp_catalog
-	        .GetEntry<TableCatalogEntry>(
-	            context, QualifiedName(temp_catalog.GetName(), Identifier(DEFAULT_SCHEMA), Identifier(table_name)))
-	        .Cast<DuckTableEntry>();
 	auto &storage = table_entry.GetStorage();
 
 	auto types = storage.GetTypes();

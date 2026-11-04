@@ -44,9 +44,9 @@ SELECT count(*) FROM dl.t WHERE s.a IS NOT NULL
 ----
 1
 
-# the counts are unknown rather than zero
+# the counts are unknown rather than zero for a Parquet INTERVAL (1.0 catalogs), and exact for the struct of a 1.1 catalog
 query II
-SELECT value_count IS NULL, null_count IS NULL FROM __ducklake_metadata_dl.ducklake_file_column_stats
+SELECT value_count IS NULL OR value_count = 2, null_count IS NULL OR null_count = 1 FROM __ducklake_metadata_dl.ducklake_file_column_stats
 WHERE column_id = (SELECT column_id FROM __ducklake_metadata_dl.ducklake_column WHERE column_name = 'iv')
 ----
 true	true

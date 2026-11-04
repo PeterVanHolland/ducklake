@@ -290,12 +290,12 @@ public:
 	                                 optional_ptr<const FilterPushdownInfo> filter);
 	void AddDeleteFilter(TableIndex table_id, idx_t query_id);
 	idx_t NextScanId();
-	//! Record a scan of the current rows, and the scan of a delete or update among them
+	//! The scans of deletes and updates read only the rows their filters select, every other scan is a read
 	void RecordScan(TableIndex table_id, idx_t scan_id);
 	void RecordDeleteScan(TableIndex table_id, idx_t scan_id);
-	//! The delete filters per table, unfiltered where the transaction scanned the table beyond its deletes
+	//! The delete filters per table, unfiltered where the transaction read the table
 	map<TableIndex, DeleteConflictFilters> GetDeleteFilters() const;
-	//! The tables scanned beyond the deletes and updates, whose rows the transaction can write back
+	//! The tables the transaction read
 	set<TableIndex> GetTablesRead() const;
 
 	//! The snapshots the criterion selects that no tag protects, as the transaction sees them

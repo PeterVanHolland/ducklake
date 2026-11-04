@@ -527,7 +527,6 @@ static unique_ptr<LogicalOperator> FlushInlinedDataBind(ClientContext &context, 
 		}
 		flush_tables.emplace_back(table_entry, std::move(inlined_tables));
 	}
-	// the tables of one old schema version load together instead of one at a time
 	for (auto &version : version_tables) {
 		ducklake_catalog.LoadTablesAtSchemaVersion(transaction, version.first, version.second);
 	}

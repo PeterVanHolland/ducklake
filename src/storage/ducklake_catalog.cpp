@@ -505,7 +505,7 @@ idx_t DuckLakeCatalog::GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx
 
 optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLakeTransaction &transaction,
                                                                           TableIndex table_id, idx_t schema_version) {
-	// a cached version or group holds the table, a version of few tables loads one table at a time, a bigger one whole
+	// a cached version or group may hold the table, else few tables load alone and many load the whole version
 	auto entry = GetObjectCacheInstance().Get<DuckLakeSchemaCacheEntry>(SchemaCacheKey(schema_version));
 	if (!entry) {
 		entry = FindTableCacheEntry(schema_version, table_id);
@@ -1647,13 +1647,20 @@ string DuckLakeCatalog::SchemaCacheKey(idx_t schema_version) const {
 }
 
 string DuckLakeCatalog::TableCacheKey(idx_t schema_version, const vector<TableIndex> &table_ids) const {
+	if (table_ids.size() == 1) {
+		return StringUtil::Format("%s:table:%llu", SchemaCacheKey(schema_version), table_ids[0].index);
+	}
+	// a group is keyed by a hash of its sorted ids, so the key stays short however many tables it holds
 	vector<idx_t> ids;
 	for (auto &table_id : table_ids) {
 		ids.push_back(table_id.index);
 	}
 	std::sort(ids.begin(), ids.end());
-	return StringUtil::Format("%s:table:%s", SchemaCacheKey(schema_version),
-	                          StringUtil::Join(ids, ids.size(), ",", [](idx_t id) { return to_string(id); }));
+	hash_t hash = 0;
+	for (auto &id : ids) {
+		hash = CombineHash(hash, Hash(id));
+	}
+	return StringUtil::Format("%s:tables:%llu-%llu-%llx", SchemaCacheKey(schema_version), ids[0], ids.size(), hash);
 }
 
 bool DuckLakeCatalog::LoadsVersionWhole(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
@@ -1696,7 +1703,7 @@ void DuckLakeCatalog::InvalidateTableStatsCaches(const unordered_set<idx_t> &nex
 void DuckLakeCatalog::InvalidateSchemaCache(idx_t schema_version) {
 	auto &cache = GetObjectCacheInstance();
 	cache.Delete(SchemaCacheKey(schema_version));
-	// the tables of the version loaded alone go with it
+	// the tables of the version loaded alone or in groups go with it
 	lock_guard<mutex> guard(cache_entries_lock);
 	whole_version_loads.erase(schema_version);
 	auto keys = table_cache_keys.find(schema_version);

@@ -334,7 +334,6 @@ SinkFinalizeType DuckLakeInsert::Finalize(Pipeline &pipeline, Event &event, Clie
 	if (reads_table) {
 		// a concurrent insert could have produced rows that would have changed what we inserted
 		transaction.MarkDeleteAttempted(global_state.table.GetTableId());
-		transaction.AddUnfilteredDelete(global_state.table.GetTableId());
 	}
 
 	return SinkFinalizeType::READY;

@@ -503,6 +503,34 @@ SELECT i FROM lk.dep ORDER BY i
 0
 1
 
+# a read in an earlier statement counts as well
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.dep WHERE i = 1
+
+statement ok con1
+SET VARIABLE absent = (SELECT count(*) = 0 FROM lk.dep WHERE i = 2)
+
+statement ok con1
+INSERT INTO lk.dep SELECT 2 WHERE getvariable('absent')
+
+statement ok con2
+INSERT INTO lk.dep SELECT 2 WHERE EXISTS (SELECT 1 FROM lk.dep WHERE i = 1)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+query I
+SELECT i FROM lk.dep ORDER BY i
+----
+0
+1
+2
+
 # a bucket partition excludes an inserted file whose column bounds cover the deleted key
 statement ok
 CREATE TABLE lk.bucketed (id INTEGER, v INTEGER)
@@ -530,6 +558,33 @@ SELECT id, v FROM lk.bucketed ORDER BY id
 ----
 3	2
 5	3
+
+# the bucket alone prunes when the column statistics cannot answer the filter
+statement ok
+CREATE TABLE lk.blobs (k BLOB, v INTEGER)
+
+statement ok
+ALTER TABLE lk.blobs SET PARTITIONED BY (bucket(4, k))
+
+statement ok
+INSERT INTO lk.blobs VALUES ('\x01'::BLOB, 1)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.blobs WHERE k = '\x01'::BLOB
+
+statement ok con2
+INSERT INTO lk.blobs VALUES ('\x03'::BLOB, 2)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT k, v FROM lk.blobs
+----
+\x03	2
 
 # and the delete of a partition commits after a file was added for another
 statement ok

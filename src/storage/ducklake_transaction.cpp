@@ -1197,7 +1197,7 @@ TransactionChangeInformation DuckLakeTransaction::GetTransactionChanges() const 
 	}
 	changes.tables_deleted_from = state->tables_deleted_from;
 	changes.tables_delete_attempted = state->tables_delete_attempted;
-	changes.delete_filters = state->delete_filters;
+	changes.delete_filters = GetDeleteFilters();
 	changes.tables_read = state->tables_read;
 	for (auto &entry : state->local_changes.Changes()) {
 		auto table_id = entry.first;
@@ -2721,11 +2721,6 @@ void DuckLakeTransaction::RecordStatementDeleteFilter(DuckLakeTableEntry &table,
 	state->statement_delete_filters[table.GetTableId()][query_id].push_back(std::move(query));
 }
 
-void DuckLakeTransaction::AddUnfilteredDelete(TableIndex table_id) {
-	lock_guard<mutex> guard(delete_attempted_lock);
-	state->delete_filters[table_id].unfiltered = true;
-}
-
 void DuckLakeTransaction::AddDeleteFilter(TableIndex table_id, idx_t query_id) {
 	lock_guard<mutex> guard(delete_attempted_lock);
 	auto &filters = state->delete_filters[table_id];
@@ -2743,12 +2738,33 @@ void DuckLakeTransaction::AddDeleteFilter(TableIndex table_id, idx_t query_id) {
 	}
 }
 
-const map<TableIndex, DeleteConflictFilters> &DuckLakeTransaction::GetDeleteFilters() const {
-	return state->delete_filters;
+void DuckLakeTransaction::MarkDeleteScan(TableIndex table_id) {
+	lock_guard<mutex> guard(delete_attempted_lock);
+	state->delete_scan_counts[table_id]++;
+}
+
+map<TableIndex, DeleteConflictFilters> DuckLakeTransaction::GetDeleteFilters() const {
+	auto result = state->delete_filters;
+	// the rows the transaction writes can depend on what it read beyond its delete scans, so an insert of another
+	// transaction into the table could have changed them even when the delete filters do not match it
+	for (auto &entry : state->scan_counts) {
+		auto filters = result.find(entry.first);
+		if (filters == result.end()) {
+			continue;
+		}
+		auto delete_scans = state->delete_scan_counts.find(entry.first);
+		idx_t delete_scan_count = delete_scans == state->delete_scan_counts.end() ? 0 : delete_scans->second;
+		if (entry.second > delete_scan_count) {
+			filters->second.unfiltered = true;
+		}
+	}
+	return result;
 }
 
 void DuckLakeTransaction::AddTableRead(TableIndex table_id) {
+	lock_guard<mutex> guard(delete_attempted_lock);
 	state->tables_read.insert(table_id);
+	state->scan_counts[table_id]++;
 }
 
 const set<TableIndex> &DuckLakeTransaction::GetTablesRead() const {

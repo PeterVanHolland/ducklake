@@ -745,6 +745,9 @@ protected:
 	string GenerateFilterTreeCondition(const DuckLakeFilterNode &node, FilterSQLResult &result,
 	                                   bool splice_into_parent = false);
 	virtual FilterSQLResult ConvertFilterPushdownToSQL(const FilterPushdownInfo &filter_info);
+	//! The conditions on the files of a table from its filters, the column statistics and the bucket partitions
+	FilterSQLResult GenerateFileFilterConditions(DuckLakeTableEntry &table, const FilterPushdownInfo &filter_info,
+	                                             const string &metadata_table_prefix);
 	string GenerateCTESectionFromRequirements(const map<idx_t, CTERequirement> &requirements, TableIndex table_id,
 	                                          const string &metadata_table_prefix);
 	//! Whether the stats CTEs of the file list query are materialized, for a database that plans the query itself

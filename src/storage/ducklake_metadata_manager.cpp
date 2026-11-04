@@ -2447,12 +2447,20 @@ WHERE data.table_id=%d AND {SNAPSHOT_ID} >= data.begin_snapshot AND ({SNAPSHOT_I
 	return query + order_by_clause;
 }
 
-string DuckLakeMetadataManager::InsertedFilesMatchingSql(TableIndex table_id, const FilterPushdownInfo &filters,
+string DuckLakeMetadataManager::InsertedFilesMatchingSql(DuckLakeTableEntry &table, const FilterPushdownInfo &filters,
                                                          const string &metadata_table_prefix) {
 	auto filter_result = ConvertFilterPushdownToSQL(filters);
 	if (filter_result.where_conditions.empty()) {
 		return string();
 	}
+	if (table.GetPartitionData()) {
+		auto partition_value_table = metadata_table_prefix + ".ducklake_file_partition_value";
+		auto bucket_clause = BuildBucketPartitionPruningClause(table, filters, partition_value_table);
+		if (!bucket_clause.empty()) {
+			filter_result.where_conditions += " AND " + bucket_clause;
+		}
+	}
+	auto table_id = table.GetTableId();
 	auto query = GenerateCTESectionFromRequirements(filter_result.required_ctes, table_id, metadata_table_prefix);
 	query += StringUtil::Format(R"(
 SELECT data.data_file_id

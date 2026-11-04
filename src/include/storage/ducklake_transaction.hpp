@@ -286,7 +286,7 @@ public:
 	//! Record that a delete predicate was evaluated against a table, even if no rows matched
 	void MarkDeleteAttempted(TableIndex table_id);
 	//! Record a delete of the statement with the filters of its scan, none when the delete keeps the table rule
-	void RecordStatementDeleteFilter(TableIndex table_id, idx_t query_id,
+	void RecordStatementDeleteFilter(DuckLakeTableEntry &table, idx_t query_id,
 	                                 optional_ptr<const FilterPushdownInfo> filter);
 	void AddDeleteFilter(TableIndex table_id, idx_t query_id);
 	void AddUnfilteredDelete(TableIndex table_id);

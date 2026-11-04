@@ -6,6 +6,7 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/file_open_flags.hpp"
 #include "duckdb/planner/operator/logical_delete.hpp"
+#include "duckdb/planner/operator/logical_insert.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_merge_into.hpp"
 #include "duckdb/planner/operator/logical_update.hpp"
@@ -753,24 +754,43 @@ static optional_ptr<DuckLakeFunctionInfo> GetDuckLakeScanInfo(LogicalGet &get) {
 	return &get.function.function_info->Cast<DuckLakeFunctionInfo>();
 }
 
-void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
+//! The DuckLake tables the plan scans
+static void CollectScannedTables(LogicalOperator &plan, set<TableIndex> &tables) {
+	if (plan.type == LogicalOperatorType::LOGICAL_GET) {
+		auto scan_info = GetDuckLakeScanInfo(plan.Cast<LogicalGet>());
+		if (scan_info) {
+			tables.insert(scan_info->table_id);
+		}
+	}
+	for (auto &child : plan.children) {
+		CollectScannedTables(*child, tables);
+	}
+}
+
+static void RecordStatementDeletes(OptimizerExtensionInput &input, LogicalOperator &plan,
+                                   const set<TableIndex> &scanned_tables) {
 	optional_ptr<TableCatalogEntry> table;
 	bool simple = true;
-	switch (plan->type) {
+	bool insert = false;
+	switch (plan.type) {
 	case LogicalOperatorType::LOGICAL_DELETE:
-		table = plan->Cast<LogicalDelete>().table;
+		table = plan.Cast<LogicalDelete>().table;
 		break;
 	case LogicalOperatorType::LOGICAL_UPDATE:
-		table = plan->Cast<LogicalUpdate>().table;
+		table = plan.Cast<LogicalUpdate>().table;
 		break;
 	case LogicalOperatorType::LOGICAL_MERGE_INTO:
 		// a merge reads its target against its source, so its deletes need the check of the whole table
-		table = plan->Cast<LogicalMergeInto>().table;
+		table = plan.Cast<LogicalMergeInto>().table;
 		simple = false;
 		break;
+	case LogicalOperatorType::LOGICAL_INSERT:
+		table = plan.Cast<LogicalInsert>().table;
+		insert = true;
+		break;
 	default:
-		for (auto &child : plan->children) {
-			RecordDeleteFilters(input, child);
+		for (auto &child : plan.children) {
+			RecordStatementDeletes(input, *child, scanned_tables);
 		}
 		return;
 	}
@@ -783,10 +803,19 @@ void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_
 		return;
 	}
 	auto &context = input.context;
+	auto &transaction = DuckLakeTransaction::Get(context, table->catalog);
+	if (insert) {
+		// the rows an insert writes after reading its table can depend on the rows a delete of the transaction
+		// removes, so the deletes of such a transaction keep the table rule
+		if (scanned_tables.find(table_id) != scanned_tables.end()) {
+			transaction.AddUnfilteredDelete(table_id);
+		}
+		return;
+	}
 	vector<unique_ptr<Expression>> filters;
 	optional_ptr<const FilterPushdownInfo> filter_info;
 	unique_ptr<MultiFileList> pushed;
-	auto get = simple ? FindDeleteScan(*plan->children[0], filters) : nullptr;
+	auto get = simple ? FindDeleteScan(*plan.children[0], filters) : nullptr;
 	auto scan_info = get ? GetDuckLakeScanInfo(*get) : nullptr;
 	if (scan_info && scan_info->table_id == table_id && !filters.empty()) {
 		// the constants are folded the way the optimizer does before it pushes the filters into the scan
@@ -804,8 +833,14 @@ void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_
 			filter_info = pushed->Cast<DuckLakeMultiFileList>().GetFilterInfo();
 		}
 	}
-	auto &transaction = DuckLakeTransaction::Get(context, table->catalog);
-	transaction.RecordStatementDeleteFilter(table_id, MetaTransaction::Get(context).GetActiveQuery(), filter_info);
+	transaction.RecordStatementDeleteFilter(ducklake_table, MetaTransaction::Get(context).GetActiveQuery(),
+	                                        filter_info);
+}
+
+void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
+	set<TableIndex> scanned_tables;
+	CollectScannedTables(*plan, scanned_tables);
+	RecordStatementDeletes(input, *plan, scanned_tables);
 }
 
 PhysicalOperator &DuckLakeDelete::PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner,

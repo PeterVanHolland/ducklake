@@ -66,7 +66,7 @@ protected:
 	                             const vector<DuckLakeFileListDynamicFilter> &dynamic_filters,
 	                             const vector<idx_t> &runtime_filter_stats_columns, FileListType file_list_type,
 	                             const string &metadata_table_prefix) override;
-	string InsertedFilesMatchingSql(TableIndex table_id, const FilterPushdownInfo &filters,
+	string InsertedFilesMatchingSql(DuckLakeTableEntry &table, const FilterPushdownInfo &filters,
 	                                const string &metadata_table_prefix) override;
 	bool MaterializeStatsCTEs() const override;
 	string CastValueToTarget(const Value &value, const LogicalType &type) override;

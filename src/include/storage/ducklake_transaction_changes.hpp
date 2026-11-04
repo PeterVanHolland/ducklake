@@ -19,10 +19,10 @@ namespace duckdb {
 class CatalogEntry;
 class DuckLakeSchemaEntry;
 
-//! What the deletes of a table can remove, checked against the inserts of other transactions at the commit
+//! The delete filters of a table, checked against the files other transactions inserted
 struct DeleteConflictFilters {
 	bool unfiltered = false;
-	//! Per delete, the query for an inserted file its filters can match
+	//! Per delete, a query that finds an inserted file the filters can match
 	vector<string> queries;
 };
 

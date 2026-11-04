@@ -453,7 +453,7 @@ COMMIT
 ----
 but another transaction has inserted into it
 
-# a NULL check on its own is no filter of the scan before the optimizer, so it keeps the table rule
+# a NULL check on its own checks the null counts of the inserted files
 statement ok con1
 BEGIN
 
@@ -463,10 +463,73 @@ DELETE FROM lk.plain WHERE n IS NULL
 statement ok con2
 INSERT INTO lk.plain VALUES ('2026-10-31 07:00', 12)
 
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.plain WHERE hour < '2026-10-31 12:00' ORDER BY hour
+----
+2026-10-31 03:00:00	11
+2026-10-31 07:00:00	12
+2026-10-31 11:00:00	2
+
+# an insert that reads its table next to a filtered delete keeps the table rule for the delete
+statement ok
+CREATE TABLE lk.dep (i INTEGER)
+
+statement ok
+INSERT INTO lk.dep VALUES (0)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.dep WHERE i = 0
+
+statement ok con1
+INSERT INTO lk.dep SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM lk.dep WHERE i = 1)
+
+statement ok con2
+INSERT INTO lk.dep SELECT 1 WHERE EXISTS (SELECT 1 FROM lk.dep WHERE i = 0)
+
 statement error con1
 COMMIT
 ----
 but another transaction has inserted into it
+
+query I
+SELECT i FROM lk.dep ORDER BY i
+----
+0
+1
+
+# a bucket partition excludes an inserted file whose column bounds cover the deleted key
+statement ok
+CREATE TABLE lk.bucketed (id INTEGER, v INTEGER)
+
+statement ok
+ALTER TABLE lk.bucketed SET PARTITIONED BY (bucket(4, id))
+
+statement ok
+INSERT INTO lk.bucketed VALUES (4, 1)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.bucketed WHERE id = 4
+
+statement ok con2
+INSERT INTO lk.bucketed VALUES (3, 2), (5, 3)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT id, v FROM lk.bucketed ORDER BY id
+----
+3	2
+5	3
 
 # and the delete of a partition commits after a file was added for another
 statement ok
@@ -488,7 +551,6 @@ query II
 SELECT hour, n FROM lk.plain ORDER BY hour
 ----
 2026-10-31 03:00:00	11
-2026-10-31 06:00:00	NULL
 2026-10-31 07:00:00	12
 2026-10-31 12:00:00	3
 2026-10-31 13:00:00	4

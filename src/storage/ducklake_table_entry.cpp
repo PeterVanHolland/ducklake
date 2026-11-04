@@ -425,7 +425,7 @@ TableFunction DuckLakeTableEntry::GetScanFunctionById(ClientContext &context, un
 		throw BinderException("Table with name %s does not exist", name);
 	}
 	// the rows the transaction inserts can depend on what it read, an older snapshot cannot change
-	if (!lookup_info.GetAtClause() && !IsTransactionLocal()) {
+	if (!lookup_info.GetAtClause() && !DuckLakeTransaction::IsTransactionLocal(GetTableId().index)) {
 		transaction.AddTableRead(GetTableId());
 	}
 

@@ -47,7 +47,7 @@ struct TransactionChangeInformation {
 	set<TableIndex> tables_deleted_from;
 	//! Tables a delete predicate was evaluated against, regardless of whether any rows matched
 	set<TableIndex> tables_delete_attempted;
-	//! The filters of the deletes per table
+	//! Per table, the filters its deletes removed rows through
 	map<TableIndex, DeleteConflictFilters> delete_filters;
 	//! Tables the transaction scanned, whose rows its inserts can depend on
 	set<TableIndex> tables_read;

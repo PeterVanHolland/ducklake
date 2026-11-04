@@ -450,8 +450,8 @@ void DuckLakeServerSideCommit::ReadStagedDroppedFiles() {
 			filters.unfiltered = true;
 			continue;
 		}
-		filters.queries.push_back(
-		    StringUtil::Replace(row.GetValue<string>(1), "{STAGED_METADATA_CATALOG}", "{METADATA_CATALOG}"));
+		filters.queries.push_back(DuckLakeUtil::ReplacePlaceholders(
+		    row.GetValue<string>(1), {{"{STAGED_METADATA_CATALOG}", "{METADATA_CATALOG}"}}));
 	}
 }
 

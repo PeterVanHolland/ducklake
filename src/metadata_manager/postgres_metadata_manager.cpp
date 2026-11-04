@@ -537,4 +537,15 @@ string PostgresMetadataManager::GenerateFileListQuery(DuckLakeTableEntry &table,
 	return PostgresQuery(remote_query);
 }
 
+string PostgresMetadataManager::InsertedFilesMatchingSql(TableIndex table_id, const FilterPushdownInfo &filters,
+                                                         const string &) {
+	auto schema = SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName());
+	auto remote_query = DuckLakeMetadataManager::InsertedFilesMatchingSql(table_id, filters, schema);
+	if (remote_query.empty()) {
+		return remote_query;
+	}
+	SubstituteSnapshotPlaceholders(transaction.GetSnapshot(), remote_query);
+	return PostgresQuery(remote_query);
+}
+
 } // namespace duckdb

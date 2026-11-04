@@ -2447,19 +2447,20 @@ WHERE data.table_id=%d AND {SNAPSHOT_ID} >= data.begin_snapshot AND ({SNAPSHOT_I
 	return query + order_by_clause;
 }
 
-string DuckLakeMetadataManager::InsertedFilesMatchingSql(TableIndex table_id, const FilterPushdownInfo &filters) {
+string DuckLakeMetadataManager::InsertedFilesMatchingSql(TableIndex table_id, const FilterPushdownInfo &filters,
+                                                         const string &metadata_table_prefix) {
 	auto filter_result = ConvertFilterPushdownToSQL(filters);
 	if (filter_result.where_conditions.empty()) {
 		return string();
 	}
-	auto query = GenerateCTESectionFromRequirements(filter_result.required_ctes, table_id, "{METADATA_CATALOG}");
+	auto query = GenerateCTESectionFromRequirements(filter_result.required_ctes, table_id, metadata_table_prefix);
 	query += StringUtil::Format(R"(
 SELECT data.data_file_id
-FROM {METADATA_CATALOG}.ducklake_data_file data%s
+FROM %s.ducklake_data_file data%s
 WHERE data.table_id = %d AND data.begin_snapshot > {SNAPSHOT_ID} AND %s
 LIMIT 1)",
-	                            GenerateStatsJoinList(filter_result.required_ctes), table_id.index,
-	                            filter_result.where_conditions);
+	                            metadata_table_prefix, GenerateStatsJoinList(filter_result.required_ctes),
+	                            table_id.index, filter_result.where_conditions);
 	return query;
 }
 

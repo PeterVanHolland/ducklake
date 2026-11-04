@@ -284,6 +284,31 @@ SELECT hour, n FROM lk.plain ORDER BY hour
 2026-10-31 11:00:00	2
 2026-10-31 12:00:00	3
 
+# an insert that read the table through a merge keeps the table level rule next to a filtered delete
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE hour = '2026-10-31 11:00'
+
+statement ok con1
+MERGE INTO lk.plain USING (SELECT TIMESTAMP '2026-10-31 14:00' AS hour, 5::BIGINT AS n) AS s ON lk.plain.hour = s.hour WHEN NOT MATCHED THEN INSERT VALUES (s.hour, s.n)
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 14:00', 50)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+query II
+SELECT hour, n FROM lk.plain ORDER BY hour
+----
+2026-10-31 11:00:00	2
+2026-10-31 12:00:00	3
+2026-10-31 14:00:00	50
+
 # and the delete of a partition commits after a file was added for another
 statement ok
 COPY (SELECT TIMESTAMP '2026-10-31 13:00' AS hour, 4::BIGINT AS n) TO '{DATA_PATH}/delete_insert_filters_added2.parquet'
@@ -305,3 +330,4 @@ SELECT hour, n FROM lk.plain ORDER BY hour
 ----
 2026-10-31 12:00:00	3
 2026-10-31 13:00:00	4
+2026-10-31 14:00:00	50

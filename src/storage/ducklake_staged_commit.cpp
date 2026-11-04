@@ -504,7 +504,8 @@ string DuckLakeStagedCommit::EmitDroppedFiles(DuckLakeTransaction &transaction) 
 		}
 		for (auto &query : entry.second.queries) {
 			// the batch gets the catalog of the client, the server puts its own catalog back
-			auto staged_query = StringUtil::Replace(query, "{METADATA_CATALOG}", "{STAGED_METADATA_CATALOG}");
+			auto staged_query =
+			    DuckLakeUtil::ReplacePlaceholders(query, {{"{METADATA_CATALOG}", "{STAGED_METADATA_CATALOG}"}});
 			sql += StringUtil::Format("INSERT INTO %s VALUES (%llu, %s);", table_name, entry.first.index,
 			                          SQLString(staged_query));
 		}

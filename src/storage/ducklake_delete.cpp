@@ -809,7 +809,6 @@ static void RecordStatementChanges(OptimizerExtensionInput &input, unique_ptr<Lo
 		transaction.RecordDeleteScan(table_id, scan_info->scan_id);
 	}
 	if (scan_info && scan_info->table_id == table_id && !filters.empty()) {
-		// folded like the optimizer folds them before it pushes them into the scan
 		LogicalFilter folded;
 		folded.expressions = std::move(filters);
 		ExpressionRewriter rewriter(context);

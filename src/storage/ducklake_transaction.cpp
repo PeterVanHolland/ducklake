@@ -2762,7 +2762,6 @@ static bool HasOtherScans(const DuckLakeTransactionState &state, TableIndex tabl
 
 map<TableIndex, DeleteConflictFilters> DuckLakeTransaction::GetDeleteFilters() const {
 	auto result = state->delete_filters;
-	// other scans of the table need the check against the whole table
 	for (auto &entry : state->table_scans) {
 		auto filters = result.find(entry.first);
 		if (filters != result.end() && HasOtherScans(*state, entry.first, entry.second)) {

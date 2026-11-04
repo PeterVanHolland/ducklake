@@ -747,8 +747,7 @@ vector<DuckLakeFileListEntry> DuckLakeMultiFileList::ReadCommittedFiles(
 }
 
 void DuckLakeMultiFileList::RecordRead() const {
-	if (read_info.scan_type != DuckLakeScanType::SCAN_TABLE || !read_info.include_local_changes ||
-	    IsTransactionLocal(read_info.table_id)) {
+	if (!read_info.ReadsCurrentRows()) {
 		return;
 	}
 	auto transaction_ref = read_info.GetTransaction();

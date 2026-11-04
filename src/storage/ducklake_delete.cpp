@@ -767,8 +767,7 @@ static void RecordStatementChanges(OptimizerExtensionInput &input, unique_ptr<Lo
 		break;
 	case LogicalOperatorType::LOGICAL_GET: {
 		auto scan_info = GetDuckLakeScanInfo(plan->Cast<LogicalGet>());
-		if (scan_info && scan_info->include_local_changes &&
-		    !DuckLakeTransaction::IsTransactionLocal(scan_info->table_id.index)) {
+		if (scan_info && scan_info->ReadsCurrentRows()) {
 			DuckLakeTransaction::Get(context, scan_info->table.catalog)
 			    .RecordScan(scan_info->table_id, scan_info->scan_id);
 		}

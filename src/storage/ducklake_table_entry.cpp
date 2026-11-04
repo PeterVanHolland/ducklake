@@ -422,8 +422,7 @@ TableFunction DuckLakeTableEntry::GetScanFunctionById(ClientContext &context, un
 	    DuckLakeFunctionInfo::Create(*this, transaction, transaction.GetSnapshot(lookup_info.GetAtClause()));
 	function_info->include_local_changes = !lookup_info.GetAtClause();
 	// without the optimizer hook the bind records the scan
-	if (!lookup_info.GetAtClause() && !DuckLakeTransaction::IsTransactionLocal(GetTableId().index) &&
-	    Optimizer::OptimizerDisabled(context, OptimizerType::EXTENSION)) {
+	if (function_info->ReadsCurrentRows() && Optimizer::OptimizerDisabled(context, OptimizerType::EXTENSION)) {
 		transaction.RecordScan(GetTableId(), function_info->scan_id);
 	}
 	function.function_info = std::move(function_info);

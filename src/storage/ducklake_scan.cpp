@@ -267,6 +267,11 @@ DuckLakeFunctionInfo::DuckLakeFunctionInfo(DuckLakeTableEntry &table, DuckLakeTr
     : table(table), transaction(transaction_p.shared_from_this()), snapshot(snapshot) {
 }
 
+bool DuckLakeFunctionInfo::ReadsCurrentRows() const {
+	return scan_type == DuckLakeScanType::SCAN_TABLE && include_local_changes &&
+	       !DuckLakeTransaction::IsTransactionLocal(table_id.index);
+}
+
 shared_ptr<DuckLakeFunctionInfo>
 DuckLakeFunctionInfo::Create(DuckLakeTableEntry &table, DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
 	auto result = make_shared_ptr<DuckLakeFunctionInfo>(table, transaction, snapshot);

@@ -65,6 +65,8 @@ struct DuckLakeFunctionInfo : public TableFunctionInfo {
 
 	shared_ptr<DuckLakeTransaction> GetTransaction();
 	bool CanUseGlobalStats();
+	//! Whether the scan reads the current rows of a committed table, which counts as a read of the table
+	bool ReadsCurrentRows() const;
 };
 
 } // namespace duckdb

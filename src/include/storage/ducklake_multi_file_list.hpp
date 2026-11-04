@@ -31,6 +31,8 @@ public:
 	DuckLakeMultiFileList(DuckLakeFunctionInfo &read_info, const DuckLakeInlinedTableInfo &inlined_table);
 
 	unique_ptr<MultiFileList> DynamicFilterPushdown(MultiFileDynamicPushdownInfo &pushdown_info) const override;
+	//! The filters of the list together with the table filters, every row the scan returns satisfies both
+	unique_ptr<FilterPushdownInfo> CombinedFilterInfo(MultiFileDynamicPushdownInfo &pushdown_info) const;
 
 	unique_ptr<MultiFileList> ComplexFilterPushdown(ClientContext &context, const MultiFileOptions &options,
 	                                                MultiFilePushdownInfo &info,

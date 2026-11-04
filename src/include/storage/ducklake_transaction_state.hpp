@@ -11,6 +11,7 @@
 #include "storage/ducklake_stats.hpp"
 #include "storage/ducklake_transaction.hpp"
 #include "storage/ducklake_transaction_changes.hpp"
+#include "duckdb/common/optional_idx.hpp"
 
 namespace duckdb {
 struct DuckLakeAddedFields;
@@ -183,6 +184,14 @@ struct DuckLakeCommitContext {
 //! Holds the per-transaction mutable change state (new/dropped/renamed catalog entries, local file
 //! changes, flushed inlined tables) and owns the Commit() loop that flushes them into the metadata
 //! database. Owned by DuckLakeTransaction via a back-reference.
+//! A delete scan of a statement, its filters come from the optimized plan
+struct StatementDeleteFilter {
+	//! The scan of the delete in the plan, set until the optimizer resolved its filters
+	optional_idx scan_index;
+	//! The query for an inserted file the filters can match, empty when the delete keeps the table rule
+	string query;
+};
+
 class DuckLakeTransactionState {
 public:
 	DuckLakeTransactionState(DatabaseInstance &db, bool require_commit_message, DuckLakeNameMapSet &new_name_maps,
@@ -312,8 +321,8 @@ public:
 	set<TableIndex> tables_deleted_from;
 	set<TableIndex> tables_delete_attempted;
 	map<TableIndex, DeleteConflictFilters> delete_filters;
-	//! Per table and statement, the query of every delete, empty when its filters do not bound the rows
-	map<TableIndex, map<idx_t, vector<string>>> statement_delete_filters;
+	//! Per table and statement, the delete scans and their queries
+	map<TableIndex, map<idx_t, vector<StatementDeleteFilter>>> statement_delete_filters;
 	set<TableIndex> tables_read;
 	unique_ptr<DuckLakeCatalogSet> new_schemas;
 	map<SchemaIndex, reference<DuckLakeSchemaEntry>> dropped_schemas;

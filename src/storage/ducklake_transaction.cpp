@@ -2711,14 +2711,49 @@ void DuckLakeTransaction::MarkDeleteAttempted(TableIndex table_id) {
 	state->tables_delete_attempted.insert(table_id);
 }
 
-void DuckLakeTransaction::RecordStatementDeleteFilter(TableIndex table_id, idx_t query_id,
-                                                      optional_ptr<const FilterPushdownInfo> filter) {
+void DuckLakeTransaction::RecordDeleteScan(TableIndex table_id, idx_t query_id, optional_idx scan_index) {
+	lock_guard<mutex> guard(delete_attempted_lock);
+	StatementDeleteFilter record;
+	record.scan_index = scan_index;
+	state->statement_delete_filters[table_id][query_id].push_back(std::move(record));
+}
+
+static optional_ptr<StatementDeleteFilter> FindPendingDeleteScan(DuckLakeTransactionState &state, TableIndex table_id,
+                                                                 idx_t query_id, idx_t scan_index) {
+	auto table_entry = state.statement_delete_filters.find(table_id);
+	if (table_entry == state.statement_delete_filters.end()) {
+		return nullptr;
+	}
+	auto query_entry = table_entry->second.find(query_id);
+	if (query_entry == table_entry->second.end()) {
+		return nullptr;
+	}
+	for (auto &record : query_entry->second) {
+		if (record.scan_index.IsValid() && record.scan_index.GetIndex() == scan_index) {
+			return &record;
+		}
+	}
+	return nullptr;
+}
+
+bool DuckLakeTransaction::HasPendingDeleteScan(TableIndex table_id, idx_t query_id, idx_t scan_index) {
+	lock_guard<mutex> guard(delete_attempted_lock);
+	return FindPendingDeleteScan(*state, table_id, query_id, scan_index) != nullptr;
+}
+
+void DuckLakeTransaction::SetDeleteScanFilter(TableIndex table_id, idx_t query_id, idx_t scan_index,
+                                              optional_ptr<const FilterPushdownInfo> filter) {
 	string query;
 	if (filter) {
 		query = metadata_manager->InsertedFilesMatchingSql(table_id, *filter);
 	}
 	lock_guard<mutex> guard(delete_attempted_lock);
-	state->statement_delete_filters[table_id][query_id].push_back(std::move(query));
+	auto record = FindPendingDeleteScan(*state, table_id, query_id, scan_index);
+	if (!record) {
+		throw InternalException("DuckLake delete scan %llu of table %llu was not recorded", scan_index, table_id.index);
+	}
+	record->scan_index = optional_idx();
+	record->query = std::move(query);
 }
 
 void DuckLakeTransaction::AddUnfilteredDelete(TableIndex table_id) {
@@ -2734,11 +2769,12 @@ void DuckLakeTransaction::AddDeleteFilter(TableIndex table_id, idx_t query_id) {
 	if (statement_filters.empty()) {
 		filters.unfiltered = true;
 	}
-	for (auto &query : statement_filters) {
-		if (query.empty()) {
+	for (auto &record : statement_filters) {
+		// a scan the optimizer did not resolve keeps the table rule
+		if (record.scan_index.IsValid() || record.query.empty()) {
 			filters.unfiltered = true;
-		} else if (std::find(filters.queries.begin(), filters.queries.end(), query) == filters.queries.end()) {
-			filters.queries.push_back(query);
+		} else if (std::find(filters.queries.begin(), filters.queries.end(), record.query) == filters.queries.end()) {
+			filters.queries.push_back(record.query);
 		}
 	}
 }

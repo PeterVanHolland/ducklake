@@ -285,8 +285,13 @@ public:
 	void DropFile(TableIndex table_id, DataFileIndex data_file_id, string path, idx_t row_count, idx_t file_size_bytes);
 	//! Record that a delete predicate was evaluated against a table, even if no rows matched
 	void MarkDeleteAttempted(TableIndex table_id);
-	void RecordStatementDeleteFilter(TableIndex table_id, idx_t query_id,
-	                                 optional_ptr<const FilterPushdownInfo> filter);
+	//! Record a delete scan of the statement, or no scan when the delete keeps the table rule
+	void RecordDeleteScan(TableIndex table_id, idx_t query_id, optional_idx scan_index);
+	//! Whether a delete scan of the statement still waits for its filters
+	bool HasPendingDeleteScan(TableIndex table_id, idx_t query_id, idx_t scan_index);
+	//! Set the filters of a delete scan of the statement
+	void SetDeleteScanFilter(TableIndex table_id, idx_t query_id, idx_t scan_index,
+	                         optional_ptr<const FilterPushdownInfo> filter);
 	void AddDeleteFilter(TableIndex table_id, idx_t query_id);
 	//! A delete of the table that can remove any row
 	void AddUnfilteredDelete(TableIndex table_id);

@@ -400,6 +400,63 @@ COMMIT
 ----
 but another transaction has inserted into it
 
+# a delete of several partitions commits after an insert into another, the optimizer folds the list
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE hour IN ('2026-10-31 21:00', '2026-10-31 22:00')
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 05:00', NULL)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.plain WHERE hour >= '2026-10-31 21:00' OR n IS NULL ORDER BY hour
+----
+2026-10-31 05:00:00	NULL
+2026-10-31 23:00:00	9
+
+# a delete of the NULL rows checks the null counts of the inserted files
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE n IS NULL
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 03:00', 11)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.plain WHERE hour < '2026-10-31 12:00' ORDER BY hour
+----
+2026-10-31 02:00:00	10
+2026-10-31 03:00:00	11
+2026-10-31 11:00:00	2
+
+# and conflicts with an inserted NULL
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE n IS NULL
+
+statement ok con1
+INSERT INTO lk.other VALUES (3)
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 06:00', NULL)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
 # and the delete of a partition commits after a file was added for another
 statement ok
 COPY (SELECT TIMESTAMP '2026-10-31 13:00' AS hour, 4::BIGINT AS n) TO '{DATA_PATH}/delete_insert_filters_added2.parquet'
@@ -420,10 +477,10 @@ query II
 SELECT hour, n FROM lk.plain ORDER BY hour
 ----
 2026-10-31 02:00:00	10
+2026-10-31 03:00:00	11
+2026-10-31 06:00:00	NULL
 2026-10-31 12:00:00	3
 2026-10-31 13:00:00	4
 2026-10-31 14:00:00	50
 2026-10-31 15:00:00	6
-2026-10-31 21:00:00	7
-2026-10-31 22:00:00	8
 2026-10-31 23:00:00	9

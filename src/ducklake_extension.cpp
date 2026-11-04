@@ -28,7 +28,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(instance);
 	StorageExtension::Register(config, "ducklake", make_shared_ptr<DuckLakeStorageExtension>());
 	OptimizerExtension delete_filters;
-	delete_filters.pre_optimize_function = DuckLakeDelete::RecordDeleteFilters;
+	delete_filters.pre_optimize_function = DuckLakeDelete::RecordDeleteScans;
+	delete_filters.optimize_function = DuckLakeDelete::ResolveDeleteFilters;
 	OptimizerExtension::Register(config, std::move(delete_filters));
 
 	config.AddExtensionOption("ducklake_max_retry_count",

@@ -419,12 +419,12 @@ SELECT hour, n FROM lk.plain WHERE hour >= '2026-10-31 21:00' OR n IS NULL ORDER
 2026-10-31 05:00:00	NULL
 2026-10-31 23:00:00	9
 
-# a delete of the NULL rows checks the null counts of the inserted files
+# a disjunction with a NULL check becomes a filter tree, inserted values outside it commit
 statement ok con1
 BEGIN
 
 statement ok con1
-DELETE FROM lk.plain WHERE n IS NULL
+DELETE FROM lk.plain WHERE hour = '2026-10-31 02:00' OR n IS NULL
 
 statement ok con2
 INSERT INTO lk.plain VALUES ('2026-10-31 03:00', 11)
@@ -435,22 +435,33 @@ COMMIT
 query II
 SELECT hour, n FROM lk.plain WHERE hour < '2026-10-31 12:00' ORDER BY hour
 ----
-2026-10-31 02:00:00	10
 2026-10-31 03:00:00	11
 2026-10-31 11:00:00	2
 
-# and conflicts with an inserted NULL
+# and an inserted NULL conflicts with it
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE hour = '2026-10-31 03:00' OR n IS NULL
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 06:00', NULL)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+# a NULL check on its own is no filter of the scan before the optimizer, so it keeps the table rule
 statement ok con1
 BEGIN
 
 statement ok con1
 DELETE FROM lk.plain WHERE n IS NULL
 
-statement ok con1
-INSERT INTO lk.other VALUES (3)
-
 statement ok con2
-INSERT INTO lk.plain VALUES ('2026-10-31 06:00', NULL)
+INSERT INTO lk.plain VALUES ('2026-10-31 07:00', 12)
 
 statement error con1
 COMMIT
@@ -476,9 +487,9 @@ COMMIT
 query II
 SELECT hour, n FROM lk.plain ORDER BY hour
 ----
-2026-10-31 02:00:00	10
 2026-10-31 03:00:00	11
 2026-10-31 06:00:00	NULL
+2026-10-31 07:00:00	12
 2026-10-31 12:00:00	3
 2026-10-31 13:00:00	4
 2026-10-31 14:00:00	50

@@ -241,25 +241,6 @@ DuckLakeMultiFileList::DynamicFilterPushdown(MultiFileDynamicPushdownInfo &dynam
 	                                        std::move(pushdown_info));
 }
 
-unique_ptr<FilterPushdownInfo>
-DuckLakeMultiFileList::CombinedFilterInfo(MultiFileDynamicPushdownInfo &dynamic_pushdown_info) const {
-	if (!SupportsFilterPushdown()) {
-		return nullptr;
-	}
-	auto pushdown_info = filter_info ? filter_info->Copy() : make_uniq<FilterPushdownInfo>();
-	auto &column_ids = dynamic_pushdown_info.column_ids;
-	for (auto &entry : dynamic_pushdown_info.filters) {
-		auto column_id = column_ids[entry.GetIndex().GetIndex()];
-		AddFilterToPushdownInfo(
-		    *pushdown_info, column_id,
-		    ExpressionFilter::GetExpressionFilter(entry.Filter(), "DuckLakeMultiFileList::CombinedFilterInfo").Copy());
-	}
-	if (pushdown_info->Empty()) {
-		return nullptr;
-	}
-	return pushdown_info;
-}
-
 template <class FUNC>
 static void VisitFilterTreeLeaves(const DuckLakeFilterNode &node, FUNC &&visit) {
 	if (node.type == DuckLakeFilterNodeType::COLUMN_FILTER) {

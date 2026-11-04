@@ -17,6 +17,8 @@
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "storage/ducklake_scan.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/operator/logical_copy_to_file.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
@@ -712,14 +714,24 @@ static void FindDeleteSources(PhysicalOperator &plan, DuckLakeTableEntry &table,
 	}
 }
 
-//! The scan a delete or update removes rows from, when nothing else feeds the plan
-static optional_ptr<LogicalGet> FindDeleteScan(LogicalOperator &plan) {
+//! The scan a delete or update removes rows from, with the filters above it, when nothing else feeds the plan
+static optional_ptr<LogicalGet> FindDeleteScan(LogicalOperator &plan, vector<unique_ptr<Expression>> &filters) {
 	reference<LogicalOperator> node(plan);
+	bool below_filter = false;
 	while (true) {
 		auto &current = node.get();
 		switch (current.type) {
 		case LogicalOperatorType::LOGICAL_PROJECTION:
+			// the filters above a projection refer to its columns, not to the scan
+			if (below_filter) {
+				return nullptr;
+			}
+			break;
 		case LogicalOperatorType::LOGICAL_FILTER:
+			for (auto &expr : current.expressions) {
+				filters.push_back(expr->Copy());
+			}
+			below_filter = true;
 			break;
 		case LogicalOperatorType::LOGICAL_GET:
 			return &current.Cast<LogicalGet>();
@@ -733,6 +745,18 @@ static optional_ptr<LogicalGet> FindDeleteScan(LogicalOperator &plan) {
 	}
 }
 
+//! Fold the constant parts of a filter the way the optimizer does before it pushes the filter into the scan
+static void FoldConstants(ClientContext &context, unique_ptr<Expression> &expr) {
+	if (expr->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT && expr->IsFoldable()) {
+		Value value;
+		if (ExpressionExecutor::TryEvaluateScalar(context, *expr, value)) {
+			expr = make_uniq<BoundConstantExpression>(std::move(value));
+		}
+		return;
+	}
+	ExpressionIterator::EnumerateChildren(*expr, [&](unique_ptr<Expression> &child) { FoldConstants(context, child); });
+}
+
 static optional_ptr<DuckLakeFunctionInfo> GetDuckLakeScanInfo(LogicalGet &get) {
 	auto definition = get.function.GetDefinition();
 	if (!definition || definition->name != "ducklake_scan" || !definition->function_info) {
@@ -741,7 +765,7 @@ static optional_ptr<DuckLakeFunctionInfo> GetDuckLakeScanInfo(LogicalGet &get) {
 	return &definition->function_info->Cast<DuckLakeFunctionInfo>();
 }
 
-void DuckLakeDelete::RecordDeleteScans(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
+void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
 	optional_ptr<TableCatalogEntry> table;
 	bool simple = true;
 	switch (plan->type) {
@@ -758,7 +782,7 @@ void DuckLakeDelete::RecordDeleteScans(OptimizerExtensionInput &input, unique_pt
 		break;
 	default:
 		for (auto &child : plan->children) {
-			RecordDeleteScans(input, child);
+			RecordDeleteFilters(input, child);
 		}
 		return;
 	}
@@ -770,42 +794,26 @@ void DuckLakeDelete::RecordDeleteScans(OptimizerExtensionInput &input, unique_pt
 	if (DuckLakeTransaction::IsTransactionLocal(table_id.index)) {
 		return;
 	}
-	optional_idx scan_index;
-	auto get = simple ? FindDeleteScan(*plan->children[0]) : nullptr;
+	auto &context = input.context;
+	vector<unique_ptr<Expression>> filters;
+	optional_ptr<const FilterPushdownInfo> filter_info;
+	unique_ptr<MultiFileList> pushed;
+	auto get = simple ? FindDeleteScan(*plan->children[0], filters) : nullptr;
 	auto scan_info = get ? GetDuckLakeScanInfo(*get) : nullptr;
-	if (scan_info && scan_info->table_id == table_id) {
-		scan_index = get->table_index.index;
-	}
-	auto &context = input.context;
-	auto &transaction = DuckLakeTransaction::Get(context, table->catalog);
-	transaction.RecordDeleteScan(table_id, MetaTransaction::Get(context).GetActiveQuery(), scan_index);
-}
-
-void DuckLakeDelete::ResolveDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
-	if (plan->type != LogicalOperatorType::LOGICAL_GET) {
-		for (auto &child : plan->children) {
-			ResolveDeleteFilters(input, child);
+	if (scan_info && scan_info->table_id == table_id && !filters.empty()) {
+		for (auto &filter : filters) {
+			FoldConstants(context, filter);
 		}
-		return;
+		auto &bind_data = get->bind_data->Cast<MultiFileBindData>();
+		auto &file_list = bind_data.file_list->Cast<DuckLakeMultiFileList>();
+		MultiFilePushdownInfo info(get->table_index, bind_data.names, get->GetColumnIds(), get->extra_info);
+		pushed = file_list.ComplexFilterPushdown(context, bind_data.file_options, info, filters);
+		if (pushed) {
+			filter_info = pushed->Cast<DuckLakeMultiFileList>().GetFilterInfo();
+		}
 	}
-	auto &get = plan->Cast<LogicalGet>();
-	auto scan_info = GetDuckLakeScanInfo(get);
-	if (!scan_info) {
-		return;
-	}
-	auto &context = input.context;
-	auto query_id = MetaTransaction::Get(context).GetActiveQuery();
-	auto &transaction = DuckLakeTransaction::Get(context, scan_info->table.catalog);
-	if (!transaction.HasPendingDeleteScan(scan_info->table_id, query_id, get.table_index.index)) {
-		return;
-	}
-	// the file list holds the filters the optimizer pushed before it dropped the ones the statistics made redundant,
-	// the table filters hold the expressions it pushed on top
-	auto &bind_data = get.bind_data->Cast<MultiFileBindData>();
-	MultiFileDynamicPushdownInfo pushdown_info(context, bind_data.file_options, bind_data.names, bind_data.types,
-	                                           get.GetColumnIds(), get.table_filters);
-	auto filter_info = bind_data.file_list->Cast<DuckLakeMultiFileList>().CombinedFilterInfo(pushdown_info);
-	transaction.SetDeleteScanFilter(scan_info->table_id, query_id, get.table_index.index, filter_info.get());
+	auto &transaction = DuckLakeTransaction::Get(context, table->catalog);
+	transaction.RecordStatementDeleteFilter(table_id, MetaTransaction::Get(context).GetActiveQuery(), filter_info);
 }
 
 PhysicalOperator &DuckLakeDelete::PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner,

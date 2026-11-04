@@ -141,23 +141,28 @@ SELECT count(DISTINCT filename), count(DISTINCT filename) FILTER (WHERE k < prev
 ----
 20	0
 
-# the copy sorts by the keys before a volatile key, which it does not evaluate again
+# the copy sorts by the keys before a volatile key, which it does not evaluate again, and not by the keys after it
 statement ok
-CREATE TABLE lake.s (p INTEGER, k INTEGER);
+CREATE TABLE lake.s (p INTEGER, k INTEGER, id INTEGER);
 
 statement ok
 ALTER TABLE lake.s SET PARTITIONED BY (p);
 
 statement ok
-ALTER TABLE lake.s SET SORTED BY (k, random());
+ALTER TABLE lake.s SET SORTED BY (k, random(), id);
 
 statement ok
-INSERT INTO lake.s SELECT i % 4, i FROM range(1000) r(i);
+INSERT INTO lake.s SELECT i % 4, i % 25, i FROM range(1000) r(i);
 
 query II
 SELECT count(DISTINCT filename), count(DISTINCT filename) FILTER (WHERE k < prev) FROM (SELECT filename, k, lag(k) OVER (PARTITION BY filename ORDER BY file_row_number) AS prev FROM (SELECT filename, file_row_number, k AS k FROM lake.s))
 ----
 4	0
+
+query I
+SELECT count(*) FROM lake.s WHERE p = 1 AND k = 5
+----
+10
 
 # a flush sorts each partition with the collation of the sort key
 statement ok

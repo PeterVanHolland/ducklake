@@ -357,8 +357,7 @@ public:
 	                                                            const vector<TableIndex> &table_ids = {});
 	//! Get the record count of every table that has global stats
 	virtual map<TableIndex, idx_t> GetTableRecordCounts(DuckLakeSnapshot snapshot);
-	//! A query for a data file of the table inserted after the snapshot that the filters can match, empty when
-	//! the filters cannot be written into a query
+	//! The query for a file inserted after the snapshot that the filters can match, empty if they have no statistics
 	virtual string InsertedFilesMatchingSql(TableIndex table_id, const FilterPushdownInfo &filters,
 	                                        const string &metadata_table_prefix = "{METADATA_CATALOG}");
 	virtual vector<DuckLakeFileListEntry> GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,

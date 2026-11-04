@@ -19,11 +19,11 @@ namespace duckdb {
 class CatalogEntry;
 class DuckLakeSchemaEntry;
 
-//! The filters of the deletes of a table, which bound the rows a concurrent insert must not have added
+//! What the deletes of a table can remove, checked against concurrent inserts at the commit
 struct DeleteConflictFilters {
-	//! A delete whose filters cannot be checked against file statistics can remove any row
+	//! Some delete can remove any row
 	bool unfiltered = false;
-	//! Per delete, the query for a file inserted after the snapshot that its filters can match
+	//! Per delete, the query for an inserted file its filters can match
 	vector<string> queries;
 };
 

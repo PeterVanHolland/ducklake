@@ -309,6 +309,52 @@ SELECT hour, n FROM lk.plain ORDER BY hour
 2026-10-31 12:00:00	3
 2026-10-31 14:00:00	50
 
+# a merge of files committed after the snapshot keeps the inserted rows visible to the check
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE hour = '2026-10-31 15:00'
+
+statement ok con1
+INSERT INTO lk.other VALUES (2)
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 15:00', 6)
+
+query I con2
+SELECT files_created FROM ducklake_merge_adjacent_files('lk', 'plain')
+----
+1
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+query II
+SELECT hour, n FROM lk.plain ORDER BY hour
+----
+2026-10-31 11:00:00	2
+2026-10-31 12:00:00	3
+2026-10-31 14:00:00	50
+2026-10-31 15:00:00	6
+
+# a delete with another source keeps the table rule, the statistics of that source become filters of the scan
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain USING lk.src WHERE lk.plain.hour = lk.src.hour - INTERVAL 5 HOUR
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 21:00', 7)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
 # and the delete of a partition commits after a file was added for another
 statement ok
 COPY (SELECT TIMESTAMP '2026-10-31 13:00' AS hour, 4::BIGINT AS n) TO '{DATA_PATH}/delete_insert_filters_added2.parquet'
@@ -331,3 +377,5 @@ SELECT hour, n FROM lk.plain ORDER BY hour
 2026-10-31 12:00:00	3
 2026-10-31 13:00:00	4
 2026-10-31 14:00:00	50
+2026-10-31 15:00:00	6
+2026-10-31 21:00:00	7

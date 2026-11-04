@@ -298,10 +298,12 @@ void DuckLakeTransactionState::CheckForConflicts(const TransactionChangeInformat
 	for (auto &table_id : changes.tables_deleted_from) {
 		ConflictCheck(table_id, other_changes.dropped_tables, "delete from table", "dropped it");
 		ConflictCheck(table_id, other_changes.altered_tables, "delete from table", "altered it");
-		DeleteInsertConflictCheck(table_id, changes, other_changes, context);
 	}
 	// a delete that matched no rows must still conflict with concurrent inserts its filters can match
-	for (auto &table_id : changes.tables_delete_attempted) {
+	set<TableIndex> delete_tables(changes.tables_delete_attempted);
+	delete_tables.insert(changes.tables_deleted_from.begin(), changes.tables_deleted_from.end());
+	delete_tables.insert(changes.tables_deleted_inlined.begin(), changes.tables_deleted_inlined.end());
+	for (auto &table_id : delete_tables) {
 		DeleteInsertConflictCheck(table_id, changes, other_changes, context);
 	}
 	CheckFileConflicts(changes, other_changes, context);
@@ -319,7 +321,6 @@ void DuckLakeTransactionState::CheckForConflicts(const TransactionChangeInformat
 			ConflictCheck(table_id, other_changes.tables_deleted_inlined, "delete from table", "deleted from it");
 		}
 		ConflictCheck(table_id, other_changes.tables_flushed_inlined, "delete from table", "flushed the inlined data");
-		DeleteInsertConflictCheck(table_id, changes, other_changes, context);
 	}
 	for (auto &table_id : changes.tables_flushed_inlined) {
 		ConflictCheck(table_id, other_changes.dropped_tables, "flush inline data", "dropped it");

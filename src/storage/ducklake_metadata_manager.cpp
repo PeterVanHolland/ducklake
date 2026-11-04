@@ -2457,7 +2457,8 @@ string DuckLakeMetadataManager::InsertedFilesMatchingSql(TableIndex table_id, co
 	query += StringUtil::Format(R"(
 SELECT data.data_file_id
 FROM %s.ducklake_data_file data%s
-WHERE data.table_id = %d AND data.begin_snapshot > {SNAPSHOT_ID} AND %s
+WHERE data.table_id = %d AND %s
+  AND (data.begin_snapshot > {SNAPSHOT_ID} OR (data.partial_max IS NOT NULL AND data.partial_max > {SNAPSHOT_ID}))
 LIMIT 1)",
 	                            metadata_table_prefix, GenerateStatsJoinList(filter_result.required_ctes),
 	                            table_id.index, filter_result.where_conditions);

@@ -129,7 +129,7 @@ class DuckLakeDelete : public PhysicalOperator {
 public:
 	DuckLakeDelete(PhysicalPlan &physical_plan, DuckLakeTableEntry &table, PhysicalOperator &child,
 	               shared_ptr<DuckLakeDeleteMap> delete_map, vector<idx_t> row_id_indexes, string encryption_key,
-	               bool allow_duplicates);
+	               bool allow_duplicates, bool filters_bound_rows);
 
 	//! The table to delete from
 	DuckLakeTableEntry &table;
@@ -137,6 +137,8 @@ public:
 	shared_ptr<DuckLakeDeleteMap> delete_map;
 	//! The column indexes for the relevant row-id columns
 	vector<idx_t> row_id_indexes;
+	//! Whether the filters of the scan bound the rows the delete removes, which other sources of the plan prevent
+	bool filters_bound_rows;
 	//! The encryption key used to encrypt the written files
 	string encryption_key;
 	//! Whether or not we allow duplicate deletes

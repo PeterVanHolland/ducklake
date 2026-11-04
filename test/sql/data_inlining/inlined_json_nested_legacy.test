@@ -19,11 +19,11 @@ CREATE TABLE lk.t (id INTEGER, l JSON[], s STRUCT(j JSON, l JSON[]))
 statement ok
 INSERT INTO lk.t VALUES (1, ['{"id":1}'], {'j': '1', 'l': ['2']})
 
-# the current version keeps the JSON leaves quoted
+# the current version writes the JSON leaves as strings, quoted when they hold anything but a plain word
 query II
 SELECT l, s FROM __ducklake_metadata_lk.ducklake_inlined_data_1_1
 ----
-['{"id":1}']	{'j': '1', 'l': ['2']}
+['{"id":1}']	{'j': 1, 'l': [2]}
 
 # older versions wrote the JSON itself, with NULL for a missing element and null for a JSON null
 statement ok
@@ -37,18 +37,20 @@ SELECT id, l, s FROM lk.t ORDER BY id
 ----
 1	[{"id":1}]	{'j': 1, 'l': [2]}
 2	[NULL]	{'j': NULL, 'l': [NULL, null]}
-3	[{"id":1}, null, "[1, 2]", "it's, a \"quote\"", "", "NULL", 1, true]	{'j': "null", 'l': []}
-4	[]	{'j': [1, {"k": "v, w"}], 'l': [{"a": [null, "NULL"]}]}
+3	[{"id":1}, null, "[1, 2]", "it's, a \"quote\"", "", "NULL", 1, true]	{'j': '"null"', 'l': []}
+4	[]	{'j': '[1, {"k": "v, w"}]', 'l': [{"a": [null, "NULL"]}]}
 
-query IIII
-SELECT l[2] IS NULL, l[3] IS NULL, s.l[1] IS NULL, s.l[2] IS NULL FROM lk.t WHERE id = 3
-----
-false	false	false	false
-
+# a JSON null and a JSON string are values, a NULL element is missing; the injected rows are unknown to the
+# table statistics, so they are reached by position and not by a filter
 query II
-SELECT l[1] IS NULL, s.l[2] IS NULL FROM lk.t WHERE id = 2
+SELECT l[2] IS NULL, l[3] IS NULL FROM lk.t ORDER BY id OFFSET 2 LIMIT 1
 ----
-true	false
+false	false
+
+query III
+SELECT l[1] IS NULL, s.l[1] IS NULL, s.l[2] IS NULL FROM lk.t ORDER BY id OFFSET 1 LIMIT 1
+----
+true	true	false
 
 # the flush writes the rows to a data file as they were read
 statement ok
@@ -64,5 +66,5 @@ SELECT id, l, s FROM lk.t ORDER BY id
 ----
 1	[{"id":1}]	{'j': 1, 'l': [2]}
 2	[NULL]	{'j': NULL, 'l': [NULL, null]}
-3	[{"id":1}, null, "[1, 2]", "it's, a \"quote\"", "", "NULL", 1, true]	{'j': "null", 'l': []}
-4	[]	{'j': [1, {"k": "v, w"}], 'l': [{"a": [null, "NULL"]}]}
+3	[{"id":1}, null, "[1, 2]", "it's, a \"quote\"", "", "NULL", 1, true]	{'j': '"null"', 'l': []}
+4	[]	{'j': '[1, {"k": "v, w"}]', 'l': [{"a": [null, "NULL"]}]}

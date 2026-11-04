@@ -762,7 +762,8 @@ void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_
 		auto scan_info = GetDuckLakeScanInfo(plan->Cast<LogicalGet>());
 		if (scan_info && scan_info->include_local_changes &&
 		    !DuckLakeTransaction::IsTransactionLocal(scan_info->table_id.index)) {
-			DuckLakeTransaction::Get(context, scan_info->table.catalog).CountScan(scan_info->table_id);
+			DuckLakeTransaction::Get(context, scan_info->table.catalog)
+			    .RecordScan(scan_info->table_id, scan_info->scan_id);
 		}
 		break;
 	}
@@ -798,7 +799,7 @@ void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_
 	auto get = simple ? FindDeleteScan(*plan->children[0], filters) : nullptr;
 	auto scan_info = get ? GetDuckLakeScanInfo(*get) : nullptr;
 	if (scan_info && scan_info->table_id == table_id) {
-		transaction.CountDeleteScan(table_id);
+		transaction.RecordDeleteScan(table_id, scan_info->scan_id);
 	}
 	if (scan_info && scan_info->table_id == table_id && !filters.empty()) {
 		// folded like the optimizer folds them before it pushes them into the scan

@@ -531,6 +531,38 @@ SELECT i FROM lk.dep ORDER BY i
 1
 2
 
+# a read that runs without the optimizer counts through the scan itself
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.dep WHERE i = 2
+
+statement ok con1
+SET enable_optimizer = false
+
+statement ok con1
+INSERT INTO lk.dep SELECT 3 WHERE NOT EXISTS (SELECT 1 FROM lk.dep WHERE i = 3)
+
+statement ok con1
+RESET enable_optimizer
+
+statement ok con2
+INSERT INTO lk.dep SELECT 3 WHERE EXISTS (SELECT 1 FROM lk.dep WHERE i = 2)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+query I
+SELECT i FROM lk.dep ORDER BY i
+----
+0
+1
+2
+3
+
 # a bucket partition excludes an inserted file whose column bounds cover the deleted key
 statement ok
 CREATE TABLE lk.bucketed (id INTEGER, v INTEGER)

@@ -2738,28 +2738,32 @@ void DuckLakeTransaction::AddDeleteFilter(TableIndex table_id, idx_t query_id) {
 	}
 }
 
-void DuckLakeTransaction::CountScan(TableIndex table_id) {
+idx_t DuckLakeTransaction::NextScanId() {
 	lock_guard<mutex> guard(delete_attempted_lock);
-	state->scan_counts[table_id]++;
+	return state->next_scan_id++;
 }
 
-void DuckLakeTransaction::CountDeleteScan(TableIndex table_id) {
+void DuckLakeTransaction::RecordScan(TableIndex table_id, idx_t scan_id) {
 	lock_guard<mutex> guard(delete_attempted_lock);
-	state->delete_scan_counts[table_id]++;
+	state->table_scans[table_id].insert(scan_id);
+}
+
+void DuckLakeTransaction::RecordDeleteScan(TableIndex table_id, idx_t scan_id) {
+	lock_guard<mutex> guard(delete_attempted_lock);
+	state->table_delete_scans[table_id].insert(scan_id);
 }
 
 map<TableIndex, DeleteConflictFilters> DuckLakeTransaction::GetDeleteFilters() const {
 	auto result = state->delete_filters;
-	// a scan beyond the delete scans can feed the rows the transaction writes, which an insert of another
-	// transaction can change even when the delete filters do not match it
-	for (auto &entry : state->scan_counts) {
+	// other scans of the table need the check against the whole table
+	for (auto &entry : state->table_scans) {
 		auto filters = result.find(entry.first);
 		if (filters == result.end()) {
 			continue;
 		}
-		auto delete_scans = state->delete_scan_counts.find(entry.first);
-		idx_t delete_scan_count = delete_scans == state->delete_scan_counts.end() ? 0 : delete_scans->second;
-		if (entry.second > delete_scan_count) {
+		auto delete_scans = state->table_delete_scans.find(entry.first);
+		idx_t delete_scan_count = delete_scans == state->table_delete_scans.end() ? 0 : delete_scans->second.size();
+		if (entry.second.size() > delete_scan_count) {
 			filters->second.unfiltered = true;
 		}
 	}

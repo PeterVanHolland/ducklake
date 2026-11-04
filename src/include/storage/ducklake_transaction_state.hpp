@@ -316,9 +316,10 @@ public:
 	//! Per table and statement, the query of every delete, empty when its filters do not bound the rows
 	map<TableIndex, map<idx_t, vector<string>>> statement_delete_filters;
 	set<TableIndex> tables_read;
-	//! Per table, the scans of the current rows the optimizer saw, and those of the deletes and updates
-	map<TableIndex, idx_t> scan_counts;
-	map<TableIndex, idx_t> delete_scan_counts;
+	//! Per table, the scans of the current rows the optimizer saw or that ran, and those of the deletes and updates
+	map<TableIndex, set<idx_t>> table_scans;
+	map<TableIndex, set<idx_t>> table_delete_scans;
+	idx_t next_scan_id = 0;
 	unique_ptr<DuckLakeCatalogSet> new_schemas;
 	map<SchemaIndex, reference<DuckLakeSchemaEntry>> dropped_schemas;
 	LocalTableChanges local_changes;

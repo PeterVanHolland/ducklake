@@ -274,6 +274,7 @@ DuckLakeFunctionInfo::Create(DuckLakeTableEntry &table, DuckLakeTransaction &tra
 	result->column_names = table.GetColumns().GetColumnNames();
 	result->column_types = table.GetColumns().GetColumnTypes();
 	result->table_id = table.GetTableId();
+	result->scan_id = transaction.NextScanId();
 	return result;
 }
 

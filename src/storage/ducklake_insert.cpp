@@ -11,7 +11,6 @@
 #include "storage/ducklake_schema_entry.hpp"
 #include "storage/ducklake_field_data.hpp"
 #include "storage/ducklake_insert.hpp"
-#include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "storage/ducklake_table_entry.hpp"
 #include "storage/ducklake_transaction.hpp"

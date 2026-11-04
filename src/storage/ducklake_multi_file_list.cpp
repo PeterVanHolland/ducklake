@@ -749,6 +749,10 @@ vector<DuckLakeFileListEntry> DuckLakeMultiFileList::ReadCommittedFiles(
 void DuckLakeMultiFileList::GetFilesForTable() const {
 	auto transaction_ref = read_info.GetTransaction();
 	auto &transaction = *transaction_ref;
+	if (read_info.include_local_changes && !IsTransactionLocal(read_info.table_id)) {
+		// a scan that runs without the optimizer is still a read of the table
+		transaction.RecordScan(read_info.table_id, read_info.scan_id);
+	}
 	inlined_data_tables =
 	    read_info.table.GetInlinedDataTables(transaction, read_info.snapshot, read_info.include_local_changes);
 	identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>> inlined_rows;

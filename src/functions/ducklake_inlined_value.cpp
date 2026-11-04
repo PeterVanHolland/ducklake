@@ -12,10 +12,9 @@
 
 namespace duckdb {
 
-//! The text of a JSON list as the metadata catalogs that store nested values as text wrote it. DuckDB renders a list
-//! of strings with quotes around any element that is not a plain word and NULL for a missing element; the JSON
-//! extension rendered a JSON list as the JSON texts themselves. So a quoted element holds the JSON text, exactly NULL
-//! is a missing element and any other element is the JSON text itself.
+//! The text of a JSON list as the catalogs wrote it. DuckDB quotes an element that is not a plain word, the JSON
+//! extension wrote the JSON itself, so a quoted element holds the JSON text, exactly NULL is a missing element and
+//! any other element is the JSON text itself.
 struct JSONListText {
 	JSONListText(const char *buf, idx_t len) : buf(buf), len(len) {
 	}

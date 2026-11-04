@@ -9,6 +9,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/storage/data_table.hpp"
@@ -452,6 +453,9 @@ void DuckLakeServerSideCommit::ReadStagedDroppedFiles() {
 		}
 		filters.queries.push_back(row.GetValue<string>(1));
 	}
+	// a client that does not know these tables must not inherit them from an earlier commit of the session
+	DropStagedTable(DuckLakeStagedTableType::TABLES_READ);
+	DropStagedTable(DuckLakeStagedTableType::DELETE_FILTER);
 }
 
 void DuckLakeServerSideCommit::ReadStagedFlushedInlinedTables() {
@@ -798,6 +802,16 @@ optional_ptr<TableCatalogEntry> DuckLakeServerSideCommit::StagedTableEntry(DuckL
 
 bool DuckLakeServerSideCommit::StagedTableExists(DuckLakeStagedTableType kind) {
 	return StagedTableEntry(kind) != nullptr;
+}
+
+void DuckLakeServerSideCommit::DropStagedTable(DuckLakeStagedTableType kind) {
+	auto &temp_catalog = Catalog::GetCatalog(context, TEMP_CATALOG);
+	DropInfo info;
+	info.type = CatalogType::TABLE_ENTRY;
+	info.SetQualifiedName(QualifiedName(temp_catalog.GetName(), Identifier(DEFAULT_SCHEMA),
+	                                    Identifier(DuckLakeStagedTable::BaseName(kind))));
+	info.if_not_found = OnEntryNotFound::RETURN_NULL;
+	temp_catalog.DropEntry(context, info);
 }
 
 unique_ptr<QueryResult> DuckLakeServerSideCommit::ScanStagedTable(DuckLakeStagedTableType kind) {

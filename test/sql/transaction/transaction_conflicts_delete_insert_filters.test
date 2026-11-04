@@ -640,6 +640,38 @@ SELECT hour, n FROM lk.plain WHERE hour BETWEEN '2026-10-31 08:00' AND '2026-10-
 2026-10-31 08:00:00	13
 2026-10-31 11:00:00	2
 
+# a plain explain and a prepared but not executed select read nothing
+statement ok con1
+BEGIN
+
+statement ok con1
+EXPLAIN SELECT count(*) FROM lk.plain
+
+statement ok con1
+PREPARE cnt AS SELECT count(*) FROM lk.plain WHERE hour = $1
+
+statement ok con1
+DELETE FROM lk.plain WHERE hour = '2026-10-31 08:00'
+
+statement ok con1
+INSERT INTO lk.plain VALUES ('2026-10-31 09:00', 14)
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 16:00', 15)
+
+statement ok con2
+DELETE FROM lk.plain WHERE hour = '2026-10-31 07:00'
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.plain WHERE hour < '2026-10-31 12:00' ORDER BY hour
+----
+2026-10-31 03:00:00	11
+2026-10-31 09:00:00	14
+2026-10-31 11:00:00	2
+
 # and the delete of a partition commits after a file was added for another
 statement ok
 COPY (SELECT TIMESTAMP '2026-10-31 13:00' AS hour, 4::BIGINT AS n) TO '{DATA_PATH}/delete_insert_filters_added2.parquet'
@@ -660,9 +692,9 @@ query II
 SELECT hour, n FROM lk.plain ORDER BY hour
 ----
 2026-10-31 03:00:00	11
-2026-10-31 07:00:00	12
-2026-10-31 08:00:00	13
+2026-10-31 09:00:00	14
 2026-10-31 13:00:00	4
 2026-10-31 14:00:00	50
 2026-10-31 15:00:00	6
+2026-10-31 16:00:00	15
 2026-10-31 23:00:00	9

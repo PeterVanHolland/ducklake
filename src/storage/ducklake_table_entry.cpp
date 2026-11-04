@@ -424,10 +424,6 @@ TableFunction DuckLakeTableEntry::GetScanFunctionById(ClientContext &context, un
 	if (!lookup_info.GetAtClause() && transaction.IsDeleted(*this)) {
 		throw BinderException("Table with name %s does not exist", name);
 	}
-	// the rows the transaction inserts can depend on what it read, an older snapshot cannot change
-	if (!lookup_info.GetAtClause() && !DuckLakeTransaction::IsTransactionLocal(GetTableId().index)) {
-		transaction.AddTableRead(GetTableId());
-	}
 
 	bind_data = DuckLakeFunctions::BindDuckLakeScan(context, function);
 	auto &multi_file_bind_data = bind_data->Cast<MultiFileBindData>();

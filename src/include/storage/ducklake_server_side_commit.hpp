@@ -86,6 +86,7 @@ private:
 	unique_ptr<QueryResult> ScanStagedTable(DuckLakeStagedTableType kind);
 	optional_ptr<TableCatalogEntry> StagedTableEntry(DuckLakeStagedTableType kind);
 	bool StagedTableExists(DuckLakeStagedTableType kind);
+	void DropStagedTable(DuckLakeStagedTableType kind);
 
 private:
 	ClientContext &context;

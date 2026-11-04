@@ -6,6 +6,7 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/file_open_flags.hpp"
 #include "duckdb/planner/operator/logical_delete.hpp"
+#include "duckdb/planner/operator/logical_explain.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_merge_into.hpp"
 #include "duckdb/planner/operator/logical_update.hpp"
@@ -753,7 +754,7 @@ static optional_ptr<DuckLakeFunctionInfo> GetDuckLakeScanInfo(LogicalGet &get) {
 	return &get.function.function_info->Cast<DuckLakeFunctionInfo>();
 }
 
-void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
+static void RecordStatementChanges(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
 	auto &context = input.context;
 	optional_ptr<TableCatalogEntry> table;
 	bool simple = true;
@@ -782,7 +783,7 @@ void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_
 		break;
 	}
 	for (auto &child : plan->children) {
-		RecordDeleteFilters(input, child);
+		RecordStatementChanges(input, child);
 	}
 	if (!table || table->catalog.GetCatalogType() != "ducklake") {
 		return;
@@ -819,6 +820,15 @@ void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_
 	}
 	transaction.RecordStatementDeleteFilter(ducklake_table, MetaTransaction::Get(context).GetActiveQuery(),
 	                                        filter_info);
+}
+
+void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
+	// a plain explain runs nothing, so it reads nothing
+	if (plan->type == LogicalOperatorType::LOGICAL_EXPLAIN &&
+	    plan->Cast<LogicalExplain>().explain_type != ExplainType::EXPLAIN_ANALYZE) {
+		return;
+	}
+	RecordStatementChanges(input, plan);
 }
 
 PhysicalOperator &DuckLakeDelete::PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner,

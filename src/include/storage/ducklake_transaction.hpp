@@ -296,8 +296,8 @@ public:
 	void RecordDeleteScan(TableIndex table_id, idx_t scan_id);
 	//! The delete filters per table, unfiltered where the transaction scanned the table beyond its deletes
 	map<TableIndex, DeleteConflictFilters> GetDeleteFilters() const;
-	void AddTableRead(TableIndex table_id);
-	const set<TableIndex> &GetTablesRead() const;
+	//! The tables scanned beyond the deletes and updates, whose rows the transaction can write back
+	set<TableIndex> GetTablesRead() const;
 
 	//! The snapshots the criterion selects that no tag protects, as the transaction sees them
 	vector<DuckLakeSnapshotInfo> ExpirableSnapshots(const string &filter);

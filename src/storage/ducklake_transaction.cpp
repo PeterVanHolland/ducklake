@@ -1198,7 +1198,7 @@ TransactionChangeInformation DuckLakeTransaction::GetTransactionChanges() const 
 	changes.tables_deleted_from = state->tables_deleted_from;
 	changes.tables_delete_attempted = state->tables_delete_attempted;
 	changes.delete_filters = GetDeleteFilters();
-	changes.tables_read = state->tables_read;
+	changes.tables_read = GetTablesRead();
 	for (auto &entry : state->local_changes.Changes()) {
 		auto table_id = entry.first;
 		if (IsTransactionLocal(table_id.index)) {
@@ -2753,29 +2753,33 @@ void DuckLakeTransaction::RecordDeleteScan(TableIndex table_id, idx_t scan_id) {
 	state->table_delete_scans[table_id].insert(scan_id);
 }
 
+//! Whether the transaction scanned the table beyond the scans of its deletes and updates
+static bool HasOtherScans(const DuckLakeTransactionState &state, TableIndex table_id, const set<idx_t> &scans) {
+	auto delete_scans = state.table_delete_scans.find(table_id);
+	idx_t delete_scan_count = delete_scans == state.table_delete_scans.end() ? 0 : delete_scans->second.size();
+	return scans.size() > delete_scan_count;
+}
+
 map<TableIndex, DeleteConflictFilters> DuckLakeTransaction::GetDeleteFilters() const {
 	auto result = state->delete_filters;
 	// other scans of the table need the check against the whole table
 	for (auto &entry : state->table_scans) {
 		auto filters = result.find(entry.first);
-		if (filters == result.end()) {
-			continue;
-		}
-		auto delete_scans = state->table_delete_scans.find(entry.first);
-		idx_t delete_scan_count = delete_scans == state->table_delete_scans.end() ? 0 : delete_scans->second.size();
-		if (entry.second.size() > delete_scan_count) {
+		if (filters != result.end() && HasOtherScans(*state, entry.first, entry.second)) {
 			filters->second.unfiltered = true;
 		}
 	}
 	return result;
 }
 
-void DuckLakeTransaction::AddTableRead(TableIndex table_id) {
-	state->tables_read.insert(table_id);
-}
-
-const set<TableIndex> &DuckLakeTransaction::GetTablesRead() const {
-	return state->tables_read;
+set<TableIndex> DuckLakeTransaction::GetTablesRead() const {
+	auto result = state->tables_read;
+	for (auto &entry : state->table_scans) {
+		if (HasOtherScans(*state, entry.first, entry.second)) {
+			result.insert(entry.first);
+		}
+	}
+	return result;
 }
 
 bool DuckLakeTransaction::HasDroppedFiles() const {

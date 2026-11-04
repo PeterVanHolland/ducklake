@@ -493,19 +493,26 @@ string DuckLakeStagedCommit::EmitDroppedFiles(DuckLakeTransaction &transaction) 
 		                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::TABLES_DELETE_ATTEMPTED),
 		                          table_id.index);
 	}
+	vector<string> read_rows;
 	for (auto &table_id : transaction.GetTablesRead()) {
-		sql += StringUtil::Format("INSERT INTO %s VALUES (%llu);",
-		                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::TABLES_READ), table_id.index);
+		read_rows.push_back(StringUtil::Format("(%llu)", table_id.index));
 	}
+	if (!read_rows.empty()) {
+		sql += DuckLakeMetadataManager::InsertValuesIntoSql(
+		    DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::TABLES_READ), read_rows);
+	}
+	vector<string> filter_rows;
 	for (auto &entry : transaction.GetDeleteFilters()) {
-		auto table_name = DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::DELETE_FILTER);
 		if (entry.second.unfiltered) {
-			sql += StringUtil::Format("INSERT INTO %s VALUES (%llu, NULL);", table_name, entry.first.index);
+			filter_rows.push_back(StringUtil::Format("(%llu, NULL)", entry.first.index));
 		}
 		for (auto &query : entry.second.queries) {
-			sql += StringUtil::Format("INSERT INTO %s VALUES (%llu, %s);", table_name, entry.first.index,
-			                          SQLString(query));
+			filter_rows.push_back(StringUtil::Format("(%llu, %s)", entry.first.index, SQLString(query)));
 		}
+	}
+	if (!filter_rows.empty()) {
+		sql += DuckLakeMetadataManager::InsertValuesIntoSql(
+		    DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::DELETE_FILTER), filter_rows);
 	}
 	return sql;
 }

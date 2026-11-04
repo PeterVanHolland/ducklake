@@ -2738,15 +2738,20 @@ void DuckLakeTransaction::AddDeleteFilter(TableIndex table_id, idx_t query_id) {
 	}
 }
 
-void DuckLakeTransaction::MarkDeleteScan(TableIndex table_id) {
+void DuckLakeTransaction::CountScan(TableIndex table_id) {
+	lock_guard<mutex> guard(delete_attempted_lock);
+	state->scan_counts[table_id]++;
+}
+
+void DuckLakeTransaction::CountDeleteScan(TableIndex table_id) {
 	lock_guard<mutex> guard(delete_attempted_lock);
 	state->delete_scan_counts[table_id]++;
 }
 
 map<TableIndex, DeleteConflictFilters> DuckLakeTransaction::GetDeleteFilters() const {
 	auto result = state->delete_filters;
-	// the rows the transaction writes can depend on what it read beyond its delete scans, so an insert of another
-	// transaction into the table could have changed them even when the delete filters do not match it
+	// a scan beyond the delete scans can feed the rows the transaction writes, which an insert of another
+	// transaction can change even when the delete filters do not match it
 	for (auto &entry : state->scan_counts) {
 		auto filters = result.find(entry.first);
 		if (filters == result.end()) {
@@ -2762,9 +2767,7 @@ map<TableIndex, DeleteConflictFilters> DuckLakeTransaction::GetDeleteFilters() c
 }
 
 void DuckLakeTransaction::AddTableRead(TableIndex table_id) {
-	lock_guard<mutex> guard(delete_attempted_lock);
 	state->tables_read.insert(table_id);
-	state->scan_counts[table_id]++;
 }
 
 const set<TableIndex> &DuckLakeTransaction::GetTablesRead() const {

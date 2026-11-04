@@ -586,6 +586,28 @@ SELECT k, v FROM lk.blobs
 ----
 \x03	2
 
+# a prepared delete keeps its filters
+statement ok con1
+BEGIN
+
+statement ok con1
+PREPARE del AS DELETE FROM lk.plain WHERE hour = $1
+
+statement ok con1
+EXECUTE del('2026-10-31 12:00'::TIMESTAMP)
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 08:00', 13)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.plain WHERE hour BETWEEN '2026-10-31 08:00' AND '2026-10-31 12:00' ORDER BY hour
+----
+2026-10-31 08:00:00	13
+2026-10-31 11:00:00	2
+
 # and the delete of a partition commits after a file was added for another
 statement ok
 COPY (SELECT TIMESTAMP '2026-10-31 13:00' AS hour, 4::BIGINT AS n) TO '{DATA_PATH}/delete_insert_filters_added2.parquet'
@@ -607,7 +629,7 @@ SELECT hour, n FROM lk.plain ORDER BY hour
 ----
 2026-10-31 03:00:00	11
 2026-10-31 07:00:00	12
-2026-10-31 12:00:00	3
+2026-10-31 08:00:00	13
 2026-10-31 13:00:00	4
 2026-10-31 14:00:00	50
 2026-10-31 15:00:00	6

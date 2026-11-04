@@ -289,9 +289,10 @@ public:
 	void RecordStatementDeleteFilter(DuckLakeTableEntry &table, idx_t query_id,
 	                                 optional_ptr<const FilterPushdownInfo> filter);
 	void AddDeleteFilter(TableIndex table_id, idx_t query_id);
-	//! Record the scan of a delete or update, which reads only the rows its filters select
-	void MarkDeleteScan(TableIndex table_id);
-	//! The delete filters per table, unfiltered where the transaction read the table beyond its delete scans
+	//! Count a scan of the current rows the optimizer saw, and the scan of a delete or update among them
+	void CountScan(TableIndex table_id);
+	void CountDeleteScan(TableIndex table_id);
+	//! The delete filters per table, unfiltered where the transaction scanned the table beyond its deletes
 	map<TableIndex, DeleteConflictFilters> GetDeleteFilters() const;
 	void AddTableRead(TableIndex table_id);
 	const set<TableIndex> &GetTablesRead() const;

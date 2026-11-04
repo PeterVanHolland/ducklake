@@ -152,8 +152,7 @@ public:
 		return true;
 	}
 
-	//! Records the filters of a delete or update that reads only its target table, before the optimizer simplifies
-	//! them with the table statistics or removes sources
+	//! Records the filters of a delete or update that reads only its target table, before the optimizer changes them
 	static void RecordDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan);
 	static PhysicalOperator &PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner,
 	                                    DuckLakeTableEntry &table, PhysicalOperator &child_plan,

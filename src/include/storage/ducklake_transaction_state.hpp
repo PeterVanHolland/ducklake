@@ -316,7 +316,7 @@ public:
 	//! Per table and statement, the query of every delete, empty when its filters do not bound the rows
 	map<TableIndex, map<idx_t, vector<string>>> statement_delete_filters;
 	set<TableIndex> tables_read;
-	//! Per table, the scans the transaction bound, and those of its deletes and updates
+	//! Per table, the scans of the current rows the optimizer saw, and those of the deletes and updates
 	map<TableIndex, idx_t> scan_counts;
 	map<TableIndex, idx_t> delete_scan_counts;
 	unique_ptr<DuckLakeCatalogSet> new_schemas;

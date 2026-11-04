@@ -754,9 +754,18 @@ static optional_ptr<DuckLakeFunctionInfo> GetDuckLakeScanInfo(LogicalGet &get) {
 }
 
 void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
+	auto &context = input.context;
 	optional_ptr<TableCatalogEntry> table;
 	bool simple = true;
 	switch (plan->type) {
+	case LogicalOperatorType::LOGICAL_GET: {
+		auto scan_info = GetDuckLakeScanInfo(plan->Cast<LogicalGet>());
+		if (scan_info && scan_info->include_local_changes &&
+		    !DuckLakeTransaction::IsTransactionLocal(scan_info->table_id.index)) {
+			DuckLakeTransaction::Get(context, scan_info->table.catalog).CountScan(scan_info->table_id);
+		}
+		break;
+	}
 	case LogicalOperatorType::LOGICAL_DELETE:
 		table = plan->Cast<LogicalDelete>().table;
 		break;
@@ -769,12 +778,12 @@ void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_
 		simple = false;
 		break;
 	default:
-		for (auto &child : plan->children) {
-			RecordDeleteFilters(input, child);
-		}
-		return;
+		break;
 	}
-	if (table->catalog.GetCatalogType() != "ducklake") {
+	for (auto &child : plan->children) {
+		RecordDeleteFilters(input, child);
+	}
+	if (!table || table->catalog.GetCatalogType() != "ducklake") {
 		return;
 	}
 	auto &ducklake_table = table->Cast<DuckLakeTableEntry>();
@@ -782,7 +791,6 @@ void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_
 	if (DuckLakeTransaction::IsTransactionLocal(table_id.index)) {
 		return;
 	}
-	auto &context = input.context;
 	auto &transaction = DuckLakeTransaction::Get(context, table->catalog);
 	vector<unique_ptr<Expression>> filters;
 	optional_ptr<const FilterPushdownInfo> filter_info;
@@ -790,7 +798,7 @@ void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_
 	auto get = simple ? FindDeleteScan(*plan->children[0], filters) : nullptr;
 	auto scan_info = get ? GetDuckLakeScanInfo(*get) : nullptr;
 	if (scan_info && scan_info->table_id == table_id) {
-		transaction.MarkDeleteScan(table_id);
+		transaction.CountDeleteScan(table_id);
 	}
 	if (scan_info && scan_info->table_id == table_id && !filters.empty()) {
 		// folded like the optimizer folds them before it pushes them into the scan

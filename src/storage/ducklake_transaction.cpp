@@ -2721,6 +2721,11 @@ void DuckLakeTransaction::RecordStatementDeleteFilter(TableIndex table_id, idx_t
 	state->statement_delete_filters[table_id][query_id].push_back(std::move(query));
 }
 
+void DuckLakeTransaction::AddUnfilteredDelete(TableIndex table_id) {
+	lock_guard<mutex> guard(delete_attempted_lock);
+	state->delete_filters[table_id].unfiltered = true;
+}
+
 void DuckLakeTransaction::AddDeleteFilter(TableIndex table_id, idx_t query_id) {
 	lock_guard<mutex> guard(delete_attempted_lock);
 	auto &filters = state->delete_filters[table_id];

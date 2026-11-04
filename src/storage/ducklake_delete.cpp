@@ -7,6 +7,7 @@
 #include "duckdb/common/file_open_flags.hpp"
 #include "duckdb/planner/operator/logical_delete.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/operator/logical_merge_into.hpp"
 #include "duckdb/planner/operator/logical_update.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/common/multi_file/multi_file_function.hpp"
@@ -744,12 +745,18 @@ static optional_ptr<LogicalGet> FindDeleteScan(LogicalOperator &plan, vector<uni
 
 void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
 	optional_ptr<TableCatalogEntry> table;
+	bool simple = true;
 	switch (plan->type) {
 	case LogicalOperatorType::LOGICAL_DELETE:
 		table = plan->Cast<LogicalDelete>().table;
 		break;
 	case LogicalOperatorType::LOGICAL_UPDATE:
 		table = plan->Cast<LogicalUpdate>().table;
+		break;
+	case LogicalOperatorType::LOGICAL_MERGE_INTO:
+		// a merge reads its target against its source, so its deletes need the check of the whole table
+		table = plan->Cast<LogicalMergeInto>().table;
+		simple = false;
 		break;
 	default:
 		for (auto &child : plan->children) {
@@ -767,7 +774,7 @@ void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_
 	}
 	auto &context = input.context;
 	vector<unique_ptr<Expression>> filters;
-	auto get = FindDeleteScan(*plan->children[0], filters);
+	auto get = simple ? FindDeleteScan(*plan->children[0], filters) : nullptr;
 	optional_ptr<const FilterPushdownInfo> filter_info;
 	unique_ptr<MultiFileList> pushed;
 	auto definition = get ? get->function.GetDefinition() : nullptr;

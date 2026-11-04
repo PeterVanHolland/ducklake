@@ -285,11 +285,11 @@ public:
 	void DropFile(TableIndex table_id, DataFileIndex data_file_id, string path, idx_t row_count, idx_t file_size_bytes);
 	//! Record that a delete predicate was evaluated against a table, even if no rows matched
 	void MarkDeleteAttempted(TableIndex table_id);
-	//! Record the filters a statement deletes through, none when they do not bound the rows
 	void RecordStatementDeleteFilter(TableIndex table_id, idx_t query_id,
 	                                 optional_ptr<const FilterPushdownInfo> filter);
-	//! Add the filters recorded for the statement to those of the table
 	void AddDeleteFilter(TableIndex table_id, idx_t query_id);
+	//! A delete of the table that can remove any row
+	void AddUnfilteredDelete(TableIndex table_id);
 	const map<TableIndex, DeleteConflictFilters> &GetDeleteFilters() const;
 	//! Record that the transaction scanned a table
 	void AddTableRead(TableIndex table_id);

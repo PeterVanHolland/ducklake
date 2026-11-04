@@ -106,14 +106,16 @@ u4	1
 v1	1
 v2	1
 
-# an old schema version that created one or two tables is loaded table by table, the whole catalog is loaded for the
-# current version and for the version that created u1 to u4
-query II
-SELECT count(*) FILTER (WHERE query NOT LIKE '%tbl.table_id = %'), count(*) FILTER (WHERE query LIKE '%tbl.table_id = %')
+# the flush loads the tables it needs of an old schema version together, t1 to t6 alone, v1 and v2 in one load and
+# u1 to u4 in one load, the whole catalog is loaded for the current version only
+query III
+SELECT count(*) FILTER (WHERE query NOT LIKE '%tbl.table_id IN (%'),
+	count(*) FILTER (WHERE query LIKE '%tbl.table_id IN (%'),
+	count(*) FILTER (WHERE regexp_matches(query, 'tbl\.table_id IN \(\d+, \d+'))
 FROM duckdb_logs_parsed('DuckLakeMetadata')
 WHERE query LIKE '%ducklake_table tbl%'
 ----
-2	8
+1	8	2
 
 statement ok
 CALL disable_logging()
@@ -135,6 +137,40 @@ query I
 SELECT count(*) FROM ducklake_list_files('lake', 't1')
 ----
 2
+
+# a table read alone at a version that created four tables loads the whole catalog of that version
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/flush_inlined_tables_per_schema_version', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+CALL enable_logging('DuckLakeMetadata')
+
+statement ok
+INSERT INTO lake.u1 VALUES (9)
+
+query I
+SELECT * FROM lake.u1 ORDER BY a
+----
+1
+2
+9
+
+query II
+SELECT count(*) FILTER (WHERE query NOT LIKE '%tbl.table_id IN (%'),
+	count(*) FILTER (WHERE query LIKE '%tbl.table_id IN (%')
+FROM duckdb_logs_parsed('DuckLakeMetadata')
+WHERE query LIKE '%ducklake_table tbl%'
+----
+2	0
+
+statement ok
+CALL disable_logging()
 
 # new inlined rows of a table of an old schema version flush and read back
 statement ok

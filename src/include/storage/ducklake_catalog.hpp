@@ -379,6 +379,9 @@ public:
 	idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version, DuckLakeTransaction &transaction);
 	optional_ptr<DuckLakeTableEntry> GetTableAtSchemaVersion(DuckLakeTransaction &transaction, TableIndex table_id,
 	                                                         idx_t schema_version);
+	//! Load the given tables of a schema version together, so that their lookups do not load them one at a time
+	void LoadTablesAtSchemaVersion(DuckLakeTransaction &transaction, idx_t schema_version,
+	                               const vector<TableIndex> &table_ids);
 
 	static unique_ptr<DuckLakeStats> ConstructStatsMap(vector<DuckLakeGlobalStatsInfo> &global_stats,
 	                                                   DuckLakeCatalogSet &schema);
@@ -442,14 +445,17 @@ private:
 	//! Look up (or load) the ObjectCache entry for a given snapshot.
 	shared_ptr<DuckLakeSchemaCacheEntry> GetSchemaCacheEntry(DuckLakeTransaction &transaction,
 	                                                         DuckLakeSnapshot snapshot);
-	//! Look up (or load) the ObjectCache entry that holds one table of a schema version
-	shared_ptr<DuckLakeSchemaCacheEntry> GetTableCacheEntry(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
-	                                                        TableIndex table_id);
+	//! Load the ObjectCache entry that holds the given tables of a schema version
+	shared_ptr<DuckLakeSchemaCacheEntry> LoadTablesCacheEntry(DuckLakeTransaction &transaction,
+	                                                          DuckLakeSnapshot snapshot,
+	                                                          const vector<TableIndex> &table_ids);
+	//! The cached entry of the schema version that holds the table, loaded alone or in a group
+	shared_ptr<DuckLakeSchemaCacheEntry> FindTableCacheEntry(idx_t schema_version, TableIndex table_id);
 	void LoadNameMaps(DuckLakeTransaction &transaction);
 	string StatsCacheKey(idx_t next_file_id, TableIndex table_id) const;
 	string RecordCountCacheKey(idx_t snapshot_id) const;
 	string SchemaCacheKey(idx_t schema_version) const;
-	string TableCacheKey(idx_t schema_version, TableIndex table_id) const;
+	string TableCacheKey(idx_t schema_version, const vector<TableIndex> &table_ids) const;
 	//! Whether the schema version loads whole, as it created or altered several tables, or one table at a time
 	bool LoadsVersionWhole(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
 	ObjectCache &GetObjectCacheInstance();
@@ -505,7 +511,7 @@ private:
 	static constexpr idx_t WHOLE_VERSION_TABLE_COUNT = 4;
 	//! Whether a schema version loads whole, decided once per version
 	unordered_map<idx_t, bool> whole_version_loads;
-	//! The cache keys of the tables loaded alone per schema version
+	//! The cache keys of the tables loaded alone or in a group per schema version
 	unordered_map<idx_t, unordered_set<string>> table_cache_keys;
 	vector<TrackedStatsEntry> stats_cache_entries;
 	//! The number of tracked entries at which the evicted ones are forgotten

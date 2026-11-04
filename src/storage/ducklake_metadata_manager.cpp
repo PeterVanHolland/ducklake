@@ -1195,20 +1195,23 @@ identifier_set_t DuckLakeMetadataManager::GetInlinedTableNames(TableIndex table_
 	return table_names;
 }
 
-DuckLakeCatalogInfo DuckLakeMetadataManager::GetCatalogForSnapshot(DuckLakeSnapshot snapshot, TableIndex only_table) {
+DuckLakeCatalogInfo DuckLakeMetadataManager::GetCatalogForSnapshot(DuckLakeSnapshot snapshot,
+                                                                   const vector<TableIndex> &only_tables) {
 	auto &ducklake_catalog = transaction.GetCatalog();
 	return BuildCatalogForSnapshot(
 	    snapshot, [this](DuckLakeSnapshot s, string q) { return Query(s, q); }, ducklake_catalog.DataPath(),
-	    ducklake_catalog.Separator(), ducklake_catalog.SupportsV1_1Metadata(), only_table);
+	    ducklake_catalog.Separator(), ducklake_catalog.SupportsV1_1Metadata(), only_tables);
 }
 
 DuckLakeCatalogInfo DuckLakeMetadataManager::BuildCatalogForSnapshot(
     DuckLakeSnapshot snapshot, const std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> &query_executor,
-    const string &base_data_path, const string &separator, bool supports_v1_1_metadata, TableIndex only_table) {
+    const string &base_data_path, const string &separator, bool supports_v1_1_metadata,
+    const vector<TableIndex> &only_tables) {
 	DuckLakeCatalogInfo catalog;
-	// a given table is loaded alone with its partitions and sort keys, without the views and macros
+	// given tables are loaded alone with their partitions and sort keys, without the views and macros
 	auto table_filter = [&](const string &column) {
-		return only_table.IsValid() ? StringUtil::Format(" AND %s = %llu", column, only_table.index) : string();
+		return only_tables.empty() ? string()
+		                           : StringUtil::Format(" AND %s IN (%s)", column, GenerateIDList(only_tables));
 	};
 	// load the schema information
 	string parent_schema_select = supports_v1_1_metadata ? ", parent_schema_id" : "";
@@ -1367,7 +1370,7 @@ ORDER BY table_id ASC, parent_column ASC NULLS FIRST, column_order ASC
 			parent.children.push_back(std::move(column_info));
 		}
 	}
-	if (!only_table.IsValid()) {
+	if (only_tables.empty()) {
 		// load view information
 		auto view_column_tags_select = supports_v1_1_metadata
 		                                   ? StringUtil::Format(R"(,

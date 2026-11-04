@@ -289,7 +289,6 @@ public:
 	void RecordStatementDeleteFilter(DuckLakeTableEntry &table, idx_t query_id,
 	                                 optional_ptr<const FilterPushdownInfo> filter);
 	void AddDeleteFilter(TableIndex table_id, idx_t query_id);
-	//! Number a scan within the transaction
 	idx_t NextScanId();
 	//! Record a scan of the current rows, and the scan of a delete or update among them
 	void RecordScan(TableIndex table_id, idx_t scan_id);

@@ -563,6 +563,39 @@ SELECT i FROM lk.dep ORDER BY i
 2
 3
 
+# a read while the extension optimizers are disabled still counts
+statement ok con1
+BEGIN
+
+statement ok con1
+SET disabled_optimizers = 'extension'
+
+query I con1
+SELECT count(*) FROM lk.dep
+----
+4
+
+statement ok con1
+RESET disabled_optimizers
+
+statement ok con1
+INSERT INTO lk.dep VALUES (4)
+
+statement ok con2
+DELETE FROM lk.dep WHERE i = 3
+
+statement error con1
+COMMIT
+----
+but another transaction has deleted from it
+
+query I
+SELECT i FROM lk.dep ORDER BY i
+----
+0
+1
+2
+
 # a bucket partition excludes an inserted file whose column bounds cover the deleted key
 statement ok
 CREATE TABLE lk.bucketed (id INTEGER, v INTEGER)

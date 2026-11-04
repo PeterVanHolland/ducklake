@@ -759,6 +759,12 @@ static void RecordStatementChanges(OptimizerExtensionInput &input, unique_ptr<Lo
 	optional_ptr<TableCatalogEntry> table;
 	bool simple = true;
 	switch (plan->type) {
+	case LogicalOperatorType::LOGICAL_EXPLAIN:
+		// a plain explain runs nothing, so it reads nothing
+		if (plan->Cast<LogicalExplain>().explain_type != ExplainType::EXPLAIN_ANALYZE) {
+			return;
+		}
+		break;
 	case LogicalOperatorType::LOGICAL_GET: {
 		auto scan_info = GetDuckLakeScanInfo(plan->Cast<LogicalGet>());
 		if (scan_info && scan_info->include_local_changes &&
@@ -823,11 +829,6 @@ static void RecordStatementChanges(OptimizerExtensionInput &input, unique_ptr<Lo
 }
 
 void DuckLakeDelete::RecordDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
-	// a plain explain runs nothing, so it reads nothing
-	if (plan->type == LogicalOperatorType::LOGICAL_EXPLAIN &&
-	    plan->Cast<LogicalExplain>().explain_type != ExplainType::EXPLAIN_ANALYZE) {
-		return;
-	}
 	RecordStatementChanges(input, plan);
 }
 

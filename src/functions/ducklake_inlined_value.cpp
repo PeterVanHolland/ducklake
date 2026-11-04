@@ -28,12 +28,6 @@ private:
 		                          string(buf, len), pos);
 	}
 
-	void SkipSpace(idx_t &pos) {
-		while (pos < len && StringUtil::CharacterIsSpace(buf[pos])) {
-			pos++;
-		}
-	}
-
 	bool IsNullToken(idx_t start, idx_t end) {
 		return end - start == 4 && StringUtil::CIEquals(buf + start, 4, "null", 4);
 	}
@@ -83,14 +77,23 @@ private:
 		Fail(pos);
 	}
 
-	//! The range of the value that starts at pos and ends before one of the stop characters at the top level
+	static bool IsStop(char c, const char *stops) {
+		// a NUL byte inside a string is a regular character, not the end of the stop list
+		for (auto stop = stops; *stop; stop++) {
+			if (c == *stop) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	//! The raw range of the value that starts at pos and ends before one of the stop characters at the top level;
+	//! the renderer puts one space after a comma or colon, which the caller skips, and no other space of its own
 	pair<idx_t, idx_t> ScanValue(idx_t &pos, const char *stops) {
-		SkipSpace(pos);
 		auto start = pos;
-		auto end = pos;
 		while (pos < len) {
 			auto c = buf[pos];
-			if (strchr(stops, c)) {
+			if (IsStop(c, stops)) {
 				break;
 			}
 			if (c == '\'' || c == '"') {
@@ -102,14 +105,18 @@ private:
 			} else {
 				pos++;
 			}
-			if (!StringUtil::CharacterIsSpace(buf[pos - 1])) {
-				end = pos;
-			}
 		}
 		if (pos == len) {
 			Fail(pos);
 		}
-		return make_pair(start, MaxValue<idx_t>(start, end));
+		return make_pair(start, pos);
+	}
+
+	//! Skips the one space the renderer writes after a separator
+	void SkipSeparatorSpace(idx_t &pos) {
+		if (pos < len && buf[pos] == ' ') {
+			pos++;
+		}
 	}
 
 	//! The contents of a quoted string or of a plain text, with the escapes removed as DuckDB reads them
@@ -132,14 +139,15 @@ private:
 	}
 
 	Value ParseValue(const LogicalType &type, idx_t start, idx_t end) {
+		if (type.IsJSONType()) {
+			// the JSON text keeps the spaces at its ends, the generic parser would drop them
+			return ParseJSON(start, end);
+		}
 		while (start < end && StringUtil::CharacterIsSpace(buf[start])) {
 			start++;
 		}
 		while (end > start && StringUtil::CharacterIsSpace(buf[end - 1])) {
 			end--;
-		}
-		if (type.IsJSONType()) {
-			return ParseJSON(start, end);
 		}
 		if (IsNullToken(start, end)) {
 			return Value(type);
@@ -149,10 +157,15 @@ private:
 		case LogicalTypeId::ARRAY:
 			return ParseList(type, start, end);
 		case LogicalTypeId::STRUCT:
+		case LogicalTypeId::TUPLE:
 			return ParseStruct(type, start, end);
 		case LogicalTypeId::MAP:
 			return ParseMap(type, start, end);
 		default:
+			if (type.IsNested()) {
+				// a type this parser does not know is read by DuckDB from its own rendering
+				return Value(string(buf + start, end - start)).DefaultCastAs(type);
+			}
 			return Value(Unquote(start, end)).DefaultCastAs(type);
 		}
 	}
@@ -161,7 +174,7 @@ private:
 		if (start == end) {
 			Fail(start);
 		}
-		if (buf[start] == '\'') {
+		if (buf[start] == '\'' && buf[end - 1] == '\'' && end > start + 1) {
 			// the quoted form, the JSON text is the contents of the string
 			return Value(Unquote(start, end)).DefaultCastAs(LogicalType::JSON());
 		}
@@ -182,7 +195,6 @@ private:
 	vector<pair<idx_t, idx_t>> SplitElements(idx_t start, idx_t end) {
 		vector<pair<idx_t, idx_t>> elements;
 		idx_t pos = start + 1;
-		SkipSpace(pos);
 		if (pos == end - 1) {
 			return elements;
 		}
@@ -195,6 +207,7 @@ private:
 				Fail(pos);
 			}
 			pos++;
+			SkipSeparatorSpace(pos);
 		}
 	}
 
@@ -207,6 +220,9 @@ private:
 			values.push_back(ParseValue(child_type, element.first, element.second));
 		}
 		if (type.id() == LogicalTypeId::ARRAY) {
+			if (values.size() != ArrayType::GetSize(type)) {
+				Fail(start);
+			}
 			return Value::ARRAY(child_type, std::move(values));
 		}
 		return Value::LIST(child_type, std::move(values));
@@ -229,11 +245,11 @@ private:
 		ExpectBrackets(start, end, '{', '}');
 		vector<bool> seen(child_types.size(), false);
 		idx_t pos = start + 1;
-		SkipSpace(pos);
 		while (pos != end - 1) {
 			auto key = ScanValue(pos, ":");
 			auto name = Unquote(key.first, key.second);
 			pos++;
+			SkipSeparatorSpace(pos);
 			auto value = ScanValue(pos, ",}");
 			idx_t index = child_types.size();
 			for (idx_t i = 0; i < child_types.size(); i++) {
@@ -249,7 +265,7 @@ private:
 			values[index] = ParseValue(child_types[index].second, value.first, value.second);
 			if (buf[pos] == ',') {
 				pos++;
-				SkipSpace(pos);
+				SkipSeparatorSpace(pos);
 			}
 		}
 		for (idx_t i = 0; i < child_types.size(); i++) {
@@ -267,7 +283,6 @@ private:
 		vector<Value> keys;
 		vector<Value> values;
 		idx_t pos = start + 1;
-		SkipSpace(pos);
 		while (pos != end - 1) {
 			auto key = ScanValue(pos, "=");
 			pos++;
@@ -276,7 +291,7 @@ private:
 			values.push_back(ParseValue(value_type, value.first, value.second));
 			if (buf[pos] == ',') {
 				pos++;
-				SkipSpace(pos);
+				SkipSeparatorSpace(pos);
 			}
 		}
 		return Value::MAP(key_type, value_type, std::move(keys), std::move(values));

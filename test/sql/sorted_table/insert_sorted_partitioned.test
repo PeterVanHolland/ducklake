@@ -1,0 +1,185 @@
+# name: test/sql/sorted_table/insert_sorted_partitioned.test
+# description: inserts and flushes into a partitioned sorted table write every file in the sort order
+# group: [sorted_table]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/insert_sorted_partitioned.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/insert_sorted_partitioned', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+SET threads = 4
+
+# identity partition
+statement ok
+CREATE TABLE lake.t(p INTEGER, id INTEGER);
+
+statement ok
+ALTER TABLE lake.t SET PARTITIONED BY (p);
+
+statement ok
+ALTER TABLE lake.t SET SORTED BY (id);
+
+statement ok
+INSERT INTO lake.t SELECT i % 20, i FROM range(1000) r(i);
+
+query II
+SELECT count(DISTINCT filename), count(DISTINCT filename) FILTER (WHERE k < prev) FROM (SELECT filename, k, lag(k) OVER (PARTITION BY filename ORDER BY file_row_number) AS prev FROM (SELECT filename, file_row_number, id AS k FROM lake.t))
+----
+20	0
+
+query I
+SELECT list(id ORDER BY file_row_number)[1:6] FROM lake.t WHERE p = 0
+----
+[0, 20, 40, 60, 80, 100]
+
+# a second insert with one thread adds a sorted file to every partition
+statement ok
+SET threads = 1
+
+statement ok
+INSERT INTO lake.t SELECT i % 20, 1000 + (i * 7919) % 1000 FROM range(1000) r(i);
+
+query II
+SELECT count(DISTINCT filename), count(DISTINCT filename) FILTER (WHERE k < prev) FROM (SELECT filename, k, lag(k) OVER (PARTITION BY filename ORDER BY file_row_number) AS prev FROM (SELECT filename, file_row_number, id AS k FROM lake.t))
+----
+40	0
+
+statement ok
+SET threads = 4
+
+statement ok
+CREATE TABLE lake.c PARTITIONED BY (p) SORTED BY (id) AS SELECT i % 20 AS p, 999 - i AS id FROM range(1000) r(i)
+
+query II
+SELECT count(DISTINCT filename), count(DISTINCT filename) FILTER (WHERE k < prev) FROM (SELECT filename, k, lag(k) OVER (PARTITION BY filename ORDER BY file_row_number) AS prev FROM (SELECT filename, file_row_number, id AS k FROM lake.c))
+----
+20	0
+
+# transform partition, descending expression key, rotation by file size
+statement ok
+CREATE TABLE lake.e(ts TIMESTAMP, id INTEGER, pad VARCHAR);
+
+statement ok
+ALTER TABLE lake.e SET PARTITIONED BY (year(ts));
+
+statement ok
+ALTER TABLE lake.e SET SORTED BY (id % 1000 DESC, id);
+
+statement ok
+ALTER TABLE lake.e SET (target_file_size = '64KB', parquet_row_group_size = 1000);
+
+statement ok
+INSERT INTO lake.e SELECT TIMESTAMP '2020-01-01' + INTERVAL (i % 3) YEAR, (i * 7919) % 100003, md5(i::VARCHAR) FROM range(30000) r(i);
+
+query I
+SELECT count(DISTINCT filename) > 3 FROM lake.e
+----
+true
+
+query I
+SELECT unsorted FROM (SELECT count(DISTINCT filename), count(DISTINCT filename) FILTER (WHERE k < prev) FROM (SELECT filename, k, lag(k) OVER (PARTITION BY filename ORDER BY file_row_number) AS prev FROM (SELECT filename, file_row_number, -(id % 1000) * 1000000 + id AS k FROM lake.e))) t(files, unsorted)
+----
+0
+
+# flush of inlined rows, after a rename of the sort column
+statement ok
+CREATE TABLE lake.f(p INTEGER, id INTEGER);
+
+statement ok
+ALTER TABLE lake.f SET PARTITIONED BY (p);
+
+statement ok
+ALTER TABLE lake.f SET SORTED BY (id);
+
+statement ok
+CALL lake.set_option('data_inlining_row_limit', 1000, table_name => 'f');
+
+statement ok
+INSERT INTO lake.f SELECT i % 20, 999 - i FROM range(1000) r(i);
+
+statement ok
+ALTER TABLE lake.f RENAME COLUMN id TO key;
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'f');
+
+query II
+SELECT count(DISTINCT filename), count(DISTINCT filename) FILTER (WHERE k < prev) FROM (SELECT filename, k, lag(k) OVER (PARTITION BY filename ORDER BY file_row_number) AS prev FROM (SELECT filename, file_row_number, key AS k FROM lake.f))
+----
+20	0
+
+query I
+SELECT list(key ORDER BY file_row_number)[1:4] FROM lake.f WHERE p = 19
+----
+[0, 20, 40, 60]
+
+# with per thread output the partitioned copy also sorts each partition
+statement ok
+CREATE TABLE lake.o(p INTEGER, id INTEGER);
+
+statement ok
+ALTER TABLE lake.o SET PARTITIONED BY (p);
+
+statement ok
+ALTER TABLE lake.o SET SORTED BY (id);
+
+statement ok
+CALL lake.set_option('per_thread_output', true, table_name => 'o');
+
+statement ok
+INSERT INTO lake.o SELECT i % 20, i FROM range(1000) r(i);
+
+query II
+SELECT count(DISTINCT filename), count(DISTINCT filename) FILTER (WHERE k < prev) FROM (SELECT filename, k, lag(k) OVER (PARTITION BY filename ORDER BY file_row_number) AS prev FROM (SELECT filename, file_row_number, id AS k FROM lake.o))
+----
+20	0
+
+# the copy sorts by the keys before a volatile key, which it does not evaluate again
+statement ok
+CREATE TABLE lake.s (p INTEGER, k INTEGER);
+
+statement ok
+ALTER TABLE lake.s SET PARTITIONED BY (p);
+
+statement ok
+ALTER TABLE lake.s SET SORTED BY (k, random());
+
+statement ok
+INSERT INTO lake.s SELECT i % 4, i FROM range(1000) r(i);
+
+query II
+SELECT count(DISTINCT filename), count(DISTINCT filename) FILTER (WHERE k < prev) FROM (SELECT filename, k, lag(k) OVER (PARTITION BY filename ORDER BY file_row_number) AS prev FROM (SELECT filename, file_row_number, k AS k FROM lake.s))
+----
+4	0
+
+# a flush sorts each partition with the collation of the sort key
+statement ok
+CREATE TABLE lake.cl (p INTEGER, k VARCHAR);
+
+statement ok
+ALTER TABLE lake.cl SET PARTITIONED BY (p);
+
+statement ok
+ALTER TABLE lake.cl SET SORTED BY (k COLLATE nocase);
+
+statement ok
+CALL lake.set_option('data_inlining_row_limit', 10, table_name => 'cl');
+
+statement ok
+INSERT INTO lake.cl VALUES (1, 'B'), (1, 'a'), (1, 'C'), (2, 'b'), (2, 'A');
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'cl');
+
+query II
+SELECT p, list(k ORDER BY file_row_number) FROM lake.cl GROUP BY p ORDER BY p
+----
+1	[a, B, C]
+2	[A, b]

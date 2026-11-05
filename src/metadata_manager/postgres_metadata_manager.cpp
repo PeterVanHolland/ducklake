@@ -470,30 +470,58 @@ unique_ptr<QueryResult> PostgresMetadataManager::Execute(DuckLakeSnapshot snapsh
 	    StringUtil::Format("CALL postgres_execute(%s, %s, prepare=FALSE)", catalog_literal, SQLString(query)));
 }
 
-//! Raised by the drop of an inlined table whose lock gave way to open transactions
-static constexpr const char *DROP_DEFERRED_MARKER = "ducklake_drop_deferred";
+//! The error of a drop that gave way to open transactions, retried by a later cleanup
+static constexpr const char *DROP_DEFERRED_MESSAGE =
+    "the drop of a superseded inlined table gave way to open transactions";
 
 unique_ptr<QueryResult> PostgresMetadataManager::ExecuteDropInTransaction(string &query) {
 	// DROP TABLE waits for every open transaction that read the table and the readers queued behind it fail, so it
 	// gives up instead and leaves the table to a later cleanup
 	// a transaction reads ducklake_snapshot first and keeps its share lock until it ends, while its REPEATABLE READ
 	// snapshot still lists the table, so the drop only runs when no such transaction is open and a transaction that
-	// starts meanwhile takes its snapshot after the drop; a lock timeout alone raises the marker read by DropDeferred,
-	// as the server's own message depends on its locale, any other failure keeps the server's error
+	// starts meanwhile takes its snapshot after the drop; a lock timeout is recorded in a setting of the transaction
+	// and read back, so that no message of the server is interpreted and any other failure of the lock is reported
 	auto schema = SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName());
-	auto lock_snapshots = StringUtil::Format("DO $$ BEGIN LOCK TABLE %s.ducklake_snapshot IN ACCESS EXCLUSIVE MODE; "
-	                                         "EXCEPTION WHEN lock_not_available THEN RAISE EXCEPTION '%s'; END $$",
-	                                         schema, DROP_DEFERRED_MARKER);
-	string batch = "CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, 'SET LOCAL lock_timeout = 1');\n";
-	batch +=
-	    StringUtil::Format("CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, %s);\n", SQLString(lock_snapshots));
-	batch += query;
-	return ExecuteInTransaction(batch);
+	auto lock_body = StringUtil::Format("BEGIN LOCK TABLE %s.ducklake_snapshot IN ACCESS EXCLUSIVE MODE; "
+	                                    "EXCEPTION WHEN lock_not_available THEN "
+	                                    "PERFORM set_config('ducklake.drop_deferred', 'true', true); END",
+	                                    schema);
+	string lock_batch = "BEGIN TRANSACTION;\n"
+	                    "CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, 'SET LOCAL lock_timeout = 1');\n";
+	lock_batch += StringUtil::Format("CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, %s);",
+	                                 SQLString("DO " + SQLString::ToString(lock_body)));
+	auto lock_result = Query(lock_batch);
+	if (lock_result->HasError()) {
+		Query("ROLLBACK;");
+		return lock_result;
+	}
+	string deferred_query = "SELECT * FROM postgres_query({METADATA_CATALOG_NAME_LITERAL}, "
+	                        "'SELECT coalesce(current_setting(''ducklake.drop_deferred'', true) = ''true'', false)', "
+	                        "use_transaction = true);";
+	auto deferred_result = Query(deferred_query);
+	if (deferred_result->HasError()) {
+		Query("ROLLBACK;");
+		return deferred_result;
+	}
+	bool deferred = false;
+	for (auto &row : *deferred_result) {
+		deferred = row.GetValue<bool>(0);
+	}
+	if (deferred) {
+		Query("ROLLBACK;");
+		return make_uniq<QueryResult>(ErrorData(ExceptionType::TRANSACTION, DROP_DEFERRED_MESSAGE));
+	}
+	auto drop_batch = query + "\nCOMMIT;";
+	auto result = Query(drop_batch);
+	if (result->HasError()) {
+		Query("ROLLBACK;");
+	}
+	return result;
 }
 
 bool PostgresMetadataManager::DropDeferred(const string &error) const {
 	// the lock of ExecuteDropInTransaction gave way to open transactions, a later cleanup drops the table
-	return StringUtil::Contains(error, DROP_DEFERRED_MARKER);
+	return StringUtil::Contains(error, DROP_DEFERRED_MESSAGE);
 }
 
 bool PostgresMetadataManager::InlinedTableMissing(const Identifier &inlined_table_name) {

@@ -1,4 +1,3 @@
-#include "duckdb/common/algorithm.hpp"
 #include "common/ducklake_json.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "storage/ducklake_variant_stats.hpp"
@@ -233,7 +232,7 @@ struct NestedVariantStats {
 			if (entry == field_stats.end()) {
 				throw InternalException("NestedVariantStats failed to find field name");
 			}
-			// bounds that do not parse leave the statistics unknown, the empty ones would prune every row
+			// unknown statistics when the bounds do not parse
 			StructStats::SetChildStats(main_stats, VariantStats::TYPED_VALUE_INDEX,
 			                           entry->second.field_stats.ToStats());
 			return;
@@ -337,6 +336,15 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 	throw InvalidInputException("Incorrectly formatted field name %s", field_name);
 }
 
+//! The tree of the stored field paths and the shredded type it describes
+static LogicalType BuildShreddedType(const unordered_map<string, DuckLakeVariantStats> &field_stats,
+                                     NestedVariantStats &nested_stats) {
+	for (auto &entry : field_stats) {
+		ToNestedVariantStats(entry.first, nested_stats);
+	}
+	return nested_stats.ToType(field_stats);
+}
+
 static void ParseShreddedFieldStats(const string &stats, unordered_map<string, DuckLakeVariantStats> &result) {
 	JSONParseError error;
 	auto doc = JSONDocument::TryParse(stats.c_str(), stats.size(), error);
@@ -377,10 +385,7 @@ static void ParseShreddedFieldStats(const string &stats, unordered_map<string, D
 	// the field paths have to form one tree of struct fields and list elements
 	if (!result.empty()) {
 		NestedVariantStats nested_stats;
-		for (auto &entry : result) {
-			ToNestedVariantStats(entry.first, nested_stats);
-		}
-		nested_stats.ToType(result);
+		BuildShreddedType(result, nested_stats);
 	}
 }
 
@@ -403,12 +408,7 @@ unique_ptr<BaseStatistics> DuckLakeColumnVariantStats::ToStats() const {
 	}
 	// create a nested structure that holds all the stats in the original nested order
 	NestedVariantStats nested_stats;
-	for (auto &entry : shredded_field_stats) {
-		auto &full_field_name = entry.first;
-		ToNestedVariantStats(full_field_name, nested_stats);
-	}
-	// get the type
-	auto shredded_type = nested_stats.ToType(shredded_field_stats);
+	auto shredded_type = BuildShreddedType(shredded_field_stats, nested_stats);
 	auto variant_stats = VariantStats::CreateShredded(VariantStats::GetShreddingType(shredded_type));
 
 	auto &shredded_stats = VariantStats::GetShreddedStats(variant_stats);

@@ -101,7 +101,8 @@ SELECT count(*), sum(id) FROM lake.u
 statement ok con1
 COMMIT
 
-# a transaction whose snapshot lists the emptied table copes with its drop under it, as the flush emptied it
+# a transaction whose snapshot lists the emptied table cannot tell that the flush emptied it before its snapshot, a
+# flush does not conflict with inserts committed after its snapshot, so on Postgres the read asks for a retry
 statement ok con3
 BEGIN
 
@@ -111,18 +112,23 @@ SELECT count(*) FROM lake.other
 0
 
 statement ok con2
+DELETE FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_name = 'ducklake_inlined_data_4_4'
+
+statement ok con2
 DROP TABLE IF EXISTS __ducklake_metadata_lake.ducklake_inlined_data_4_4
 
-query II con3
+statement maybe con3
+SELECT count(*), sum(id) FROM lake.u
+----
+retry the statement
+
+statement ok con3
+ROLLBACK
+
+query II
 SELECT count(*), sum(id) FROM lake.u
 ----
 15	9965
-
-statement ok con3
-COMMIT
-
-statement ok
-DELETE FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_name = 'ducklake_inlined_data_4_4'
 
 # a superseded table that never held rows, dropped under a transaction that lists it
 statement ok
@@ -148,6 +154,9 @@ SELECT count(*) FROM lake.other
 0
 
 statement ok con2
+DELETE FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_name = 'ducklake_inlined_data_6_6'
+
+statement ok con2
 DROP TABLE IF EXISTS __ducklake_metadata_lake.ducklake_inlined_data_6_6
 
 query II con4
@@ -157,9 +166,6 @@ SELECT count(*), max(id) FROM lake.w WHERE tenant = 1
 
 statement ok con4
 COMMIT
-
-statement ok
-DELETE FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_name = 'ducklake_inlined_data_6_6'
 
 query III
 SELECT (SELECT count(*) FROM lake.t), (SELECT count(*) FROM lake.u), (SELECT count(*) FROM lake.w)

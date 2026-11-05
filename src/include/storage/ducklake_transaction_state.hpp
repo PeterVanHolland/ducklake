@@ -135,9 +135,10 @@ struct DuckLakeCommitContext {
 		return vector<Identifier> {};
 	};
 	//! Net (delete-adjusted) row count of a table's regular data files.
-	std::function<idx_t(TableIndex)> get_net_data_file_row_count = [](TableIndex) {
-		return 0;
-	};
+	std::function<idx_t(TableIndex, const set<DataFileIndex> &)> get_net_data_file_row_count =
+	    [](TableIndex, const set<DataFileIndex> &) {
+		    return 0;
+	    };
 	//! Builds a DuckLakeStats map from a vector of per-snapshot global stats (retry path).
 	std::function<unique_ptr<DuckLakeStats>(vector<DuckLakeGlobalStatsInfo> &)> build_stats_map;
 	//! Invalidates the cached schema in the catalog for a given schema version.
@@ -255,10 +256,13 @@ public:
 	//! (+ committed inlined data) and append the UpdateGlobalTableStats SQL to `batch_query`. No-op (leaving the
 	//! existing stale stats, and the scan fallback) if the table is not fully delete-free post-rewrite or the
 	//! inlined data cannot be accounted for exactly. Returns whether it wrote the stats.
-	bool RecomputeGlobalStatsAfterRewrite(string &batch_query, TableIndex table_id, DuckLakeSnapshot snapshot,
-	                                      const CompactionInformation &rewrite_changes,
-	                                      const set<DataFileIndex> &removed_source_ids,
-	                                      const DuckLakeCommitContext &context);
+	//! The tables this commit changes other than through dropped files and new files without deletes
+	set<TableIndex> TablesWithDataChangesBesidesNewFiles(DuckLakeCommitState &commit_state) const;
+	//! The new files of this commit are added to the files kept from the snapshot, a next row id advanced by them is
+	//! passed in.
+	bool RecomputeGlobalStats(string &batch_query, TableIndex table_id, DuckLakeSnapshot snapshot,
+	                          const vector<DuckLakeFileInfo> &new_files, const set<DataFileIndex> &removed_source_ids,
+	                          optional_idx next_row_id, const DuckLakeCommitContext &context);
 	//! Merge committed inlined data's per-column min/max into `target` via typed SQL aggregates. Returns false if the
 	//! inlined data cannot be accounted for exactly (e.g. a non-scalar column), in which case the caller must not
 	//! claim the recomputed stats are exact.
@@ -317,6 +321,8 @@ public:
 	map<TableIndex, map<FieldIndex, DuckLakeColumnStats>> added_field_stats;
 	//! The tables whose stored size this commit reads back from their live data files
 	set<TableIndex> refreshed_table_sizes;
+	//! The tables whose dropped files left rows behind, their column bounds are recomputed from the live data
+	set<TableIndex> tables_with_dropped_files_and_rows;
 	//! The tables other transactions changed after the snapshot of a retried commit
 	set<TableIndex> tables_changed_by_others;
 	//! The snapshot tags this transaction creates, by name

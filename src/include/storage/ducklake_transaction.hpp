@@ -65,6 +65,8 @@ struct FlushedInlinedTableInfo {
 struct DroppedDataFileStats {
 	idx_t row_count = 0;
 	idx_t file_size_bytes = 0;
+	//! The dropped files, left out when the bounds of the remaining rows are recomputed
+	set<DataFileIndex> file_ids;
 };
 
 struct LocalTableDataChanges {

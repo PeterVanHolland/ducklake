@@ -337,7 +337,7 @@ void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
 		return;
 	}
 	if (!new_stats.AnyValid()) {
-		// a source without valid values leaves the bounds alone
+		// a source without valid values has no bounds to merge
 		if (!bounds_survive) {
 			SetBoundsUnknown();
 		}
@@ -398,7 +398,12 @@ bool DuckLakeColumnStats::BoundsOrdered() const {
 	if (!has_min || !has_max) {
 		return true;
 	}
-	if (!CompareBoundsAsValues(type) && type.id() != LogicalTypeId::VARCHAR) {
+	if (type.id() == LogicalTypeId::VARCHAR) {
+		// a truncated max is a prefix, the min is compared on its bytes
+		auto max_type = EffectiveMaxIsExact() ? StringStatsType::EXACT_STATS : StringStatsType::TRUNCATED_STATS;
+		return StringStats::CompareStringStats(string_t(min), string_t(max), max_type) <= 0;
+	}
+	if (!CompareBoundsAsValues(type)) {
 		return true;
 	}
 	int32_t comparison;

@@ -209,13 +209,17 @@ statement ok
 ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl (DATA_INLINING_ROW_LIMIT 0)
 
 statement ok
-CREATE TABLE dl.tb AS SELECT false::VARIANT AS b, 'a'::VARIANT AS s, 'a0000000-0000-0000-0000-000000000000'::UUID::VARIANT AS u, 'a0000000-0000-0000-0000-000000000000'::UUID AS p
+CREATE TABLE dl.tb AS SELECT false::VARIANT AS b, 'a'::VARIANT AS s, 'a0000000-0000-0000-0000-000000000000'::UUID::VARIANT AS u, 'a0000000-0000-0000-0000-000000000000'::UUID AS p, 'ab' AS q
 
 statement ok
 UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"boolean","min":"true","max":"false"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'tb') AND column_id = (SELECT column_id FROM __ducklake_metadata_dl.ducklake_column WHERE column_name = 'b')
 
 statement ok
 UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"varchar","min":"b","max":"a"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'tb') AND column_id = (SELECT column_id FROM __ducklake_metadata_dl.ducklake_column WHERE column_name = 's')
+
+# a VARCHAR min longer than a truncated max is in order when it starts with the max
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET min_value = 'ab', max_value = 'a', max_is_exact = false WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'tb') AND column_id = (SELECT column_id FROM __ducklake_metadata_dl.ducklake_column WHERE column_name = 'q')
 
 statement ok
 UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"uuid","min":"B0000000-0000-0000-0000-000000000000","max":"a0000000-0000-0000-0000-000000000000"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'tb') AND column_id = (SELECT column_id FROM __ducklake_metadata_dl.ducklake_column WHERE column_name = 'u')
@@ -229,19 +233,25 @@ DETACH dl
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl (DATA_INLINING_ROW_LIMIT 0)
 
-query IIII
-SELECT (SELECT count(*) FROM dl.tb WHERE b::BOOLEAN = false), (SELECT count(*) FROM dl.tb WHERE s::VARCHAR = 'a'), (SELECT count(*) FROM dl.tb WHERE u::UUID = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE p = 'a0000000-0000-0000-0000-000000000000')
+query IIIII
+SELECT (SELECT count(*) FROM dl.tb WHERE b::BOOLEAN = false), (SELECT count(*) FROM dl.tb WHERE s::VARCHAR = 'a'), (SELECT count(*) FROM dl.tb WHERE u::UUID = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE p = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE q = 'ab')
 ----
-1	1	1	1
+1	1	1	1	1
+
+# the bounds with the truncated max are kept
+query I
+SELECT stats(q)['min']::VARCHAR FROM dl.tb LIMIT 1
+----
+ab
 
 # an append must not trust the stored bounds either
 statement ok
-INSERT INTO dl.tb VALUES (true::VARIANT, 'b'::VARIANT, 'c0000000-0000-0000-0000-000000000000'::UUID::VARIANT, 'c0000000-0000-0000-0000-000000000000'::UUID)
+INSERT INTO dl.tb VALUES (true::VARIANT, 'b'::VARIANT, 'c0000000-0000-0000-0000-000000000000'::UUID::VARIANT, 'c0000000-0000-0000-0000-000000000000'::UUID, 'ac')
 
-query IIII
-SELECT (SELECT count(*) FROM dl.tb WHERE b::BOOLEAN = false), (SELECT count(*) FROM dl.tb WHERE s::VARCHAR = 'a'), (SELECT count(*) FROM dl.tb WHERE u::UUID = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE p = 'a0000000-0000-0000-0000-000000000000')
+query IIIII
+SELECT (SELECT count(*) FROM dl.tb WHERE b::BOOLEAN = false), (SELECT count(*) FROM dl.tb WHERE s::VARCHAR = 'a'), (SELECT count(*) FROM dl.tb WHERE u::UUID = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE p = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE q = 'ab')
 ----
-1	1	1	1
+1	1	1	1	1
 
 statement ok
 DETACH dl
@@ -249,10 +259,10 @@ DETACH dl
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
 
-query IIII
-SELECT (SELECT count(*) FROM dl.tb WHERE b::BOOLEAN = false), (SELECT count(*) FROM dl.tb WHERE s::VARCHAR = 'a'), (SELECT count(*) FROM dl.tb WHERE u::UUID = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE p = 'a0000000-0000-0000-0000-000000000000')
+query IIIII
+SELECT (SELECT count(*) FROM dl.tb WHERE b::BOOLEAN = false), (SELECT count(*) FROM dl.tb WHERE s::VARCHAR = 'a'), (SELECT count(*) FROM dl.tb WHERE u::UUID = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE p = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE q = 'ab')
 ----
-1	1	1	1
+1	1	1	1	1
 
 statement ok
 DETACH dl

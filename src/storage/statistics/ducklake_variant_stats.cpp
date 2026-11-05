@@ -373,7 +373,6 @@ static void ParseShreddedFieldStats(const string &stats, unordered_map<string, D
 			                            ErrorData(ex).RawMessage());
 		}
 	});
-	// the field paths have to form one tree of struct fields and list elements
 	if (!result.empty()) {
 		NestedVariantStats nested_stats;
 		BuildShreddedType(result, nested_stats);

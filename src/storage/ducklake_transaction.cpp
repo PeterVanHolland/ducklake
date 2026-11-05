@@ -1591,13 +1591,32 @@ void DuckLakeTransaction::CleanupFiles() {
 	state->CleanupFiles();
 }
 
-void DuckLakeTransaction::ApplyServerSideCommit(idx_t schema_version) {
+idx_t DuckLakeTransaction::CommittedNextFileId(idx_t committed_snapshot_id) {
+	auto query = StringUtil::Format(
+	    "SELECT next_file_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id = %d;", committed_snapshot_id);
+	auto result = metadata_manager->Query(query);
+	result->ThrowIfError("Failed to read the committed snapshot from DuckLake: ");
+	for (auto &row : *result) {
+		return row.GetValue<idx_t>(0);
+	}
+	// LCOV_EXCL_START
+	throw InternalException("The committed DuckLake snapshot %d was not found", committed_snapshot_id);
+	// LCOV_EXCL_STOP
+}
+
+void DuckLakeTransaction::ApplyServerSideCommit(idx_t schema_version, idx_t committed_snapshot_id) {
 	if (snapshot) {
-		for (auto &entry : state->dropped_file_stats) {
-			ducklake_catalog.InvalidateTableStatsCache(snapshot->next_file_id, entry.first);
-		}
-		for (auto &table_id : state->local_changes.GetCompactedTables()) {
-			ducklake_catalog.InvalidateTableStatsCache(snapshot->next_file_id, table_id);
+		auto compacted_tables = state->local_changes.GetCompactedTables();
+		if (!state->dropped_file_stats.empty() || !compacted_tables.empty()) {
+			// cached stats are keyed by the next file id of the committed snapshot, as after a client side commit: a
+			// commit that recomputed bounds advanced it, and the readers of older snapshots keep their stats
+			auto next_file_id = CommittedNextFileId(committed_snapshot_id);
+			for (auto &entry : state->dropped_file_stats) {
+				ducklake_catalog.InvalidateTableStatsCache(next_file_id, entry.first);
+			}
+			for (auto &table_id : compacted_tables) {
+				ducklake_catalog.InvalidateTableStatsCache(next_file_id, table_id);
+			}
 		}
 	}
 	catalog_version = schema_version;

@@ -470,36 +470,30 @@ unique_ptr<QueryResult> PostgresMetadataManager::Execute(DuckLakeSnapshot snapsh
 	    StringUtil::Format("CALL postgres_execute(%s, %s, prepare=FALSE)", catalog_literal, SQLString(query)));
 }
 
+//! Raised by the drop of an inlined table whose lock gave way to open transactions
+static constexpr const char *DROP_DEFERRED_MARKER = "ducklake_drop_deferred";
+
 unique_ptr<QueryResult> PostgresMetadataManager::ExecuteDropInTransaction(string &query) {
 	// DROP TABLE waits for every open transaction that read the table and the readers queued behind it fail, so it
 	// gives up instead and leaves the table to a later cleanup
 	// a transaction reads ducklake_snapshot first and keeps its share lock until it ends, while its REPEATABLE READ
 	// snapshot still lists the table, so the drop only runs when no such transaction is open and a transaction that
-	// starts meanwhile takes its snapshot after the drop; the lock is taken on its own, so that its failure is told
-	// apart from a failure of the drop without reading the server's message
+	// starts meanwhile takes its snapshot after the drop; a lock timeout alone raises the marker read by DropDeferred,
+	// as the server's own message depends on its locale, any other failure keeps the server's error
 	auto schema = SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName());
-	auto lock_snapshots = StringUtil::Format("LOCK TABLE %s.ducklake_snapshot IN ACCESS EXCLUSIVE MODE", schema);
-	string lock_batch = "BEGIN TRANSACTION;\n"
-	                    "CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, 'SET LOCAL lock_timeout = 1');\n";
-	lock_batch +=
-	    StringUtil::Format("CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, %s);", SQLString(lock_snapshots));
-	auto lock_result = Query(lock_batch);
-	last_drop_deferred = lock_result->HasError();
-	if (last_drop_deferred) {
-		Query("ROLLBACK;");
-		return lock_result;
-	}
-	auto drop_batch = query + "\nCOMMIT;";
-	auto result = Query(drop_batch);
-	if (result->HasError()) {
-		Query("ROLLBACK;");
-	}
-	return result;
+	auto lock_snapshots = StringUtil::Format("DO $$ BEGIN LOCK TABLE %s.ducklake_snapshot IN ACCESS EXCLUSIVE MODE; "
+	                                         "EXCEPTION WHEN lock_not_available THEN RAISE EXCEPTION '%s'; END $$",
+	                                         schema, DROP_DEFERRED_MARKER);
+	string batch = "CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, 'SET LOCAL lock_timeout = 1');\n";
+	batch +=
+	    StringUtil::Format("CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, %s);\n", SQLString(lock_snapshots));
+	batch += query;
+	return ExecuteInTransaction(batch);
 }
 
-bool PostgresMetadataManager::DropDeferred(const string &) const {
+bool PostgresMetadataManager::DropDeferred(const string &error) const {
 	// the lock of ExecuteDropInTransaction gave way to open transactions, a later cleanup drops the table
-	return last_drop_deferred;
+	return StringUtil::Contains(error, DROP_DEFERRED_MARKER);
 }
 
 bool PostgresMetadataManager::InlinedTableMissing(const Identifier &inlined_table_name) {

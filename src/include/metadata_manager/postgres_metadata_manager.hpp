@@ -50,7 +50,6 @@ public:
 	unique_ptr<QueryResult> ExecuteDropInTransaction(string &query) override;
 	bool DropDeferred(const string &error) const override;
 	bool InlinedTableMissing(const Identifier &inlined_table_name) override;
-	void OnMetadataTransactionBegin(Connection &connection) override;
 
 private:
 	//! Whether the last ExecuteDropInTransaction gave way to open transactions instead of dropping

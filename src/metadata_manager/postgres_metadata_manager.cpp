@@ -502,23 +502,6 @@ bool PostgresMetadataManager::DropDeferred(const string &) const {
 	return last_drop_deferred;
 }
 
-void PostgresMetadataManager::OnMetadataTransactionBegin(Connection &connection) {
-	// a plain statement locks the relation before it takes the REPEATABLE READ snapshot of the transaction, so the
-	// share lock on ducklake_snapshot holds a drop of inlined tables off while this snapshot can still list them,
-	// whatever the first query of the transaction reads; the connection comes in since its lock is held here
-	if (!transaction.GetCatalog().IsInitialized()) {
-		// the attach creates or loads the catalog, whose snapshot table may not exist yet
-		return;
-	}
-	auto schema = SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName());
-	auto remote_query = StringUtil::Format("SELECT 1 FROM %s.ducklake_snapshot LIMIT 1", schema);
-	string query = StringUtil::Format("CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, %s)",
-	                                  SQLString::ToString(remote_query));
-	SubstituteCatalogPlaceholders(query);
-	auto result = connection.Query(query);
-	result->ThrowIfError("Failed to start a DuckLake metadata transaction: ");
-}
-
 bool PostgresMetadataManager::InlinedTableMissing(const Identifier &inlined_table_name) {
 	// the name lookup reads the current catalog, not the snapshot of the transaction, like a query of the table would
 	auto &catalog = transaction.GetCatalog();

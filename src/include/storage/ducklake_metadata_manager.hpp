@@ -30,7 +30,6 @@
 #include <functional>
 
 namespace duckdb {
-class Connection;
 class ColumnList;
 class DuckLakeCatalogSet;
 class DuckLakeSchemaEntry;
@@ -310,8 +309,6 @@ public:
 	virtual unique_ptr<QueryResult> ExecuteDropInTransaction(string &query);
 	//! Whether a failed drop gave way to open transactions on purpose, to be retried by a later cleanup
 	virtual bool DropDeferred(const string &error) const;
-	//! Runs the first statement of a new metadata transaction on its connection, where a catalog needs one
-	virtual void OnMetadataTransactionBegin(Connection &connection);
 
 	virtual unique_ptr<QueryResult> Query(DuckLakeSnapshot snapshot, string &query);
 	virtual unique_ptr<QueryResult> Query(string &query);

@@ -3261,9 +3261,6 @@ bool DuckLakeMetadataManager::DropDeferred(const string &) const {
 	return false;
 }
 
-void DuckLakeMetadataManager::OnMetadataTransactionBegin(Connection &) {
-}
-
 unique_ptr<QueryResult> DuckLakeMetadataManager::ExecuteInTransaction(string &query) {
 	auto batch = "BEGIN TRANSACTION;\n" + query + "\nCOMMIT;";
 	auto result = Query(batch);

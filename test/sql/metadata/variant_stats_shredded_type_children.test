@@ -55,6 +55,36 @@ SELECT v FROM dl.t
 ----
 <REGEX>:.*Invalid Input Error.*Column "v" has invalid stored statistics.*
 
+# an append replaces the invalid statistics, the rows stay readable
+statement ok
+INSERT INTO dl.t VALUES (4::VARIANT)
+
+query I
+SELECT count(*) FROM dl.t WHERE v IS NOT NULL
+----
+2
+
+query I
+SELECT DISTINCT stats(v) IS NOT NULL FROM dl.t
+----
+true
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_${nested_type}.db' AS dl
+
+query I
+SELECT count(*) FROM dl.t WHERE v IS NOT NULL
+----
+2
+
+query I
+SELECT extra_stats IS NULL FROM __ducklake_metadata_dl.ducklake_table_column_stats WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 't')
+----
+true
+
 statement ok
 DETACH dl
 

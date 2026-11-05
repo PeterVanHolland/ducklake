@@ -305,13 +305,7 @@ unique_ptr<BaseStatistics> GetColumnStats(const DuckLakeFieldId &field_id, const
 			// don't serve stale stats from before a retype
 			return nullptr;
 		}
-		try {
-			return entry->second.ToStats();
-		} catch (InvalidInputException &ex) {
-			ErrorData error(ex);
-			error.Throw(StringUtil::Format("Column \"%s\" has invalid stored statistics, ",
-			                               field_id.Name().GetIdentifierName()));
-		}
+		return entry->second.ToStats();
 	}
 	// nested type
 	switch (field_id.Type().id()) {
@@ -375,7 +369,13 @@ unique_ptr<BaseStatistics> DuckLakeTableEntry::GetStatistics(ClientContext &cont
 		return nullptr;
 	}
 	auto &field_id = field_data->GetByRootIndex(PhysicalIndex(column_id));
-	return GetColumnStats(field_id, *table_stats);
+	try {
+		return GetColumnStats(field_id, *table_stats);
+	} catch (InvalidInputException &ex) {
+		ErrorData error(ex);
+		error.Throw(
+		    StringUtil::Format("Column \"%s\" has invalid stored statistics, ", field_id.Name().GetIdentifierName()));
+	}
 }
 
 // LCOV_EXCL_START

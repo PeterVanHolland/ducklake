@@ -91,7 +91,7 @@ DETACH dl
 endloop
 
 # other invalid statistics are reported the same way
-foreach payload [{"field_name":"root","shredded_type":"int3"}] [{"field_name":"root","shredded_type":"decimal"}] [{"field_name":"root","shredded_type":"decimal(foo,2)"}] [{"field_name":"root","shredded_type":"decimal(8)"}] {} [1] [{"field_name":["x"],"shredded_type":"int32"}] notjson
+foreach payload [{"field_name":"root","shredded_type":"int3"}] [{"field_name":"root","shredded_type":"decimal"}] [{"field_name":"root","shredded_type":"decimal(foo,2)"}] [{"field_name":"root","shredded_type":"decimal(8)"}] [{"field_name":"root","shredded_type":"decimal(264,2)"}] [{"field_name":"root","shredded_type":"decimal(8junk,2)"}] [{"field_name":"root","shredded_type":"decimal(2,8)"}] [{"field_name":"root","shredded_type":"int32","min":[1]}] {} [1] [{"field_name":["x"],"shredded_type":"int32"}] notjson
 
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl (DATA_PATH '{DATA_PATH}/shredded_other', DATA_INLINING_ROW_LIMIT 0)
@@ -117,3 +117,24 @@ statement ok
 DETACH dl
 
 endloop
+
+# a malformed DECIMAL column type is rejected when the catalog loads
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_column SET column_type = 'decimal(264,2)' WHERE column_name = 'v'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
+
+statement error
+SELECT v FROM dl.t
+----
+<REGEX>:.*Invalid Input Error.*invalid DECIMAL width or scale in 'decimal\(264,2\)'.*
+
+statement ok
+DETACH dl

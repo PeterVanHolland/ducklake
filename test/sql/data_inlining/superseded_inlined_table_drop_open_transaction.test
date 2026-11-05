@@ -101,73 +101,19 @@ SELECT count(*), sum(id) FROM lake.u
 statement ok con1
 COMMIT
 
-# a transaction whose snapshot lists the emptied table cannot tell that the flush emptied it before its snapshot, a
-# flush does not conflict with inserts committed after its snapshot, so on Postgres the read asks for a retry
-statement ok con3
-BEGIN
-
-query I con3
-SELECT count(*) FROM lake.other
-----
-0
+# once the transaction ended, the next flush drops the emptied table
+statement ok con2
+INSERT INTO lake.u SELECT 3, i, i FROM range(5) r(i)
 
 statement ok con2
-DELETE FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_name = 'ducklake_inlined_data_4_4'
-
-statement ok con2
-DROP TABLE IF EXISTS __ducklake_metadata_lake.ducklake_inlined_data_4_4
-
-statement maybe con3
-SELECT count(*), sum(id) FROM lake.u
-----
-retry the statement
-
-statement ok con3
-ROLLBACK
-
-query II
-SELECT count(*), sum(id) FROM lake.u
-----
-15	9965
-
-# a superseded table that never held rows, dropped under a transaction that lists it
-statement ok
-CREATE TABLE lake.w (tenant INTEGER, id BIGINT, v DOUBLE)
-
-statement ok
-ALTER TABLE lake.w SET PARTITIONED BY (tenant)
-
-statement ok
-INSERT INTO lake.w SELECT 1, 1000 - i, i FROM range(10) r(i)
+CALL ducklake_flush_inlined_data('lake', table_name => 'u')
 
 query I
-SELECT max(table_name) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'w' AND end_snapshot IS NULL)
+SELECT count(*) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'u' AND end_snapshot IS NULL)
 ----
-ducklake_inlined_data_6_7
+1
 
-statement ok con4
-BEGIN
-
-query I con4
-SELECT count(*) FROM lake.other
+query II
+SELECT (SELECT count(*) FROM lake.t), (SELECT count(*) FROM lake.u)
 ----
-0
-
-statement ok con2
-DELETE FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_name = 'ducklake_inlined_data_6_6'
-
-statement ok con2
-DROP TABLE IF EXISTS __ducklake_metadata_lake.ducklake_inlined_data_6_6
-
-query II con4
-SELECT count(*), max(id) FROM lake.w WHERE tenant = 1
-----
-10	1000
-
-statement ok con4
-COMMIT
-
-query III
-SELECT (SELECT count(*) FROM lake.t), (SELECT count(*) FROM lake.u), (SELECT count(*) FROM lake.w)
-----
-15	15	10
+15	20

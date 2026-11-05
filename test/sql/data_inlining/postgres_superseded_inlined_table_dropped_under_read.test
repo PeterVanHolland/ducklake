@@ -1,0 +1,109 @@
+# name: test/sql/data_inlining/postgres_superseded_inlined_table_dropped_under_read.test
+# description: a Postgres transaction whose snapshot lists a superseded inlined table that is gone reads on when the table was empty
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require-env DUCKLAKE_CONNECTION postgres:dbname=ducklakedb
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/postgres_superseded_inlined_table_dropped_under_read', DATA_INLINING_ROW_LIMIT 1000)
+
+statement ok
+CREATE TABLE lake.other (id INTEGER)
+
+# the inlined table of the first schema version never receives a row before the partitioning supersedes it
+statement ok
+CREATE TABLE lake.w (tenant INTEGER, id BIGINT, v DOUBLE)
+
+statement ok
+ALTER TABLE lake.w SET PARTITIONED BY (tenant)
+
+statement ok
+INSERT INTO lake.w SELECT 1, 1000 - i, i FROM range(10) r(i)
+
+query I
+SELECT list(table_name ORDER BY schema_version) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'w' AND end_snapshot IS NULL)
+----
+[ducklake_inlined_data_2_2, ducklake_inlined_data_2_3]
+
+# con1 fixes its snapshot before the table is unregistered and dropped, as a flush of another connection does it
+statement ok con1
+BEGIN
+
+query I con1
+SELECT count(*) FROM lake.other
+----
+0
+
+statement ok
+DELETE FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_name = 'ducklake_inlined_data_2_2'
+
+statement ok
+DROP TABLE __ducklake_metadata_lake.ducklake_inlined_data_2_2
+
+# the snapshot shows that the table never held a row, so the read goes on without it
+query II con1
+SELECT count(*), max(id) FROM lake.w WHERE tenant = 1
+----
+10	1000
+
+statement ok con1
+COMMIT
+
+# a superseded table that held rows: the flush empties it, but a snapshot cannot tell that from its change log
+statement ok
+CREATE TABLE lake.u (tenant INTEGER, id BIGINT, v DOUBLE)
+
+statement ok
+INSERT INTO lake.u SELECT 1, 1000 - i, i FROM range(10) r(i)
+
+statement ok
+ALTER TABLE lake.u SET PARTITIONED BY (tenant)
+
+statement ok
+INSERT INTO lake.u SELECT 2, i, i FROM range(5) r(i)
+
+# con2 fixes its snapshot before the flush, which keeps the emptied table for it, and sees the rows of the old table
+statement ok con2
+BEGIN
+
+query I con2
+SELECT count(*) FROM lake.other
+----
+0
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'u')
+
+query I
+SELECT list(table_name ORDER BY schema_version) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'u' AND end_snapshot IS NULL)
+----
+[ducklake_inlined_data_4_4, ducklake_inlined_data_4_5]
+
+statement ok
+DELETE FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_name = 'ducklake_inlined_data_4_4'
+
+statement ok
+DROP TABLE __ducklake_metadata_lake.ducklake_inlined_data_4_4
+
+# the read names the dropped table and asks for a retry instead of failing on the missing relation
+statement error con2
+SELECT count(*), sum(id) FROM lake.u
+----
+a concurrent flush dropped the inlined table ducklake_inlined_data_4_4 while the snapshot of this transaction still reads it, retry the statement
+
+statement ok con2
+ROLLBACK
+
+# the retry takes a snapshot without the table
+query II
+SELECT count(*), sum(id) FROM lake.u
+----
+15	9965

@@ -33,7 +33,7 @@ DETACH dl
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/shredded_${nested_type}.db' AS dl
 
-# the other table and the rows of the table itself stay readable
+# the other table loads, and a count needs no column statistics
 query I
 SELECT stats(w) IS NOT NULL FROM dl.healthy
 ----
@@ -44,10 +44,16 @@ SELECT count(*) FROM dl.t
 ----
 1
 
+# reading the column asks for its statistics
 statement error
 SELECT stats(v) FROM dl.t
 ----
 <REGEX>:.*Invalid Input Error.*Column "v".*shredded type "(list|struct|map)".*
+
+statement error
+SELECT v FROM dl.t
+----
+<REGEX>:.*Invalid Input Error.*Column "v" has invalid stored statistics.*
 
 statement ok
 DETACH dl

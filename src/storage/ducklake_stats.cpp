@@ -348,7 +348,6 @@ void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
 			// invalidated bounds
 			return;
 		}
-		// the current stats have no valid values, the bounds of the source are the bounds
 		CopyMinFrom(new_stats);
 		CopyMaxFrom(new_stats);
 		any_valid = true;

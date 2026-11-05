@@ -108,7 +108,6 @@ public:
 	void MergeStats(const DuckLakeColumnStats &new_stats);
 	//! Whether the bounds are in order, bounds that do not parse count as ordered
 	bool BoundsOrdered() const;
-	//! Bounds in the wrong order become unknown bounds
 	void DropReversedBounds();
 	void SetBoundsUnknown();
 

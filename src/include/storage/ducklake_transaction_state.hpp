@@ -256,8 +256,10 @@ public:
 	//! (+ committed inlined data) and append the UpdateGlobalTableStats SQL to `batch_query`. No-op (leaving the
 	//! existing stale stats, and the scan fallback) if the table is not fully delete-free post-rewrite or the
 	//! inlined data cannot be accounted for exactly. Returns whether it wrote the stats.
-	//! The tables this commit changes other than through dropped files and new files without deletes
-	set<TableIndex> TablesWithDataChangesBesidesNewFiles(DuckLakeCommitState &commit_state) const;
+	//! The tables this commit changes other than through dropped files and new files without deletes, for which the
+	//! files and the schema of the snapshot do not stand for the committed table
+	set<TableIndex> TablesWithChangesBeyondNewFiles(DuckLakeCommitState &commit_state,
+	                                                const TransactionChangeInformation &transaction_changes) const;
 	//! The new files of this commit are added to the files kept from the snapshot, a next row id advanced by them is
 	//! passed in.
 	bool RecomputeGlobalStats(string &batch_query, TableIndex table_id, DuckLakeSnapshot snapshot,

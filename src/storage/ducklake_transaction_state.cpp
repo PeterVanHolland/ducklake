@@ -2210,9 +2210,10 @@ FROM {METADATA_CATALOG}.ducklake_column WHERE (table_id, column_id) IN (%s))",
 	return result;
 }
 
-set<TableIndex>
-DuckLakeTransactionState::TablesWithDataChangesBesidesNewFiles(DuckLakeCommitState &commit_state) const {
-	set<TableIndex> result;
+set<TableIndex> DuckLakeTransactionState::TablesWithChangesBeyondNewFiles(
+    DuckLakeCommitState &commit_state, const TransactionChangeInformation &transaction_changes) const {
+	// a schema change of the commit, such as a widened type, is not in the per file stats of the snapshot
+	set<TableIndex> result = transaction_changes.altered_tables;
 	for (auto &entry : local_changes.Changes()) {
 		auto &changes = entry.second;
 		bool other_changes = changes.new_inlined_data || !changes.new_delete_files.empty() ||
@@ -2489,7 +2490,7 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 	// the bounds a drop made unknown are read from the remaining files and the inlined data of the snapshot, which
 	// stand for the live rows only when this commit changes the table through new files at most
 	if (!tables_with_dropped_files_and_rows.empty()) {
-		auto tables_with_other_changes = TablesWithDataChangesBesidesNewFiles(commit_state);
+		auto tables_with_other_changes = TablesWithChangesBeyondNewFiles(commit_state, transaction_changes);
 		auto recompute_snapshot = context.get_snapshot();
 		for (auto &table_id : tables_with_dropped_files_and_rows) {
 			if (tables_with_other_changes.find(table_id) != tables_with_other_changes.end()) {

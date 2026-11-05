@@ -122,7 +122,7 @@ static idx_t ParseDecimalMember(string member, const string &type) {
 	if (!digits) {
 		throw InvalidInputException("Failed to parse DuckLake type - invalid DECIMAL width or scale in '%s'", type);
 	}
-	return std::stoull(member);
+	return StringUtil::ToUnsigned(member);
 }
 
 LogicalType DuckLakeTypes::FromString(const string &type) {

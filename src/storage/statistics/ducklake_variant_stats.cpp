@@ -1,3 +1,4 @@
+#include "duckdb/common/algorithm.hpp"
 #include "common/ducklake_json.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "storage/ducklake_variant_stats.hpp"
@@ -102,6 +103,9 @@ static DuckLakeVariantStats DeserializeShreddedStats(const LogicalType &shredded
 	auto &stats = variant_stats.field_stats;
 	stats.has_null_count = TryGetCount(obj, "null_count", stats.null_count);
 	stats.has_num_values = TryGetCount(obj, "num_values", stats.num_values);
+	if (stats.has_null_count && stats.has_num_values && stats.null_count > stats.num_values) {
+		throw InvalidInputException("\"null_count\" exceeds \"num_values\"");
+	}
 	TryGetCount(obj, "column_size_bytes", stats.column_size_bytes);
 
 	stats.has_min = TryGetString(obj, "min", stats.min);
@@ -326,6 +330,9 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 	throw InvalidInputException("Incorrectly formatted field name %s", field_name);
 }
 
+//! Deeper paths are not shredded, the limit keeps the tree of the stored paths shallow
+static constexpr idx_t MAX_SHREDDED_FIELD_DEPTH = 100;
+
 static void ParseShreddedFieldStats(const string &stats, unordered_map<string, DuckLakeVariantStats> &result) {
 	JSONParseError error;
 	auto doc = JSONDocument::TryParse(stats.c_str(), stats.size(), error);
@@ -354,8 +361,14 @@ static void ParseShreddedFieldStats(const string &stats, unordered_map<string, D
 			                            "\"%s\", a nested type has its children as fields of their own",
 			                            field_name, type_string, stats);
 		}
+		if (std::count(field_name.begin(), field_name.end(), '.') >= MAX_SHREDDED_FIELD_DEPTH) {
+			throw InvalidInputException("Field \"%s\" in VARIANT stats JSON \"%s\" is nested too deeply", field_name,
+			                            stats);
+		}
 		try {
-			result.emplace(field_name, DeserializeShreddedStats(shredded_type, obj));
+			if (!result.emplace(field_name, DeserializeShreddedStats(shredded_type, obj)).second) {
+				throw InvalidInputException("the field appears twice");
+			}
 		} catch (InvalidInputException &ex) {
 			throw InvalidInputException("Field \"%s\" in VARIANT stats JSON \"%s\", %s", field_name, stats,
 			                            ErrorData(ex).RawMessage());

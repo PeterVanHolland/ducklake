@@ -398,12 +398,8 @@ bool DuckLakeColumnStats::BoundsOrdered() const {
 	if (!has_min || !has_max) {
 		return true;
 	}
-	if (type.id() == LogicalTypeId::VARCHAR) {
-		// a truncated max is a prefix, the min is compared on its bytes
-		auto max_type = EffectiveMaxIsExact() ? StringStatsType::EXACT_STATS : StringStatsType::TRUNCATED_STATS;
-		return StringStats::CompareStringStats(string_t(min), string_t(max), max_type) <= 0;
-	}
-	if (!CompareBoundsAsValues(type)) {
+	// string bounds are a lower and an upper bound in text order, exact or not
+	if (!CompareBoundsAsValues(type) && type.id() != LogicalTypeId::VARCHAR) {
 		return true;
 	}
 	int32_t comparison;

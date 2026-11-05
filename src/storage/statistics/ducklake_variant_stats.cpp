@@ -26,7 +26,6 @@ void DuckLakeColumnVariantStats::Merge(const DuckLakeColumnExtraStats &new_stats
 	// the merged statistics replace the invalid ones, with no shredded fields
 	invalid_reason.clear();
 	if (shredded_field_stats.empty()) {
-		// nothing to merge
 		return;
 	}
 	auto &new_stats = new_stats_p.Cast<DuckLakeColumnVariantStats>();
@@ -196,7 +195,6 @@ struct NestedVariantStats {
 
 	LogicalType ToType(const unordered_map<string, DuckLakeVariantStats> &field_stats) {
 		if (!full_field_name.empty()) {
-			// field, find it in the stats
 			auto entry = field_stats.find(full_field_name);
 			if (entry == field_stats.end()) {
 				throw InternalException("NestedVariantStats failed to find field name");
@@ -216,7 +214,6 @@ struct NestedVariantStats {
 		if (child_names.size() != child_stats.size()) {
 			throw InvalidInputException("The VARIANT stats mix a list element and struct fields in one field");
 		}
-		// recurse into the children
 		child_list_t<LogicalType> children;
 		for (idx_t i = 0; i < child_names.size(); i++) {
 			children.emplace_back(child_names[i], child_stats[i].ToType(field_stats));
@@ -230,7 +227,6 @@ struct NestedVariantStats {
 		auto &untyped_value_index_stats = StructStats::GetChildStats(main_stats, VariantStats::UNTYPED_VALUE_INDEX);
 		untyped_value_index_stats.SetHasNull();
 		if (!full_field_name.empty()) {
-			// field, find it in the stats
 			auto entry = field_stats.find(full_field_name);
 			if (entry == field_stats.end()) {
 				throw InternalException("NestedVariantStats failed to find field name");

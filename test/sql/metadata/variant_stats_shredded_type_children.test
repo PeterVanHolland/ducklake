@@ -217,7 +217,7 @@ UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"
 statement ok
 UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"varchar","min":"b","max":"a"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'tb') AND column_id = (SELECT column_id FROM __ducklake_metadata_dl.ducklake_column WHERE column_name = 's')
 
-# a VARCHAR min longer than a truncated max is in order when it starts with the max
+# an inexact max is an upper bound, so a max below the min is reversed as well
 statement ok
 UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET min_value = 'ab', max_value = 'a', max_is_exact = false WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'tb') AND column_id = (SELECT column_id FROM __ducklake_metadata_dl.ducklake_column WHERE column_name = 'q')
 
@@ -238,11 +238,10 @@ SELECT (SELECT count(*) FROM dl.tb WHERE b::BOOLEAN = false), (SELECT count(*) F
 ----
 1	1	1	1	1
 
-# the bounds with the truncated max are kept
 query I
-SELECT stats(q)['min']::VARCHAR FROM dl.tb LIMIT 1
+SELECT stats(q)['min'] IS NULL FROM dl.tb LIMIT 1
 ----
-ab
+true
 
 # an append must not trust the stored bounds either
 statement ok

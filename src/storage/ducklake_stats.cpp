@@ -331,13 +331,11 @@ void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
 	}
 
 	if (!new_stats.BoundsOrdered()) {
-		// stored bounds in the wrong order are unknown bounds of the source
 		SetBoundsUnknown();
 		MergeExtraStats(extra_stats, new_stats);
 		return;
 	}
 	if (!new_stats.AnyValid()) {
-		// a source without valid values has no bounds to merge
 		if (!bounds_survive) {
 			SetBoundsUnknown();
 		}

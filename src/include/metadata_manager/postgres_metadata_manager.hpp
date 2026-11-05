@@ -51,6 +51,11 @@ public:
 	bool DropDeferred(const string &error) const override;
 	bool InlinedTableMissing(const Identifier &inlined_table_name) override;
 
+private:
+	//! Whether the last ExecuteDropInTransaction gave way to open transactions instead of dropping
+	bool last_drop_deferred = false;
+
+public:
 	void ClearCache() override;
 	//! postgres_scanner looks up a table it has not cached
 	bool NewTablesRequireCacheClear() const override {

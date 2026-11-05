@@ -559,10 +559,10 @@ idx_t DuckLakeTableEntry::GetNetInlinedRowCount(DuckLakeTransaction &transaction
 bool DuckLakeTableEntry::InlinedTableMayBeDropped(DuckLakeTransaction &transaction,
                                                   const Identifier &inlined_table_name,
                                                   DuckLakeSnapshot snapshot) const {
-	if (inlined_data_tables.size() == 1) {
-		// the only inlined table of an older or pinned snapshot can be superseded by now
-		return transaction.GetCatalog().CatalogSnapshot() ||
-		       snapshot.schema_version < transaction.GetSnapshot().schema_version;
+	if (transaction.GetCatalog().CatalogSnapshot() ||
+	    snapshot.schema_version < transaction.GetSnapshot().schema_version) {
+		// the newest inlined table of an older or pinned snapshot can be superseded by now
+		return true;
 	}
 	optional_idx schema_version;
 	idx_t newest_version = 0;

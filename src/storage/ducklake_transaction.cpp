@@ -1617,10 +1617,6 @@ void DuckLakeTransaction::DropEmptySupersededInlinedTablesClientSide() {
 	context.drop_deferred = [&](const string &error) {
 		return metadata_manager->DropDeferred(error);
 	};
-	context.inlined_table_dropped = [&](TableIndex table_id, const Identifier &inlined_table_name,
-	                                    DuckLakeSnapshot snapshot) {
-		return metadata_manager->InlinedTableDropped(table_id, inlined_table_name, snapshot);
-	};
 	context.invalidate_schema_cache = [&](idx_t schema_version) {
 		ducklake_catalog.InvalidateSchemaCache(schema_version);
 	};
@@ -1769,10 +1765,6 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	context.drop_deferred = [&](const string &error) {
 		return metadata_manager->DropDeferred(error);
 	};
-	context.inlined_table_dropped = [&](TableIndex table_id, const Identifier &inlined_table_name,
-	                                    DuckLakeSnapshot snapshot) {
-		return metadata_manager->InlinedTableDropped(table_id, inlined_table_name, snapshot);
-	};
 	context.query_metadata_with_snapshot = [&](DuckLakeSnapshot s, string q) {
 		return metadata_manager->Query(s, q);
 	};
@@ -1853,6 +1845,10 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 			// LCOV_EXCL_STOP
 		}
 		for (auto &t : table->GetInlinedDataTables(*this, transaction_snapshot)) {
+			// another connection can drop an empty superseded table the snapshot still lists
+			if (metadata_manager->InlinedTableDropped(*table, t.table_name, transaction_snapshot)) {
+				continue;
+			}
 			names.push_back(t.table_name);
 		}
 		return names;

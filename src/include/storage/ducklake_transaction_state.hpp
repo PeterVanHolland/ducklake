@@ -88,11 +88,6 @@ struct DuckLakeCommitContext {
 	std::function<bool(const string &)> drop_deferred = [](const string &) {
 		return false;
 	};
-	//! Whether an inlined table the snapshot lists was dropped by another connection while empty, so it is skipped.
-	std::function<bool(TableIndex, const Identifier &, DuckLakeSnapshot)> inlined_table_dropped =
-	    [](TableIndex, const Identifier &, DuckLakeSnapshot) {
-		    return false;
-	    };
 	//! Runs a snapshot-templated metadata-DB query (handles {SNAPSHOT_ID} substitution).
 	std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> query_metadata_with_snapshot;
 	//! Optional Appender fast-path.

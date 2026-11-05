@@ -473,21 +473,33 @@ unique_ptr<QueryResult> PostgresMetadataManager::Execute(DuckLakeSnapshot snapsh
 unique_ptr<QueryResult> PostgresMetadataManager::ExecuteDropInTransaction(string &query) {
 	// DROP TABLE waits for every open transaction that read the table and the readers queued behind it fail, so it
 	// gives up instead and leaves the table to a later cleanup
-	string batch = "CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, 'SET LOCAL lock_timeout = 1');\n";
 	// a transaction reads ducklake_snapshot first and keeps its share lock until it ends, while its REPEATABLE READ
 	// snapshot still lists the table, so the drop only runs when no such transaction is open and a transaction that
-	// starts meanwhile takes its snapshot after the drop
+	// starts meanwhile takes its snapshot after the drop; the lock is taken on its own, so that its failure is told
+	// apart from a failure of the drop without reading the server's message
 	auto schema = SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName());
 	auto lock_snapshots = StringUtil::Format("LOCK TABLE %s.ducklake_snapshot IN ACCESS EXCLUSIVE MODE", schema);
-	batch +=
-	    StringUtil::Format("CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, %s);\n", SQLString(lock_snapshots));
-	batch += query;
-	return ExecuteInTransaction(batch);
+	string lock_batch = "BEGIN TRANSACTION;\n"
+	                    "CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, 'SET LOCAL lock_timeout = 1');\n";
+	lock_batch +=
+	    StringUtil::Format("CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, %s);", SQLString(lock_snapshots));
+	auto lock_result = Query(lock_batch);
+	last_drop_deferred = lock_result->HasError();
+	if (last_drop_deferred) {
+		Query("ROLLBACK;");
+		return lock_result;
+	}
+	auto drop_batch = query + "\nCOMMIT;";
+	auto result = Query(drop_batch);
+	if (result->HasError()) {
+		Query("ROLLBACK;");
+	}
+	return result;
 }
 
-bool PostgresMetadataManager::DropDeferred(const string &error) const {
-	// the lock timeout of ExecuteDropInTransaction leaves the table to a later cleanup
-	return StringUtil::Contains(error, "lock timeout");
+bool PostgresMetadataManager::DropDeferred(const string &) const {
+	// the lock of ExecuteDropInTransaction gave way to open transactions, a later cleanup drops the table
+	return last_drop_deferred;
 }
 
 bool PostgresMetadataManager::InlinedTableMissing(const Identifier &inlined_table_name) {

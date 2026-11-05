@@ -950,16 +950,11 @@ ReadInlinedTableColumns(TableIndex table_id, const DuckLakeCommitContext &contex
 	return result;
 }
 
-static void CountInlinedRows(TableIndex table_id, const vector<Identifier> &inlined_table_names,
-                             DuckLakeSnapshot snapshot, const DuckLakeCommitContext &context, idx_t &stored_rows,
-                             idx_t &live_rows) {
+static void CountInlinedRows(const vector<Identifier> &inlined_table_names, DuckLakeSnapshot snapshot,
+                             const DuckLakeCommitContext &context, idx_t &stored_rows, idx_t &live_rows) {
 	stored_rows = 0;
 	live_rows = 0;
 	for (auto &inlined_table_name : inlined_table_names) {
-		if (context.inlined_table_dropped(table_id, inlined_table_name, snapshot)) {
-			// another connection dropped the empty superseded table the snapshot still lists
-			continue;
-		}
 		auto sql = DuckLakeMetadataManager::GetInlinedRowCountsSql(inlined_table_name, context.InlinedColNames());
 		auto result = context.query_metadata_with_snapshot(snapshot, sql);
 		result->ThrowIfError("Failed to read the inlined row counts from DuckLake: ");
@@ -1207,7 +1202,7 @@ bool DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(string &batch_qu
 	auto inlined_table_names = context.get_inlined_table_names(table_id);
 	idx_t stored_inlined;
 	idx_t net_inlined;
-	CountInlinedRows(table_id, inlined_table_names, snapshot, context, stored_inlined, net_inlined);
+	CountInlinedRows(inlined_table_names, snapshot, context, stored_inlined, net_inlined);
 	if (stored_inlined != net_inlined) {
 		return false;
 	}

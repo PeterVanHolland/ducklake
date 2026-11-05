@@ -251,6 +251,9 @@ struct NestedVariantStats {
 	}
 };
 
+//! The tree of the stored paths is walked recursively, so their depth is bounded
+static constexpr idx_t MAX_SHREDDED_FIELD_DEPTH = 1000;
+
 void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats> stats) {
 	if (field_name == "root") {
 		// special case: top-level variant - no need to parse
@@ -258,7 +261,11 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 		return;
 	}
 	idx_t pos = 0;
+	idx_t depth = 0;
 	while (pos < field_name.size()) {
+		if (++depth > MAX_SHREDDED_FIELD_DEPTH) {
+			throw InvalidInputException("Field %s is nested too deeply", field_name);
+		}
 		if (field_name[pos] != '"') {
 			// find the dot
 			idx_t start_pos = pos;
@@ -330,9 +337,6 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 	throw InvalidInputException("Incorrectly formatted field name %s", field_name);
 }
 
-//! Deeper paths are not shredded, the limit keeps the tree of the stored paths shallow
-static constexpr idx_t MAX_SHREDDED_FIELD_DEPTH = 100;
-
 static void ParseShreddedFieldStats(const string &stats, unordered_map<string, DuckLakeVariantStats> &result) {
 	JSONParseError error;
 	auto doc = JSONDocument::TryParse(stats.c_str(), stats.size(), error);
@@ -360,10 +364,6 @@ static void ParseShreddedFieldStats(const string &stats, unordered_map<string, D
 			throw InvalidInputException("Field \"%s\" has the incomplete shredded type \"%s\" in VARIANT stats JSON "
 			                            "\"%s\", a nested type has its children as fields of their own",
 			                            field_name, type_string, stats);
-		}
-		if (std::count(field_name.begin(), field_name.end(), '.') >= MAX_SHREDDED_FIELD_DEPTH) {
-			throw InvalidInputException("Field \"%s\" in VARIANT stats JSON \"%s\" is nested too deeply", field_name,
-			                            stats);
 		}
 		try {
 			if (!result.emplace(field_name, DeserializeShreddedStats(shredded_type, obj)).second) {

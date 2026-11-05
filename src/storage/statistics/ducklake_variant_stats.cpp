@@ -34,12 +34,10 @@ void DuckLakeColumnVariantStats::Merge(const DuckLakeColumnExtraStats &new_stats
 	for (auto &entry : shredded_field_stats) {
 		auto other_entry = new_stats.shredded_field_stats.find(entry.first);
 		if (other_entry == new_stats.shredded_field_stats.end()) {
-			// the new statistics do not have the field
 			stats_to_erase.push_back(entry.first);
 			continue;
 		}
 		if (entry.second.shredded_type != other_entry->second.shredded_type) {
-			// the shredded types differ
 			stats_to_erase.push_back(entry.first);
 			continue;
 		}
@@ -115,7 +113,7 @@ static DuckLakeVariantStats DeserializeShreddedStats(const LogicalType &shredded
 	if (TryGetBoolean(obj, "any_valid", any_valid)) {
 		stats.any_valid = any_valid;
 	}
-	if (!stats.AnyValid() && (stats.has_min || stats.has_max)) {
+	if ((!stats.any_valid || !stats.AnyValid()) && (stats.has_min || stats.has_max)) {
 		throw InvalidInputException("The field has bounds but no valid values");
 	}
 	stats.DropReversedBounds();

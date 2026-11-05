@@ -248,9 +248,14 @@ bool StatsBoundLessThan(const Value &left, const Value &right) {
 	return left < right;
 }
 
+//! UUID bounds are compared as values, their text may mix upper and lower case
+static bool CompareBoundsAsValues(const LogicalType &type) {
+	return RequiresValueComparison(type) || type.id() == LogicalTypeId::UUID;
+}
+
 //! Returns false when either bound is unknown
 static bool TryCompareBounds(const LogicalType &type, const string &left, const string &right, int32_t &result) {
-	if (!RequiresValueComparison(type)) {
+	if (!CompareBoundsAsValues(type)) {
 		// for other types we can compare the strings directly
 		result = left < right ? -1 : (left == right ? 0 : 1);
 		return true;
@@ -409,7 +414,7 @@ bool DuckLakeColumnStats::BoundsOrdered() const {
 	if (!has_min || !has_max) {
 		return true;
 	}
-	if (!RequiresValueComparison(type) && type.id() != LogicalTypeId::UUID && type.id() != LogicalTypeId::VARCHAR) {
+	if (!CompareBoundsAsValues(type) && type.id() != LogicalTypeId::VARCHAR) {
 		return true;
 	}
 	int32_t comparison;

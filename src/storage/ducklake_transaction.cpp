@@ -1853,6 +1853,9 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		}
 		return names;
 	};
+	context.inlined_table_dropped = [&](TableIndex table_id, const Identifier &inlined_table_name) {
+		return metadata_manager->InlinedTableDropped(table_id, inlined_table_name, transaction_snapshot);
+	};
 	context.get_net_data_file_row_count = [&](TableIndex table_id) -> idx_t {
 		auto table = get_table_entry(table_id);
 		return table ? table->GetNetDataFileRowCount(*this) : 0;

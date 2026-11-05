@@ -941,7 +941,15 @@ ReadInlinedTableColumns(TableIndex table_id, const DuckLakeCommitContext &contex
 	map<Identifier, map<FieldIndex, DuckLakeColumnSchemaEntry>> result;
 	auto columns = context.query_metadata(DuckLakeMetadataManager::GetInlinedTableColumnsSql(table_id.index));
 	columns->ThrowIfError("Failed to read the columns of the inlined data tables from DuckLake: ");
+	set<Identifier> dropped_tables;
 	for (auto &row : *columns) {
+		auto inlined_table_name = row.GetValue<Identifier>(0);
+		// another connection can drop an empty superseded table the snapshot still lists
+		if (dropped_tables.count(inlined_table_name) || (result.find(inlined_table_name) == result.end() &&
+		                                                 context.inlined_table_dropped(table_id, inlined_table_name))) {
+			dropped_tables.insert(inlined_table_name);
+			continue;
+		}
 		FieldIndex field_index(static_cast<idx_t>(row.GetValue<int64_t>(3)));
 		DuckLakeColumnSchemaEntry column {field_index, row.GetValue<Identifier>(1),
 		                                  DuckLakeTypes::FromString(row.GetValue<string>(2)), true};

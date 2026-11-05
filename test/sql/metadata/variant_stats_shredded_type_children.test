@@ -1,5 +1,5 @@
 # name: test/sql/metadata/variant_stats_shredded_type_children.test
-# description: VARIANT statistics with a nested shredded type that has no child fields report an error and are dropped by the next append
+# description: invalid stored VARIANT statistics report an error when the column is read and are dropped by the next append
 # group: [metadata]
 
 require ducklake
@@ -25,7 +25,7 @@ SELECT stats(v) IS NOT NULL FROM dl.t
 true
 
 statement ok
-UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"\"a\"","shredded_type":"integer","min":"1","max":"1"},{"field_name":"\"b\"","shredded_type":"${nested_type}"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 't')
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"\"a\"","shredded_type":"int32","min":"1","max":"1"},{"field_name":"\"b\"","shredded_type":"${nested_type}"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 't')
 
 statement ok
 DETACH dl
@@ -89,3 +89,41 @@ statement ok
 DETACH dl
 
 endloop
+
+# an unknown type name and unparsable JSON are reported the same way
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl (DATA_PATH '{DATA_PATH}/shredded_other', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t AS SELECT 1::VARIANT AS v
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"int3"}]'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
+
+statement error
+SELECT stats(v) FROM dl.t
+----
+<REGEX>:.*Invalid Input Error.*Column "v" has invalid stored statistics.*unsupported type 'int3'.*
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = 'not json'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
+
+statement error
+SELECT stats(v) FROM dl.t
+----
+<REGEX>:.*Invalid Input Error.*Column "v" has invalid stored statistics.*parse VARIANT stats JSON.*
+
+statement ok
+DETACH dl

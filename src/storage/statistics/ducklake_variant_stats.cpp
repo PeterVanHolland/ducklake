@@ -1,3 +1,4 @@
+#include "duckdb/common/error_data.hpp"
 #include "storage/ducklake_variant_stats.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/json_document.hpp"
@@ -118,24 +119,39 @@ static DuckLakeVariantStats DeserializeShreddedStats(const LogicalType &shredded
 }
 
 void DuckLakeColumnVariantStats::Deserialize(const string &stats) {
+	// invalid stored statistics are reported when the statistics of the column are read, so the catalog still loads
 	JSONParseError error;
 	auto doc = JSONDocument::TryParse(stats.c_str(), stats.size(), error);
 	if (!doc) {
-		throw InvalidInputException("Failed to parse VARIANT stats JSON \"%s\"", stats);
+		invalid_reason = StringUtil::Format("Failed to parse VARIANT stats JSON \"%s\"", stats);
+		return;
 	}
 	doc->GetRoot().IterateArray([&](JSONValue obj) {
+		if (!invalid_reason.empty()) {
+			return;
+		}
 		auto field_name_val = obj.GetMember("field_name");
 		if (!field_name_val.IsValid()) {
-			throw InvalidInputException("Missing field_name in VARIANT stats JSON \"%s\"", stats);
+			invalid_reason = StringUtil::Format("Missing field_name in VARIANT stats JSON \"%s\"", stats);
+			return;
 		}
 		auto shredded_type_val = obj.GetMember("shredded_type");
 		if (!shredded_type_val.IsValid()) {
-			throw InvalidInputException("Missing shredded_type in VARIANT stats JSON \"%s\"", stats);
+			invalid_reason = StringUtil::Format("Missing shredded_type in VARIANT stats JSON \"%s\"", stats);
+			return;
 		}
-		auto shredded_type = DuckLakeTypes::FromString(shredded_type_val.GetString());
+		LogicalType shredded_type;
+		try {
+			shredded_type = DuckLakeTypes::FromString(shredded_type_val.GetString());
+		} catch (InvalidInputException &ex) {
+			ErrorData parse_error(ex);
+			invalid_reason = StringUtil::Format("Field \"%s\" in VARIANT stats JSON \"%s\", %s",
+			                                    field_name_val.GetString(), stats, parse_error.RawMessage());
+			return;
+		}
 		// shredded statistics describe leaf fields, the children of a nested type are fields of their own
 		if (DuckLakeTypes::IsNested(shredded_type)) {
-			invalid_reason = StringUtil::Format("field \"%s\" has the nested shredded type \"%s\" but no child "
+			invalid_reason = StringUtil::Format("Field \"%s\" has the nested shredded type \"%s\" but no child "
 			                                    "fields in VARIANT stats JSON \"%s\"",
 			                                    field_name_val.GetString(), shredded_type_val.GetString(), stats);
 			return;

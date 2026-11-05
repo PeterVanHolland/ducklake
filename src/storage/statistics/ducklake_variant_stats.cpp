@@ -34,12 +34,12 @@ void DuckLakeColumnVariantStats::Merge(const DuckLakeColumnExtraStats &new_stats
 	for (auto &entry : shredded_field_stats) {
 		auto other_entry = new_stats.shredded_field_stats.find(entry.first);
 		if (other_entry == new_stats.shredded_field_stats.end()) {
-			// no stats - erase it
+			// the new statistics do not have the field
 			stats_to_erase.push_back(entry.first);
 			continue;
 		}
 		if (entry.second.shredded_type != other_entry->second.shredded_type) {
-			// incompatible shredded types - drop the field
+			// the shredded types differ
 			stats_to_erase.push_back(entry.first);
 			continue;
 		}
@@ -115,8 +115,8 @@ static DuckLakeVariantStats DeserializeShreddedStats(const LogicalType &shredded
 	if (TryGetBoolean(obj, "any_valid", any_valid)) {
 		stats.any_valid = any_valid;
 	}
-	if (!stats.any_valid && (stats.has_min || stats.has_max)) {
-		throw InvalidInputException("\"any_valid\" is false but the field has bounds");
+	if (!stats.AnyValid() && (stats.has_min || stats.has_max)) {
+		throw InvalidInputException("The field has bounds but no valid values");
 	}
 	stats.DropReversedBounds();
 
@@ -257,7 +257,6 @@ static constexpr idx_t MAX_SHREDDED_FIELD_DEPTH = 1000;
 
 void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats> stats) {
 	if (field_name == "root") {
-		// the top level variant itself
 		stats.get().full_field_name = field_name;
 		return;
 	}
@@ -287,7 +286,6 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 			}
 			stats = stats.get().child_stats.back();
 			if (pos >= field_name.size()) {
-				// the list element is the leaf
 				stats.get().full_field_name = field_name;
 				return;
 			} else {

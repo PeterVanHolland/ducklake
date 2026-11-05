@@ -406,12 +406,14 @@ void DuckLakeColumnStats::SetValidity(BaseStatistics &stats) const {
 }
 
 bool DuckLakeColumnStats::BoundsOrdered() const {
-	if (!has_min || !has_max || !(type.IsNumeric() || type.IsTemporal() || type.id() == LogicalTypeId::UUID)) {
+	if (!has_min || !has_max) {
 		return true;
 	}
-	auto min_value = TryCastStatsBound(min, type);
-	auto max_value = TryCastStatsBound(max, type);
-	return !min_value || !max_value || !(*min_value > *max_value);
+	if (!RequiresValueComparison(type) && type.id() != LogicalTypeId::UUID && type.id() != LogicalTypeId::VARCHAR) {
+		return true;
+	}
+	int32_t comparison;
+	return !TryCompareBounds(type, min, max, comparison) || comparison <= 0;
 }
 
 void DuckLakeColumnStats::DropReversedBounds() {

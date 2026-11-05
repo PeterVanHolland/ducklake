@@ -163,3 +163,46 @@ query III
 SELECT count(*), min(id), max(id) FROM lake.w
 ----
 110	0	2009
+
+# the drop and a widened column type in one transaction: the bounds of the snapshot's files are not recomputed
+statement ok
+CREATE TABLE lake.f (id BIGINT, v FLOAT)
+
+statement ok
+INSERT INTO lake.f SELECT i, 0.1::FLOAT FROM range(100) r(i)
+
+statement ok
+INSERT INTO lake.f VALUES (1000, 2.5::FLOAT)
+
+statement ok
+SET VARIABLE f_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'f' AND end_snapshot IS NULL)
+
+statement ok
+BEGIN
+
+query I
+DELETE FROM lake.f WHERE id >= 1000
+----
+1
+
+statement ok
+ALTER TABLE lake.f ALTER COLUMN v TYPE DOUBLE
+
+statement ok
+COMMIT
+
+query III
+SELECT column_id, min_value IS NULL, max_value IS NULL FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id = getvariable('f_id') ORDER BY column_id
+----
+1	true	true
+2	true	true
+
+query III
+SELECT count(*), min(v), max(v) FROM lake.f
+----
+100	0.10000000149011612	0.10000000149011612
+
+query I
+SELECT count(*) FROM lake.f WHERE v > 0.1
+----
+100

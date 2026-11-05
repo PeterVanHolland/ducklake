@@ -21,6 +21,8 @@ DuckLakeVariantStats::DuckLakeVariantStats(LogicalType shredded_type_p, DuckLake
 }
 
 void DuckLakeColumnVariantStats::Merge(const DuckLakeColumnExtraStats &new_stats_p) {
+	// the merged statistics replace the invalid ones, with no shredded fields
+	invalid_reason.clear();
 	if (shredded_field_stats.empty()) {
 		// nothing to merge
 		return;
@@ -131,14 +133,18 @@ void DuckLakeColumnVariantStats::Deserialize(const string &stats) {
 			throw InvalidInputException("Missing shredded_type in VARIANT stats JSON \"%s\"", stats);
 		}
 		auto shredded_type = DuckLakeTypes::FromString(shredded_type_val.GetString());
-		// the children of a nested type are fields of their own, so a nested type has nothing to shred
+		// shredded statistics describe leaf fields, the children of a nested type are fields of their own
 		if (DuckLakeTypes::IsNested(shredded_type)) {
-			throw InvalidInputException("field \"%s\" has the nested shredded type \"%s\" but no child fields in "
-			                            "VARIANT stats JSON \"%s\"",
-			                            field_name_val.GetString(), shredded_type_val.GetString(), stats);
+			invalid_reason = StringUtil::Format("field \"%s\" has the nested shredded type \"%s\" but no child "
+			                                    "fields in VARIANT stats JSON \"%s\"",
+			                                    field_name_val.GetString(), shredded_type_val.GetString(), stats);
+			return;
 		}
 		shredded_field_stats.emplace(field_name_val.GetString(), DeserializeShreddedStats(shredded_type, obj));
 	});
+	if (!invalid_reason.empty()) {
+		shredded_field_stats.clear();
+	}
 }
 
 static JSONMutableValue SerializeShreddedStats(JSONWriter &writer, const string &field_name,
@@ -337,6 +343,9 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 }
 
 unique_ptr<BaseStatistics> DuckLakeColumnVariantStats::ToStats() const {
+	if (!invalid_reason.empty()) {
+		throw InvalidInputException(invalid_reason);
+	}
 	if (shredded_field_stats.empty()) {
 		return nullptr;
 	}

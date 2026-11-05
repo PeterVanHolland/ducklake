@@ -9,7 +9,6 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/common/helper.hpp"
-#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/limits.hpp"
 
 namespace duckdb {
@@ -56,8 +55,7 @@ DuckLakeColumnStats &DuckLakeColumnStats::operator=(const DuckLakeColumnStats &o
 
 unique_ptr<DuckLakeTableStats>
 DuckLakeTableStats::FromGlobalStats(const DuckLakeGlobalStatsInfo &stats,
-                                    const std::function<optional_ptr<const LogicalType>(FieldIndex)> &get_column_type,
-                                    const std::function<string(FieldIndex)> &get_column_name) {
+                                    const std::function<optional_ptr<const LogicalType>(FieldIndex)> &get_column_type) {
 	auto result = make_uniq<DuckLakeTableStats>();
 	result->record_count = stats.record_count;
 	result->record_count_unknown = stats.record_count_unknown;
@@ -68,17 +66,8 @@ DuckLakeTableStats::FromGlobalStats(const DuckLakeGlobalStatsInfo &stats,
 		if (!type) {
 			continue;
 		}
-		try {
-			result->column_stats.emplace(col_stats.column_id,
-			                             DuckLakeColumnStats::FromGlobalStats(*type, col_stats, stats.MayHaveRows()));
-		} catch (InvalidInputException &ex) {
-			if (!get_column_name) {
-				throw;
-			}
-			ErrorData error(ex);
-			throw InvalidInputException("Column \"%s\" has invalid stored statistics, %s",
-			                            get_column_name(col_stats.column_id), error.RawMessage());
-		}
+		result->column_stats.emplace(col_stats.column_id,
+		                             DuckLakeColumnStats::FromGlobalStats(*type, col_stats, stats.MayHaveRows()));
 	}
 	return result;
 }

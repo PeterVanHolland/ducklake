@@ -1,3 +1,4 @@
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "common/ducklake_types.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -304,7 +305,13 @@ unique_ptr<BaseStatistics> GetColumnStats(const DuckLakeFieldId &field_id, const
 			// don't serve stale stats from before a retype
 			return nullptr;
 		}
-		return entry->second.ToStats();
+		try {
+			return entry->second.ToStats();
+		} catch (InvalidInputException &ex) {
+			ErrorData error(ex);
+			error.Throw(StringUtil::Format("Column \"%s\" has invalid stored statistics, ",
+			                               field_id.Name().GetIdentifierName()));
+		}
 	}
 	// nested type
 	switch (field_id.Type().id()) {

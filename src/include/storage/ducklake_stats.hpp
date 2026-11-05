@@ -106,6 +106,10 @@ public:
 	static bool BoundsSurviveTypePromotion(const LogicalType &source, const LogicalType &target);
 	unique_ptr<BaseStatistics> ToStats() const;
 	void MergeStats(const DuckLakeColumnStats &new_stats);
+	//! Whether the bounds are in order, bounds that do not parse count as ordered
+	bool BoundsOrdered() const;
+	//! Bounds in the wrong order become unknown bounds
+	void DropReversedBounds();
 
 private:
 	void MergeBound(const DuckLakeColumnStats &new_stats, bool is_min);

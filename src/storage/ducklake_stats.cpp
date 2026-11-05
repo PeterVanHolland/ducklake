@@ -101,6 +101,7 @@ DuckLakeColumnStats DuckLakeColumnStats::FromGlobalStats(const LogicalType &type
 	if (col.has_extra_stats && stats.extra_stats) {
 		stats.extra_stats->Deserialize(col.extra_stats);
 	}
+	stats.DropReversedBounds();
 	return stats;
 }
 
@@ -303,6 +304,7 @@ static void MergeExtraStats(unique_ptr<DuckLakeColumnExtraStats> &extra_stats, c
 }
 
 void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
+	DropReversedBounds();
 	// the null state has to be read before the counts of the source are added to it
 	bool adopt_bounds = !bounds_unknown && has_num_values && has_null_count && num_values == null_count;
 	bool types_differ = type != new_stats.type;
@@ -332,6 +334,14 @@ void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
 		}
 	}
 
+	if (!new_stats.BoundsOrdered()) {
+		// stored bounds in the wrong order are unknown bounds of the source
+		has_min = false;
+		has_max = false;
+		bounds_unknown = true;
+		MergeExtraStats(extra_stats, new_stats);
+		return;
+	}
 	if (!new_stats.AnyValid()) {
 		// all values in the source are NULL - don't update min/max
 		if (!bounds_survive) {
@@ -392,6 +402,23 @@ void DuckLakeColumnStats::SetValidity(BaseStatistics &stats) const {
 	}
 	if (has_null_count && has_num_values && null_count == num_values) {
 		stats.Set(StatsInfo::CANNOT_HAVE_VALID_VALUES);
+	}
+}
+
+bool DuckLakeColumnStats::BoundsOrdered() const {
+	if (!has_min || !has_max || !(type.IsNumeric() || type.IsTemporal() || type.id() == LogicalTypeId::UUID)) {
+		return true;
+	}
+	auto min_value = TryCastStatsBound(min, type);
+	auto max_value = TryCastStatsBound(max, type);
+	return !min_value || !max_value || !(*min_value > *max_value);
+}
+
+void DuckLakeColumnStats::DropReversedBounds() {
+	if (!BoundsOrdered()) {
+		has_min = false;
+		has_max = false;
+		bounds_unknown = true;
 	}
 }
 

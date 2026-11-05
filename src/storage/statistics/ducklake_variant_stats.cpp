@@ -115,6 +115,10 @@ static DuckLakeVariantStats DeserializeShreddedStats(const LogicalType &shredded
 	if (TryGetBoolean(obj, "any_valid", any_valid)) {
 		stats.any_valid = any_valid;
 	}
+	if (!stats.any_valid && (stats.has_min || stats.has_max)) {
+		throw InvalidInputException("\"any_valid\" is false but the field has bounds");
+	}
+	stats.DropReversedBounds();
 
 	string extra_stats;
 	if (stats.extra_stats && TryGetString(obj, "extra_stats", extra_stats)) {
@@ -212,7 +216,6 @@ struct NestedVariantStats {
 		if (child_names.size() != child_stats.size()) {
 			throw InvalidInputException("The VARIANT stats mix a list element and struct fields in one field");
 		}
-		// a struct
 		// recurse into the children
 		child_list_t<LogicalType> children;
 		for (idx_t i = 0; i < child_names.size(); i++) {
@@ -288,7 +291,6 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 				stats.get().full_field_name = field_name;
 				return;
 			} else {
-				// a nested list
 				pos++;
 			}
 			continue;
@@ -320,7 +322,6 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 			return;
 		} else {
 			if (field_name[pos] != '.') {
-				// a dot has to separate the segments
 				break;
 			}
 			pos++;

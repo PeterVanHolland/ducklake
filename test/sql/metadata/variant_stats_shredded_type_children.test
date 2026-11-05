@@ -90,29 +90,17 @@ DETACH dl
 
 endloop
 
-# an unknown type name and unparsable JSON are reported the same way
+# other invalid statistics are reported the same way
+foreach payload [{"field_name":"root","shredded_type":"int3"}] [{"field_name":"root","shredded_type":"decimal"}] [{"field_name":"root","shredded_type":"decimal(foo,2)"}] [{"field_name":"root","shredded_type":"decimal(8)"}] {} [1] [{"field_name":["x"],"shredded_type":"int32"}] notjson
+
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl (DATA_PATH '{DATA_PATH}/shredded_other', DATA_INLINING_ROW_LIMIT 0)
 
 statement ok
-CREATE TABLE dl.t AS SELECT 1::VARIANT AS v
+CREATE TABLE IF NOT EXISTS dl.t AS SELECT 1::VARIANT AS v
 
 statement ok
-UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"int3"}]'
-
-statement ok
-DETACH dl
-
-statement ok
-ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
-
-statement error
-SELECT stats(v) FROM dl.t
-----
-<REGEX>:.*Invalid Input Error.*Column "v" has invalid stored statistics.*unsupported type 'int3'.*
-
-statement ok
-UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = 'not json'
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '${payload}'
 
 statement ok
 DETACH dl
@@ -123,7 +111,9 @@ ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
 statement error
 SELECT stats(v) FROM dl.t
 ----
-<REGEX>:.*Invalid Input Error.*Column "v" has invalid stored statistics.*parse VARIANT stats JSON.*
+<REGEX>:.*Invalid Input Error.*Column "v" has invalid stored statistics.*
 
 statement ok
 DETACH dl
+
+endloop

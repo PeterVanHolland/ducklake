@@ -119,11 +119,11 @@ static DuckLakeVariantStats DeserializeShreddedStats(const LogicalType &shredded
 }
 
 void DuckLakeColumnVariantStats::Deserialize(const string &stats) {
-	// invalid stored statistics are reported when the statistics of the column are read, so the catalog still loads
+	// defer invalid statistics errors until the column is read
 	JSONParseError error;
 	auto doc = JSONDocument::TryParse(stats.c_str(), stats.size(), error);
-	if (!doc) {
-		invalid_reason = StringUtil::Format("Failed to parse VARIANT stats JSON \"%s\"", stats);
+	if (!doc || !doc->GetRoot().IsArray()) {
+		invalid_reason = StringUtil::Format("VARIANT stats JSON \"%s\" is not an array of fields", stats);
 		return;
 	}
 	doc->GetRoot().IterateArray([&](JSONValue obj) {
@@ -131,32 +131,32 @@ void DuckLakeColumnVariantStats::Deserialize(const string &stats) {
 			return;
 		}
 		auto field_name_val = obj.GetMember("field_name");
-		if (!field_name_val.IsValid()) {
-			invalid_reason = StringUtil::Format("Missing field_name in VARIANT stats JSON \"%s\"", stats);
-			return;
-		}
 		auto shredded_type_val = obj.GetMember("shredded_type");
-		if (!shredded_type_val.IsValid()) {
-			invalid_reason = StringUtil::Format("Missing shredded_type in VARIANT stats JSON \"%s\"", stats);
+		if (!field_name_val.IsString() || !shredded_type_val.IsString()) {
+			invalid_reason = StringUtil::Format(
+			    "A field without a field_name and shredded_type string in VARIANT stats JSON \"%s\"", stats);
 			return;
 		}
+		auto field_name = field_name_val.GetString();
+		auto type_string = shredded_type_val.GetString();
 		LogicalType shredded_type;
 		try {
-			shredded_type = DuckLakeTypes::FromString(shredded_type_val.GetString());
-		} catch (InvalidInputException &ex) {
-			ErrorData parse_error(ex);
-			invalid_reason = StringUtil::Format("Field \"%s\" in VARIANT stats JSON \"%s\", %s",
-			                                    field_name_val.GetString(), stats, parse_error.RawMessage());
+			shredded_type = DuckLakeTypes::FromString(type_string);
+		} catch (std::exception &ex) {
+			invalid_reason =
+			    StringUtil::Format("Field \"%s\" has the shredded type \"%s\" in VARIANT stats JSON \"%s\", %s",
+			                       field_name, type_string, stats, ErrorData(ex).RawMessage());
 			return;
 		}
-		// shredded statistics describe leaf fields, the children of a nested type are fields of their own
-		if (DuckLakeTypes::IsNested(shredded_type)) {
-			invalid_reason = StringUtil::Format("Field \"%s\" has the nested shredded type \"%s\" but no child "
-			                                    "fields in VARIANT stats JSON \"%s\"",
-			                                    field_name_val.GetString(), shredded_type_val.GetString(), stats);
+		// shredded statistics describe leaf fields of a complete type, the children of a nested type are fields of
+		// their own
+		if (!shredded_type.IsComplete()) {
+			invalid_reason = StringUtil::Format("Field \"%s\" has the incomplete shredded type \"%s\" in VARIANT stats "
+			                                    "JSON \"%s\", a nested type has its children as fields of their own",
+			                                    field_name, type_string, stats);
 			return;
 		}
-		shredded_field_stats.emplace(field_name_val.GetString(), DeserializeShreddedStats(shredded_type, obj));
+		shredded_field_stats.emplace(field_name, DeserializeShreddedStats(shredded_type, obj));
 	});
 	if (!invalid_reason.empty()) {
 		shredded_field_stats.clear();

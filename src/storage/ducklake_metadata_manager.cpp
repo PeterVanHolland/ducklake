@@ -3261,6 +3261,9 @@ bool DuckLakeMetadataManager::DropDeferred(const string &) const {
 	return false;
 }
 
+void DuckLakeMetadataManager::OnMetadataTransactionBegin(Connection &) {
+}
+
 unique_ptr<QueryResult> DuckLakeMetadataManager::ExecuteInTransaction(string &query) {
 	auto batch = "BEGIN TRANSACTION;\n" + query + "\nCOMMIT;";
 	auto result = Query(batch);
@@ -6132,11 +6135,27 @@ WHERE scope = 'schema' AND NOT EXISTS(
 	// above. Runs after the drop block, so dropped tables are already unregistered and this needs
 	// no table_id filter.
 	{
-		auto inlined = Query("SELECT table_name FROM {METADATA_CATALOG}.ducklake_inlined_data_tables;");
+		auto inlined =
+		    Query("SELECT table_id, table_name, schema_version FROM {METADATA_CATALOG}.ducklake_inlined_data_tables;");
 		inlined->ThrowIfError("Failed to list inlined-data tables for cleanup in DuckLake: ");
-		auto col_names = InlinedColNames();
+		vector<std::tuple<TableIndex, Identifier, idx_t>> inlined_tables;
+		map<idx_t, idx_t> newest_versions;
 		for (auto &row : *inlined) {
-			auto inlined_table_name = row.GetValue<Identifier>(0);
+			auto table_id = TableIndex(row.GetValue<idx_t>(0));
+			auto schema_version = row.GetValue<idx_t>(2);
+			inlined_tables.emplace_back(table_id, row.GetValue<Identifier>(1), schema_version);
+			newest_versions[table_id.index] = MaxValue<idx_t>(newest_versions[table_id.index], schema_version);
+		}
+		auto col_names = InlinedColNames();
+		auto snapshot = transaction.GetSnapshot();
+		for (auto &inlined_table : inlined_tables) {
+			auto &table_id = std::get<0>(inlined_table);
+			auto &inlined_table_name = std::get<1>(inlined_table);
+			// a flush of another connection can drop an empty superseded table the snapshot still lists
+			if (std::get<2>(inlined_table) < newest_versions[table_id.index] &&
+			    InlinedTableDropped(table_id, inlined_table_name, snapshot)) {
+				continue;
+			}
 			auto result = Execute(StringUtil::Format(R"(
 DELETE FROM {METADATA_CATALOG}.%s
 WHERE %s IS NOT NULL AND NOT EXISTS(

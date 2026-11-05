@@ -1011,6 +1011,7 @@ void DuckLakeTransaction::BeginMetadataTransaction() {
 	connection->context->transaction.SetInvalidationPolicy(
 	    TransactionInvalidationPolicy::SYNTACTIC_ERRORS_DO_NOT_INVALIDATE);
 	metadata_transaction_released = false;
+	metadata_manager->OnMetadataTransactionBegin(*connection);
 }
 
 void DuckLakeTransaction::ReleaseMetadataTransaction() {

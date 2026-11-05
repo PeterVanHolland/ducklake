@@ -2492,6 +2492,7 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 	if (!tables_with_dropped_files_and_rows.empty()) {
 		auto tables_with_other_changes = TablesWithChangesBeyondNewFiles(commit_state, transaction_changes);
 		auto recompute_snapshot = context.get_snapshot();
+		bool recomputed = false;
 		for (auto &table_id : tables_with_dropped_files_and_rows) {
 			if (tables_with_other_changes.find(table_id) != tables_with_other_changes.end()) {
 				continue;
@@ -2507,8 +2508,13 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 			if (new_rows != new_data.next_row_ids.end()) {
 				next_row_id = new_rows->second;
 			}
-			RecomputeGlobalStats(batch_queries, table_id, recompute_snapshot, new_data.new_files,
-			                     dropped->second.file_ids, next_row_id, context);
+			recomputed |= RecomputeGlobalStats(batch_queries, table_id, recompute_snapshot, new_data.new_files,
+			                                   dropped->second.file_ids, next_row_id, context);
+		}
+		if (recomputed && new_data.new_files.empty()) {
+			// cached stats are keyed by the next file id, which a drop without new files keeps; a reader of an older
+			// snapshot must not find the narrowed bounds under its key
+			commit_snapshot.next_file_id++;
 		}
 	}
 	// runs after this commit writes its files and table stats, so it clears those too

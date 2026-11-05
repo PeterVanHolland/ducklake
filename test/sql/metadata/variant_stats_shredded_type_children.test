@@ -1,5 +1,5 @@
 # name: test/sql/metadata/variant_stats_shredded_type_children.test
-# description: VARIANT statistics with a nested shredded type that has no child fields report an error
+# description: VARIANT statistics with a nested shredded type that has no child fields report an error and are dropped by the next append
 # group: [metadata]
 
 require ducklake
@@ -25,7 +25,7 @@ SELECT stats(v) IS NOT NULL FROM dl.t
 true
 
 statement ok
-UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"${nested_type}"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 't')
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"\"a\"","shredded_type":"integer","min":"1","max":"1"},{"field_name":"\"b\"","shredded_type":"${nested_type}"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 't')
 
 statement ok
 DETACH dl
@@ -55,7 +55,7 @@ SELECT v FROM dl.t
 ----
 <REGEX>:.*Invalid Input Error.*Column "v" has invalid stored statistics.*
 
-# an append replaces the invalid statistics, the rows stay readable
+# an append restores the column reads and drops the stored statistics, the valid field with them
 statement ok
 INSERT INTO dl.t VALUES (4::VARIANT)
 

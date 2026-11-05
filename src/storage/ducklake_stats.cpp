@@ -337,7 +337,7 @@ void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
 		return;
 	}
 	if (!new_stats.AnyValid()) {
-		// all values in the source are NULL - don't update min/max
+		// a source without valid values leaves the bounds alone
 		if (!bounds_survive) {
 			SetBoundsUnknown();
 		}
@@ -348,7 +348,7 @@ void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
 			// invalidated bounds
 			return;
 		}
-		// all values in the current stats are null - copy the min/max
+		// the current stats have no valid values, the bounds of the source are the bounds
 		CopyMinFrom(new_stats);
 		CopyMaxFrom(new_stats);
 		any_valid = true;
@@ -441,7 +441,7 @@ unique_ptr<BaseStatistics> DuckLakeColumnStats::CreateNumericStats() const {
 		NumericStats::SetMax(stats, *max_value);
 	}
 	// reversed bounds would prune every row
-	if (min_value && max_value && *min_value > *max_value) {
+	if (min_value && max_value && StatsBoundLessThan(*max_value, *min_value)) {
 		return nullptr;
 	}
 	SetValidity(stats);

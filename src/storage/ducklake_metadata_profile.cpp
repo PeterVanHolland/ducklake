@@ -3,6 +3,7 @@
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/json_document.hpp"
+#include "common/ducklake_json.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/storage/storage_extension.hpp"
@@ -43,14 +44,15 @@ public:
 			if (key == "types") {
 				ParseTypes(value);
 			} else if (key == "max_column_count") {
-				profile.max_column_count = GetCount(key, value);
+				profile.max_column_count = DuckLakeJSON::GetCount(key, value);
 			} else if (key == "system_column_names") {
 				profile.system_column_names.clear();
-				IterateStrings(key, value, [&](const string &name) { profile.system_column_names.push_back(name); });
+				DuckLakeJSON::IterateStrings(key, value,
+				                             [&](const string &name) { profile.system_column_names.push_back(name); });
 			} else if (key == "dropped_tables_stay_readable") {
-				profile.dropped_tables_stay_readable = GetBoolean(key, value);
+				profile.dropped_tables_stay_readable = DuckLakeJSON::GetBoolean(key, value);
 			} else if (key == "rename_inlined_columns_by_copy") {
-				profile.rename_inlined_columns_by_copy = GetBoolean(key, value);
+				profile.rename_inlined_columns_by_copy = DuckLakeJSON::GetBoolean(key, value);
 			} else if (key == "commit_errors") {
 				ParseCommitErrors(value);
 			} else {
@@ -61,17 +63,18 @@ public:
 
 private:
 	void ParseTypes(JSONValue types) {
-		ExpectObject("types", types);
+		DuckLakeJSON::ExpectObject("types", types);
 		types.IterateObject([&](const string &key, JSONValue value) {
 			if (key == "natively_unsupported") {
 				profile.natively_unsupported_types.clear();
-				IterateStrings(key, value,
-				               [&](const string &name) { profile.natively_unsupported_types.insert(GetTypeId(name)); });
+				DuckLakeJSON::IterateStrings(key, value, [&](const string &name) {
+					profile.natively_unsupported_types.insert(GetTypeId(name));
+				});
 			} else if (key == "column_type_overrides") {
-				ExpectObject(key, value);
+				DuckLakeJSON::ExpectObject(key, value);
 				profile.column_type_overrides.clear();
 				value.IterateObject([&](const string &name, JSONValue column_type) {
-					profile.column_type_overrides[GetTypeId(name)] = GetString(name, column_type);
+					profile.column_type_overrides[GetTypeId(name)] = DuckLakeJSON::GetString(name, column_type);
 				});
 			} else {
 				throw InvalidInputException("unknown field \"types.%s\"", key);
@@ -85,19 +88,19 @@ private:
 		}
 		profile.commit_errors.clear();
 		rules.IterateArray([&](JSONValue rule_value) {
-			ExpectObject("commit_errors", rule_value);
+			DuckLakeJSON::ExpectObject("commit_errors", rule_value);
 			DuckLakeCommitErrorRule rule;
 			rule_value.IterateObject([&](const string &key, JSONValue value) {
 				if (key == "pattern") {
-					rule.pattern = CompilePattern(GetString(key, value));
+					rule.pattern = CompilePattern(DuckLakeJSON::GetString(key, value));
 				} else if (key == "retryable") {
-					rule.retryable = GetBoolean(key, value);
+					rule.retryable = DuckLakeJSON::GetBoolean(key, value);
 				} else if (key == "hint") {
-					rule.hint = GetString(key, value);
+					rule.hint = DuckLakeJSON::GetString(key, value);
 				} else if (key == "hint_unless_parameter") {
-					ExpectObject(key, value);
+					DuckLakeJSON::ExpectObject(key, value);
 					value.IterateObject([&](const string &parameter, JSONValue parameter_value) {
-						rule.hint_unless_parameters[parameter] = GetString(parameter, parameter_value);
+						rule.hint_unless_parameters[parameter] = DuckLakeJSON::GetString(parameter, parameter_value);
 					});
 				} else {
 					throw InvalidInputException("unknown field \"commit_errors.%s\"", key);
@@ -128,41 +131,6 @@ private:
 			ErrorData error(ex);
 			throw InvalidInputException("unknown type \"%s\": %s", name, error.RawMessage());
 		}
-	}
-
-	static void ExpectObject(const string &key, JSONValue value) {
-		if (!value.IsObject()) {
-			throw InvalidInputException("\"%s\" must be an object", key);
-		}
-	}
-
-	static string GetString(const string &key, JSONValue value) {
-		if (!value.IsString()) {
-			throw InvalidInputException("\"%s\" must be a string", key);
-		}
-		return value.GetString();
-	}
-
-	static bool GetBoolean(const string &key, JSONValue value) {
-		if (value.GetType() != JSONValueType::BOOLEAN) {
-			throw InvalidInputException("\"%s\" must be a boolean", key);
-		}
-		return value.GetBoolean();
-	}
-
-	static idx_t GetCount(const string &key, JSONValue value) {
-		if (value.GetType() != JSONValueType::UNSIGNED_INTEGER) {
-			throw InvalidInputException("\"%s\" must be a non-negative integer", key);
-		}
-		return value.GetUnsignedInteger();
-	}
-
-	static void IterateStrings(const string &key, JSONValue value,
-	                           const std::function<void(const string &)> &callback) {
-		if (!value.IsArray()) {
-			throw InvalidInputException("\"%s\" must be an array of strings", key);
-		}
-		value.IterateArray([&](JSONValue element) { callback(GetString(key, element)); });
 	}
 
 private:

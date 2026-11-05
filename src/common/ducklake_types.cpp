@@ -127,7 +127,6 @@ static idx_t ParseDecimalMember(string member, const string &type) {
 
 LogicalType DuckLakeTypes::FromString(const string &type) {
 	if (StringUtil::StartsWith(type, "decimal(") && StringUtil::EndsWith(type, ")")) {
-		// decimal - parse width/scale
 		string members = type.substr(8, type.size() - 9);
 		auto comma = members.find(',');
 		if (comma == string::npos || members.find(',', comma + 1) != string::npos) {

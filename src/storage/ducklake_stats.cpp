@@ -401,19 +401,25 @@ unique_ptr<BaseStatistics> DuckLakeColumnStats::CreateNumericStats() const {
 	}
 	// a missing bound leaves its side of the range unknown
 	auto stats = NumericStats::CreateUnknown(type);
+	optional<Value> min_value;
+	optional<Value> max_value;
 	if (has_min) {
-		auto min_value = TryCastStatsBound(min, type);
+		min_value = TryCastStatsBound(min, type);
 		if (!min_value) {
 			return nullptr;
 		}
 		NumericStats::SetMin(stats, *min_value);
 	}
 	if (has_max) {
-		auto max_value = TryCastStatsBound(max, type);
+		max_value = TryCastStatsBound(max, type);
 		if (!max_value) {
 			return nullptr;
 		}
 		NumericStats::SetMax(stats, *max_value);
+	}
+	// reversed bounds would prune every row
+	if (min_value && max_value && *min_value > *max_value) {
+		return nullptr;
 	}
 	SetValidity(stats);
 	return stats.ToUnique();

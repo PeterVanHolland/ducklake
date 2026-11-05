@@ -212,7 +212,7 @@ struct NestedVariantStats {
 		if (child_names.size() != child_stats.size()) {
 			throw InvalidInputException("The VARIANT stats mix a list element and struct fields in one field");
 		}
-		// not a leaf - this is a struct
+		// a struct
 		// recurse into the children
 		child_list_t<LogicalType> children;
 		for (idx_t i = 0; i < child_names.size(); i++) {
@@ -242,7 +242,6 @@ struct NestedVariantStats {
 			child_stats[0].ConvertStats(field_stats, ListStats::GetChildStats(stats));
 			return;
 		}
-		// struct - recurse into children
 		for (idx_t struct_idx = 0; struct_idx < child_stats.size(); struct_idx++) {
 			auto &struct_child_stats = StructStats::GetChildStats(stats, struct_idx);
 			child_stats[struct_idx].ConvertStats(field_stats, struct_child_stats);
@@ -312,13 +311,11 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 			}
 		}
 		if (struct_idx >= child_names.size()) {
-			// a new field
 			child_names.push_back(current_field_name);
 			child_stats.emplace_back();
 		}
 		stats = child_stats[struct_idx];
 		if (pos >= field_name.size()) {
-			// the struct field is the leaf
 			stats.get().full_field_name = field_name;
 			return;
 		} else {

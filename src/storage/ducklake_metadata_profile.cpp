@@ -194,12 +194,10 @@ void DuckLakeMetadataProfiles::Register(const string &name, const string &json) 
 		auto profile = make_shared_ptr<DuckLakeMetadataProfile>();
 		auto base = root.GetMember("base");
 		if (base.IsValid()) {
-			if (!base.IsString()) {
-				throw InvalidInputException("\"base\" must be a string");
-			}
-			auto base_profile = Find(base.GetString());
+			auto base_name = DuckLakeJSON::GetString("base", base);
+			auto base_profile = Find(base_name);
 			if (!base_profile) {
-				throw InvalidInputException("base \"%s\" is not a registered metadata profile", base.GetString());
+				throw InvalidInputException("base \"%s\" is not a registered metadata profile", base_name);
 			}
 			*profile = *base_profile;
 		}

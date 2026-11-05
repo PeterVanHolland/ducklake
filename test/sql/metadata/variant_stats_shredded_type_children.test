@@ -153,12 +153,14 @@ true
 statement ok
 DETACH dl
 
-# bounds that do not parse give unknown statistics, not empty ones
+# bounds that do not parse or are reversed give unknown statistics, not empty ones
+foreach bounds "min":"bad","max":"bad" "min":"2","max":"1"
+
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
 
 statement ok
-UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"int32","min":"bad","max":"bad"}]'
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"int32",${bounds}}]'
 
 statement ok
 DETACH dl
@@ -178,6 +180,8 @@ true
 
 statement ok
 DETACH dl
+
+endloop
 
 # a malformed DECIMAL column type is rejected when the catalog loads
 statement ok

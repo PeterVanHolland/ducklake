@@ -50,9 +50,9 @@ DROP TABLE __ducklake_metadata_lake.ducklake_inlined_data_2_2
 
 # the snapshot shows that the table never held a row, so the read goes on without it
 query II con1
-SELECT count(*), max(id) FROM lake.w WHERE tenant = 1
+SELECT count(*), sum(id) FROM lake.w WHERE tenant = 1
 ----
-10	1000
+10	9955
 
 # the expiry of this transaction skips the dropped table as well
 statement ok con1

@@ -141,7 +141,7 @@ static void ParseShreddedFieldStats(const string &stats, unordered_map<string, D
 		LogicalType shredded_type;
 		try {
 			shredded_type = DuckLakeTypes::FromString(type_string);
-		} catch (std::exception &ex) {
+		} catch (InvalidInputException &ex) {
 			throw InvalidInputException("Field \"%s\" has the shredded type \"%s\" in VARIANT stats JSON \"%s\", %s",
 			                            field_name, type_string, stats, ErrorData(ex).RawMessage());
 		}
@@ -159,13 +159,9 @@ void DuckLakeColumnVariantStats::Deserialize(const string &stats) {
 	// defer invalid statistics errors until the column is read
 	try {
 		ParseShreddedFieldStats(stats, shredded_field_stats);
-	} catch (std::exception &ex) {
-		ErrorData error(ex);
-		if (error.Type() == ExceptionType::INTERNAL) {
-			throw;
-		}
+	} catch (InvalidInputException &ex) {
 		shredded_field_stats.clear();
-		invalid_reason = error.RawMessage();
+		invalid_reason = ErrorData(ex).RawMessage();
 	}
 }
 

@@ -1,7 +1,7 @@
 #include "common/ducklake_types.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/numeric_utils.hpp"
-#include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/to_string.hpp"
 #include "duckdb/common/array.hpp"
 #include "duckdb/common/optional_idx.hpp"
@@ -114,26 +114,27 @@ LogicalType DuckLakeTypes::FromDuckDBString(const string &type, ClientContext &c
 	}
 }
 
-//! The width or scale of a DECIMAL type string, a whole number no larger than the widest DECIMAL
+//! The width or scale of a DECIMAL type string, up to three digits no larger than the widest DECIMAL
 static uint8_t ParseDecimalMember(string member, const string &type) {
 	StringUtil::Trim(member);
-	idx_t value;
-	if (!TryCast::Operation<string_t, idx_t>(string_t(member), value, true) || value > DecimalType::MaxWidth()) {
+	bool digits = !member.empty() && member.size() <= 3 &&
+	              std::all_of(member.begin(), member.end(), [](char c) { return StringUtil::CharacterIsDigit(c); });
+	if (!digits || std::stoull(member) > DecimalType::MaxWidth()) {
 		throw InvalidInputException("Failed to parse DuckLake type - invalid DECIMAL width or scale in '%s'", type);
 	}
-	return NumericCast<uint8_t>(value);
+	return NumericCast<uint8_t>(std::stoull(member));
 }
 
 LogicalType DuckLakeTypes::FromString(const string &type) {
 	if (StringUtil::StartsWith(type, "decimal(") && StringUtil::EndsWith(type, ")")) {
 		// decimal - parse width/scale
-		string decimal_members_str = type.substr(8, type.size() - 9);
-		vector<string> decimal_members_vect = StringUtil::SplitWithParentheses(decimal_members_str);
-		if (decimal_members_vect.size() != 2) {
+		string members = type.substr(8, type.size() - 9);
+		auto comma = members.find(',');
+		if (comma == string::npos || members.find(',', comma + 1) != string::npos) {
 			throw InvalidInputException("Failed to parse DuckLake type - expected width and scale in '%s'", type);
 		}
-		auto width = ParseDecimalMember(decimal_members_vect[0], type);
-		auto scale = ParseDecimalMember(decimal_members_vect[1], type);
+		auto width = ParseDecimalMember(members.substr(0, comma), type);
+		auto scale = ParseDecimalMember(members.substr(comma + 1), type);
 		if (width == 0 || scale > width) {
 			throw InvalidInputException("Failed to parse DuckLake type - invalid DECIMAL width or scale in '%s'", type);
 		}

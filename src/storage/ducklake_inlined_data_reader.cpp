@@ -180,7 +180,11 @@ bool DuckLakeInlinedDataReader::TryInitializeScan(ClientContext &context, Global
 		if (committed_rows) {
 			data = ProjectCommittedRows(context, *committed_rows, columns_to_read);
 		}
-		if (!data && metadata_manager.InlinedTableDropped(read_info.table, table_name, read_info.snapshot)) {
+		// a flush reads the inlined tables of older schema versions through their own entries, so it always probes
+		if (!data &&
+		    (read_info.scan_type == DuckLakeScanType::SCAN_FOR_FLUSH
+		         ? metadata_manager.InlinedTableDropped(read_info.table.GetTableId(), table_name, read_info.snapshot)
+		         : metadata_manager.InlinedTableDropped(read_info.table, table_name, read_info.snapshot))) {
 			// a concurrent flush dropped the empty superseded table the snapshot still lists
 			data = metadata_manager.EmptyInlinedData(expected_types);
 		}

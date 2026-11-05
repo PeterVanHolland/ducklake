@@ -586,8 +586,10 @@ public:
 	void CheckInlinedDataReadError(QueryResult &result, const Identifier &inlined_table_name);
 	shared_ptr<DuckLakeInlinedData> TransformInlinedData(QueryResult &result, const vector<LogicalType> &expected_types,
 	                                                     const Identifier &inlined_table_name);
-	//! Whether a superseded inlined table the snapshot lists was dropped by a concurrent flush meanwhile, in which case
-	//! it was empty at the snapshot (checked, else this throws) and its read is skipped
+	//! Whether an inlined table the snapshot lists was dropped by a concurrent flush meanwhile, in which case it was
+	//! empty at the snapshot (checked, else this throws) and its read is skipped
+	bool InlinedTableDropped(TableIndex table_id, const Identifier &inlined_table_name, DuckLakeSnapshot snapshot);
+	//! The same for the inlined tables of a table entry, which only probes the tables that a flush may have dropped
 	bool InlinedTableDropped(DuckLakeTableEntry &table, const Identifier &inlined_table_name,
 	                         DuckLakeSnapshot snapshot);
 	//! Whether the inlined table is gone from the catalog, also when the snapshot of the transaction still has it

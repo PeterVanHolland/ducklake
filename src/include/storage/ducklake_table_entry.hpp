@@ -113,8 +113,10 @@ public:
 	//! The inlined data tables at the snapshot, without the flushed ones when local changes are included
 	vector<DuckLakeInlinedTableInfo> GetInlinedDataTables(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
 	                                                      bool include_local_changes = true) const;
-	//! Whether a newer inlined data table superseded the one of this name, which a flush drops once it is empty
-	bool IsSupersededInlinedTable(const Identifier &inlined_table_name) const;
+	//! Whether a flush of another connection may have dropped the inlined data table: a superseded one, or the only
+	//! one of an entry that is older than the transaction's catalog
+	bool InlinedTableMayBeDropped(DuckLakeTransaction &transaction, const Identifier &inlined_table_name,
+	                              DuckLakeSnapshot snapshot) const;
 	const ColumnDefinition &GetColumnByFieldId(FieldIndex field_index) const;
 	//! Returns the root field id of a column
 	const DuckLakeFieldId &GetFieldId(PhysicalIndex column_index) const;

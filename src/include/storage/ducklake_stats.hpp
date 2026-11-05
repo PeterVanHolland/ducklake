@@ -110,6 +110,7 @@ public:
 	bool BoundsOrdered() const;
 	//! Bounds in the wrong order become unknown bounds
 	void DropReversedBounds();
+	void SetBoundsUnknown();
 
 private:
 	void MergeBound(const DuckLakeColumnStats &new_stats, bool is_min);

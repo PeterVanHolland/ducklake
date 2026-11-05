@@ -10,6 +10,7 @@
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/common/operator/add.hpp"
 
 namespace duckdb {
 
@@ -317,42 +318,28 @@ void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
 	if (types_differ) {
 		type = new_stats.type;
 	}
-	if (!new_stats.has_null_count) {
-		has_null_count = false;
-	} else if (has_null_count) {
-		// both stats have a null count - add them up
-		null_count += new_stats.null_count;
-	}
-	if (!new_stats.has_num_values) {
-		has_num_values = false;
-	} else if (has_num_values) {
-		// both stats have a null count - add them up
-		num_values += new_stats.num_values;
-	}
+	// a count that overflows is unknown
+	has_null_count = has_null_count && new_stats.has_null_count &&
+	                 TryAddOperator::Operation(null_count, new_stats.null_count, null_count);
+	has_num_values = has_num_values && new_stats.has_num_values &&
+	                 TryAddOperator::Operation(num_values, new_stats.num_values, num_values);
 	column_size_bytes += new_stats.column_size_bytes;
 	if (!new_stats.has_contains_nan) {
 		has_contains_nan = false;
-	} else if (has_contains_nan) {
-		// both stats have a null count - add them up
-		if (new_stats.contains_nan) {
-			contains_nan = true;
-		}
+	} else if (has_contains_nan && new_stats.contains_nan) {
+		contains_nan = true;
 	}
 
 	if (!new_stats.BoundsOrdered()) {
 		// stored bounds in the wrong order are unknown bounds of the source
-		has_min = false;
-		has_max = false;
-		bounds_unknown = true;
+		SetBoundsUnknown();
 		MergeExtraStats(extra_stats, new_stats);
 		return;
 	}
 	if (!new_stats.AnyValid()) {
 		// all values in the source are NULL - don't update min/max
 		if (!bounds_survive) {
-			has_min = false;
-			has_max = false;
-			bounds_unknown = true;
+			SetBoundsUnknown();
 		}
 		return;
 	}
@@ -367,9 +354,7 @@ void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
 		any_valid = true;
 	} else if (!bounds_survive) {
 		// bounds do not survive this retype
-		has_min = false;
-		has_max = false;
-		bounds_unknown = true;
+		SetBoundsUnknown();
 	} else {
 		MergeBound(new_stats, true);
 		MergeBound(new_stats, false);
@@ -423,10 +408,14 @@ bool DuckLakeColumnStats::BoundsOrdered() const {
 
 void DuckLakeColumnStats::DropReversedBounds() {
 	if (!BoundsOrdered()) {
-		has_min = false;
-		has_max = false;
-		bounds_unknown = true;
+		SetBoundsUnknown();
 	}
+}
+
+void DuckLakeColumnStats::SetBoundsUnknown() {
+	has_min = false;
+	has_max = false;
+	bounds_unknown = true;
 }
 
 unique_ptr<BaseStatistics> DuckLakeColumnStats::CreateNumericStats() const {

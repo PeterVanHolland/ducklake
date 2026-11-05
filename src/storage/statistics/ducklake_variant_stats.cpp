@@ -326,7 +326,6 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 	throw InvalidInputException("Incorrectly formatted field name %s", field_name);
 }
 
-//! The tree of the stored field paths and the shredded type it describes
 static LogicalType BuildShreddedType(const unordered_map<string, DuckLakeVariantStats> &field_stats,
                                      NestedVariantStats &nested_stats) {
 	for (auto &entry : field_stats) {

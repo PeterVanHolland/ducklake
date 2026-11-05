@@ -153,8 +153,8 @@ true
 statement ok
 DETACH dl
 
-# bounds that do not parse or are reversed give unknown statistics, not empty ones
-foreach bounds "min":"bad","max":"bad" "min":"2","max":"1"
+# bounds that do not parse or are reversed give unknown statistics, not empty ones, and a count that overflows at the append is dropped
+foreach bounds "min":"bad","max":"bad" "min":"2","max":"1" "min":"1","max":"1","null_count":0,"num_values":18446744073709551615
 
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl

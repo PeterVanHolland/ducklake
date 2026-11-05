@@ -373,8 +373,7 @@ unique_ptr<BaseStatistics> DuckLakeTableEntry::GetStatistics(ClientContext &cont
 		return GetColumnStats(field_id, *table_stats);
 	} catch (InvalidInputException &ex) {
 		ErrorData error(ex);
-		error.Throw(
-		    StringUtil::Format("Column \"%s\" has invalid stored statistics, ", field_id.Name().GetIdentifierName()));
+		error.Throw(StringUtil::Format("Column %s has invalid stored statistics, ", field_id.Name()));
 	}
 }
 

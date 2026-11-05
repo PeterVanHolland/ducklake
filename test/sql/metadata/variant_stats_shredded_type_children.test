@@ -137,7 +137,7 @@ SELECT stats(v) FROM dl.t
 <REGEX>:.*Invalid Input Error.*Column "v" has invalid stored statistics.*nested too deeply.*
 
 statement ok
-UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"\"' || repeat('a.', 150) || 'a\"","shredded_type":"int32"}]'
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"\"' || repeat('a.', 1200) || 'a\"","shredded_type":"int32"}]'
 
 statement ok
 DETACH dl

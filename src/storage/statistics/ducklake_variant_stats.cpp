@@ -255,7 +255,7 @@ static constexpr idx_t MAX_SHREDDED_FIELD_DEPTH = 1000;
 
 void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats> stats) {
 	if (field_name == "root") {
-		// special case: top-level variant - no need to parse
+		// the top level variant itself
 		stats.get().full_field_name = field_name;
 		return;
 	}
@@ -266,7 +266,7 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 			throw InvalidInputException("Field %s is nested too deeply", field_name);
 		}
 		if (field_name[pos] != '"') {
-			// find the dot
+			// an unquoted segment runs to the next dot
 			idx_t start_pos = pos;
 			for (; pos < field_name.size(); pos++) {
 				if (field_name[pos] == '.') {
@@ -285,22 +285,21 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 			}
 			stats = stats.get().child_stats.back();
 			if (pos >= field_name.size()) {
-				// leaf level list - push field name into child and finish
+				// the list element is the leaf
 				stats.get().full_field_name = field_name;
 				return;
 			} else {
-				// nested list - continue
+				// a nested list
 				pos++;
 			}
 			continue;
 		}
-		// quoted field - this is a field name
+		// a quoted segment is a struct field name
 		string current_field_name;
 		if (!StringUtil::TryParseQuotedString(field_name, pos, current_field_name)) {
 			break;
 		}
-		// we have the current field name
-		// check if the field name already exists
+		// the field may already have a node from an earlier path
 		auto &child_names = stats.get().child_names;
 		auto &child_stats = stats.get().child_stats;
 		if (child_names.size() != child_stats.size()) {
@@ -309,25 +308,22 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 		idx_t struct_idx;
 		for (struct_idx = 0; struct_idx < child_names.size(); struct_idx++) {
 			if (child_names[struct_idx] == current_field_name) {
-				// found it!
 				break;
 			}
 		}
 		if (struct_idx >= child_names.size()) {
-			// did not find it - push the field name
+			// a new field
 			child_names.push_back(current_field_name);
 			child_stats.emplace_back();
 		}
 		stats = child_stats[struct_idx];
-		// have we reached the end?
 		if (pos >= field_name.size()) {
-			// we have! add the full field name and return
+			// the struct field is the leaf
 			stats.get().full_field_name = field_name;
 			return;
 		} else {
-			// we have not - this is nested - continue with the next field name
 			if (field_name[pos] != '.') {
-				// invalid format - expected a dot here
+				// a dot has to separate the segments
 				break;
 			}
 			pos++;

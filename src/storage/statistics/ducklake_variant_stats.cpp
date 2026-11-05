@@ -131,6 +131,12 @@ void DuckLakeColumnVariantStats::Deserialize(const string &stats) {
 			throw InvalidInputException("Missing shredded_type in VARIANT stats JSON \"%s\"", stats);
 		}
 		auto shredded_type = DuckLakeTypes::FromString(shredded_type_val.GetString());
+		// the children of a nested type are fields of their own, so a nested type has nothing to shred
+		if (DuckLakeTypes::IsNested(shredded_type)) {
+			throw InvalidInputException("field \"%s\" has the nested shredded type \"%s\" but no child fields in "
+			                            "VARIANT stats JSON \"%s\"",
+			                            field_name_val.GetString(), shredded_type_val.GetString(), stats);
+		}
 		shredded_field_stats.emplace(field_name_val.GetString(), DeserializeShreddedStats(shredded_type, obj));
 	});
 }

@@ -146,10 +146,11 @@ struct DuckLakeTableStats {
 	//! Merges a file with the given column stats, which can differ from the file's own
 	void MergeFileStats(const DuckLakeDataFile &file, const map<FieldIndex, DuckLakeColumnStats> &column_stats);
 
-	//! Skips columns whose type lookup returns nullptr
+	//! Skips columns whose type lookup returns nullptr, names the column of invalid stored statistics when it can
 	static unique_ptr<DuckLakeTableStats>
 	FromGlobalStats(const DuckLakeGlobalStatsInfo &stats,
-	                const std::function<optional_ptr<const LogicalType>(FieldIndex)> &get_column_type);
+	                const std::function<optional_ptr<const LogicalType>(FieldIndex)> &get_column_type,
+	                const std::function<string(FieldIndex)> &get_column_name = nullptr);
 };
 
 struct DuckLakeStats {

@@ -1,0 +1,41 @@
+# name: test/sql/metadata/variant_stats_shredded_type_children.test
+# description: VARIANT statistics with a nested shredded type that has no child fields report an error
+# group: [metadata]
+
+require ducklake
+
+require parquet
+
+test-env DATA_PATH {TEST_DIR}
+
+foreach nested_type list struct map
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_${nested_type}.db' AS dl (DATA_PATH '{DATA_PATH}/shredded_${nested_type}', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t AS SELECT 1::VARIANT AS v
+
+query I
+SELECT stats(v) IS NOT NULL FROM dl.t
+----
+true
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"${nested_type}"}]'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_${nested_type}.db' AS dl
+
+statement error
+SELECT stats(v) FROM dl.t
+----
+<REGEX>:.*Invalid Input Error.*Column "v".*shredded type "(list|struct|map)".*
+
+statement ok
+DETACH dl
+
+endloop

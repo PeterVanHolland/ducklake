@@ -1025,11 +1025,13 @@ unique_ptr<DuckLakeStats> DuckLakeCatalog::ConstructStatsMap(vector<DuckLakeGlob
 			continue;
 		}
 		auto &table = table_entry->Cast<DuckLakeTableEntry>();
-		auto table_stats =
-		    DuckLakeTableStats::FromGlobalStats(stats, [&](FieldIndex field_index) -> optional_ptr<const LogicalType> {
+		auto table_stats = DuckLakeTableStats::FromGlobalStats(
+		    stats,
+		    [&](FieldIndex field_index) -> optional_ptr<const LogicalType> {
 			    auto field = table.GetFieldId(field_index);
 			    return field ? &field->Type() : nullptr;
-		    });
+		    },
+		    [&](FieldIndex field_index) { return table.GetFieldId(field_index)->Name().GetIdentifierName(); });
 		lake_stats->table_stats.insert(make_pair(stats.table_id, std::move(table_stats)));
 	}
 	return lake_stats;

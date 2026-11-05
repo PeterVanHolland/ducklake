@@ -1,0 +1,167 @@
+# name: test/sql/data_inlining/superseded_inlined_table_drop_open_transaction.test
+# description: a flush does not drop an empty superseded inlined table while a transaction that still lists it is open, and a read copes with one dropped under it
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/superseded_inlined_table_drop_open_transaction.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/superseded_inlined_table_drop_open_transaction', DATA_INLINING_ROW_LIMIT 1000)
+
+statement ok
+CREATE TABLE lake.t (tenant INTEGER, id BIGINT, v DOUBLE)
+
+statement ok
+CREATE TABLE lake.other (id INTEGER)
+
+# the partitioning creates a new inlined table, the one of the first schema version is empty and superseded
+statement ok
+ALTER TABLE lake.t SET PARTITIONED BY (tenant)
+
+statement ok
+INSERT INTO lake.t SELECT 1, 1000 - i, i FROM range(10) r(i)
+
+# con1 fixes its snapshot before the flush without reading t, so its snapshot still lists the empty table
+statement ok con1
+BEGIN
+
+query I con1
+SELECT count(*) FROM lake.other
+----
+0
+
+statement ok con2
+CALL ducklake_flush_inlined_data('lake', table_name => 't')
+
+# the read of t in the older snapshot must not fail on a dropped table
+query II con1
+SELECT count(*), max(id) FROM lake.t WHERE tenant = 1
+----
+10	1000
+
+statement ok con1
+COMMIT
+
+# once no transaction is open, the next flush drops the empty superseded table
+statement ok con2
+INSERT INTO lake.t SELECT 2, i, i FROM range(5) r(i)
+
+statement ok con2
+CALL ducklake_flush_inlined_data('lake', table_name => 't')
+
+query I
+SELECT count(*) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 't' AND end_snapshot IS NULL)
+----
+1
+
+query III
+SELECT count(*), sum(id), count(DISTINCT tenant) FROM lake.t
+----
+15	9965	2
+
+# a superseded table that held rows: the flush empties it, a transaction open across the flush still reads u
+statement ok
+CREATE TABLE lake.u (tenant INTEGER, id BIGINT, v DOUBLE)
+
+statement ok
+INSERT INTO lake.u SELECT 1, 1000 - i, i FROM range(10) r(i)
+
+statement ok
+ALTER TABLE lake.u SET PARTITIONED BY (tenant)
+
+statement ok
+INSERT INTO lake.u SELECT 2, i, i FROM range(5) r(i)
+
+query I
+SELECT list(table_name ORDER BY schema_version) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'u' AND end_snapshot IS NULL)
+----
+[ducklake_inlined_data_4_4, ducklake_inlined_data_4_5]
+
+statement ok con1
+BEGIN
+
+query I con1
+SELECT count(*) FROM lake.other
+----
+0
+
+statement ok con2
+CALL ducklake_flush_inlined_data('lake', table_name => 'u')
+
+query II con1
+SELECT count(*), sum(id) FROM lake.u
+----
+15	9965
+
+statement ok con1
+COMMIT
+
+# a transaction whose snapshot lists the emptied table copes with its drop under it, as the flush emptied it
+statement ok con3
+BEGIN
+
+query I con3
+SELECT count(*) FROM lake.other
+----
+0
+
+statement ok con2
+DROP TABLE IF EXISTS __ducklake_metadata_lake.ducklake_inlined_data_4_4
+
+query II con3
+SELECT count(*), sum(id) FROM lake.u
+----
+15	9965
+
+statement ok con3
+COMMIT
+
+statement ok
+DELETE FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_name = 'ducklake_inlined_data_4_4'
+
+# a superseded table that never held rows, dropped under a transaction that lists it
+statement ok
+CREATE TABLE lake.w (tenant INTEGER, id BIGINT, v DOUBLE)
+
+statement ok
+ALTER TABLE lake.w SET PARTITIONED BY (tenant)
+
+statement ok
+INSERT INTO lake.w SELECT 1, 1000 - i, i FROM range(10) r(i)
+
+query I
+SELECT max(table_name) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'w' AND end_snapshot IS NULL)
+----
+ducklake_inlined_data_6_7
+
+statement ok con4
+BEGIN
+
+query I con4
+SELECT count(*) FROM lake.other
+----
+0
+
+statement ok con2
+DROP TABLE IF EXISTS __ducklake_metadata_lake.ducklake_inlined_data_6_6
+
+query II con4
+SELECT count(*), max(id) FROM lake.w WHERE tenant = 1
+----
+10	1000
+
+statement ok con4
+COMMIT
+
+statement ok
+DELETE FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_name = 'ducklake_inlined_data_6_6'
+
+query III
+SELECT (SELECT count(*) FROM lake.t), (SELECT count(*) FROM lake.u), (SELECT count(*) FROM lake.w)
+----
+15	15	10

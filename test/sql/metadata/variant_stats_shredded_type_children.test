@@ -11,7 +11,7 @@ test-env DATA_PATH {TEST_DIR}
 foreach nested_type list struct map
 
 statement ok
-ATTACH 'ducklake:{TEST_DIR}/shredded_${nested_type}.db' AS dl (DATA_PATH '{DATA_PATH}/shredded_${nested_type}', DATA_INLINING_ROW_LIMIT 0)
+ATTACH 'ducklake:{TEST_DIR}/shredded_{nested_type}.db' AS dl (DATA_PATH '{DATA_PATH}/shredded_{nested_type}', DATA_INLINING_ROW_LIMIT 0)
 
 statement ok
 CREATE TABLE dl.t AS SELECT 1::VARIANT AS v
@@ -25,13 +25,13 @@ SELECT stats(v) IS NOT NULL FROM dl.t
 true
 
 statement ok
-UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"\"a\"","shredded_type":"int32","min":"1","max":"1"},{"field_name":"\"b\"","shredded_type":"${nested_type}"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 't')
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"\"a\"","shredded_type":"int32","min":"1","max":"1"},{"field_name":"\"b\"","shredded_type":"{nested_type}"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 't')
 
 statement ok
 DETACH dl
 
 statement ok
-ATTACH 'ducklake:{TEST_DIR}/shredded_${nested_type}.db' AS dl (DATA_INLINING_ROW_LIMIT 0)
+ATTACH 'ducklake:{TEST_DIR}/shredded_{nested_type}.db' AS dl (DATA_INLINING_ROW_LIMIT 0)
 
 # the other table loads, and a count needs no column statistics
 query I
@@ -73,7 +73,7 @@ statement ok
 DETACH dl
 
 statement ok
-ATTACH 'ducklake:{TEST_DIR}/shredded_${nested_type}.db' AS dl
+ATTACH 'ducklake:{TEST_DIR}/shredded_{nested_type}.db' AS dl
 
 query I
 SELECT count(*) FROM dl.t WHERE v IS NOT NULL
@@ -100,7 +100,7 @@ statement ok
 CREATE TABLE IF NOT EXISTS dl.t AS SELECT 1::VARIANT AS v
 
 statement ok
-UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '${payload}'
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '{payload}'
 
 statement ok
 DETACH dl
@@ -161,7 +161,7 @@ statement ok
 ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
 
 statement ok
-UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"int32",${bounds}}]'
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"int32",{bounds}}]'
 
 statement ok
 DETACH dl

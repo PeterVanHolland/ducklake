@@ -2688,11 +2688,11 @@ WHERE idt.schema_version < (
 		if (rows_result->begin() != rows_result->end()) {
 			continue;
 		}
-		// keep the registration if the drop fails
+		// keep the registration if the drop fails, a drop that gave way to open transactions is retried later
 		auto res = context.execute_in_transaction(DuckLakeMetadataManager::DropInlinedTableSql(
 		    candidate.table_id, candidate.schema_version, candidate.table_name));
 		if (res->HasError()) {
-			if (!failed_drop) {
+			if (!failed_drop && !context.drop_deferred(res->GetError())) {
 				failed_drop = std::move(res);
 			}
 			continue;

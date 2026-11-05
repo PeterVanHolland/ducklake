@@ -473,8 +473,38 @@ unique_ptr<QueryResult> PostgresMetadataManager::Execute(DuckLakeSnapshot snapsh
 unique_ptr<QueryResult> PostgresMetadataManager::ExecuteDropInTransaction(string &query) {
 	// DROP TABLE waits for every open transaction that read the table and the readers queued behind it fail, so it
 	// gives up instead and leaves the table to a later cleanup
-	auto batch = "CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, 'SET LOCAL lock_timeout = 1');\n" + query;
+	string batch = "CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, 'SET LOCAL lock_timeout = 1');\n";
+	// a transaction reads ducklake_snapshot first and keeps its share lock until it ends, while its REPEATABLE READ
+	// snapshot still lists the table, so the drop only runs when no such transaction is open and a transaction that
+	// starts meanwhile takes its snapshot after the drop
+	auto schema = SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName());
+	auto lock_snapshots = StringUtil::Format("LOCK TABLE %s.ducklake_snapshot IN ACCESS EXCLUSIVE MODE", schema);
+	batch +=
+	    StringUtil::Format("CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, %s);\n", SQLString(lock_snapshots));
+	batch += query;
 	return ExecuteInTransaction(batch);
+}
+
+bool PostgresMetadataManager::DropDeferred(const string &error) const {
+	// the lock timeout of ExecuteDropInTransaction leaves the table to a later cleanup
+	return StringUtil::Contains(error, "lock timeout");
+}
+
+bool PostgresMetadataManager::InlinedTableMissing(const Identifier &inlined_table_name) {
+	// the name lookup reads the current catalog, not the snapshot of the transaction, like a query of the table would
+	auto &catalog = transaction.GetCatalog();
+	auto qualified_name = SQLQuotedIdentifier::ToString(catalog.MetadataSchemaName()) + "." +
+	                      SQLQuotedIdentifier::ToString(inlined_table_name);
+	auto remote_query = StringUtil::Format("SELECT to_regclass(%s) IS NULL", SQLString::ToString(qualified_name));
+	auto query =
+	    StringUtil::Format("SELECT * FROM postgres_query({METADATA_CATALOG_NAME_LITERAL}, %s, use_transaction = true)",
+	                       SQLString::ToString(remote_query));
+	auto result = DuckLakeMetadataManager::Query(query);
+	result->ThrowIfError("Failed to probe for a DuckLake inlined data table: ");
+	for (auto &row : *result) {
+		return row.GetValue<bool>(0);
+	}
+	return false;
 }
 
 void PostgresMetadataManager::ClearCache() {

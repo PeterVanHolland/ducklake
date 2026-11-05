@@ -48,6 +48,8 @@ public:
 
 	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query) override;
 	unique_ptr<QueryResult> ExecuteDropInTransaction(string &query) override;
+	bool DropDeferred(const string &error) const override;
+	bool InlinedTableMissing(const Identifier &inlined_table_name) override;
 
 	void ClearCache() override;
 	//! postgres_scanner looks up a table it has not cached

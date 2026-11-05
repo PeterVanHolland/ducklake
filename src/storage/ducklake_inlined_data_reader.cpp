@@ -1,4 +1,5 @@
 #include "storage/ducklake_inlined_data_reader.hpp"
+#include "storage/ducklake_table_entry.hpp"
 #include "storage/ducklake_multi_file_reader.hpp"
 #include "storage/ducklake_transaction.hpp"
 #include "storage/ducklake_metadata_manager.hpp"
@@ -83,8 +84,13 @@ DuckLakeInlinedDataReader::ReadCommittedRows(DuckLakeFunctionInfo &read_info, co
 	}
 	result->columns.push_back("(SELECT MAX(next_file_id) FROM {METADATA_CATALOG}.ducklake_snapshot)");
 	types.push_back(LogicalType::BIGINT);
-	auto query_result = metadata_manager.ReadInlinedData(read_info.snapshot, table_name, result->columns);
-	result->rows = metadata_manager.TransformInlinedData(*query_result, types, table_name);
+	if (metadata_manager.InlinedTableDropped(read_info.table, table_name, read_info.snapshot)) {
+		// a concurrent flush dropped the empty superseded table the snapshot still lists
+		result->rows = metadata_manager.EmptyInlinedData(types);
+	} else {
+		auto query_result = metadata_manager.ReadInlinedData(read_info.snapshot, table_name, result->columns);
+		result->rows = metadata_manager.TransformInlinedData(*query_result, types, table_name);
+	}
 	auto &rows = *result->rows->data;
 	if (rows.Count() > 0) {
 		auto file_id = rows.GetValue(types.size() - 1, 0).GetValue<idx_t>();
@@ -173,6 +179,10 @@ bool DuckLakeInlinedDataReader::TryInitializeScan(ClientContext &context, Global
 		}
 		if (committed_rows) {
 			data = ProjectCommittedRows(context, *committed_rows, columns_to_read);
+		}
+		if (!data && metadata_manager.InlinedTableDropped(read_info.table, table_name, read_info.snapshot)) {
+			// a concurrent flush dropped the empty superseded table the snapshot still lists
+			data = metadata_manager.EmptyInlinedData(expected_types);
 		}
 		if (!data) {
 			unique_ptr<QueryResult> query_result;

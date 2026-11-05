@@ -3257,6 +3257,10 @@ unique_ptr<QueryResult> DuckLakeMetadataManager::ExecuteDropInTransaction(string
 	return ExecuteInTransaction(query);
 }
 
+bool DuckLakeMetadataManager::DropDeferred(const string &) const {
+	return false;
+}
+
 unique_ptr<QueryResult> DuckLakeMetadataManager::ExecuteInTransaction(string &query) {
 	auto batch = "BEGIN TRANSACTION;\n" + query + "\nCOMMIT;";
 	auto result = Query(batch);
@@ -4184,6 +4188,83 @@ shared_ptr<DuckLakeInlinedData> DuckLakeMetadataManager::TransformInlinedData(Qu
 	}
 	auto inlined_data = make_shared_ptr<DuckLakeInlinedData>();
 	inlined_data->data = std::move(data);
+	return inlined_data;
+}
+
+bool DuckLakeMetadataManager::InlinedTableDropped(DuckLakeTableEntry &table, const Identifier &inlined_table_name,
+                                                  DuckLakeSnapshot snapshot) {
+	if (!table.IsSupersededInlinedTable(inlined_table_name) || !InlinedTableMissing(inlined_table_name)) {
+		return false;
+	}
+	if (!InlinedTableEmptyAtSnapshot(inlined_table_name, table.GetTableId(), snapshot)) {
+		throw InvalidInputException(
+		    "Failed to read inlined data from DuckLake: a concurrent flush dropped the inlined "
+		    "table %s while the snapshot of this transaction still reads it, retry the statement",
+		    inlined_table_name.GetIdentifierName());
+	}
+	return true;
+}
+
+bool DuckLakeMetadataManager::InlinedTableMissing(const Identifier &) {
+	// the catalog of a DuckDB or SQLite transaction keeps the tables its snapshot has
+	return false;
+}
+
+bool DuckLakeMetadataManager::InlinedTableEmptyAtSnapshot(const Identifier &inlined_table_name, TableIndex table_id,
+                                                          DuckLakeSnapshot snapshot) {
+	// the first snapshot of the table's schema version and the first one of the version that superseded it
+	auto bounds = Query(StringUtil::Format(R"(
+SELECT (SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot WHERE schema_version >= this.schema_version),
+	(SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot WHERE schema_version >= (
+		SELECT MIN(idt.schema_version) FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
+		WHERE idt.table_id = %d AND idt.schema_version > this.schema_version))
+FROM {METADATA_CATALOG}.ducklake_inlined_data_tables this
+WHERE this.table_id = %d AND this.table_name = %s)",
+	                                       table_id.index, table_id.index,
+	                                       SQLString::ToString(inlined_table_name.GetIdentifierName())));
+	if (bounds->HasError()) {
+		return false;
+	}
+	optional_idx first_snapshot;
+	optional_idx superseded_snapshot;
+	for (auto &row : *bounds) {
+		first_snapshot = OptIdx(row, 0);
+		superseded_snapshot = OptIdx(row, 1);
+	}
+	if (!first_snapshot.IsValid() || !superseded_snapshot.IsValid() ||
+	    superseded_snapshot.GetIndex() > snapshot.snapshot_id) {
+		// a table that is not superseded at the snapshot is not dropped by DuckLake
+		return false;
+	}
+	// the table was empty at the snapshot when no inlined insert reached it before it was superseded, or when a
+	// flush emptied it after that
+	auto changes = Query(StringUtil::Format(R"(
+SELECT snapshot_id, changes_made
+FROM {METADATA_CATALOG}.ducklake_snapshot_changes
+WHERE snapshot_id >= %d AND snapshot_id <= %d
+	AND (changes_made LIKE '%%inlined_insert:%%' OR changes_made LIKE '%%inline_flush:%%'))",
+	                                        first_snapshot.GetIndex(), snapshot.snapshot_id));
+	if (changes->HasError()) {
+		return false;
+	}
+	bool inserted = false;
+	bool flushed_after = false;
+	for (auto &row : *changes) {
+		auto changed_snapshot = row.GetValue<idx_t>(0);
+		auto change_info = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(1));
+		if (changed_snapshot < superseded_snapshot.GetIndex()) {
+			inserted = inserted || change_info.tables_inserted_inlined.count(table_id) > 0;
+		} else {
+			flushed_after = flushed_after || change_info.tables_flushed_inlined.count(table_id) > 0;
+		}
+	}
+	return !inserted || flushed_after;
+}
+
+shared_ptr<DuckLakeInlinedData> DuckLakeMetadataManager::EmptyInlinedData(const vector<LogicalType> &types) {
+	auto context = transaction.context.lock();
+	auto inlined_data = make_shared_ptr<DuckLakeInlinedData>();
+	inlined_data->data = make_uniq<ColumnDataCollection>(*context, types);
 	return inlined_data;
 }
 

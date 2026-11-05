@@ -67,16 +67,31 @@ void DuckLakeColumnVariantStats::Serialize(DuckLakeColumnStatsInfo &column_stats
 	TrySerialize(column_stats.extra_stats);
 }
 
-static bool TryGetCount(const JSONValue &obj, const string &key, idx_t &result) {
+static bool TryGetCount(const JSONValue &obj, const string &key, const string &field_name, idx_t &result) {
 	auto count_val = obj.GetMember(key);
-	if (!count_val.IsInteger()) {
+	if (!count_val.IsValid()) {
 		return false;
+	}
+	if (count_val.GetType() != JSONValueType::UNSIGNED_INTEGER) {
+		throw InvalidInputException("Field \"%s\" has a %s that is not a count in its VARIANT stats", field_name, key);
 	}
 	result = count_val.GetUnsignedInteger();
 	return true;
 }
 
-//! A string member of a shredded field, which has to be a string when present
+static bool TryGetStatsBoolean(const JSONValue &obj, const string &key, const string &field_name, bool &result) {
+	auto member = obj.GetMember(key);
+	if (!member.IsValid()) {
+		return false;
+	}
+	if (member.GetType() != JSONValueType::BOOLEAN) {
+		throw InvalidInputException("Field \"%s\" has a %s that is not a boolean in its VARIANT stats", field_name,
+		                            key);
+	}
+	result = member.GetBoolean();
+	return true;
+}
+
 static bool TryGetStatsString(const JSONValue &obj, const string &key, const string &field_name, string &result) {
 	auto member = obj.GetMember(key);
 	if (!member.IsValid()) {
@@ -95,22 +110,17 @@ static DuckLakeVariantStats DeserializeShreddedStats(const LogicalType &shredded
 	DuckLakeVariantStats variant_stats(shredded_type, std::move(column_stats));
 
 	auto &stats = variant_stats.field_stats;
-	stats.has_null_count = TryGetCount(obj, "null_count", stats.null_count);
-	stats.has_num_values = TryGetCount(obj, "num_values", stats.num_values);
-	TryGetCount(obj, "column_size_bytes", stats.column_size_bytes);
+	stats.has_null_count = TryGetCount(obj, "null_count", field_name, stats.null_count);
+	stats.has_num_values = TryGetCount(obj, "num_values", field_name, stats.num_values);
+	TryGetCount(obj, "column_size_bytes", field_name, stats.column_size_bytes);
 
 	stats.has_min = TryGetStatsString(obj, "min", field_name, stats.min);
 	stats.has_max = TryGetStatsString(obj, "max", field_name, stats.max);
+	stats.has_contains_nan = TryGetStatsBoolean(obj, "contains_nan", field_name, stats.contains_nan);
 
-	auto contains_nan_val = obj.GetMember("contains_nan");
-	if (contains_nan_val.IsValid()) {
-		stats.has_contains_nan = true;
-		stats.contains_nan = contains_nan_val.GetBoolean();
-	}
-
-	auto any_valid_val = obj.GetMember("any_valid");
-	if (any_valid_val.IsValid()) {
-		stats.any_valid = any_valid_val.GetBoolean();
+	bool any_valid;
+	if (TryGetStatsBoolean(obj, "any_valid", field_name, any_valid)) {
+		stats.any_valid = any_valid;
 	}
 
 	string extra_stats;
@@ -271,6 +281,9 @@ struct NestedVariantStats {
 			auto field_stats = entry->second.field_stats.ToStats();
 			if (field_stats) {
 				stats.Copy(*field_stats);
+			} else {
+				// bounds that do not parse leave the statistics unknown, the empty ones would prune every row
+				stats.Copy(BaseStatistics::CreateUnknown(stats.GetType()));
 			}
 			return;
 		}

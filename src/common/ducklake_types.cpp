@@ -2,6 +2,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/algorithm.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/to_string.hpp"
 #include "duckdb/common/array.hpp"
 #include "duckdb/common/optional_idx.hpp"
@@ -114,15 +115,14 @@ LogicalType DuckLakeTypes::FromDuckDBString(const string &type, ClientContext &c
 	}
 }
 
-//! The width or scale of a DECIMAL type string, up to three digits no larger than the widest DECIMAL
-static uint8_t ParseDecimalMember(string member, const string &type) {
+static idx_t ParseDecimalMember(string member, const string &type) {
 	StringUtil::Trim(member);
 	bool digits = !member.empty() && member.size() <= 3 &&
 	              std::all_of(member.begin(), member.end(), [](char c) { return StringUtil::CharacterIsDigit(c); });
-	if (!digits || std::stoull(member) > DecimalType::MaxWidth()) {
+	if (!digits) {
 		throw InvalidInputException("Failed to parse DuckLake type - invalid DECIMAL width or scale in '%s'", type);
 	}
-	return NumericCast<uint8_t>(std::stoull(member));
+	return std::stoull(member);
 }
 
 LogicalType DuckLakeTypes::FromString(const string &type) {
@@ -135,10 +135,11 @@ LogicalType DuckLakeTypes::FromString(const string &type) {
 		}
 		auto width = ParseDecimalMember(members.substr(0, comma), type);
 		auto scale = ParseDecimalMember(members.substr(comma + 1), type);
-		if (width == 0 || scale > width) {
+		if (width > Decimal::MAX_WIDTH_DECIMAL || scale > Decimal::MAX_WIDTH_DECIMAL ||
+		    !Decimal::IsValidWidthScale(UnsafeNumericCast<uint8_t>(width), UnsafeNumericCast<uint8_t>(scale))) {
 			throw InvalidInputException("Failed to parse DuckLake type - invalid DECIMAL width or scale in '%s'", type);
 		}
-		return LogicalType::DECIMAL(width, scale);
+		return LogicalType::DECIMAL(UnsafeNumericCast<uint8_t>(width), UnsafeNumericCast<uint8_t>(scale));
 	}
 	return ParseBaseType(type);
 }

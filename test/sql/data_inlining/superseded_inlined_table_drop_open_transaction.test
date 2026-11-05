@@ -117,3 +117,38 @@ query II
 SELECT (SELECT count(*) FROM lake.t), (SELECT count(*) FROM lake.u)
 ----
 15	20
+
+# a transaction whose first statement reads no snapshot of a table is protected as well
+statement ok
+CREATE TABLE lake.v (tenant INTEGER, id BIGINT, v DOUBLE)
+
+statement ok
+INSERT INTO lake.v SELECT 1, 1000 - i, i FROM range(10) r(i)
+
+statement ok con3
+BEGIN
+
+statement ok con3
+SELECT * FROM ducklake_cleanup_old_files('lake', dry_run => true)
+
+statement ok con2
+ALTER TABLE lake.v SET PARTITIONED BY (tenant)
+
+statement ok con2
+INSERT INTO lake.v SELECT 2, i, i FROM range(5) r(i)
+
+statement ok con2
+CALL ducklake_flush_inlined_data('lake', table_name => 'v')
+
+query II con3
+SELECT count(*), sum(id) FROM lake.v
+----
+10	9955
+
+statement ok con3
+COMMIT
+
+query II
+SELECT count(*), sum(id) FROM lake.v
+----
+15	9965

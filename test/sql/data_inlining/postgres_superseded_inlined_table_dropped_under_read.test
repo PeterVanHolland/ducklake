@@ -54,6 +54,10 @@ SELECT count(*), max(id) FROM lake.w WHERE tenant = 1
 ----
 10	1000
 
+# the expiry of this transaction skips the dropped table as well
+statement ok con1
+CALL ducklake_expire_snapshots('lake', versions => [0])
+
 statement ok con1
 COMMIT
 

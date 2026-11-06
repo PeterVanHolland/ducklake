@@ -1,0 +1,67 @@
+# name: test/sql/table_changes/table_changes_start_timestamp_expired_transaction.test
+# description: a change feed by timestamp resolves its start again after the transaction expired snapshots
+# group: [table_changes]
+
+require ducklake
+
+require parquet
+
+require icu
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/table_changes_start_timestamp_expired_transaction', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t (i INTEGER)
+
+statement ok
+INSERT INTO lake.t VALUES (1)
+
+statement ok
+INSERT INTO lake.t VALUES (2)
+
+statement ok
+INSERT INTO lake.t VALUES (3)
+
+statement ok
+SET VARIABLE t3 = (SELECT snapshot_time FROM lake.snapshots() WHERE snapshot_id = 3)
+
+statement ok
+SET VARIABLE t4 = (SELECT snapshot_time FROM lake.snapshots() WHERE snapshot_id = 4)
+
+statement ok
+BEGIN
+
+query I
+SELECT list(i ORDER BY i) FROM ducklake_table_changes('lake', 'main', 't', getvariable('t3'), getvariable('t4'))
+----
+[2, 3]
+
+# the time of snapshot 2 is gone, so the feed from the time of snapshot 3 starts after snapshot 1
+statement ok
+CALL ducklake_expire_snapshots('lake', versions => [2])
+
+query I
+SELECT list(i ORDER BY i) FROM ducklake_table_changes('lake', 'main', 't', getvariable('t3'), getvariable('t4'))
+----
+[1, 2, 3]
+
+statement ok
+CALL ducklake_expire_snapshots('lake', versions => [3])
+
+query I
+SELECT list(i ORDER BY i) FROM ducklake_table_changes('lake', 'main', 't', getvariable('t3'), getvariable('t4'))
+----
+[1, 2, 3]
+
+statement ok
+COMMIT
+
+query I
+SELECT list(i ORDER BY i) FROM ducklake_table_changes('lake', 'main', 't', getvariable('t3'), getvariable('t4'))
+----
+[1, 2, 3]

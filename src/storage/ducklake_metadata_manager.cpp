@@ -5680,6 +5680,34 @@ FROM {METADATA_CATALOG}.ducklake_files_scheduled_for_deletion f
 )";
 }
 
+//! The key the orphan cleanup compares paths by: the canonical local path, or the authority and path of a remote one
+//! without the scheme and the query string, with both Azure forms as <account host>/<container>/<path>
+static string OrphanCleanupPathKey(FileSystem &fs, const string &path) {
+	auto normalized = StringUtil::Replace(path, "\\", "/");
+	auto parsed = Path::FromString(normalized);
+	if (parsed.IsLocal()) {
+		return fs.CanonicalizePath(normalized);
+	}
+	idx_t path_start = parsed.GetScheme().size();
+	auto query_start = normalized.find('?', path_start);
+	idx_t path_end = query_start == string::npos ? normalized.size() : query_start;
+	auto key = normalized.substr(path_start, path_end - path_start);
+	auto scheme = StringUtil::Lower(parsed.GetScheme());
+	if (scheme != "abfs://" && scheme != "abfss://" && scheme != "az://" && scheme != "azure://") {
+		return key;
+	}
+	// abfs[s]://<container>@<account>.<endpoint>/<path> gets the key of
+	// abfs[s]://<account>.<endpoint>/<container>/<path>
+	auto at_position = key.find('@');
+	auto slash_position = key.find('/');
+	if (at_position == string::npos || (slash_position != string::npos && slash_position < at_position)) {
+		return key;
+	}
+	idx_t host_end = slash_position == string::npos ? key.size() : slash_position;
+	return key.substr(at_position + 1, host_end - at_position - 1) + "/" + key.substr(0, at_position) +
+	       key.substr(host_end);
+}
+
 vector<DuckLakeFileForCleanup> DuckLakeMetadataManager::GetOrphanFilesForCleanup(const string &filter) {
 	// files of open transactions, collected before the metadata read and again after the listing
 	auto &transaction_manager = transaction.manager.Cast<DuckLakeTransactionManager>();
@@ -5688,23 +5716,23 @@ vector<DuckLakeFileForCleanup> DuckLakeMetadataManager::GetOrphanFilesForCleanup
 	auto known_files_res = Query(GetKnownFilesForCleanupQuery());
 	known_files_res->ThrowIfError("Failed to get files scheduled for deletion from DuckLake: ");
 
-	// compare canonical paths so differently spelled paths to the same file match
 	auto &fs = GetFileSystem();
 	auto canonical_path = [&](const string &path) {
-		auto normalized = StringUtil::Replace(path, "\\", "/");
-		auto parsed = Path::FromString(normalized);
-		if (parsed.IsLocal()) {
-			return fs.CanonicalizePath(normalized);
-		}
-		// key remote paths by authority and path so scheme aliases and query strings match
-		auto path_start = parsed.GetScheme().size();
-		auto query_start = normalized.find('?', path_start);
-		auto path_end = query_start == string::npos ? normalized.size() : query_start;
-		return normalized.substr(path_start, path_end - path_start);
+		return OrphanCleanupPathKey(fs, path);
 	};
 	unordered_set<string> known_files;
 	for (auto &row : *known_files_res) {
 		known_files.insert(canonical_path(row.GetValue<string>(0)));
+	}
+	// a listed file whose key is not under the data path is spelled in a form this key does not know, and is left alone
+	auto &data_path = transaction.GetCatalog().DataPath();
+	auto data_path_key = canonical_path(data_path);
+	// a canonical local key has the separators of the file system, a remote key has slashes
+	auto separator = Path::FromString(StringUtil::Replace(data_path, "\\", "/")).IsLocal()
+	                     ? fs.PathSeparator(data_path_key)
+	                     : string("/");
+	if (!StringUtil::EndsWith(data_path_key, separator)) {
+		data_path_key += separator;
 	}
 
 	auto query = StringUtil::Format(R"(SELECT filename
@@ -5723,7 +5751,8 @@ WHERE (suffix(filename, '.parquet') OR suffix(filename, '.puffin'))
 	vector<DuckLakeFileForCleanup> result;
 	for (auto &row : *res) {
 		auto path = row.GetValue<string>(0);
-		if (known_files.count(canonical_path(path))) {
+		auto key = canonical_path(path);
+		if (!StringUtil::StartsWith(key, data_path_key) || known_files.count(key)) {
 			continue;
 		}
 		DuckLakeFileForCleanup info;

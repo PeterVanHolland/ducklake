@@ -320,6 +320,8 @@ public:
 	virtual unique_ptr<QueryResult> ExecuteInTransaction(string &query);
 	//! Runs statements that drop metadata tables atomically, failing where the drop would wait for their readers
 	virtual unique_ptr<QueryResult> ExecuteDropInTransaction(string &query);
+	//! Whether a failed drop gave way to open transactions on purpose, to be retried by a later cleanup
+	virtual bool DropDeferred(const string &error) const;
 
 	virtual unique_ptr<QueryResult> Query(DuckLakeSnapshot snapshot, string &query);
 	virtual unique_ptr<QueryResult> Query(string &query);
@@ -603,6 +605,18 @@ public:
 	void CheckInlinedDataReadError(QueryResult &result, const Identifier &inlined_table_name);
 	shared_ptr<DuckLakeInlinedData> TransformInlinedData(QueryResult &result, const vector<LogicalType> &expected_types,
 	                                                     const Identifier &inlined_table_name);
+	//! Whether an inlined table the snapshot lists was dropped by a concurrent flush meanwhile, in which case it was
+	//! empty at the snapshot (checked, else this throws) and its read is skipped
+	bool InlinedTableDropped(TableIndex table_id, const Identifier &inlined_table_name, DuckLakeSnapshot snapshot);
+	//! The same for the inlined tables of a table entry, which only probes the tables that a flush may have dropped
+	bool InlinedTableDropped(DuckLakeTableEntry &table, const Identifier &inlined_table_name,
+	                         DuckLakeSnapshot snapshot);
+	//! Whether the inlined table is gone from the catalog, also when the snapshot of the transaction still has it
+	virtual bool InlinedTableMissing(const Identifier &inlined_table_name);
+	//! Whether the snapshot shows that the superseded inlined table had no rows at the snapshot
+	bool InlinedTableEmptyAtSnapshot(const Identifier &inlined_table_name, TableIndex table_id,
+	                                 DuckLakeSnapshot snapshot);
+	shared_ptr<DuckLakeInlinedData> EmptyInlinedData(const vector<LogicalType> &types);
 
 	//! The statements deleting the inlined rows and inlined file deletions that the transaction flushed
 	static string GenerateDeleteFlushedInlinedData(const vector<FlushedInlinedTableInfo> &flushed_tables,

@@ -3284,6 +3284,10 @@ unique_ptr<QueryResult> DuckLakeMetadataManager::ExecuteDropInTransaction(string
 	return ExecuteInTransaction(query);
 }
 
+bool DuckLakeMetadataManager::DropDeferred(const string &) const {
+	return false;
+}
+
 unique_ptr<QueryResult> DuckLakeMetadataManager::ExecuteInTransaction(string &query) {
 	auto batch = "BEGIN TRANSACTION;\n" + query + "\nCOMMIT;";
 	auto result = Query(batch);
@@ -4211,6 +4215,100 @@ shared_ptr<DuckLakeInlinedData> DuckLakeMetadataManager::TransformInlinedData(Qu
 	}
 	auto inlined_data = make_shared_ptr<DuckLakeInlinedData>();
 	inlined_data->data = std::move(data);
+	return inlined_data;
+}
+
+bool DuckLakeMetadataManager::InlinedTableDropped(DuckLakeTableEntry &table, const Identifier &inlined_table_name,
+                                                  DuckLakeSnapshot snapshot) {
+	if (!table.InlinedTableMayBeDropped(transaction, inlined_table_name, snapshot)) {
+		return false;
+	}
+	return InlinedTableDropped(table.GetTableId(), inlined_table_name, snapshot);
+}
+
+bool DuckLakeMetadataManager::InlinedTableDropped(TableIndex table_id, const Identifier &inlined_table_name,
+                                                  DuckLakeSnapshot snapshot) {
+	if (!InlinedTableMissing(inlined_table_name)) {
+		return false;
+	}
+	if (!InlinedTableEmptyAtSnapshot(inlined_table_name, table_id, snapshot)) {
+		throw InvalidInputException(
+		    "Failed to read inlined data from DuckLake: a concurrent flush dropped the inlined "
+		    "table %s while the snapshot of this transaction still reads it, retry the statement",
+		    inlined_table_name.GetIdentifierName());
+	}
+	return true;
+}
+
+bool DuckLakeMetadataManager::InlinedTableMissing(const Identifier &) {
+	// the catalog of a DuckDB or SQLite transaction keeps the tables its snapshot has
+	return false;
+}
+
+bool DuckLakeMetadataManager::InlinedTableEmptyAtSnapshot(const Identifier &inlined_table_name, TableIndex table_id,
+                                                          DuckLakeSnapshot snapshot) {
+	// the first snapshot of the table's schema version, the first one of the version that superseded it, and how
+	// many snapshots remain from the one before the first to the superseding one
+	auto bounds = Query(StringUtil::Format(R"(
+WITH bounds AS (
+	SELECT (SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot
+		WHERE schema_version >= this.schema_version) AS first_snapshot,
+		(SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot WHERE schema_version >= (
+			SELECT MIN(idt.schema_version) FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
+			WHERE idt.table_id = %d AND idt.schema_version > this.schema_version)) AS superseded_snapshot
+	FROM {METADATA_CATALOG}.ducklake_inlined_data_tables this
+	WHERE this.table_id = %d AND this.table_name = %s
+)
+SELECT first_snapshot, superseded_snapshot,
+	(SELECT COUNT(*) FROM {METADATA_CATALOG}.ducklake_snapshot
+	 WHERE snapshot_id + 1 >= first_snapshot AND snapshot_id <= superseded_snapshot)
+FROM bounds)",
+	                                       table_id.index, table_id.index,
+	                                       SQLString::ToString(inlined_table_name.GetIdentifierName())));
+	if (bounds->HasError()) {
+		return false;
+	}
+	optional_idx first_snapshot;
+	optional_idx superseded_snapshot;
+	idx_t remaining_snapshots = 0;
+	for (auto &row : *bounds) {
+		first_snapshot = OptIdx(row, 0);
+		superseded_snapshot = OptIdx(row, 1);
+		remaining_snapshots = row.GetValue<idx_t>(2);
+	}
+	if (!first_snapshot.IsValid() || !superseded_snapshot.IsValid() ||
+	    superseded_snapshot.GetIndex() > snapshot.snapshot_id) {
+		// a table that is not superseded at the snapshot is not dropped by DuckLake
+		return false;
+	}
+	// an expired snapshot took the record of its inserts with it, the rows may still be there
+	auto oldest_required = first_snapshot.GetIndex() > 0 ? first_snapshot.GetIndex() - 1 : 0;
+	if (remaining_snapshots != superseded_snapshot.GetIndex() - oldest_required + 1) {
+		return false;
+	}
+	// the table was empty at the snapshot when no inlined insert reached it before it was superseded; a flush after
+	// that does not prove it, since a flush does not conflict with inserts committed after its snapshot
+	auto changes = Query(StringUtil::Format(R"(
+SELECT changes_made
+FROM {METADATA_CATALOG}.ducklake_snapshot_changes
+WHERE snapshot_id >= %d AND snapshot_id < %d AND changes_made LIKE '%%inlined_insert:%%')",
+	                                        first_snapshot.GetIndex(), superseded_snapshot.GetIndex()));
+	if (changes->HasError()) {
+		return false;
+	}
+	for (auto &row : *changes) {
+		auto change_info = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(0));
+		if (change_info.tables_inserted_inlined.count(table_id) > 0) {
+			return false;
+		}
+	}
+	return true;
+}
+
+shared_ptr<DuckLakeInlinedData> DuckLakeMetadataManager::EmptyInlinedData(const vector<LogicalType> &types) {
+	auto context = transaction.context.lock();
+	auto inlined_data = make_shared_ptr<DuckLakeInlinedData>();
+	inlined_data->data = make_uniq<ColumnDataCollection>(*context, types);
 	return inlined_data;
 }
 
@@ -6162,11 +6260,27 @@ WHERE scope = 'schema' AND NOT EXISTS(
 	// above. Runs after the drop block, so dropped tables are already unregistered and this needs
 	// no table_id filter.
 	{
-		auto inlined = Query("SELECT table_name FROM {METADATA_CATALOG}.ducklake_inlined_data_tables;");
+		auto inlined =
+		    Query("SELECT table_id, table_name, schema_version FROM {METADATA_CATALOG}.ducklake_inlined_data_tables;");
 		inlined->ThrowIfError("Failed to list inlined-data tables for cleanup in DuckLake: ");
-		auto col_names = InlinedColNames();
+		vector<std::tuple<TableIndex, Identifier, idx_t>> inlined_tables;
+		map<idx_t, idx_t> newest_versions;
 		for (auto &row : *inlined) {
-			auto inlined_table_name = row.GetValue<Identifier>(0);
+			auto table_id = TableIndex(row.GetValue<idx_t>(0));
+			auto schema_version = row.GetValue<idx_t>(2);
+			inlined_tables.emplace_back(table_id, row.GetValue<Identifier>(1), schema_version);
+			newest_versions[table_id.index] = MaxValue<idx_t>(newest_versions[table_id.index], schema_version);
+		}
+		auto col_names = InlinedColNames();
+		auto snapshot = transaction.GetSnapshot();
+		for (auto &inlined_table : inlined_tables) {
+			auto &table_id = std::get<0>(inlined_table);
+			auto &inlined_table_name = std::get<1>(inlined_table);
+			// a flush of another connection can drop an empty superseded table the snapshot still lists
+			if (std::get<2>(inlined_table) < newest_versions[table_id.index] &&
+			    InlinedTableDropped(table_id, inlined_table_name, snapshot)) {
+				continue;
+			}
 			auto result = Execute(StringUtil::Format(R"(
 DELETE FROM {METADATA_CATALOG}.%s
 WHERE %s IS NOT NULL AND NOT EXISTS(

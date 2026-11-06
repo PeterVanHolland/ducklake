@@ -211,3 +211,51 @@ query I
 SELECT count(*) FROM glob('{DATA_PATH}/add_files_shared_local_file_delete/main/t/*.parquet')
 ----
 2
+
+# the file a compaction wrote in the transaction is added to another table before the compacted table is dropped
+statement ok
+CREATE TABLE ducklake.c(i INTEGER)
+
+statement ok
+INSERT INTO ducklake.c VALUES (6)
+
+statement ok
+INSERT INTO ducklake.c VALUES (7)
+
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_merge_adjacent_files('ducklake', 'c')
+
+# the compacted file is the newest one in the directory of c
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/add_files_shared_local_file_delete/main/c/*.parquet')
+----
+3
+
+statement ok
+SET VARIABLE shared = (SELECT file FROM glob('{DATA_PATH}/add_files_shared_local_file_delete/main/c/*.parquet') ORDER BY file DESC LIMIT 1)
+
+# the compacted file carries the row id column
+statement ok
+CALL ducklake_add_data_files('ducklake', 'v', getvariable('shared'), ignore_extra_columns => true)
+
+statement ok
+COMMENT ON TABLE ducklake.c IS 'dropped with its compacted file'
+
+statement ok
+DROP TABLE ducklake.c
+
+query II
+SELECT count(*), sum(i) FROM ducklake.v
+----
+3	18
+
+statement ok
+COMMIT
+
+query II
+SELECT count(*), sum(i) FROM ducklake.v
+----
+3	18

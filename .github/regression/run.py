@@ -1,4 +1,4 @@
-"""Runs DuckDB's regression runner and fails when any benchmark regresses on its initial pairs"""
+"""Runs DuckDB's regression runner and fails when a benchmark regresses on its initial pairs and again when rerun"""
 
 import argparse
 import os
@@ -18,6 +18,10 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 RUNNER = REPOSITORY / "duckdb" / "scripts" / "regression" / "test_runner.py"
 # Compares on the initial pairs alone, a regression fails without confirmation runs
 COMPARE = Path(__file__).resolve().with_name("compare.py")
+# Micro benchmarks of a few hundred milliseconds pick up runner noise above 10% in a tenth of the runs; a regression
+# counts once a rerun of the flagged benchmarks alone, with twice the samples, shows it again
+INITIAL_SAMPLES = 10
+CONFIRMATION_SAMPLES = 20
 REGRESSED = re.compile(r"^(?:confirm|samples): (\S+): .*\| regression$", re.MULTILINE)
 COLOR = re.compile(r"\x1b\[[0-9;]*m")
 # Rendered benchmarks name a database that never exists, so a runner without its wrapper fails instead
@@ -194,12 +198,29 @@ def main(argv=None):
 
         initial = directory / f"{suite}.csv"
         initial.write_text("\n".join(benchmarks) + "\n", encoding="utf-8")
-        code, regressed = run(RUNNER, root, [*passthrough, "--samples", "10"], initial)
-    if code != 0:
-        return code
-    for benchmark in sorted(regressed):
-        print(f"::error::{benchmark} ({suite}) is 10% or more slower", flush=True)
-    return 1 if regressed else 0
+        code, regressed = run(RUNNER, root, [*passthrough, "--samples", str(INITIAL_SAMPLES)], initial)
+        if code != 0:
+            return code
+        confirmed = set()
+        if regressed:
+            print(
+                f"Rerunning {len(regressed)} regressed benchmark(s) with {CONFIRMATION_SAMPLES} samples per binary",
+                flush=True,
+            )
+            confirmation = directory / f"{suite}_confirmation.csv"
+            confirmation.write_text("\n".join(sorted(regressed)) + "\n", encoding="utf-8")
+            code, confirmed = run(RUNNER, root, [*passthrough, "--samples", str(CONFIRMATION_SAMPLES)], confirmation)
+            if code != 0:
+                return code
+            confirmed &= regressed
+    for benchmark in sorted(regressed - confirmed):
+        print(
+            f"::warning::{benchmark} ({suite}) was 10% or more slower on its first samples, but not when rerun",
+            flush=True,
+        )
+    for benchmark in sorted(confirmed):
+        print(f"::error::{benchmark} ({suite}) is 10% or more slower, also when rerun", flush=True)
+    return 1 if confirmed else 0
 
 
 if __name__ == "__main__":

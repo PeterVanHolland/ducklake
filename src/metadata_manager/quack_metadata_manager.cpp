@@ -53,6 +53,37 @@ unique_ptr<QueryResult> QuackMetadataManager::AttachMetadata(const string &attac
 	return std::move(result);
 }
 
+unique_ptr<QueryResult> QuackMetadataManager::QuerySnapshotData(DuckLakeSnapshot snapshot, string &query,
+                                                                optional_idx start_snapshot) {
+	// the server commits each statement on its own, so another connection can expire a snapshot between the
+	// statements of this transaction, and the server transaction of the read checks that its snapshots remain
+	auto newest_snapshot_id = transaction.GetNewestVisibleSnapshotId();
+	vector<idx_t> snapshot_ids;
+	for (auto snapshot_id : {snapshot.snapshot_id, start_snapshot.IsValid() ? start_snapshot.GetIndex() : 0}) {
+		// a snapshot beyond the newest visible one is being committed or starts an empty change feed
+		if (snapshot_id > 0 && snapshot_id <= newest_snapshot_id) {
+			snapshot_ids.push_back(snapshot_id);
+		}
+	}
+	if (snapshot_ids.empty()) {
+		return DuckLakeMetadataManager::Query(snapshot, query);
+	}
+	string expired_cases;
+	for (auto snapshot_id : snapshot_ids) {
+		expired_cases += StringUtil::Format(
+		    "\n\tWHEN count(*) FILTER (snapshot_id = %llu) = 0"
+		    "\n\t\tTHEN error('Snapshot %llu of the DuckLake catalog has been expired by another connection')",
+		    snapshot_id, snapshot_id);
+	}
+	SubstituteTransactionPlaceholders(snapshot, query);
+	query = StringUtil::Format(R"(SET VARIABLE ducklake_snapshot_check = (SELECT CASE%s END
+	FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id IN (%s));
+%s;)",
+	                           expired_cases,
+	                           StringUtil::Join(snapshot_ids, ", ", [](idx_t id) { return to_string(id); }), query);
+	return ExecuteInTransaction(query);
+}
+
 unique_ptr<QueryResult> QuackMetadataManager::Execute(DuckLakeSnapshot snapshot, string &query) {
 	// the server commits each statement on its own, so the statements run in a server transaction
 	SubstituteTransactionPlaceholders(snapshot, query);

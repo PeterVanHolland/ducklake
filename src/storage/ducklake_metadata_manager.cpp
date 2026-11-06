@@ -107,9 +107,13 @@ vector<string> DuckLakeMetadataManager::SystemColumnNames() const {
 }
 
 string DuckLakeMetadataManager::TimestampTzColumnType() const {
-	auto &overrides = GetMetadataProfile().column_type_overrides;
-	auto entry = overrides.find(LogicalTypeId::TIMESTAMP_TZ);
-	return entry == overrides.end() ? "TIMESTAMPTZ" : entry->second;
+	auto &profile = GetMetadataProfile();
+	auto entry = profile.column_type_overrides.find(LogicalTypeId::TIMESTAMP_TZ);
+	if (entry != profile.column_type_overrides.end()) {
+		return entry->second;
+	}
+	// a catalog without the type stores it as text, like the tag table it creates
+	return profile.natively_unsupported_types.count(LogicalTypeId::TIMESTAMP_TZ) ? "VARCHAR" : "TIMESTAMPTZ";
 }
 
 bool DuckLakeMetadataManager::IsRetryableCommitError(const string &message) const {

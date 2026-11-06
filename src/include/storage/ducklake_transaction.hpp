@@ -117,10 +117,10 @@ public:
 	shared_ptr<DuckLakeInlinedData> GetTransactionLocalInlinedData(ClientContext &context, TableIndex table_id) const;
 	//! Returns false for a file whose rows keep their history
 	bool TryDropTransactionLocalFile(ClientContext &context, TableIndex table_id, const string &path);
-	//! A file of any table of the transaction at the given path, which another table may have added
-	optional_ptr<DuckLakeDataFile> FindAddedFile(FileSystem &fs, const string &path);
+	//! A file of another table of the transaction at the given path, which ducklake_add_data_files may have added
+	optional_ptr<DuckLakeDataFile> FindAddedFile(FileSystem &fs, TableIndex dropping_table, const string &path);
 	//! Removes a file DuckLake wrote in this transaction, unless another table added it and owns it from now on
-	void RemoveOwnedFile(FileSystem &fs, const string &path);
+	void RemoveOwnedFile(FileSystem &fs, TableIndex dropping_table, const string &path);
 	void AppendFiles(TableIndex table_id, vector<DuckLakeDataFile> files);
 	void AppendDeleteFiles(TableIndex table_id, const string &data_file_path, vector<DuckLakeDeleteFile> files);
 	void AppendInlinedData(ClientContext &context, TableIndex table_id, unique_ptr<DuckLakeInlinedData> new_data);

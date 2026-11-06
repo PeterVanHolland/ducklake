@@ -178,10 +178,14 @@ shared_ptr<DuckLakeInlinedData> LocalTableChanges::GetTransactionLocalInlinedDat
 	return result;
 }
 
-optional_ptr<DuckLakeDataFile> LocalTableChanges::FindAddedFile(FileSystem &fs, const string &path) {
+optional_ptr<DuckLakeDataFile> LocalTableChanges::FindAddedFile(FileSystem &fs, TableIndex dropping_table,
+                                                                const string &path) {
 	// ducklake_add_data_files registers the path it was given, which can spell the file differently
 	string canonical_path;
 	for (auto &entry : changes) {
+		if (entry.first == dropping_table) {
+			continue;
+		}
 		for (auto &file : entry.second.new_data_files) {
 			if (file.file_name == path) {
 				return file;
@@ -200,8 +204,8 @@ optional_ptr<DuckLakeDataFile> LocalTableChanges::FindAddedFile(FileSystem &fs, 
 	return nullptr;
 }
 
-void LocalTableChanges::RemoveOwnedFile(FileSystem &fs, const string &path) {
-	auto shared = FindAddedFile(fs, path);
+void LocalTableChanges::RemoveOwnedFile(FileSystem &fs, TableIndex dropping_table, const string &path) {
+	auto shared = FindAddedFile(fs, dropping_table, path);
 	if (shared) {
 		// another table added the file in this transaction, it is removed when that table drops it
 		shared->created_by_ducklake = true;
@@ -237,7 +241,7 @@ bool LocalTableChanges::TryDropTransactionLocalFile(ClientContext &context, Tabl
 			// found the file - delete it from the table list and from disk if DuckLake owns it
 			table_files.erase_at(i);
 			if (created_by_ducklake) {
-				RemoveOwnedFile(fs, path);
+				RemoveOwnedFile(fs, table_id, path);
 			}
 			if (table_changes.IsEmpty()) {
 				// no more files remaining
@@ -770,19 +774,18 @@ void LocalTableChanges::CleanupFiles(ClientContext &context, TableIndex table_id
 	if (table_entry == changes.end()) {
 		return;
 	}
-	// the table leaves the changes first, so that its own entries do not count as other references to its files
-	auto table_changes = std::move(table_entry->second);
-	changes.erase(table_entry);
+	// the entry stays until its files are gone, so that a rollback removes them if a removal fails here
 	auto &fs = FileSystem::GetFileSystem(context);
 	vector<string> data_files;
 	vector<string> other_files;
-	table_changes.AddWrittenFiles(data_files, other_files, false);
+	table_entry->second.AddWrittenFiles(data_files, other_files, false);
 	for (auto &file_name : data_files) {
-		RemoveOwnedFile(fs, file_name);
+		RemoveOwnedFile(fs, table_id, file_name);
 	}
 	for (auto &file_name : other_files) {
 		fs.TryRemoveFile(file_name);
 	}
+	changes.erase(table_entry);
 }
 
 void LocalTableChanges::AddDeletesToMap(ClientContext &context, vector<DuckLakeDeleteFile> new_deletes,

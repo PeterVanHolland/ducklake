@@ -116,10 +116,23 @@ unique_ptr<BaseStatistics> DuckLakeStatistics(ClientContext &context, const Func
 }
 
 unique_ptr<BaseStatistics> DuckLakeStatisticsExtended(ClientContext &context, TableFunctionGetStatisticsInput &input) {
-	if (input.column_index.IsVirtualColumn()) {
+	auto &column_index = input.column_index;
+	if (column_index.IsVirtualColumn()) {
 		return nullptr;
 	}
-	return DuckLakeStatistics(context, input.bind_data.get(), input.column_index.GetPrimaryIndex());
+	auto stats = DuckLakeStatistics(context, input.bind_data.get(), column_index.GetPrimaryIndex());
+	if (!stats || !column_index.IsPushdownExtract()) {
+		return stats;
+	}
+	// a pushed-down extract reads a field, so it gets the statistics of that field
+	auto storage_index = StorageIndex::FromColumnIndex(column_index);
+	return stats->PushdownExtract(storage_index.GetChildIndexes()[0]);
+}
+
+//! Only fields of VARIANT columns, because DuckDB cannot yet map an extracted STRUCT field that a file lacks
+static bool DuckLakeSupportsPushdownExtract(const FunctionData &bind_data_p, const LogicalIndex &col_idx) {
+	auto &bind_data = bind_data_p.Cast<MultiFileBindData>();
+	return bind_data.columns[col_idx.index].type.id() == LogicalTypeId::VARIANT;
 }
 
 optional_ptr<TableCatalogEntry> DuckLakeGetTableEntry(optional_ptr<const FunctionData> bind_data) {
@@ -245,8 +258,9 @@ TableFunction DuckLakeFunctions::GetDuckLakeScanFunction(DatabaseInstance &insta
 		function.get_multi_file_reader = DuckLakeMultiFileReader::CreateInstance;
 	}
 
-	function.statistics = DuckLakeStatistics;
+	// no statistics callback, since it disables pushing field extracts into the scan
 	function.statistics_extended = DuckLakeStatisticsExtended;
+	function.supports_pushdown_extract = DuckLakeSupportsPushdownExtract;
 	function.get_table_entry = DuckLakeGetTableEntry;
 	function.get_virtual_columns = DuckLakeVirtualColumns;
 	function.get_row_id_columns = DuckLakeGetRowIdColumn;

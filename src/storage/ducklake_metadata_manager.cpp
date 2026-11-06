@@ -1011,7 +1011,8 @@ WHERE table_id = {TABLE_ID} AND schema_version = {SCHEMA_VERSION})";
 }
 
 string DuckLakeMetadataManager::GetNetDataFileRowCountSql(TableIndex table_id, const Identifier &inlined_deletion_table,
-                                                          bool require_exact, bool exclude_new_files) {
+                                                          bool require_exact, bool exclude_new_files,
+                                                          const set<DataFileIndex> &excluded_files) {
 	// Compute sum(record_count) - sum(delete_count) - inlined_deletions in a single query.
 	// Delete files are only counted if their corresponding data file is still visible.
 	// (When a data file's end_snapshot is set — e.g. TRUNCATE — associated deletes don't count.)
@@ -1024,42 +1025,57 @@ string DuckLakeMetadataManager::GetNetDataFileRowCountSql(TableIndex table_id, c
 		}
 		return count;
 	};
+	// the excluded files and the deletions on them count for neither sum
+	string excluded_filter;
+	if (!excluded_files.empty()) {
+		vector<string> excluded_ids;
+		for (auto &file_id : excluded_files) {
+			excluded_ids.push_back(to_string(file_id.index));
+		}
+		excluded_filter =
+		    StringUtil::Format("\n              AND {DATA_FILE_ID} NOT IN (%s)", StringUtil::Join(excluded_ids, ", "));
+	}
 	string inlined_deletion_subquery = "0";
 	if (!inlined_deletion_table.empty()) {
-		inlined_deletion_subquery = StringUtil::Format(R"(
+		inlined_deletion_subquery = StringUtil::Format(
+		    R"(
 COALESCE((SELECT COUNT(*) FROM {METADATA_CATALOG}.%s del
           JOIN {METADATA_CATALOG}.ducklake_data_file data ON del.file_id = data.data_file_id
           WHERE del.begin_snapshot <= {SNAPSHOT_ID}
-            AND data.table_id = {TABLE_ID}
+            AND data.table_id = {TABLE_ID}%s
             AND {SNAPSHOT_ID} >= data.begin_snapshot
             AND ({SNAPSHOT_ID} < data.end_snapshot OR data.end_snapshot IS NULL)), 0))",
-		                                               inlined_deletion_table);
+		    inlined_deletion_table, StringUtil::Replace(excluded_filter, "{DATA_FILE_ID}", "data.data_file_id"));
 	}
-	string query =
-	    StringUtil::Format(R"(
+	string query = StringUtil::Format(R"(
 SELECT
   (SELECT %s FROM {METADATA_CATALOG}.ducklake_data_file
-            WHERE table_id = {TABLE_ID}%s
+            WHERE table_id = {TABLE_ID}%s%s
               AND {SNAPSHOT_ID} >= begin_snapshot
               AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL))
   -
   (SELECT %s FROM {METADATA_CATALOG}.ducklake_delete_file del
             JOIN {METADATA_CATALOG}.ducklake_data_file data ON del.data_file_id = data.data_file_id
-            WHERE del.table_id = {TABLE_ID}
+            WHERE del.table_id = {TABLE_ID}%s
               AND {SNAPSHOT_ID} >= del.begin_snapshot
               AND ({SNAPSHOT_ID} < del.end_snapshot OR del.end_snapshot IS NULL)
               AND {SNAPSHOT_ID} >= data.begin_snapshot
               AND ({SNAPSHOT_ID} < data.end_snapshot OR data.end_snapshot IS NULL))
   -
   %s)",
-	                       count_aggregate("record_count", "partial_max"),
-	                       exclude_new_files ? "\n              AND data_file_id < {NEXT_FILE_ID}" : "",
-	                       count_aggregate("del.delete_count", "del.partial_max"), inlined_deletion_subquery);
+	                                  count_aggregate("record_count", "partial_max"),
+	                                  exclude_new_files ? "\n              AND data_file_id < {NEXT_FILE_ID}" : "",
+	                                  StringUtil::Replace(excluded_filter, "{DATA_FILE_ID}", "data_file_id"),
+	                                  count_aggregate("del.delete_count", "del.partial_max"),
+	                                  StringUtil::Replace(excluded_filter, "{DATA_FILE_ID}", "data.data_file_id"),
+	                                  inlined_deletion_subquery);
 	return StringUtil::Replace(query, "{TABLE_ID}", to_string(table_id.index));
 }
 
-idx_t DuckLakeMetadataManager::GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot) {
-	auto query = GetNetDataFileRowCountSql(table_id, GetInlinedDeletionTableName(table_id, snapshot), false, true);
+idx_t DuckLakeMetadataManager::GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot,
+                                                      const set<DataFileIndex> &excluded_files) {
+	auto query = GetNetDataFileRowCountSql(table_id, GetInlinedDeletionTableName(table_id, snapshot), false, true,
+	                                       excluded_files);
 	auto result = Query(snapshot, query);
 	for (auto &row : *result) {
 		return row.GetValue<idx_t>(0);

@@ -65,6 +65,8 @@ struct FlushedInlinedTableInfo {
 struct DroppedDataFileStats {
 	idx_t row_count = 0;
 	idx_t file_size_bytes = 0;
+	//! The dropped files, left out when the bounds of the remaining rows are recomputed
+	set<DataFileIndex> file_ids;
 };
 
 struct LocalTableDataChanges {
@@ -367,7 +369,10 @@ protected:
 public:
 	void RunCommitLoop(DuckLakeSnapshot transaction_snapshot, const TransactionChangeInformation &transaction_changes,
 	                   const DuckLakeRetryConfig &retry_config);
-	void ApplyServerSideCommit(idx_t schema_version);
+	//! Applies a commit the server ran, which wrote the given snapshot
+	void ApplyServerSideCommit(idx_t schema_version, idx_t committed_snapshot_id);
+	//! The next file id of a committed snapshot, the key of its cached stats
+	idx_t CommittedNextFileId(idx_t committed_snapshot_id);
 	//! Removes the files that this transaction wrote
 	void CleanupFiles();
 	//! Post-commit cleanup of empty inlined-data tables superseded by later schema versions.

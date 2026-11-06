@@ -173,8 +173,9 @@ void QuackMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tra
 	if (row == result->end()) {
 		throw IOException("Server-side ducklake_commit returned no rows");
 	}
-	flush_transaction.GetCatalog().SetCommittedSnapshotId(AsIdx(*row, 0));
-	flush_transaction.ApplyServerSideCommit(AsIdx(*row, 1));
+	auto committed_snapshot_id = AsIdx(*row, 0);
+	flush_transaction.GetCatalog().SetCommittedSnapshotId(committed_snapshot_id);
+	flush_transaction.ApplyServerSideCommit(AsIdx(*row, 1), committed_snapshot_id);
 	if (OptBoolFalse(*row, 2)) {
 		// With quack we need to clear up superseded inlines tables on the client side to avoid dangling caching
 		// references

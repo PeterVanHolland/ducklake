@@ -46,7 +46,7 @@ CALL postgres_execute('pg', 'ALTER TABLE metadata_validation.ducklake_snapshot A
 statement error
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (METADATA_SCHEMA 'metadata_validation')
 ----
-expected "next_file_id" of type BIGINT
+column "next_file_id" of metadata table "ducklake_snapshot" has type INTEGER, expected BIGINT
 
 endloop
 

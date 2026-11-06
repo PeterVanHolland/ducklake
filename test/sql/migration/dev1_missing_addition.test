@@ -70,4 +70,4 @@ DETACH meta
 statement error
 ATTACH 'ducklake:{TEST_DIR}/dev1_missing_addition.db' AS dl (DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
 ----
-is "max_is_exact" of type BOOLEAN, expected "min_is_exact" of type BOOLEAN
+is "max_is_exact", expected "min_is_exact"

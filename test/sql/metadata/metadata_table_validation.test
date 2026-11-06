@@ -76,7 +76,7 @@ DETACH meta
 statement error
 ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_0.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation')
 ----
-column 4 of metadata table "ducklake_snapshot" is "next_file_id" of type BIGINT, expected "next_catalog_id" of type BIGINT
+column 4 of metadata table "ducklake_snapshot" is "next_file_id", expected "next_catalog_id"
 
 # a column of another type
 statement ok
@@ -103,7 +103,7 @@ DETACH meta
 statement error
 ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_1.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation')
 ----
-metadata table "ducklake_inlined_data_tables" is "table_name" of type ENUM
+column "table_name" of metadata table "ducklake_inlined_data_tables" has type ENUM
 
 # an extra column
 statement ok
@@ -151,7 +151,7 @@ DETACH meta
 statement error
 ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_3.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation')
 ----
-expected "footer_size" of type BIGINT
+is "row_id_start", expected "footer_size"
 
 # a missing last column
 statement ok
@@ -280,7 +280,7 @@ DETACH meta
 statement error
 ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_8.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation')
 ----
-column 3 of metadata table "ducklake_schema_versions" is "table_index" of type BIGINT, expected "table_id" of type BIGINT
+column 3 of metadata table "ducklake_schema_versions" is "table_index", expected "table_id"
 
 # migrating a 1.1-dev1 catalog restores its missing columns, the other columns are still checked
 statement ok

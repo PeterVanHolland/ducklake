@@ -23,6 +23,10 @@ public:
 	bool TypeIsNativelySupported(const LogicalType &type) override;
 	map<Identifier, vector<pair<Identifier, string>>>
 	GetMetadataTableColumns(const vector<Identifier> &table_names) override;
+	//! GetMetadataTableColumns maps the Postgres types back to the created types
+	bool KnowsStoredMetadataTypes() const override {
+		return true;
+	}
 	bool CanInlineValues(DataChunk &chunk) override;
 	bool SupportsAppender() const override {
 		return false;

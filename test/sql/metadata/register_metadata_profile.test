@@ -281,4 +281,4 @@ CALL ducklake_register_metadata_profile('duckdb', '{"types": {"stored_types": {"
 statement error
 ATTACH 'ducklake:{TEST_DIR}/register_metadata_profile.db' AS dl (DATA_PATH '{TEST_DIR}/register_metadata_profile')
 ----
-<REGEX>:.*of type BOOLEAN, expected .* of type BIGINT.*
+has type BOOLEAN, expected BIGINT

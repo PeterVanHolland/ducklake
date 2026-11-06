@@ -116,6 +116,11 @@ string DuckLakeMetadataManager::StoredMetadataType(const LogicalType &type) cons
 	return entry == stored_types.end() ? type.ToString() : entry->second;
 }
 
+bool DuckLakeMetadataManager::KnowsStoredMetadataTypes() const {
+	// the types of a DuckDB catalog round-trip, those of another catalog are only known from its profile
+	return transaction.GetCatalog().MetadataCatalogType() == "duckdb" || !GetMetadataProfile().stored_types.empty();
+}
+
 bool DuckLakeMetadataManager::IsRetryableCommitError(const string &message) const {
 	auto rule = GetMetadataProfile().FindCommitErrorRule(message);
 	return rule && rule->retryable;
@@ -603,6 +608,7 @@ void DuckLakeMetadataManager::ValidateMetadataTables() {
 		table_names.push_back(info.GetTableName());
 	}
 	auto actual_tables = GetMetadataTableColumns(table_names);
+	bool compare_types = KnowsStoredMetadataTypes();
 	for (auto &expected_table : expected_tables) {
 		const auto &info = expected_table.get();
 		auto &table_name = info.GetTableName();
@@ -614,17 +620,24 @@ void DuckLakeMetadataManager::ValidateMetadataTables() {
 		idx_t column_idx = 0;
 		for (auto &expected : info.columns.Logical()) {
 			auto &expected_name = expected.Name();
-			auto expected_type = StoredMetadataType(UnboundType::TryDefaultBind(expected.Type()));
 			if (column_idx >= actual_columns.size()) {
 				throw InvalidInputException("Failed to load DuckLake: metadata table %s has no column %s", table_name,
 				                            expected_name);
 			}
 			auto &actual = actual_columns[column_idx++];
-			if (actual.first != expected_name || actual.second != expected_type) {
-				throw InvalidInputException("Failed to load DuckLake: column %d of metadata table %s is %s of type %s, "
-				                            "expected %s of type %s",
-				                            column_idx, table_name, actual.first, actual.second, expected_name,
-				                            expected_type);
+			if (actual.first != expected_name) {
+				throw InvalidInputException(
+				    "Failed to load DuckLake: column %d of metadata table %s is %s, expected %s", column_idx,
+				    table_name, actual.first, expected_name);
+			}
+			if (!compare_types) {
+				continue;
+			}
+			auto expected_type = StoredMetadataType(UnboundType::TryDefaultBind(expected.Type()));
+			if (actual.second != expected_type) {
+				throw InvalidInputException(
+				    "Failed to load DuckLake: column %s of metadata table %s has type %s, expected %s", expected_name,
+				    table_name, actual.second, expected_type);
 			}
 		}
 		if (column_idx < actual_columns.size()) {

@@ -646,6 +646,8 @@ public:
 	void ValidateMetadataTables();
 	//! The type that a metadata column created with the given type is read back as
 	string StoredMetadataType(const LogicalType &type) const;
+	//! Whether the types that the metadata columns are read back as are known, so the validation compares them
+	virtual bool KnowsStoredMetadataTypes() const;
 	//! Column names and types of the given metadata tables that exist
 	virtual map<Identifier, vector<pair<Identifier, string>>>
 	GetMetadataTableColumns(const vector<Identifier> &table_names);

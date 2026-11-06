@@ -178,6 +178,28 @@ shared_ptr<DuckLakeInlinedData> LocalTableChanges::GetTransactionLocalInlinedDat
 	return result;
 }
 
+optional_ptr<DuckLakeDataFile> LocalTableChanges::FindAddedFile(FileSystem &fs, const string &path) {
+	// ducklake_add_data_files registers the path it was given, which can spell the file differently
+	string canonical_path;
+	for (auto &entry : changes) {
+		for (auto &file : entry.second.new_data_files) {
+			if (file.file_name == path) {
+				return file;
+			}
+			if (file.created_by_ducklake) {
+				continue;
+			}
+			if (canonical_path.empty()) {
+				canonical_path = fs.CanonicalizePath(path);
+			}
+			if (fs.CanonicalizePath(file.file_name) == canonical_path) {
+				return file;
+			}
+		}
+	}
+	return nullptr;
+}
+
 bool LocalTableChanges::TryDropTransactionLocalFile(ClientContext &context, TableIndex table_id, const string &path) {
 	lock_guard<mutex> guard(lock);
 	auto entry = Find(table_id);
@@ -205,7 +227,13 @@ bool LocalTableChanges::TryDropTransactionLocalFile(ClientContext &context, Tabl
 			// found the file - delete it from the table list and from disk if DuckLake owns it
 			table_files.erase_at(i);
 			if (created_by_ducklake) {
-				fs.RemoveFile(path);
+				auto shared = FindAddedFile(fs, path);
+				if (shared) {
+					// another table added the file in this transaction, it is removed when that table drops it
+					shared->created_by_ducklake = true;
+				} else {
+					fs.RemoveFile(path);
+				}
 			}
 			if (table_changes.IsEmpty()) {
 				// no more files remaining

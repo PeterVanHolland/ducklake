@@ -1116,7 +1116,9 @@ optional_idx DuckLakeCatalog::GetTableNetRowCount(DuckLakeTransaction &transacti
 	auto snapshot = transaction.GetSnapshot();
 	auto key = NetRowCountCacheKey(table.GetTableId());
 	auto cached = GetObjectCacheInstance().Get<DuckLakeTableNetRowCountCacheEntry>(key);
-	if (cached && cached->snapshot_id == snapshot.snapshot_id) {
+	// a catalog that commits each statement reads the count again, an expiry can have removed the snapshot since
+	if (cached && cached->snapshot_id == snapshot.snapshot_id &&
+	    !transaction.GetMetadataManager().CommitsEachStatement()) {
 		return cached->row_count;
 	}
 	auto file_count = transaction.GetMetadataManager().GetNetDataFileRowCountForStats(table.GetTableId(), snapshot);

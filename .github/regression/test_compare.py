@@ -55,9 +55,7 @@ class AdaptiveBenchmarkTest(unittest.TestCase):
                 self.assertEqual((result.initial_runs, result.confirmation_runs), (test_runner.INITIAL_RUNS, 0))
                 self.assertEqual(test_runner.classify_result(result), bucket)
                 self.assertEqual(runs, ([5, 5], [5, 5]))
-                self.assertRegex(
-                    output, r"^samples: benchmark/example\.benchmark: 10 pairs \| .* \| " + status + "$"
-                )
+                self.assertRegex(output, r"^samples: benchmark/example\.benchmark: 10 pairs \| .* \| " + status + "$")
 
     def test_duckdb_confirms_faster_changes(self):
         result, _, _ = compare_benchmark(compare.DUCKDB_ADAPTIVE_BENCHMARK, 0.8)
@@ -95,7 +93,7 @@ def fake_runner(path, seconds):
 
 
 class RegressionJobTest(unittest.TestCase):
-    def test_a_regression_on_the_initial_pairs_fails_without_confirmation_runs(self):
+    def test_a_regression_on_the_initial_pairs_fails_after_a_rerun_of_its_own_confirms_it(self):
         changes = {
             "benchmark/faster.benchmark": 0.8,
             "benchmark/slower.benchmark": 1.05,
@@ -117,8 +115,11 @@ class RegressionJobTest(unittest.TestCase):
         self.assertIn("samples: benchmark/slower.benchmark: 10 pairs | median change +5.0% | slower\n", output)
         self.assertIn("samples: benchmark/regressed.benchmark: 10 pairs | median change +12.0% | regression\n", output)
         self.assertNotIn("confirm:", output)
-        self.assertNotIn("Rerunning", output)
-        self.assertIn("::error::benchmark/regressed.benchmark (micro) is 10% or more slower", output)
+        # the rerun covers the regressed benchmark alone, with twice the samples
+        self.assertIn("Rerunning 1 regressed benchmark(s) with 20 samples per binary\n", output)
+        self.assertIn("samples: benchmark/regressed.benchmark: 20 pairs | median change +12.0% | regression\n", output)
+        self.assertEqual(output.count("samples: benchmark/faster.benchmark"), 1)
+        self.assertIn("::error::benchmark/regressed.benchmark (micro) is 10% or more slower, also when rerun", output)
 
 
 if __name__ == "__main__":

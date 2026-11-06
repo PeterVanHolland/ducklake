@@ -51,3 +51,52 @@ query II
 SELECT (SELECT count(*) FROM dl.t), (SELECT count(*) FROM dl.u)
 ----
 5	5
+
+# the commit drops the file from the deleted table only
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM dl.t
+
+query II
+SELECT count(*), sum(i) FROM dl.u
+----
+5	10
+
+statement ok
+COMMIT
+
+query II
+SELECT (SELECT count(*) FROM dl.t), (SELECT count(*) FROM dl.u)
+----
+0	5
+
+# two registrations of the path dropped in one transaction
+statement ok
+CREATE TABLE dl.v(i INTEGER)
+
+statement ok
+CALL ducklake_add_data_files('dl', 'v', '{DATA_PATH}/{BASE_TEST_NAME}_shared.parquet')
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM dl.u
+
+statement ok
+DELETE FROM dl.v
+
+query II
+SELECT (SELECT count(*) FROM dl.u), (SELECT count(*) FROM dl.v)
+----
+0	0
+
+statement ok
+COMMIT
+
+query III
+SELECT (SELECT count(*) FROM dl.t), (SELECT count(*) FROM dl.u), (SELECT count(*) FROM dl.v)
+----
+0	0	0

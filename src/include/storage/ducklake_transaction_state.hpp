@@ -51,6 +51,10 @@ struct DuckLakeCommitContext {
 	std::function<bool(const string &)> is_retryable_metadata_error = [](const string &) {
 		return false;
 	};
+	//! The commit error without the failed query text that it repeats.
+	std::function<string(const string &)> commit_error_without_query = [](const string &message) {
+		return message;
+	};
 	//! Advice for a commit error that is not retried.
 	std::function<string(const string &)> commit_error_hint = [](const string &) {
 		return string();
@@ -261,10 +265,11 @@ public:
 	set<TableIndex> TablesWithChangesBeyondNewFiles(DuckLakeCommitState &commit_state,
 	                                                const TransactionChangeInformation &transaction_changes) const;
 	//! The new files of this commit are added to the files kept from the snapshot, a next row id advanced by them is
-	//! passed in.
+	//! passed in. Sets deleted_rows_remain when deleted rows on the kept files or inlined rows block the recompute.
 	bool RecomputeGlobalStats(string &batch_query, TableIndex table_id, DuckLakeSnapshot snapshot,
 	                          const vector<DuckLakeFileInfo> &new_files, const set<DataFileIndex> &removed_source_ids,
-	                          optional_idx next_row_id, const DuckLakeCommitContext &context);
+	                          optional_idx next_row_id, const DuckLakeCommitContext &context,
+	                          bool &deleted_rows_remain);
 	//! Merge committed inlined data's per-column min/max into `target` via typed SQL aggregates. Returns false if the
 	//! inlined data cannot be accounted for exactly (e.g. a non-scalar column), in which case the caller must not
 	//! claim the recomputed stats are exact.

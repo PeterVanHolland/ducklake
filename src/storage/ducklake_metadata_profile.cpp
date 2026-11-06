@@ -57,9 +57,10 @@ public:
 				ParseCommitErrors(value);
 			} else if (key == "reset_settings") {
 				profile.reset_settings.clear();
-				IterateStrings(key, value, [&](const string &name) { profile.reset_settings.push_back(name); });
+				DuckLakeJSON::IterateStrings(key, value,
+				                             [&](const string &name) { profile.reset_settings.push_back(name); });
 			} else if (key == "reported_catalog_type") {
-				profile.reported_catalog_type = GetString(key, value);
+				profile.reported_catalog_type = DuckLakeJSON::GetString(key, value);
 			} else {
 				throw InvalidInputException("unknown field \"%s\"", key);
 			}

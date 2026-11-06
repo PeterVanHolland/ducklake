@@ -1918,8 +1918,7 @@ void DuckLakeTransaction::ClearMaintenanceChanges() {
 }
 
 string DuckLakeTransaction::ConfigOptionLockSql() const {
-	// a commit that failed on the lock would restore expired snapshots whose files are gone, so it takes none
-	if (config_option_undo.empty() || removed_files_after_expiry) {
+	if (config_option_undo.empty()) {
 		return string();
 	}
 	return metadata_manager->ConfigOptionLockSql();
@@ -2274,12 +2273,9 @@ vector<DuckLakeSnapshotInfo> DuckLakeTransaction::ExpireSnapshotsNow(const strin
 			expired_in_metadata_transaction = true;
 		}
 		metadata_manager.DeleteSnapshots(expired);
-		if (!metadata_manager.CommitsEachStatement()) {
-			snapshots_expired = true;
-			if (!ExpiresSnapshotsOnCommit()) {
-				// without snapshot tags a retried commit does not expire again
-				MarkMetadataWritten();
-			}
+		if (!metadata_manager.CommitsEachStatement() && !ExpiresSnapshotsOnCommit()) {
+			// without snapshot tags a retried commit does not expire again
+			MarkMetadataWritten();
 		}
 	}
 	if (latest_snapshot_id.IsValid()) {
@@ -2319,9 +2315,6 @@ void DuckLakeTransaction::RemoveFilesScheduledForCleanup(const vector<DuckLakeFi
 	auto &metadata_manager = GetMetadataManager();
 	metadata_manager.RemoveFilesScheduledForCleanup(files);
 	MarkMetadataWritten();
-	if (snapshots_expired) {
-		removed_files_after_expiry = true;
-	}
 	if (!metadata_manager.CommitsEachStatement()) {
 		// a retried commit removes them from the schedule again
 		lock_guard<mutex> guard(maintenance_lock);

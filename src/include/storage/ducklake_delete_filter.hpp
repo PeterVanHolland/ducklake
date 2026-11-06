@@ -9,20 +9,30 @@
 #pragma once
 
 #include "duckdb/common/multi_file/multi_file_reader.hpp"
+#include "duckdb/common/types/validity_mask.hpp"
 #include "storage/ducklake_metadata_info.hpp"
 
 namespace duckdb {
 
 struct DuckLakeDeleteData {
+	//! The sorted positions of the rows to skip
 	vector<idx_t> deleted_rows;
 	vector<idx_t> snapshot_ids;
-	//! The snapshot that deleted the row at each file position, used in deletion scans
-	unordered_map<idx_t, idx_t> scan_snapshot_map;
+	//! The rows a deletion scan returns, one bit per row of the data file, unset when it returns every row
+	ValidityMask scan_rows;
+	//! The sorted positions whose deleting snapshot differs from the snapshot of the file, used in deletion scans
+	vector<idx_t> scan_snapshot_positions;
+	//! The deleting snapshot of each position in scan_snapshot_positions
+	vector<idx_t> scan_snapshot_ids;
 
 	idx_t Filter(row_t start_row_index, idx_t count, SelectionVector &result_sel,
 	             optional_idx snapshot_filter = optional_idx()) const;
 
+	idx_t FilterScanRows(row_t start_row_index, idx_t count, SelectionVector &result_sel) const;
+
 	bool HasEmbeddedSnapshots() const;
+
+	bool HasScanSnapshots() const;
 
 	optional_idx GetSnapshotForPosition(idx_t position) const;
 };

@@ -51,6 +51,8 @@ public:
 				profile.dropped_tables_stay_readable = GetBoolean(key, value);
 			} else if (key == "rename_inlined_columns_by_copy") {
 				profile.rename_inlined_columns_by_copy = GetBoolean(key, value);
+			} else if (key == "reads_inlined_data_in_pages") {
+				profile.reads_inlined_data_in_pages = GetBoolean(key, value);
 			} else if (key == "commit_errors") {
 				ParseCommitErrors(value);
 			} else if (key == "reset_settings") {

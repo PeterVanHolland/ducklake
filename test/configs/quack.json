@@ -20,6 +20,12 @@
   ],
   "skip_tests": [
     {
+      "reason": "Inlined data is read in pages only from DuckDB catalogs, whose scans apply the filters of a page before reading values",
+      "paths": [
+        "test/sql/data_inlining/inlined_data_paged_reads_memory.test"
+      ]
+    },
+    {
       "reason": "Only DuckDB catalogs drop the empty inlined data table that an ALTER supersedes",
       "paths": [
         "test/sql/alter/alter_drops_empty_inlined_tables.test"
@@ -83,7 +89,7 @@
         "test/sql/general/postgres_nul_byte_text.test",
         "test/sql/data_inlining/postgres_new_inlined_table_keeps_cache.test",
         "test/sql/transaction/postgres_failed_rollback_releases_transaction.test",
-        "test/sql/metadata/postgres_attach_cache_clear.test"
+        "test/sql/metadata/postgres_attach_cache_clear.test",
         "test/sql/time_travel/postgres_at_timestamp_expired_read_committed.test"
       ]
     },

@@ -28,6 +28,7 @@ public:
 	bool DroppedTablesStayReadable() const override {
 		return false;
 	}
+	bool ShowsConcurrentCommits() const override;
 	bool InsertsInlinedRowsAfterBatch(idx_t row_count) const override;
 	idx_t MaxIdentifierLength() const override {
 		return 63;
@@ -46,6 +47,7 @@ public:
 	bool IsRetryableCommitError(const string &message) const override;
 	bool IsDroppedInlinedTableError(const string &message,
 	                                const map<TableIndex, vector<Identifier>> &inlined_tables) override;
+	string CommitErrorWithoutQuery(const string &message) const override;
 	string ConfigOptionLockSql() const override;
 
 	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query) override;
@@ -66,11 +68,20 @@ protected:
 	string GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                             const FilterPushdownInfo *filter_info,
 	                             const vector<DuckLakeFileListDynamicFilter> &dynamic_filters,
-	                             const vector<idx_t> &runtime_filter_stats_columns, FileListType file_list_type,
+	                             vector<idx_t> &runtime_filter_stats_columns, FileListType file_list_type,
 	                             const string &metadata_table_prefix) override;
 	bool MaterializeStatsCTEs() const override;
 	string CastValueToTarget(const Value &value, const LogicalType &type) override;
 	string CastStatsToTarget(const string &stats, const LogicalType &type, StatsCastType cast_type) override;
+
+private:
+	//! Where the server error starts in the error of the last Execute
+	optional_idx BatchServerErrorStart(const string &message) const;
+	//! The server error follows the failed query, which can contain any text
+	string ServerError(const string &message) const;
+
+	//! The size of the last query of Execute, which the scanner repeats in front of a server error
+	idx_t executed_query_size = 0;
 };
 
 } // namespace duckdb

@@ -163,6 +163,16 @@ vector<DuckLakeDataFile> LocalTableChanges::GetTransactionLocalFiles(TableIndex 
 	return table_changes->new_data_files;
 }
 
+vector<string> LocalTableChanges::GetWrittenFiles(TableIndex table_id) const {
+	lock_guard<mutex> guard(lock);
+	vector<string> result;
+	auto table_changes = Find(table_id);
+	if (table_changes) {
+		table_changes->AddWrittenFiles(result, result, true);
+	}
+	return result;
+}
+
 shared_ptr<DuckLakeInlinedData> LocalTableChanges::GetTransactionLocalInlinedData(ClientContext &context,
                                                                                   TableIndex table_id) const {
 	lock_guard<mutex> guard(lock);
@@ -1633,6 +1643,9 @@ void DuckLakeTransaction::ReportPostCommitError(const string &message) {
 void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
                                         const TransactionChangeInformation &transaction_changes,
                                         const DuckLakeRetryConfig &retry_config) {
+	// the catalog's data path is known after its initialization, which can follow the start of this transaction
+	state->data_path = ducklake_catalog.DataPath();
+	state->separator = ducklake_catalog.Separator();
 	vector<unique_ptr<SQLStatement>> inlined_inserts;
 	DuckLakeCommitContext context;
 	context.conflict_query_executor = [&](string q) -> unique_ptr<QueryResult> {
@@ -2511,6 +2524,10 @@ void DuckLakeTransaction::GetWrittenFiles(vector<string> &result) const {
 
 vector<DuckLakeDataFile> DuckLakeTransaction::GetTransactionLocalFiles(TableIndex table_id) const {
 	return state->local_changes.GetTransactionLocalFiles(table_id);
+}
+
+vector<string> DuckLakeTransaction::GetWrittenFiles(TableIndex table_id) const {
+	return state->local_changes.GetWrittenFiles(table_id);
 }
 
 shared_ptr<DuckLakeInlinedData> DuckLakeTransaction::GetTransactionLocalInlinedData(TableIndex table_id) const {

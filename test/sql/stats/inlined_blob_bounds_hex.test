@@ -6,7 +6,7 @@ require ducklake
 
 require parquet
 
-test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/inlined_blob_bounds_hex.db
 
 test-env DATA_PATH {TEST_DIR}
 
@@ -112,3 +112,26 @@ SELECT b FROM dl.inlined ORDER BY b NULLS LAST
 a
 \x80
 NULL
+
+# bounds stored as display text by an older version cannot merge with hexadecimal bounds and are dropped
+statement ok
+UPDATE meta.ducklake_table_column_stats SET min_value = 'a', max_value = 'a' WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 'inlined')
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (METADATA_CATALOG 'meta')
+
+statement ok
+INSERT INTO dl.inlined VALUES ('b'::BLOB)
+
+query II
+SELECT min_value IS NULL, max_value IS NULL FROM meta.ducklake_table_column_stats WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 'inlined')
+----
+true	true
+
+query I
+SELECT max(b) FROM dl.inlined
+----
+\x80

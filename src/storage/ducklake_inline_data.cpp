@@ -276,7 +276,6 @@ static void ThrowIfNegativeInterval(Vector &input_vec, idx_t row_count) {
 DuckLakeColumnStats GetVectorStats(Vector &input_vec, idx_t row_count) {
 	auto &type = input_vec.GetType();
 	if (type.id() == LogicalTypeId::BLOB) {
-		// the bytes order the bounds, which are stored like the bounds of data files
 		return TemplatedUpdateStats<string_t, StatsBlobOperator>(input_vec, type, row_count);
 	}
 	Vector str_vector(LogicalType::VARCHAR, row_count);

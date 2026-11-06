@@ -96,6 +96,8 @@ public:
 	static DuckLakeColumnStats FromConstant(const LogicalType &type, const Value &value, idx_t count);
 	//! The stored text of a bound that is the given value
 	static string BoundToString(const Value &value);
+	//! Older versions stored the bounds of inlined BLOB values as display text, which cannot merge with hexadecimal
+	void DropTextBlobBounds();
 	//! Discards the min/max bounds, leaving the counts intact
 	void ClearBounds();
 	//! Rewrite FLOAT bounds as the DOUBLE values they widen to

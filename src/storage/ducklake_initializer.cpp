@@ -285,6 +285,10 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				metadata_cache_stale = true;
 			}
 			migrating = catalog_version < target_version;
+			// an older client may have left the tables incomplete, the migrations update them
+			if (!catalog.GetAttached().IsReadOnly()) {
+				metadata_manager.CompleteMetadataTables();
+			}
 			if (catalog_version == DuckLakeVersion::V0_1) {
 				metadata_manager.MigrateV01();
 				catalog_version = DuckLakeVersion::V0_2;

@@ -349,10 +349,8 @@ struct FileDeleteInfo {
 	// Existing delete file info (if any)
 	bool has_existing_delete_file = false;
 	DataFileIndex existing_delete_file_id;
-	string existing_delete_path;
+	DuckLakeFileData existing_delete_file;
 	idx_t existing_delete_begin_snapshot = 0;
-	string existing_delete_encryption_key;
-	DeleteFileFormat existing_delete_format = DeleteFileFormat::PARQUET;
 };
 
 static void FlushInlinedFileDeletions(ClientContext &context, DuckLakeCatalog &catalog,
@@ -373,7 +371,8 @@ static void FlushInlinedFileDeletions(ClientContext &context, DuckLakeCatalog &c
 SELECT del.file_id, data.path, data.path_is_relative, del.row_id, del.begin_snapshot,
        existing_del.delete_file_id, existing_del.path as del_path, existing_del.path_is_relative as del_path_is_relative,
        existing_del.begin_snapshot as del_begin_snapshot, existing_del.encryption_key as del_encryption_key,
-       existing_del.format as del_format
+       existing_del.format as del_format, existing_del.file_size_bytes as del_file_size_bytes,
+       existing_del.footer_size as del_footer_size
 FROM {METADATA_CATALOG}.%s del
 JOIN {METADATA_CATALOG}.ducklake_data_file data ON del.file_id = data.data_file_id
 LEFT JOIN {METADATA_CATALOG}.ducklake_delete_file existing_del
@@ -405,12 +404,20 @@ WHERE del.begin_snapshot <= {SNAPSHOT_ID}
 				file_info.has_existing_delete_file = true;
 				file_info.existing_delete_file_id = DataFileIndex(row.GetValue<idx_t>(5));
 				DuckLakePath delete_file_path {row.GetValue<string>(6), row.GetValue<bool>(7)};
-				file_info.existing_delete_path =
+				auto &existing_delete_file = file_info.existing_delete_file;
+				existing_delete_file.path =
 				    DuckLakeMetadataManager::FromRelativePath(delete_file_path, table.DataPath(), separator);
 				file_info.existing_delete_begin_snapshot = row.GetValue<idx_t>(8);
-				ReadEncryptionKey(row, 9, file_info.existing_delete_encryption_key);
+				ReadEncryptionKey(row, 9, existing_delete_file.encryption_key);
 				if (!row.IsNull(10)) {
-					file_info.existing_delete_format = DeleteFileFormatFromString(row.GetValue<string>(10));
+					existing_delete_file.format = DeleteFileFormatFromString(row.GetValue<string>(10));
+				}
+				// readers of remote storage such as Azure take the size as given instead of looking it up
+				if (!row.IsNull(11)) {
+					existing_delete_file.file_size_bytes = row.GetValue<idx_t>(11);
+				}
+				if (!row.IsNull(12)) {
+					existing_delete_file.footer_size = row.GetValue<idx_t>(12);
 				}
 			}
 		} else {
@@ -451,12 +458,7 @@ WHERE del.begin_snapshot <= {SNAPSHOT_ID}
 			merged_deletions = file_info.deletions;
 
 			// Read existing deletions from the delete file
-			DuckLakeFileData existing_delete_file_data;
-			existing_delete_file_data.path = file_info.existing_delete_path;
-			existing_delete_file_data.encryption_key = file_info.existing_delete_encryption_key;
-			existing_delete_file_data.format = file_info.existing_delete_format;
-
-			auto existing_deletions = DuckLakeDeleteFilter::ScanDeleteFile(context, existing_delete_file_data);
+			auto existing_deletions = DuckLakeDeleteFilter::ScanDeleteFile(context, file_info.existing_delete_file);
 
 			// Merge existing deletions with new inlined deletions
 			MergeDeletesWithSnapshots(existing_deletions, file_info.existing_delete_begin_snapshot, merged_deletions);
@@ -492,7 +494,7 @@ WHERE del.begin_snapshot <= {SNAPSHOT_ID}
 		if (overwrites_existing) {
 			delete_file.overwrites_existing_delete = true;
 			delete_file.overwritten_delete_file.delete_file_id = file_info.existing_delete_file_id;
-			delete_file.overwritten_delete_file.path = file_info.existing_delete_path;
+			delete_file.overwritten_delete_file.path = file_info.existing_delete_file.path;
 		}
 
 		delete_files.push_back(std::move(delete_file));

@@ -316,6 +316,7 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 					// the first 2.0-dev1 builds wrote the tag table without the expiry time
 					catalog.VerifyWritable();
 					metadata_manager.AddSnapshotTagExpiry();
+					metadata_cache_stale = true;
 				}
 				resolved_version = catalog_version;
 				continue;

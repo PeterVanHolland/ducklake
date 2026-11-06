@@ -1,0 +1,19 @@
+# name: benchmark/micro/read/big_lake_cold_listing_v10.benchmark
+# description: The cold listing of big_lake_cold_listing.benchmark on a v1.0 catalog
+# group: [read]
+
+name Big Lake Cold Listing v1.0
+group micro
+subgroup read
+
+require ducklake
+
+require parquet
+
+argument lake big_lake_v10
+
+argument ducklake_version 1.0
+
+argument work big_lake_listing_v10_work
+
+include benchmark/micro/read/big_lake_cold_listing.benchmark.in

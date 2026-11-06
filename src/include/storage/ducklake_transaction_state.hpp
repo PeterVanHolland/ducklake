@@ -256,16 +256,14 @@ public:
 	                            optional_ptr<vector<DuckLakeGlobalStatsInfo>> stats,
 	                            const DuckLakeCommitContext &context);
 	CompactionInformation GetCompactionChanges(DuckLakeCommitState &commit_state, CompactionType type);
-	//! After a REWRITE_DELETES compaction, recompute EXACT global stats for `table_id` from the post-rewrite file set
-	//! (+ committed inlined data) and append the UpdateGlobalTableStats SQL to `batch_query`. No-op (leaving the
-	//! existing stale stats, and the scan fallback) if the table is not fully delete-free post-rewrite or the
-	//! inlined data cannot be accounted for exactly. Returns whether it wrote the stats.
 	//! The tables this commit changes other than through dropped files and new files without deletes, for which the
 	//! files and the schema of the snapshot do not stand for the committed table
 	set<TableIndex> TablesWithChangesBeyondNewFiles(DuckLakeCommitState &commit_state,
 	                                                const TransactionChangeInformation &transaction_changes) const;
-	//! The new files of this commit are added to the files kept from the snapshot, a next row id advanced by them is
-	//! passed in. Sets deleted_rows_remain when deleted rows on the kept files or inlined rows block the recompute.
+	//! Recomputes the exact global stats of a table from the files kept from the snapshot, the new files of this
+	//! commit and the committed inlined data, and appends the UpdateGlobalTableStats SQL to `batch_query`. A next row
+	//! id advanced by the new files is passed in. Leaves the stats as they are and returns false when deleted rows
+	//! remain, which also sets deleted_rows_remain, or when the inlined data cannot be accounted for exactly.
 	bool RecomputeGlobalStats(string &batch_query, TableIndex table_id, DuckLakeSnapshot snapshot,
 	                          const vector<DuckLakeFileInfo> &new_files, const set<DataFileIndex> &removed_source_ids,
 	                          optional_idx next_row_id, const DuckLakeCommitContext &context,

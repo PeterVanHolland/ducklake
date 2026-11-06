@@ -1,0 +1,179 @@
+# name: test/sql/migration/v10_table_stats_catalogs.test
+# description: The table stats recomputed when migrating to v1.1 read the inlined rows of every catalog type
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/v10_table_stats_catalogs.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
+(DATA_PATH '{DATA_PATH}/v10_table_stats_catalogs', DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.0')
+
+statement ok
+CREATE TABLE lake.t (id INTEGER, s VARCHAR, st STRUCT(x INTEGER))
+
+statement ok
+INSERT INTO lake.t SELECT i, 'v' || i, {'x': i} FROM range(100, 120) t(i)
+
+statement ok
+INSERT INTO lake.t VALUES (5, 'e', {'x': 5}), (200, 'z', {'x': 200})
+
+statement ok
+CREATE TABLE lake.m (id INTEGER, name VARCHAR)
+
+statement ok
+INSERT INTO lake.m SELECT 1, 'a' FROM range(20)
+
+statement ok
+COPY (SELECT 2 AS id) TO '{DATA_PATH}/v10_table_stats_catalogs_id.parquet'
+
+statement ok
+CALL ducklake_add_data_files('lake', 'm', '{DATA_PATH}/v10_table_stats_catalogs_id.parquet', allow_missing => true)
+
+statement ok
+CREATE TABLE lake.v (v VARIANT)
+
+statement ok
+INSERT INTO lake.v SELECT {'a': i}::VARIANT FROM range(20) t(i)
+
+statement ok
+INSERT INTO lake.v VALUES (NULL)
+
+# stats like v1.0 could leave, wider and narrower than the live rows
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET min_value = '1' WHERE table_id = 1 AND column_id = 1
+
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET max_value = 'w' WHERE table_id = 1 AND column_id = 2
+
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET contains_null = false WHERE table_id = 2 AND column_id = 2
+
+# inlined rows written before a column was added
+statement ok
+CREATE TABLE lake.w (id INTEGER)
+
+statement ok
+INSERT INTO lake.w VALUES (6)
+
+statement ok
+ALTER TABLE lake.w ADD COLUMN k INTEGER
+
+statement ok
+INSERT INTO lake.w VALUES (7, 1)
+
+statement ok
+INSERT INTO lake.w SELECT i, 50 FROM range(100, 120) t(i)
+
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET min_value = '1' WHERE table_id = 4 AND column_id = 1
+
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET max_value = '100' WHERE table_id = 4 AND column_id = 2
+
+# a file whose stats count no values or NULLs, like the INTERVAL files of v1.0
+statement ok
+CREATE TABLE lake.u (i INTEGER)
+
+statement ok
+INSERT INTO lake.u SELECT CASE WHEN i = 0 THEN NULL ELSE -10 - i END FROM range(20) t(i)
+
+statement ok
+INSERT INTO lake.u SELECT 10 + i FROM range(20) t(i)
+
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_file_column_stats SET value_count = 0, null_count = 0, min_value = NULL,
+max_value = NULL WHERE data_file_id = (SELECT min(data_file_id) FROM __ducklake_metadata_lake.ducklake_data_file
+WHERE table_id = 5)
+
+# a bound with the text of a migration placeholder
+statement ok
+CREATE TABLE lake.p (s VARCHAR)
+
+statement ok
+INSERT INTO lake.p VALUES ('a'), ('x{IF_NOT_EXISTS}y')
+
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_table_column_stats SET max_value = 'b' WHERE table_id = 6
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
+(DATA_PATH '{DATA_PATH}/v10_table_stats_catalogs', DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT min(id), max(id) FROM lake.t
+----
+5	200
+
+query I
+SELECT count(*) FROM lake.t WHERE s = 'z'
+----
+1
+
+query I
+SELECT count(*) FROM lake.m WHERE name IS NULL
+----
+1
+
+query IIIII
+SELECT table_id, column_id, contains_null::BOOLEAN, min_value, max_value
+FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id < 3 ORDER BY ALL
+----
+1	1	false	5	200
+1	2	false	e	z
+1	4	NULL	NULL	NULL
+2	1	false	1	2
+2	2	true	a	a
+
+query IIII
+SELECT min(id), max(id), min(k), max(k) FROM lake.w
+----
+6	119	1	50
+
+# the rows written before k was added read its initial default
+query III
+SELECT contains_null::BOOLEAN, min_value, max_value FROM __ducklake_metadata_lake.ducklake_table_column_stats
+WHERE table_id = 4 AND column_id = 2
+----
+true	1	50
+
+query III
+SELECT count(i), min(i), max(i) FROM lake.u
+----
+39	-29	29
+
+query I
+SELECT count(*) FROM lake.p WHERE s = 'x{IF_NOT_EXISTS}y'
+----
+1
+
+# the stats of a variant whose inlined rows SQL cannot aggregate are left to the scan
+query I
+SELECT extra_stats IS NULL FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id = 3
+----
+true
+
+# new rows extend the recomputed stats
+statement ok
+INSERT INTO lake.t VALUES (2, 'b', {'x': 2})
+
+query II
+SELECT min(id), max(id) FROM lake.t
+----
+2	200
+
+statement ok
+INSERT INTO lake.m VALUES (3, 'b')
+
+query I
+SELECT count(*) FROM lake.m WHERE name IS NULL
+----
+1

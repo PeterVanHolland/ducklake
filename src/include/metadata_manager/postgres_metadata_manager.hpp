@@ -45,6 +45,8 @@ public:
 	bool InlinedDeletionTableExists(const Identifier &table_name) override;
 	void MigrateInlinedDataTypes() override;
 	bool IsRetryableCommitError(const string &message) const override;
+	bool IsDroppedInlinedTableError(const string &message,
+	                                const map<TableIndex, vector<Identifier>> &inlined_tables) override;
 	string CommitErrorWithoutQuery(const string &message) const override;
 	string ConfigOptionLockSql() const override;
 
@@ -75,6 +77,8 @@ protected:
 private:
 	//! Where the server error starts in the error of the last Execute
 	optional_idx BatchServerErrorStart(const string &message) const;
+	//! The server error follows the failed query, which can contain any text
+	string ServerError(const string &message) const;
 
 	//! The size of the last query of Execute, which the scanner repeats in front of a server error
 	idx_t executed_query_size = 0;

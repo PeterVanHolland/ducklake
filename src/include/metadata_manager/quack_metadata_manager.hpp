@@ -30,6 +30,12 @@ public:
 		return true;
 	}
 	void ProbeServerCapabilities() override;
+	map<Identifier, vector<pair<Identifier, string>>>
+	GetMetadataTableColumns(const vector<Identifier> &table_names) override;
+	//! the server is a DuckDB, which keeps the types as created
+	bool KnowsStoredMetadataTypes() const override {
+		return true;
+	}
 	bool CanSkipSnapshotFetch(const TransactionChangeInformation &changes) const override;
 	void FlushChangesServerSide(DuckLakeTransaction &transaction, DuckLakeSnapshot transaction_snapshot,
 	                            const TransactionChangeInformation &transaction_changes,

@@ -178,15 +178,19 @@ shared_ptr<DuckLakeInlinedData> LocalTableChanges::GetTransactionLocalInlinedDat
 	return result;
 }
 
-optional_ptr<DuckLakeDataFile> LocalTableChanges::FindAddedFile(FileSystem &fs, TableIndex dropping_table,
-                                                                const string &path) {
+optional_ptr<DuckLakeDataFile> LocalTableChanges::FindAddedFile(FileSystem &fs, const string &path,
+                                                                optional_ptr<const DuckLakeDataFile> dropped_file,
+                                                                optional_idx dropped_table) {
 	// ducklake_add_data_files registers the path it was given, which can spell the file differently
 	string canonical_path;
 	for (auto &entry : changes) {
-		if (entry.first == dropping_table) {
+		if (dropped_table.IsValid() && entry.first.index == dropped_table.GetIndex()) {
 			continue;
 		}
 		for (auto &file : entry.second.new_data_files) {
+			if (dropped_file && &file == dropped_file.get()) {
+				continue;
+			}
 			if (file.file_name == path) {
 				return file;
 			}
@@ -204,9 +208,9 @@ optional_ptr<DuckLakeDataFile> LocalTableChanges::FindAddedFile(FileSystem &fs, 
 	return nullptr;
 }
 
-void LocalTableChanges::RemoveOwnedFile(FileSystem &fs, TableIndex dropping_table, const string &path,
-                                        bool try_remove) {
-	auto shared = FindAddedFile(fs, dropping_table, path);
+void LocalTableChanges::RemoveOwnedFile(FileSystem &fs, const string &path, bool try_remove,
+                                        optional_ptr<const DuckLakeDataFile> dropped_file, optional_idx dropped_table) {
+	auto shared = FindAddedFile(fs, path, dropped_file, dropped_table);
 	if (shared) {
 		// another table added the file in this transaction, it is removed when that table drops it
 		shared->created_by_ducklake = true;
@@ -245,7 +249,8 @@ bool LocalTableChanges::TryDropTransactionLocalFile(ClientContext &context, Tabl
 			// found the file - remove it from disk if DuckLake owns it, then from the table list, so that the entry
 			// stays for the rollback when the removal fails
 			if (file.created_by_ducklake) {
-				RemoveOwnedFile(fs, table_id, path, false);
+				// the same table may hold a second registration of the file, so only this entry is left out
+				RemoveOwnedFile(fs, path, false, file, optional_idx());
 			}
 			table_files.erase_at(i);
 			if (table_changes.IsEmpty()) {
@@ -784,13 +789,13 @@ void LocalTableChanges::CleanupFiles(ClientContext &context, TableIndex table_id
 	auto &table_changes = table_entry->second;
 	for (auto &file : table_changes.new_data_files) {
 		if (file.created_by_ducklake) {
-			RemoveOwnedFile(fs, table_id, file.file_name, false);
+			RemoveOwnedFile(fs, file.file_name, false, nullptr, table_id.index);
 		}
 	}
 	// the files a compaction wrote can be added to another table as well
 	for (auto &compaction : table_changes.compactions) {
 		for (auto &file : compaction.written_files) {
-			RemoveOwnedFile(fs, table_id, file.file_name, true);
+			RemoveOwnedFile(fs, file.file_name, true, nullptr, table_id.index);
 		}
 	}
 	ForEachDeleteFile(table_changes, [&](const DuckLakeDeleteFile &file) { fs.TryRemoveFile(file.file_name); });

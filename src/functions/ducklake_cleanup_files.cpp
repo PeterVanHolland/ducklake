@@ -55,13 +55,7 @@ static unique_ptr<FunctionData> CleanupBind(ClientContext &context, TableFunctio
 
 	const auto older_than_default = ducklake_catalog.GetConfigOption<string>("delete_older_than", {}, {}, "2 days");
 
-	Value dry_run;
-	if (DuckLakeTableFunctionUtil::TryGetNonNullOption(input, "dry_run", "boolean", dry_run)) {
-		result->dry_run = BooleanValue::Get(dry_run);
-	}
-	if (!result->dry_run) {
-		ducklake_catalog.VerifyWritable();
-	}
+	result->dry_run = DuckLakeTableFunctionUtil::GetDryRunOption(input, ducklake_catalog);
 	bool cleanup_all = false;
 	Value cleanup_all_value;
 	if (DuckLakeTableFunctionUtil::TryGetNonNullOption(input, "cleanup_all", "boolean", cleanup_all_value)) {
@@ -78,8 +72,7 @@ static unique_ptr<FunctionData> CleanupBind(ClientContext &context, TableFunctio
 	}
 
 	if (has_timestamp) {
-		auto from_timestamp = older_than.GetValue<timestamp_tz_t>();
-		result->timestamp_filter = DuckLakeTableFunctionUtil::FormatTimestampISO8601(timestamp_t(from_timestamp.value));
+		result->timestamp_filter = DuckLakeTableFunctionUtil::FormatTimestampISO8601(older_than);
 	} else if (!cleanup_all && !older_than_default.empty()) {
 		result->timestamp_filter =
 		    DuckLakeTableFunctionUtil::FormatTimestampOlderThan("delete_older_than", older_than_default);

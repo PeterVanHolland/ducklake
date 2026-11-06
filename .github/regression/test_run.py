@@ -248,21 +248,61 @@ class RegressionRunTest(unittest.TestCase):
         self.assertEqual(self.dropped(), self.created()[::-1])
         self.assertIs(signal.getsignal(signal.SIGTERM), handler)
 
-    def test_a_regression_fails_after_one_comparison(self):
-        def compare(script, root, passthrough, benchmarks):
+    def test_a_regression_fails_once_a_rerun_of_the_flagged_benchmarks_confirms_it(self):
+        benchmarks = ["benchmark/example.benchmark", "benchmark/noisy.benchmark", "benchmark/steady.benchmark"]
+        (self.directory / "micro.csv").write_text("\n".join(benchmarks) + "\n")
+        listings = []
+
+        def compare(script, root, passthrough, listing):
             self.mocks["drop_database"].assert_not_called()
             self.assertEqual(len(self.created()), 2)
+            listings.append((listing.read_text().split(), passthrough[-2:]))
+            if len(listings) == 1:
+                return 0, {"benchmark/example.benchmark", "benchmark/noisy.benchmark"}
             return 0, {"benchmark/example.benchmark"}
 
         self.compare.side_effect = compare
         self.assertEqual(self.main(), 1)
-        self.assertEqual(self.compare.call_count, 1)
+        self.assertEqual(self.compare.call_count, 2)
         self.assertEqual(self.compare.call_args.args[0], run.RUNNER)
-        self.assertEqual(self.dropped(), self.created()[::-1])
-        self.assertIn(
-            "::error::benchmark/example.benchmark (micro_postgres) is 10% or more slower",
-            self.stdout.getvalue(),
+        self.assertEqual(
+            listings,
+            [
+                (benchmarks, ["--samples", str(run.INITIAL_SAMPLES)]),
+                (
+                    ["benchmark/example.benchmark", "benchmark/noisy.benchmark"],
+                    ["--samples", str(run.CONFIRMATION_SAMPLES)],
+                ),
+            ],
         )
+        self.assertEqual(self.dropped(), self.created()[::-1])
+        output = self.stdout.getvalue()
+        self.assertIn("Rerunning 2 regressed benchmark(s)", output)
+        self.assertIn(
+            "::error::benchmark/example.benchmark (micro_postgres) is 10% or more slower, also when rerun", output
+        )
+        self.assertIn("::warning::benchmark/noisy.benchmark (micro_postgres) was 10% or more slower", output)
+        self.assertNotIn("::error::benchmark/noisy.benchmark", output)
+        self.assertNotIn("steady", output)
+
+    def test_an_unconfirmed_regression_is_a_warning(self):
+        self.compare.side_effect = [(0, {"benchmark/example.benchmark"}), (0, set())]
+        self.assertEqual(self.main(), 0)
+        self.assertEqual(self.compare.call_count, 2)
+        output = self.stdout.getvalue()
+        self.assertIn("::warning::benchmark/example.benchmark (micro_postgres) was 10% or more slower", output)
+        self.assertNotIn("::error::", output)
+
+    def test_a_failing_rerun_returns_its_code(self):
+        self.compare.side_effect = [(0, {"benchmark/example.benchmark"}), (42, {"benchmark/example.benchmark"})]
+        self.assertEqual(self.main(), 42)
+        self.assertEqual(self.dropped(), self.created()[::-1])
+        self.assertNotIn("::error::", self.stdout.getvalue())
+
+    def test_no_regression_runs_one_comparison(self):
+        self.assertEqual(self.main(), 0)
+        self.assertEqual(self.compare.call_count, 1)
+        self.assertNotIn("Rerunning", self.stdout.getvalue())
 
     def test_cleanup_failure_preserves_result_and_attempts_both_drops(self):
         self.compare.return_value = (42, set())

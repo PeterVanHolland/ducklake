@@ -2856,26 +2856,43 @@ WHERE begin_snapshot < %d AND file_id IN (%s)
 	return files;
 }
 
-set<idx_t> DuckLakeMetadataManager::GetTableRewriteSnapshots(TableIndex table_id, DuckLakeSnapshot start_snapshot,
-                                                             DuckLakeSnapshot snapshot) {
-	auto &catalog = transaction.GetCatalog();
-	set<idx_t> rewrite_snapshots;
-	if (catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id, rewrite_snapshots)) {
-		return rewrite_snapshots;
-	}
-	// the changes of committed snapshots never change, so the catalog caches them
-	auto result = Query(GetRewriteSnapshotsQuery(catalog.GetFirstUnreadRewriteSnapshot(), snapshot.snapshot_id));
-	result->ThrowIfError("Failed to get rewrite snapshots from DuckLake: ");
+//! The tables and snapshots of the rewrites in rows of snapshot ids and their changes
+static vector<pair<TableIndex, idx_t>> ReadRewrites(QueryResult &result) {
 	vector<pair<TableIndex, idx_t>> rewrites;
-	for (auto &row : *result) {
+	for (auto &row : result) {
 		auto changes = SnapshotChangeInformation::ParseChangesMade(row.GetValue<string>(1));
 		for (auto &rewritten_table : changes.tables_rewrite_delete) {
 			rewrites.emplace_back(rewritten_table, row.GetValue<idx_t>(0));
 		}
 	}
-	catalog.CacheRewriteSnapshots(rewrites, snapshot.snapshot_id);
-	catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id, rewrite_snapshots);
-	return rewrite_snapshots;
+	return rewrites;
+}
+
+set<idx_t> DuckLakeMetadataManager::GetTableRewriteSnapshots(TableIndex table_id, DuckLakeSnapshot start_snapshot,
+                                                             DuckLakeSnapshot snapshot) {
+	auto &catalog = transaction.GetCatalog();
+	set<idx_t> rewrite_snapshots;
+	if (!catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id,
+	                                    rewrite_snapshots)) {
+		// the changes of committed snapshots never change, so the catalog caches them
+		auto result = Query(GetRewriteSnapshotsQuery(catalog.GetFirstUnreadRewriteSnapshot(), snapshot.snapshot_id));
+		result->ThrowIfError("Failed to get rewrite snapshots from DuckLake: ");
+		catalog.CacheRewriteSnapshots(ReadRewrites(*result), snapshot.snapshot_id);
+		catalog.TryGetRewriteSnapshots(table_id, start_snapshot.snapshot_id, snapshot.snapshot_id, rewrite_snapshots);
+	}
+	if (rewrite_snapshots.empty()) {
+		return rewrite_snapshots;
+	}
+	// a rewrite stays out of the change feed while its snapshot exists, since the files it ended stay until then
+	auto result = Query(StringUtil::Format(
+	    "SELECT snapshot_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id IN (%s)",
+	    StringUtil::Join(rewrite_snapshots, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); })));
+	result->ThrowIfError("Failed to get the snapshots of rewrites from DuckLake: ");
+	set<idx_t> existing_rewrites;
+	for (auto &row : *result) {
+		existing_rewrites.insert(row.GetValue<idx_t>(0));
+	}
+	return existing_rewrites;
 }
 
 string DuckLakeMetadataManager::GetRewriteSnapshotsQuery(idx_t first_snapshot, idx_t last_snapshot) const {
@@ -5870,15 +5887,15 @@ string DuckLakeMetadataManager::WriteCompactions(const vector<DuckLakeCompactedF
 	}
 }
 
-//! Selects the files that the filter matches or whose range no remaining snapshot lies in
+//! Selects the files the filter matches or whose range no remaining snapshot lies in, with the two reasons as flags
 static string UnusedFilesQuery(const string &file_table, const string &file_id_column, const string &filter) {
 	// only the first remaining snapshot at or after begin_snapshot matters
 	return StringUtil::Format(R"(
-SELECT f.%s, f.table_id, f.path, f.path_is_relative
+SELECT f.%s, f.table_id, f.path, f.path_is_relative, f.end_snapshot, (%sfalse), s.snapshot_id = f.end_snapshot
 FROM {METADATA_CATALOG}.%s f
 ASOF LEFT JOIN {METADATA_CATALOG}.ducklake_snapshot s ON f.begin_snapshot <= s.snapshot_id
 WHERE %s(f.end_snapshot IS NOT NULL AND (s.snapshot_id IS NULL OR s.snapshot_id >= f.end_snapshot));)",
-	                          file_id_column, file_table, filter);
+	                          file_id_column, filter, file_table, filter);
 }
 
 vector<DuckLakeSnapshotTagInfo> DuckLakeMetadataManager::GetSnapshotTags(bool with_snapshot_time) {
@@ -6012,13 +6029,45 @@ AND NOT EXISTS (
 	}
 	auto deleted_table_ids = GenerateIDList(cleanup_tables);
 
+	// a file that a rewrite of its table ended stays while the rewrite snapshot remains, the change feed reads it
 	auto read_cleanup_files = [&](QueryResult &files) {
-		vector<DuckLakeFileForCleanup> cleanup_files;
-		for (auto &row : files) {
+		struct UnusedFile {
 			DuckLakeFileForCleanup info;
-			info.id = DataFileIndex(row.GetValue<idx_t>(0));
-			info.path = FromRelativePath(TableIndex(row.GetValue<idx_t>(1)), ReadPath(row, 2));
-			cleanup_files.push_back(std::move(info));
+			idx_t table_id = 0;
+			idx_t end_snapshot = 0;
+			bool ended_by_remaining_snapshot = false;
+		};
+		vector<UnusedFile> unused_files;
+		set<idx_t> end_snapshots;
+		for (auto &row : files) {
+			UnusedFile file;
+			file.info.id = DataFileIndex(row.GetValue<idx_t>(0));
+			file.table_id = row.GetValue<idx_t>(1);
+			file.info.path = FromRelativePath(TableIndex(file.table_id), ReadPath(row, 2));
+			if (!row.GetValue<bool>(5) && !row.IsNull(6) && row.GetValue<bool>(6)) {
+				file.end_snapshot = row.GetValue<idx_t>(4);
+				file.ended_by_remaining_snapshot = true;
+				end_snapshots.insert(file.end_snapshot);
+			}
+			unused_files.push_back(std::move(file));
+		}
+		set<pair<idx_t, idx_t>> rewrites;
+		if (!end_snapshots.empty()) {
+			auto result = Query(StringUtil::Format(
+			    "SELECT snapshot_id, changes_made FROM {METADATA_CATALOG}.ducklake_snapshot_changes WHERE snapshot_id "
+			    "IN (%s)",
+			    StringUtil::Join(end_snapshots, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); })));
+			result->ThrowIfError("Failed to get the changes of the snapshots that ended files from DuckLake: ");
+			for (auto &rewrite : ReadRewrites(*result)) {
+				rewrites.emplace(rewrite.second, rewrite.first.index);
+			}
+		}
+		vector<DuckLakeFileForCleanup> cleanup_files;
+		for (auto &file : unused_files) {
+			if (file.ended_by_remaining_snapshot && rewrites.count(make_pair(file.end_snapshot, file.table_id))) {
+				continue;
+			}
+			cleanup_files.push_back(std::move(file.info));
 		}
 		return cleanup_files;
 	};

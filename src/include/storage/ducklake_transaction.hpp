@@ -309,6 +309,13 @@ public:
 	}
 	void SetConfigOption(const DuckLakeConfigOption &option);
 	void ResetConfigOption(const DuckLakeConfigOption &option);
+	//! Applies the option changes that wait for the commit to options read from the metadata
+	void ApplyDeferredConfigOptions(DuckLakeMetadata &metadata) const;
+	bool HasDeferredConfigOptions() const;
+	string DeferredConfigOptionsSql() const;
+	//! The newest change of a table option that waits for the commit
+	optional_ptr<const DuckLakeConfigOptionUndo> FindDeferredTableOption(TableIndex table_id,
+	                                                                     const string &option) const;
 
 	void SetCommitMessage(const DuckLakeSnapshotCommit &option);
 
@@ -388,8 +395,9 @@ private:
 	void BeginMetadataTransaction();
 	void ReportMetadataQuery(const string &query, std::chrono::steady_clock::duration elapsed);
 	void FlushNameMapCacheInvalidations();
-	//! Puts back the config options this transaction replaced in the catalog
+	//! Puts back the config options this transaction replaced in the catalog, or drops its deferred changes
 	void UndoConfigOptions();
+	void DeferConfigOption(const DuckLakeConfigOption &option, bool reset);
 	//! The SQL that the commit runs for the options this transaction changed
 	string ConfigOptionLockSql() const;
 	//! The last change of the option before the change at the index
@@ -491,7 +499,7 @@ private:
 	DuckLakeNameMapSet new_name_maps;
 	//! Name maps deleted by direct metadata operations, applied to the catalog cache on commit
 	vector<MappingIndex> pending_name_map_cache_invalidations;
-	//! Previous values of config options set by this transaction, for rollback
+	//! Option changes of this transaction, with the previous values for a rollback when they are written right away
 	vector<DuckLakeConfigOptionUndo> config_option_undo;
 	//! Whether a retried commit attempt wrote the options again
 	bool rewrote_config_options = false;

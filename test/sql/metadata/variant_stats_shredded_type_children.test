@@ -282,7 +282,7 @@ ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
 statement error
 SELECT v FROM dl.t
 ----
-<REGEX>:.*Invalid Input Error.*invalid DECIMAL width or scale in 'decimal\(264,2\)'.*
+<REGEX>:.*Invalid Input Error.*Invalid DECIMAL type "decimal\(264,2\)".*
 
 statement ok
 DETACH dl

@@ -848,6 +848,12 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 		auto copy = col.Copy();
 		if (copy.Name() == info.old_name) {
 			copy.SetName(info.new_name);
+			auto &column_data = field_id.GetColumnData();
+			if (column_data.KeepsStoredDefault()) {
+				// the error of the unusable default names the column
+				copy.SetDefaultValue(
+				    DuckLakeUtil::UnusableDefaultExpression(info.new_name, column_data.stored_default_reason));
+			}
 		}
 		new_columns.AddColumn(std::move(copy));
 	}
@@ -990,7 +996,18 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 
 static void ExtractDefaultValue(const DuckLakeColumnData &col_data, DuckLakeColumnInfo &info) {
 	info.initial_default = col_data.initial_default;
-	if (col_data.default_value) {
+	if (col_data.KeepsStoredDefault()) {
+		info.default_as_stored = true;
+		info.default_value = col_data.stored_default_value;
+		info.stored_default_type = col_data.stored_default_type;
+		info.stored_default_dialect = col_data.stored_default_dialect;
+		if (!info.stored_default_type.IsNull()) {
+			info.default_value_type = StringValue::Get(info.stored_default_type);
+		}
+		if (!info.stored_default_dialect.IsNull()) {
+			info.default_value_dialect = StringValue::Get(info.stored_default_dialect);
+		}
+	} else if (col_data.default_value) {
 		Value literal_value;
 		if (DuckLakeUtil::TryGetLiteralValue(*col_data.default_value, literal_value)) {
 			info.default_value = std::move(literal_value);
@@ -1154,7 +1171,8 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFiel
 	}
 	// read the literal default back as the catalog would after the commit
 	const auto &literal_default = new_col.column_info.default_value;
-	if (new_col.column_info.default_value_type == "literal" && !literal_default.IsNull()) {
+	if (new_col.column_info.default_value_type == "literal" && !literal_default.IsNull() &&
+	    !column_data.KeepsStoredDefault()) {
 		column_data.default_value = DuckLakeUtil::LiteralDefaultExpression(Value(literal_default.ToString()), target);
 	}
 	new_col.column_info.type = DuckLakeTypes::ToString(target);

@@ -530,7 +530,8 @@ void DuckLakeSchemaEntry::Scan(CatalogType type, const std::function<void(Catalo
 //! The first of the names the expression calls, matched by name alone, as a default resolves through the table
 //! schema and the search path, and x.f() can be f(x)
 static Identifier CalledFunctionIn(const ParsedExpression &expr, const identifier_set_t &names) {
-	if (expr.GetExpressionClass() == ExpressionClass::FUNCTION) {
+	// a built-in called by its full name, as the error of an unusable default is, cannot be a macro
+	if (expr.GetExpressionClass() == ExpressionClass::FUNCTION && !DuckLakeUtil::CallsBuiltinFunction(expr)) {
 		Identifier name = expr.Cast<FunctionExpression>().GetQualifiedName().Name();
 		if (names.count(name)) {
 			return name;

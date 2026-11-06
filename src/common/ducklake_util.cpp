@@ -4,6 +4,8 @@
 #include "storage/ducklake_transaction.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/parser/column_list.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/sql_identifier.hpp"
@@ -851,6 +853,25 @@ bool DuckLakeUtil::TryReadTextAs(const Value &text, const LogicalType &type, Val
 	}
 	result = std::move(*typed_value);
 	return true;
+}
+
+unique_ptr<ParsedExpression> DuckLakeUtil::UnusableDefaultExpression(const Identifier &column_name,
+                                                                     const string &reason) {
+	auto message = StringUtil::Format("DuckLake cannot use the default of column %s: %s. Supply a value for the "
+	                                  "column, or set its default in DuckDB",
+	                                  SQLIdentifier::ToString(column_name.GetIdentifierName()), reason);
+	vector<unique_ptr<ParsedExpression>> children;
+	children.push_back(ConstantExpression::FromValue(Value(message)));
+	// the built-in function by its full name, so that a macro of the same name cannot stand in for it
+	QualifiedName error_function(Identifier("system"), Identifier("main"), Identifier("error"));
+	return make_uniq<FunctionExpression>(error_function, std::move(children));
+}
+
+bool DuckLakeUtil::CallsBuiltinFunction(const ParsedExpression &expr) {
+	if (expr.GetExpressionClass() != ExpressionClass::FUNCTION) {
+		return false;
+	}
+	return expr.Cast<FunctionExpression>().GetQualifiedName().Catalog().GetIdentifierName() == "system";
 }
 
 unique_ptr<ParsedExpression> DuckLakeUtil::LiteralDefaultExpression(const Value &text, const LogicalType &type) {

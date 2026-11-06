@@ -258,6 +258,10 @@ public:
 
 	virtual void ClearCache() {
 	}
+	//! Whether a default is written in DuckDB's dialect, which an empty dialect means
+	static bool IsDuckDBDialect(const string &dialect);
+	//! The canonical text of a DuckDB default expression, or the text as it is when it cannot be parsed
+	static string NormalizeDefaultExpression(const string &expression);
 	//! Whether a table that a commit creates is only found once the cache is cleared
 	virtual bool NewTablesRequireCacheClear() const {
 		return true;

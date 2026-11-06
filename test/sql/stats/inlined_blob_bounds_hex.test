@@ -1,0 +1,160 @@
+# name: test/sql/stats/inlined_blob_bounds_hex.test
+# description: the bounds of inlined BLOB values are ordered by their bytes and stored as hexadecimal, like the bounds of data files
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/inlined_blob_bounds_hex.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_blob_bounds_hex', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 0)
+
+# a data file whose bounds the Parquet writer stores as hexadecimal
+statement ok
+CREATE TABLE dl.t AS SELECT 'zz'::BLOB AS b
+
+query II
+SELECT min_value, max_value FROM meta.ducklake_table_column_stats
+----
+7A7A	7A7A
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10)
+
+# the display form of the bytes would order these the other way around
+statement ok
+INSERT INTO dl.t VALUES ('\x00\xFF'::BLOB), ('a'::BLOB), ('\x80'::BLOB)
+
+query II
+SELECT min_value, max_value FROM meta.ducklake_table_column_stats
+----
+00FF	80
+
+query I
+SELECT b FROM dl.t ORDER BY b
+----
+\x00\xFF
+a
+zz
+\x80
+
+# the flushed file keeps the same bounds
+statement ok
+CALL ducklake_flush_inlined_data('dl')
+
+query II
+SELECT min_value, max_value FROM meta.ducklake_table_column_stats
+----
+00FF	80
+
+query II
+SELECT min_value, max_value FROM meta.ducklake_file_column_stats ORDER BY data_file_id
+----
+7A7A	7A7A
+00FF	80
+
+query II
+SELECT min(b), max(b) FROM dl.t
+----
+\x00\xFF	\x80
+
+# the default of an added column is the bound of the older rows
+statement ok
+ALTER TABLE dl.t ADD COLUMN c BLOB DEFAULT '\x00\xFF'::BLOB
+
+query II
+SELECT min_value, max_value FROM meta.ducklake_table_column_stats WHERE column_id = (SELECT column_id FROM meta.ducklake_column WHERE column_name = 'c')
+----
+00FF	00FF
+
+statement ok
+INSERT INTO dl.t VALUES ('b'::BLOB, 'b'::BLOB)
+
+query II
+SELECT min_value, max_value FROM meta.ducklake_table_column_stats WHERE column_id = (SELECT column_id FROM meta.ducklake_column WHERE column_name = 'c')
+----
+00FF	62
+
+query II
+SELECT min(c), max(c) FROM dl.t
+----
+\x00\xFF	b
+
+# inlined rows alone, with an empty value
+statement ok
+CREATE TABLE dl.inlined(b BLOB)
+
+statement ok
+INSERT INTO dl.inlined VALUES ('\x80'::BLOB), (NULL), (''::BLOB), ('a'::BLOB)
+
+query II
+SELECT min_value, max_value FROM meta.ducklake_table_column_stats WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 'inlined')
+----
+(empty)	80
+
+statement ok
+INSERT INTO dl.inlined VALUES ('\x01'::BLOB)
+
+query II
+SELECT min_value, max_value FROM meta.ducklake_table_column_stats WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 'inlined')
+----
+(empty)	80
+
+query I
+SELECT b FROM dl.inlined ORDER BY b NULLS LAST
+----
+(empty)
+\x01
+a
+\x80
+NULL
+
+# the bounds of an added data file come from parquet_metadata, which shows BLOB bounds as display text
+statement ok
+COPY (SELECT '\x00\xFFzz'::BLOB AS b UNION ALL SELECT 'a'::BLOB) TO '{DATA_PATH}/inlined_blob_bounds_hex.parquet'
+
+statement ok
+CREATE TABLE dl.added(b BLOB)
+
+statement ok
+CALL ducklake_add_data_files('dl', 'added', '{DATA_PATH}/inlined_blob_bounds_hex.parquet')
+
+query II
+SELECT min_value, max_value FROM meta.ducklake_file_column_stats WHERE data_file_id = (SELECT max(data_file_id) FROM meta.ducklake_data_file)
+----
+00FF7A7A	61
+
+statement ok
+INSERT INTO dl.added VALUES ('b'::BLOB)
+
+query II
+SELECT min_value, max_value FROM meta.ducklake_table_column_stats WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 'added')
+----
+00FF7A7A	62
+
+# bounds stored as display text by an older version cannot merge with hexadecimal bounds and are dropped
+statement ok
+UPDATE meta.ducklake_table_column_stats SET min_value = 'a', max_value = 'a' WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 'inlined')
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (METADATA_CATALOG 'meta')
+
+statement ok
+INSERT INTO dl.inlined VALUES ('b'::BLOB)
+
+query II
+SELECT min_value IS NULL, max_value IS NULL FROM meta.ducklake_table_column_stats WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 'inlined')
+----
+true	true
+
+query I
+SELECT max(b) FROM dl.inlined
+----
+\x80

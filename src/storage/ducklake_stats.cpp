@@ -1,5 +1,6 @@
 #include "storage/ducklake_stats.hpp"
 #include "common/ducklake_data_file.hpp"
+#include "common/ducklake_util.hpp"
 #include "storage/ducklake_field_data.hpp"
 #include "storage/ducklake_geo_stats.hpp"
 #include "storage/ducklake_metadata_info.hpp"
@@ -10,6 +11,7 @@
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
 
@@ -104,6 +106,35 @@ DuckLakeColumnStats DuckLakeColumnStats::FromGlobalStats(const LogicalType &type
 	return stats;
 }
 
+string DuckLakeColumnStats::BoundToString(const Value &value) {
+	if (value.type().id() == LogicalTypeId::BLOB) {
+		return DuckLakeUtil::BlobToHex(StringValue::Get(value));
+	}
+	return value.ToString();
+}
+
+static bool IsHexBound(const string &bound) {
+	if (bound.size() % 2 != 0) {
+		return false;
+	}
+	for (auto c : bound) {
+		if (!StringUtil::CharacterIsDigit(c) && (c < 'A' || c > 'F')) {
+			return false;
+		}
+	}
+	return true;
+}
+
+void DuckLakeColumnStats::DropTextBlobBounds() {
+	if (type.id() != LogicalTypeId::BLOB) {
+		return;
+	}
+	if ((has_min && !IsHexBound(min)) || (has_max && !IsHexBound(max))) {
+		ClearBounds();
+		bounds_unknown = true;
+	}
+}
+
 DuckLakeColumnStats DuckLakeColumnStats::FromConstant(const LogicalType &type, const Value &value, idx_t count) {
 	DuckLakeColumnStats stats(type);
 	stats.has_num_values = true;
@@ -115,7 +146,7 @@ DuckLakeColumnStats DuckLakeColumnStats::FromConstant(const LogicalType &type, c
 	} else if (count == 0) {
 		stats.any_valid = false;
 	} else {
-		stats.min = stats.max = value.ToString();
+		stats.min = stats.max = DuckLakeColumnStats::BoundToString(value);
 		stats.has_min = stats.has_max = true;
 		stats.min_is_exact = stats.max_is_exact = true;
 	}
@@ -193,7 +224,7 @@ static bool TryCastBound(string &bound, const LogicalType &source, const Logical
 	if (!target_value) {
 		return false;
 	}
-	bound = target_value->ToString();
+	bound = DuckLakeColumnStats::BoundToString(*target_value);
 	return true;
 }
 
@@ -303,6 +334,7 @@ static void MergeExtraStats(unique_ptr<DuckLakeColumnExtraStats> &extra_stats, c
 }
 
 void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
+	DropTextBlobBounds();
 	// the null state has to be read before the counts of the source are added to it
 	bool adopt_bounds = !bounds_unknown && has_num_values && has_null_count && num_values == null_count;
 	bool types_differ = type != new_stats.type;

@@ -94,6 +94,12 @@ string DuckLakeUtil::StatsToString(const string &text) {
 	return SQLString::ToString(text);
 }
 
+string DuckLakeUtil::BlobToHex(string_t blob) {
+	string hex(blob.GetSize() * 2, '\0');
+	CryptoHash::ToHex(const_data_ptr_cast(blob.GetData()), blob.GetSize(), &hex[0]);
+	return StringUtil::Upper(hex);
+}
+
 static string EscapeVarcharForSQL(const string &str_val) {
 	string ret;
 	bool concat = false;

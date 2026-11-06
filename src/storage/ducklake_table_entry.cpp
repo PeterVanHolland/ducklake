@@ -1,3 +1,4 @@
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "common/ducklake_types.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -368,7 +369,12 @@ unique_ptr<BaseStatistics> DuckLakeTableEntry::GetStatistics(ClientContext &cont
 		return nullptr;
 	}
 	auto &field_id = field_data->GetByRootIndex(PhysicalIndex(column_id));
-	return GetColumnStats(field_id, *table_stats);
+	try {
+		return GetColumnStats(field_id, *table_stats);
+	} catch (InvalidInputException &ex) {
+		ErrorData error(ex);
+		error.Throw(StringUtil::Format("Column %s has invalid stored statistics, ", field_id.Name()));
+	}
 }
 
 // LCOV_EXCL_START

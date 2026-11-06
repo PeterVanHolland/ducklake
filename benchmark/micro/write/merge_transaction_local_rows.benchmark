@@ -1,0 +1,27 @@
+# name: benchmark/micro/write/merge_transaction_local_rows.benchmark
+# description: MERGE update of half of 1M rows inserted in the same transaction and 1M committed rows, with commit
+# group: [write]
+
+name Merge Transaction Local Rows
+group micro
+subgroup write
+
+require ducklake
+
+require parquet
+
+argument work merge_local_rows_work
+
+include benchmark/micro/fixtures/local_rows.benchmark.in
+
+run
+BEGIN;
+INSERT INTO lake.t SELECT i AS id, i * 2 AS v FROM range(1000000, 2000000) t(i);
+MERGE INTO lake.t USING (SELECT i AS id FROM range(0, 2000000, 2) t(i)) s USING (id) WHEN MATCHED THEN UPDATE SET v = v + 1;
+COMMIT;
+
+# A missed reset leaves 3M rows
+result_query III
+SELECT count(*), sum(v), count(*) FILTER (WHERE v % 2 = 1) FROM lake.t
+----
+2000000	3999999000000	1000000

@@ -81,9 +81,11 @@ public:
 class DuckLakeCompactor {
 public:
 	DuckLakeCompactor(ClientContext &context, DuckLakeCatalog &catalog, DuckLakeTransaction &transaction,
-	                  Binder &binder, TableIndex table_id, uint64_t max_files, DuckLakeMergeAdjacentOptions options);
+	                  Binder &binder, TableIndex table_id, bool table_named, uint64_t max_files,
+	                  DuckLakeMergeAdjacentOptions options);
 	DuckLakeCompactor(ClientContext &context, DuckLakeCatalog &catalog, DuckLakeTransaction &transaction,
-	                  Binder &binder, TableIndex table_id, uint64_t max_files, double delete_threshold);
+	                  Binder &binder, TableIndex table_id, bool table_named, uint64_t max_files,
+	                  double delete_threshold);
 	void GenerateCompactions(DuckLakeTableEntry &table, vector<unique_ptr<LogicalOperator>> &compactions);
 	unique_ptr<LogicalOperator> GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry> source_files,
 	                                                      bool bind_to_latest_schema = false);
@@ -114,6 +116,8 @@ private:
 	DuckLakeTransaction &transaction;
 	Binder &binder;
 	TableIndex table_id;
+	//! Whether the caller named the table, which then fails instead of skipping files it cannot write
+	bool table_named;
 	uint64_t max_files;
 	double delete_threshold = 0.95;
 	DuckLakeMergeAdjacentOptions options;

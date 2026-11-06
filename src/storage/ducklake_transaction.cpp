@@ -200,6 +200,16 @@ optional_ptr<DuckLakeDataFile> LocalTableChanges::FindAddedFile(FileSystem &fs, 
 	return nullptr;
 }
 
+void LocalTableChanges::RemoveOwnedFile(FileSystem &fs, const string &path) {
+	auto shared = FindAddedFile(fs, path);
+	if (shared) {
+		// another table added the file in this transaction, it is removed when that table drops it
+		shared->created_by_ducklake = true;
+		return;
+	}
+	fs.RemoveFile(path);
+}
+
 bool LocalTableChanges::TryDropTransactionLocalFile(ClientContext &context, TableIndex table_id, const string &path) {
 	lock_guard<mutex> guard(lock);
 	auto entry = Find(table_id);
@@ -227,13 +237,7 @@ bool LocalTableChanges::TryDropTransactionLocalFile(ClientContext &context, Tabl
 			// found the file - delete it from the table list and from disk if DuckLake owns it
 			table_files.erase_at(i);
 			if (created_by_ducklake) {
-				auto shared = FindAddedFile(fs, path);
-				if (shared) {
-					// another table added the file in this transaction, it is removed when that table drops it
-					shared->created_by_ducklake = true;
-				} else {
-					fs.RemoveFile(path);
-				}
+				RemoveOwnedFile(fs, path);
 			}
 			if (table_changes.IsEmpty()) {
 				// no more files remaining
@@ -763,18 +767,21 @@ void LocalTableChanges::TransactionLocalDelete(ClientContext &context, TableInde
 void LocalTableChanges::CleanupFiles(ClientContext &context, TableIndex table_id) {
 	lock_guard<mutex> guard(lock);
 	auto table_entry = changes.find(table_id);
-	if (table_entry != changes.end()) {
-		auto &fs = FileSystem::GetFileSystem(context);
-		vector<string> data_files;
-		vector<string> other_files;
-		table_entry->second.AddWrittenFiles(data_files, other_files, false);
-		for (auto &file_name : data_files) {
-			fs.RemoveFile(file_name);
-		}
-		for (auto &file_name : other_files) {
-			fs.TryRemoveFile(file_name);
-		}
-		changes.erase(table_entry);
+	if (table_entry == changes.end()) {
+		return;
+	}
+	// the table leaves the changes first, so that its own entries do not count as other references to its files
+	auto table_changes = std::move(table_entry->second);
+	changes.erase(table_entry);
+	auto &fs = FileSystem::GetFileSystem(context);
+	vector<string> data_files;
+	vector<string> other_files;
+	table_changes.AddWrittenFiles(data_files, other_files, false);
+	for (auto &file_name : data_files) {
+		RemoveOwnedFile(fs, file_name);
+	}
+	for (auto &file_name : other_files) {
+		fs.TryRemoveFile(file_name);
 	}
 }
 

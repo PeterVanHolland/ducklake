@@ -396,6 +396,18 @@ unique_ptr<MultiFileList> DuckLakeMultiFileList::ComplexFilterPushdown(ClientCon
 		AddFilterToPushdownInfo(*pushdown_info, column_id, entry.TakeFilter());
 	}
 
+	// the combiner leaves the NULL checks to the expression pushdown, the null and value counts answer them
+	for (auto &filter : filters) {
+		auto type = filter->GetExpressionType();
+		if (type != ExpressionType::OPERATOR_IS_NULL && type != ExpressionType::OPERATOR_IS_NOT_NULL) {
+			continue;
+		}
+		auto node = GetExpressionFilterNode(info, *filter);
+		if (node) {
+			AddFilterNodeToPushdownInfo(*pushdown_info, *node);
+		}
+	}
+
 	// a disjunction cannot be reduced to per-column filters without losing the correlation between them
 	for (auto &filter : filters) {
 		if (filter->GetExpressionType() != ExpressionType::CONJUNCTION_OR) {
@@ -732,6 +744,14 @@ vector<DuckLakeFileListEntry> DuckLakeMultiFileList::ReadCommittedFiles(
 	throw TransactionException("Transaction conflict - the inlined data of table %s kept moving to files while "
 	                           "it was read",
 	                           read_info.table.name);
+}
+
+void DuckLakeMultiFileList::RecordRead() const {
+	if (!read_info.ReadsCurrentRows()) {
+		return;
+	}
+	auto transaction_ref = read_info.GetTransaction();
+	transaction_ref->RecordScan(read_info.table_id, read_info.scan_id);
 }
 
 void DuckLakeMultiFileList::GetFilesForTable() const {

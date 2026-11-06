@@ -1,5 +1,6 @@
 #include "ducklake_extension.hpp"
 #include "duckdb/main/config.hpp"
+#include "storage/ducklake_delete.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -26,6 +27,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	auto &config = DBConfig::GetConfig(instance);
 	StorageExtension::Register(config, "ducklake", make_shared_ptr<DuckLakeStorageExtension>());
+	OptimizerExtension delete_filters;
+	delete_filters.pre_optimize_function = DuckLakeDelete::RecordDeleteFilters;
+	OptimizerExtension::Register(config, std::move(delete_filters));
 
 	config.AddExtensionOption("ducklake_max_retry_count",
 	                          "The maximum amount of retry attempts for a ducklake transaction", LogicalType::UBIGINT,

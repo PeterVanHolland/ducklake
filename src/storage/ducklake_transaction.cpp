@@ -1199,6 +1199,8 @@ TransactionChangeInformation DuckLakeTransaction::GetTransactionChanges() const 
 	}
 	changes.tables_deleted_from = state->tables_deleted_from;
 	changes.tables_delete_attempted = state->tables_delete_attempted;
+	changes.delete_filters = GetDeleteFilters();
+	changes.tables_read = GetTablesRead();
 	for (auto &entry : state->local_changes.Changes()) {
 		auto table_id = entry.first;
 		if (IsTransactionLocal(table_id.index)) {
@@ -2733,6 +2735,76 @@ void DuckLakeTransaction::DropFile(TableIndex table_id, DataFileIndex data_file_
 void DuckLakeTransaction::MarkDeleteAttempted(TableIndex table_id) {
 	lock_guard<mutex> guard(delete_attempted_lock);
 	state->tables_delete_attempted.insert(table_id);
+}
+
+void DuckLakeTransaction::RecordStatementDeleteFilter(DuckLakeTableEntry &table, idx_t query_id,
+                                                      optional_ptr<const FilterPushdownInfo> filter) {
+	string query;
+	if (filter) {
+		query = metadata_manager->InsertedFilesMatchingSql(table, *filter);
+	}
+	lock_guard<mutex> guard(delete_attempted_lock);
+	state->statement_delete_filters[table.GetTableId()][query_id].push_back(std::move(query));
+}
+
+void DuckLakeTransaction::AddDeleteFilter(TableIndex table_id, idx_t query_id) {
+	lock_guard<mutex> guard(delete_attempted_lock);
+	auto &filters = state->delete_filters[table_id];
+	// a statement can delete from the table more than once, every delete takes all of its filters
+	auto &statement_filters = state->statement_delete_filters[table_id][query_id];
+	if (statement_filters.empty()) {
+		filters.unfiltered = true;
+	}
+	for (auto &query : statement_filters) {
+		if (query.empty()) {
+			filters.unfiltered = true;
+		} else if (std::find(filters.queries.begin(), filters.queries.end(), query) == filters.queries.end()) {
+			filters.queries.push_back(query);
+		}
+	}
+}
+
+idx_t DuckLakeTransaction::NextScanId() {
+	lock_guard<mutex> guard(delete_attempted_lock);
+	return state->next_scan_id++;
+}
+
+void DuckLakeTransaction::RecordScan(TableIndex table_id, idx_t scan_id) {
+	lock_guard<mutex> guard(delete_attempted_lock);
+	state->table_scans[table_id].insert(scan_id);
+}
+
+void DuckLakeTransaction::RecordDeleteScan(TableIndex table_id, idx_t scan_id) {
+	lock_guard<mutex> guard(delete_attempted_lock);
+	state->table_delete_scans[table_id].insert(scan_id);
+}
+
+//! Whether the transaction scanned the table beyond the scans of its deletes and updates
+static bool HasOtherScans(const DuckLakeTransactionState &state, TableIndex table_id, const set<idx_t> &scans) {
+	auto delete_scans = state.table_delete_scans.find(table_id);
+	idx_t delete_scan_count = delete_scans == state.table_delete_scans.end() ? 0 : delete_scans->second.size();
+	return scans.size() > delete_scan_count;
+}
+
+map<TableIndex, DeleteConflictFilters> DuckLakeTransaction::GetDeleteFilters() const {
+	auto result = state->delete_filters;
+	for (auto &entry : state->table_scans) {
+		auto filters = result.find(entry.first);
+		if (filters != result.end() && HasOtherScans(*state, entry.first, entry.second)) {
+			filters->second.unfiltered = true;
+		}
+	}
+	return result;
+}
+
+set<TableIndex> DuckLakeTransaction::GetTablesRead() const {
+	auto result = state->tables_read;
+	for (auto &entry : state->table_scans) {
+		if (HasOtherScans(*state, entry.first, entry.second)) {
+			result.insert(entry.first);
+		}
+	}
+	return result;
 }
 
 bool DuckLakeTransaction::HasDroppedFiles() const {

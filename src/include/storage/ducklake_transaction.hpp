@@ -38,6 +38,8 @@ struct DuckLakeTableStats;
 struct SnapshotChangeInfo;
 struct SnapshotChangeInformation;
 struct TransactionChangeInformation;
+struct DeleteConflictFilters;
+struct FilterPushdownInfo;
 struct NewDataInfo;
 struct NewTableInfo;
 struct NewNameMapInfo;
@@ -283,6 +285,18 @@ public:
 	void DropFile(TableIndex table_id, DataFileIndex data_file_id, string path, idx_t row_count, idx_t file_size_bytes);
 	//! Record that a delete predicate was evaluated against a table, even if no rows matched
 	void MarkDeleteAttempted(TableIndex table_id);
+	//! Record a delete of the statement with the filters of its scan, none when the delete keeps the table rule
+	void RecordStatementDeleteFilter(DuckLakeTableEntry &table, idx_t query_id,
+	                                 optional_ptr<const FilterPushdownInfo> filter);
+	void AddDeleteFilter(TableIndex table_id, idx_t query_id);
+	idx_t NextScanId();
+	//! The scans of deletes and updates read only the rows their filters select, every other scan is a read
+	void RecordScan(TableIndex table_id, idx_t scan_id);
+	void RecordDeleteScan(TableIndex table_id, idx_t scan_id);
+	//! The delete filters per table, unfiltered where the transaction read the table
+	map<TableIndex, DeleteConflictFilters> GetDeleteFilters() const;
+	//! The tables the transaction read
+	set<TableIndex> GetTablesRead() const;
 
 	//! The snapshots the criterion selects that no tag protects, as the transaction sees them
 	vector<DuckLakeSnapshotInfo> ExpirableSnapshots(const string &filter);

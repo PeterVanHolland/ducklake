@@ -267,6 +267,11 @@ DuckLakeFunctionInfo::DuckLakeFunctionInfo(DuckLakeTableEntry &table, DuckLakeTr
     : table(table), transaction(transaction_p.shared_from_this()), snapshot(snapshot) {
 }
 
+bool DuckLakeFunctionInfo::ReadsCurrentRows() const {
+	return scan_type == DuckLakeScanType::SCAN_TABLE && include_local_changes &&
+	       !DuckLakeTransaction::IsTransactionLocal(table_id.index);
+}
+
 shared_ptr<DuckLakeFunctionInfo>
 DuckLakeFunctionInfo::Create(DuckLakeTableEntry &table, DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
 	auto result = make_shared_ptr<DuckLakeFunctionInfo>(table, transaction, snapshot);
@@ -274,6 +279,7 @@ DuckLakeFunctionInfo::Create(DuckLakeTableEntry &table, DuckLakeTransaction &tra
 	result->column_names = table.GetColumns().GetColumnNames();
 	result->column_types = table.GetColumns().GetColumnTypes();
 	result->table_id = table.GetTableId();
+	result->scan_id = transaction.NextScanId();
 	return result;
 }
 
@@ -314,6 +320,7 @@ void DuckLakeScanSerialize(Serializer &serializer, const optional_ptr<FunctionDa
 	serializer.WriteProperty(107, "qualified_name",
 	                         func_info.table.ParentSchema().GetQualifiedName(func_info.table_name));
 	serializer.WritePropertyWithDefault<bool>(108, "include_local_changes", func_info.include_local_changes, true);
+	serializer.WritePropertyWithDefault<idx_t>(109, "scan_id", func_info.scan_id, DConstants::INVALID_INDEX);
 }
 
 unique_ptr<FunctionData> DuckLakeScanDeserialize(Deserializer &deserializer, BoundTableFunction &function) {
@@ -338,6 +345,7 @@ unique_ptr<FunctionData> DuckLakeScanDeserialize(Deserializer &deserializer, Bou
 		// LCOV_EXCL_STOP
 	}
 	auto include_local_changes = deserializer.ReadPropertyWithExplicitDefault<bool>(108, "include_local_changes", true);
+	auto scan_id = deserializer.ReadPropertyWithExplicitDefault<idx_t>(109, "scan_id", DConstants::INVALID_INDEX);
 
 	// If ducklake_scan was registered before parquet was loaded, we set it now
 	if (!function.bind) {
@@ -364,6 +372,10 @@ unique_ptr<FunctionData> DuckLakeScanDeserialize(Deserializer &deserializer, Bou
 	func_info.scan_type = scan_type;
 	func_info.start_snapshot = std::move(start_snapshot);
 	func_info.include_local_changes = include_local_changes;
+	// the scan keeps its identity across a plan round trip, so its reads are not counted twice
+	if (scan_id != DConstants::INVALID_INDEX) {
+		func_info.scan_id = scan_id;
+	}
 
 	return DuckLakeFunctions::BindDuckLakeScan(context, function);
 }

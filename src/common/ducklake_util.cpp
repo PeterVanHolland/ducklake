@@ -12,6 +12,8 @@
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/opener_file_system.hpp"
+#include "duckdb/execution/operator/persistent/copy_output_lifecycle.hpp"
 #include "storage/ducklake_metadata_manager.hpp"
 #include "functions/ducklake_table_functions.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -228,13 +230,60 @@ string DuckLakeUtil::ValueToSQL(DuckLakeMetadataManager &metadata_manager, Clien
 	return SQLString::ToString(result);
 }
 
-void DuckLakeUtil::EnsureDirectoryExists(FileSystem &fs, const string &data_path) {
-	if (!fs.IsRemoteFile(data_path)) {
-		try {
-			fs.CreateDirectoriesRecursive(data_path);
-		} catch (...) {
-		}
+void DuckLakeUtil::EnsureDirectoryExists(ClientContext &context, const string &data_path) {
+	auto &fs = FileSystem::GetFileSystem(context);
+	if (fs.IsRemoteFile(data_path)) {
+		return;
 	}
+	// the canonical path has no file URI prefix, which the walk to the parents would split
+	auto path = fs.CanonicalizePath(data_path);
+	// the missing directories, from the data path up to the first one that exists or that may not be accessed
+	vector<string> missing;
+	auto separator = fs.PathSeparator(path);
+	auto parent = path;
+	while (true) {
+		bool exists;
+		try {
+			exists = fs.DirectoryExists(parent);
+		} catch (PermissionException &) {
+			break;
+		}
+		if (exists) {
+			break;
+		}
+		missing.push_back(parent);
+		auto end = parent.find_last_not_of(separator);
+		auto position = end == string::npos ? string::npos : parent.find_last_of(separator, end);
+		if (position == string::npos) {
+			parent = ".";
+			break;
+		}
+		parent = position == 0 ? separator : parent.substr(0, position);
+	}
+	if (missing.empty()) {
+		return;
+	}
+	// a concurrent writer may create the same directories
+	try {
+		fs.CreateDirectoriesRecursive(path);
+	} catch (...) {
+	}
+	// the entries of the created directories are synced, except in a directory the connection may not access
+	CopyOutputLifecycle lifecycle(context, true);
+	auto &client_fs = fs.Cast<OpenerFileSystem>();
+	for (idx_t i = 0; i < missing.size(); i++) {
+		if (!fs.DirectoryExists(missing[i])) {
+			continue;
+		}
+		try {
+			client_fs.VerifyCanAccessDirectory(i + 1 < missing.size() ? missing[i + 1] : parent);
+		} catch (PermissionException &) {
+			continue;
+		}
+		lifecycle.RegisterCreatedDirectory(missing[i]);
+	}
+	lifecycle.SyncDirectories();
+	lifecycle.MarkSuccessful();
 }
 
 string DuckLakeUtil::PathSeparator(FileSystem &fs, const string &path) {

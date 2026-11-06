@@ -1,0 +1,194 @@
+# name: test/sql/transaction/written_files_synced.test
+# description: The files a transaction writes and the directory entries holding their names are synced before the catalog references them
+# group: [transaction]
+
+require ducklake
+
+require parquet
+
+require notwindows
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+# the syncs cover local files only, so the data path stays local when DATA_PATH is overridden with a remote one
+test-env LOCAL_DATA_PATH {TEST_DIR}
+
+statement ok
+CALL enable_logging('FileSystem')
+
+# the SYNC entries of the FileSystem log under the data path, with the test directory and the file names masked
+statement ok
+CREATE MACRO synced() AS TABLE SELECT DISTINCT regexp_replace(regexp_replace(regexp_replace(path, '^.*/written_files_synced', 'DATA/written_files_synced'), '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', 'UUID', 'g'), '-delete\.(parquet|puffin)$', '-delete.FILE') AS path FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC' AND path LIKE '%/written_files_synced%' ORDER BY ALL
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{LOCAL_DATA_PATH}/written_files_synced', METADATA_CATALOG 'metadata', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE ducklake.t(i INTEGER)
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# the first insert creates the data path, the schema directory and the table directory, and syncs their entries too
+statement ok
+INSERT INTO ducklake.t VALUES (1), (2)
+
+query I
+SELECT path FROM synced()
+----
+DATA/written_files_synced
+DATA/written_files_synced/main
+DATA/written_files_synced/main/t
+DATA/written_files_synced/main/t/ducklake-UUID.parquet
+
+# the directory holding the new data path is synced too
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem') l WHERE op = 'SYNC' AND EXISTS (SELECT 1 FROM duckdb_logs_parsed('FileSystem') r WHERE r.op = 'SYNC' AND r.path = l.path || '/written_files_synced')
+----
+1
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# the directories exist, so a later insert syncs the file and the directory holding its name
+statement ok
+INSERT INTO ducklake.t VALUES (3)
+
+query I
+SELECT path FROM synced()
+----
+DATA/written_files_synced/main/t
+DATA/written_files_synced/main/t/ducklake-UUID.parquet
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# a delete file is written by DuckLake itself and synced the same way
+statement ok
+DELETE FROM ducklake.t WHERE i = 1
+
+query I
+SELECT path FROM synced()
+----
+DATA/written_files_synced/main/t
+DATA/written_files_synced/main/t/ducklake-UUID-delete.FILE
+
+query I
+SELECT i FROM ducklake.t ORDER BY i
+----
+2
+3
+
+statement ok
+CREATE TABLE ducklake.p(d DATE, i INTEGER)
+
+statement ok
+ALTER TABLE ducklake.p SET PARTITIONED BY (year(d), month(d))
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# the partition directories are created by the copy, whose FSYNC syncs their entries
+statement ok
+INSERT INTO ducklake.p VALUES (DATE '2024-01-15', 1), (DATE '2024-02-15', 2)
+
+query I
+SELECT path FROM synced()
+----
+DATA/written_files_synced/main
+DATA/written_files_synced/main/p
+DATA/written_files_synced/main/p/year=2024
+DATA/written_files_synced/main/p/year=2024/month=1
+DATA/written_files_synced/main/p/year=2024/month=1/ducklake-UUID.parquet
+DATA/written_files_synced/main/p/year=2024/month=2
+DATA/written_files_synced/main/p/year=2024/month=2/ducklake-UUID.parquet
+
+statement ok
+CREATE TABLE ducklake.c(i INTEGER)
+
+statement ok
+INSERT INTO ducklake.c VALUES (1), (2)
+
+statement ok
+INSERT INTO ducklake.c VALUES (3), (4)
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# compaction writes its file through the same copy
+statement ok
+CALL ducklake_merge_adjacent_files('ducklake', 'c')
+
+query I
+SELECT path FROM synced()
+----
+DATA/written_files_synced/main/c
+DATA/written_files_synced/main/c/ducklake-UUID.parquet
+
+query I
+SELECT i FROM ducklake.c ORDER BY i
+----
+1
+2
+3
+4
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# an update writes a data file and a delete file
+statement ok
+UPDATE ducklake.c SET i = i + 10 WHERE i = 2
+
+query I
+SELECT path FROM synced()
+----
+DATA/written_files_synced/main/c
+DATA/written_files_synced/main/c/ducklake-UUID-delete.FILE
+DATA/written_files_synced/main/c/ducklake-UUID.parquet
+
+query I
+SELECT count(*) FROM glob('{LOCAL_DATA_PATH}/written_files_synced/main/c/*-delete.*')
+----
+1
+
+# DuckDB's fsync_mode none turns every sync off
+statement ok
+SET fsync_mode = 'none'
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+INSERT INTO ducklake.t VALUES (4)
+
+# the file of c keeps live rows, so the delete writes a second delete file
+statement ok
+DELETE FROM ducklake.c WHERE i = 1
+
+query I
+SELECT count(*) FROM glob('{LOCAL_DATA_PATH}/written_files_synced/main/c/*-delete.*')
+----
+2
+
+query I
+SELECT count(*) FROM synced()
+----
+0
+
+statement ok
+RESET fsync_mode
+
+query I
+SELECT i FROM ducklake.t ORDER BY i
+----
+2
+3
+4
+
+query I
+SELECT i FROM ducklake.c ORDER BY i
+----
+3
+4
+12

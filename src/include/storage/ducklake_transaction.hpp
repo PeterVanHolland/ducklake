@@ -120,7 +120,7 @@ public:
 	//! A file of another table of the transaction at the given path, which ducklake_add_data_files may have added
 	optional_ptr<DuckLakeDataFile> FindAddedFile(FileSystem &fs, TableIndex dropping_table, const string &path);
 	//! Removes a file DuckLake wrote in this transaction, unless another table added it and owns it from now on
-	void RemoveOwnedFile(FileSystem &fs, TableIndex dropping_table, const string &path);
+	void RemoveOwnedFile(FileSystem &fs, TableIndex dropping_table, const string &path, bool try_remove);
 	void AppendFiles(TableIndex table_id, vector<DuckLakeDataFile> files);
 	void AppendDeleteFiles(TableIndex table_id, const string &data_file_path, vector<DuckLakeDeleteFile> files);
 	void AppendInlinedData(ClientContext &context, TableIndex table_id, unique_ptr<DuckLakeInlinedData> new_data);

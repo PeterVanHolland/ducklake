@@ -988,11 +988,11 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	                                     std::move(change_info));
 }
 
-static void ExtractDefaultValue(const DuckLakeColumnData &col_data, DuckLakeColumnInfo &info) {
+static void ExtractDefaultValue(const DuckLakeColumnData &col_data, const LogicalType &type, DuckLakeColumnInfo &info) {
 	info.initial_default = col_data.initial_default;
 	if (col_data.default_value) {
 		Value literal_value;
-		if (DuckLakeUtil::TryGetLiteralValue(*col_data.default_value, literal_value)) {
+		if (DuckLakeUtil::TryGetColumnDefaultLiteral(*col_data.default_value, type, literal_value)) {
 			info.default_value = std::move(literal_value);
 			info.default_value_type = "literal";
 		} else {
@@ -1150,7 +1150,7 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFiel
 		// nested column - generate the info here
 		new_col.column_info.id = column_data.id;
 		new_col.column_info.name = source_id.Name();
-		ExtractDefaultValue(column_data, new_col.column_info);
+		ExtractDefaultValue(column_data, target, new_col.column_info);
 	}
 	// read the literal default back as the catalog would after the commit
 	const auto &literal_default = new_col.column_info.default_value;
@@ -1226,7 +1226,7 @@ void AddNewColumns(const DuckLakeFieldId &field_id, vector<DuckLakeNewColumn> &n
 	new_col.column_info.name = field_id.Name();
 	new_col.column_info.type = DuckLakeTypes::ToString(field_id.Type());
 
-	ExtractDefaultValue(col_data, new_col.column_info);
+	ExtractDefaultValue(col_data, field_id.Type(), new_col.column_info);
 	new_col.parent_idx = parent_idx.index;
 	new_fields.push_back(std::move(new_col));
 	for (auto &child : field_id.Children()) {
@@ -1257,7 +1257,8 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	auto context = transaction.context.lock();
 	Value literal_default;
 	if (info.new_field.HasDefaultValue() && !DuckLakeTypes::IsNested(info.new_field.Type()) &&
-	    !DuckLakeUtil::TryGetLiteralValue(info.new_field.DefaultValue(), literal_default, context.get())) {
+	    !DuckLakeUtil::TryGetColumnDefaultLiteral(info.new_field.DefaultValue(), info.new_field.Type(), literal_default,
+	                                              context.get())) {
 		throw NotImplementedException("We cannot add a struct field with a non-literal default value. Use a literal "
 		                              "default, or add the field without a default and UPDATE the existing rows");
 	}
@@ -1327,7 +1328,7 @@ void RenameField(const DuckLakeFieldId &field_id, const DuckLakeFieldId &parent_
 	renamed_field.column_info.id = field_id.GetFieldIndex();
 	renamed_field.column_info.name = std::move(new_name);
 	renamed_field.column_info.type = DuckLakeTypes::ToString(field_id.Type());
-	ExtractDefaultValue(field_id.GetColumnData(), renamed_field.column_info);
+	ExtractDefaultValue(field_id.GetColumnData(), field_id.Type(), renamed_field.column_info);
 	renamed_field.parent_idx = parent_id.GetFieldIndex().index;
 	change_info.new_fields.push_back(std::move(renamed_field));
 }
@@ -1810,7 +1811,7 @@ DuckLakeColumnInfo DuckLakeTableEntry::GetColumnInfo(FieldIndex field_index) con
 	result.id = field_index;
 	result.name = col.Name();
 	result.type = DuckLakeTypes::ToString(col.Type());
-	ExtractDefaultValue(col_data, result);
+	ExtractDefaultValue(col_data, col.Type(), result);
 	result.nulls_allowed = GetNotNullFields().count(col.Name()) == 0;
 	return result;
 }
@@ -1836,7 +1837,7 @@ DuckLakeColumnInfo DuckLakeTableEntry::ConvertColumn(const Identifier &name, con
 		break;
 	}
 	default:
-		ExtractDefaultValue(field_id.GetColumnData(), column_entry);
+		ExtractDefaultValue(field_id.GetColumnData(), type, column_entry);
 		break;
 	}
 	return column_entry;

@@ -88,6 +88,11 @@ static Value ExtractInitialValue(optional_ptr<const ParsedExpression> initial_ex
 		}
 		throw NonLiteralAddColumnDefault();
 	}
+	if (add_column && !DuckLakeUtil::LiteralKeepsTypeAsText(literal_value, type)) {
+		throw NotImplementedException("We cannot add a VARIANT column with a default that is not a string, as the "
+		                              "existing rows would read it as a string. Add the column and then explicitly "
+		                              "set the default for new values using \"ALTER ... SET DEFAULT\"");
+	}
 	// the rows that exist get the value the session reads, as the rows inserted later do
 	return context ? literal_value.CastAs(*context, type) : literal_value.DefaultCastAs(type);
 }

@@ -39,9 +39,9 @@ struct DuckLakeCommitContext {
 	std::function<bool(TableIndex)> inlined_file_deletion_table_exists;
 	//! Returns the latest snapshot for the first commit attempt.
 	std::function<DuckLakeSnapshot()> get_snapshot;
-	//! The snapshots the expiries of the transaction delete in the commit attempt, after the latest snapshot
-	std::function<vector<DuckLakeSnapshotInfo>(idx_t, idx_t)> get_expired_snapshots = [](idx_t, idx_t) {
-		return vector<DuckLakeSnapshotInfo>();
+	//! What the expiries of the transaction delete in the commit attempt, read after the latest snapshot
+	std::function<DuckLakeExpiry(idx_t, idx_t)> get_expired_snapshots = [](idx_t, idx_t) {
+		return DuckLakeExpiry();
 	};
 	//! Deletes the metadata that only the expired snapshots referenced, after the batch that deleted them
 	std::function<void(const vector<DuckLakeSnapshotInfo> &)> cleanup_expired_snapshots =
@@ -57,6 +57,10 @@ struct DuckLakeCommitContext {
 	//! Classifies metadata-catalog errors that are safe to retry.
 	std::function<bool(const string &)> is_retryable_metadata_error = [](const string &) {
 		return false;
+	};
+	//! The commit error without the failed query text that it repeats.
+	std::function<string(const string &)> commit_error_without_query = [](const string &message) {
+		return message;
 	};
 	//! Advice for a commit error that is not retried.
 	std::function<string(const string &)> commit_error_hint = [](const string &) {
@@ -76,8 +80,15 @@ struct DuckLakeCommitContext {
 	//! Resets per-attempt state before a retry.
 	std::function<void()> prepare_retry = []() {
 	};
+	//! Throws when a failed attempt of the transaction cannot be retried.
+	std::function<void()> verify_retry = []() {
+	};
 	//! Writes again what the transaction wrote to the metadata before its commit, in a retried attempt.
 	std::function<void()> rewrite_before_retry = []() {
+	};
+	//! Whether the failed attempt ends the commit, also when another attempt could succeed.
+	std::function<bool()> skip_retry = []() {
+		return false;
 	};
 	// LCOV_EXCL_STOP
 	//! Runs a metadata-DB query during post-commit cleanup.
@@ -163,6 +174,10 @@ struct DuckLakeCommitContext {
 	std::function<void(const string &)> report_post_commit_error = [](const string &) {
 	};
 	// LCOV_EXCL_STOP
+	//! Whether the commit writes a snapshot, a commit that only changes options writes none.
+	bool write_snapshot = true;
+	//! Whether the commit batch locks the options of the transaction, also when it writes no snapshot.
+	bool locks_config_options = false;
 	//! Author / message / extra info for the snapshot row.
 	DuckLakeSnapshotCommit commit_info;
 	//! When true, Commit() skips the post-commit DropEmptySupersededInlinedTables cleanup.
@@ -199,7 +214,7 @@ public:
 	//! Fails when a snapshot tagged by this transaction was expired meanwhile
 	void CheckTaggedSnapshotsExist(const DuckLakeCommitContext &context) const;
 	//! The ids of the snapshots the tags point at, as a SQL list
-	static string TaggedSnapshotIdList(const case_insensitive_map_t<idx_t> &tags);
+	static string TaggedSnapshotIdList(const case_insensitive_map_t<DuckLakeSnapshotTagInfo> &tags);
 	void CheckFileConflicts(const TransactionChangeInformation &changes, const SnapshotChangeInformation &other_changes,
 	                        const DuckLakeCommitContext &context) const;
 
@@ -254,7 +269,7 @@ public:
 	bool RecomputeGlobalStatsAfterRewrite(string &batch_query, TableIndex table_id, DuckLakeSnapshot snapshot,
 	                                      const CompactionInformation &rewrite_changes,
 	                                      const set<DataFileIndex> &removed_source_ids,
-	                                      const DuckLakeCommitContext &context);
+	                                      const DuckLakeCommitContext &context, bool &deleted_rows_remain);
 	//! Recomputes the stats of the tables of a migrated catalog, returning only the changed tables and columns
 	static vector<DuckLakeGlobalStatsInfo>
 	RecomputeMigratedTableStats(const vector<DuckLakeGlobalStatsInfo> &committed_stats,
@@ -320,10 +335,12 @@ public:
 	set<TableIndex> refreshed_table_sizes;
 	//! The tables other transactions changed after the snapshot of a retried commit
 	set<TableIndex> tables_changed_by_others;
-	//! The snapshot tags this transaction creates, with the tagged snapshot
-	case_insensitive_map_t<idx_t> new_snapshot_tags;
+	//! The snapshot tags this transaction creates, by name
+	case_insensitive_map_t<DuckLakeSnapshotTagInfo> new_snapshot_tags;
 	//! The committed snapshot tags this transaction drops, by their stored name
 	case_insensitive_map_t<DuckLakeSnapshotTagInfo> dropped_snapshot_tags;
+	//! The committed snapshot tags past their expiry time that an expiry in the statements of this transaction drops
+	case_insensitive_map_t<DuckLakeSnapshotTagInfo> expired_snapshot_tags;
 };
 
 } // namespace duckdb

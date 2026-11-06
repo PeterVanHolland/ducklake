@@ -325,6 +325,15 @@ struct DuckLakeSnapshotTagInfo {
 	Value snapshot_time;
 	//! The snapshot that created the tag, unset until its transaction commits
 	optional_idx created_snapshot_id;
+	//! NULL when the tag does not expire
+	Value expires_at = Value(LogicalType::TIMESTAMP_TZ);
+};
+
+//! What the expiries of a transaction delete in a commit attempt
+struct DuckLakeExpiry {
+	vector<DuckLakeSnapshotInfo> snapshots;
+	//! The live tags whose expiry time has passed
+	vector<DuckLakeSnapshotTagInfo> tags;
 };
 
 struct DuckLakeViewColumnTag {
@@ -589,6 +598,8 @@ struct DuckLakeConfigOptionUndo {
 	string previous_value;
 	bool was_set = false;
 	bool reset = false;
+	//! the rows the option is expected to have in the metadata after this change
+	idx_t metadata_rows = 0;
 };
 
 struct DuckLakeNameMapColumnInfo {

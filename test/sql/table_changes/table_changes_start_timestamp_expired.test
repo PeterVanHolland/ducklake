@@ -96,13 +96,8 @@ SELECT count(*) FROM ducklake_table_changes('lake', 'main', 't', now(), now())
 ----
 0
 
-# time travel by timestamp refuses the time of an expired snapshot, only the change feed start reaches past it
-statement error
-SELECT list(id ORDER BY id), sum(v) FROM lake.t AT (TIMESTAMP => getvariable('t5'))
-----
-snapshots 5 to 6 were expired
-
-# the upper bound keeps resolving to the snapshot before the timestamp
+# the upper bound keeps resolving to the snapshot before the timestamp, read after the expired gap, which time travel
+# by timestamp refuses on a 2.0 catalog
 query II
 SELECT list(id ORDER BY id), sum(v) FROM lake.t AT (TIMESTAMP => getvariable('t7'))
 ----

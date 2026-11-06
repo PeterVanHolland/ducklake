@@ -94,6 +94,8 @@ public:
 	                                           bool table_has_rows);
 	//! The statistics of count values that are all the given value
 	static DuckLakeColumnStats FromConstant(const LogicalType &type, const Value &value, idx_t count);
+	//! The stored text of a bound that is the given value
+	static string BoundToString(const Value &value);
 	//! Discards the min/max bounds, leaving the counts intact
 	void ClearBounds();
 	//! Rewrite FLOAT bounds as the DOUBLE values they widen to

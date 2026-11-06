@@ -1,5 +1,6 @@
 #include "storage/ducklake_stats.hpp"
 #include "common/ducklake_data_file.hpp"
+#include "common/ducklake_util.hpp"
 #include "storage/ducklake_field_data.hpp"
 #include "storage/ducklake_geo_stats.hpp"
 #include "storage/ducklake_metadata_info.hpp"
@@ -104,6 +105,14 @@ DuckLakeColumnStats DuckLakeColumnStats::FromGlobalStats(const LogicalType &type
 	return stats;
 }
 
+string DuckLakeColumnStats::BoundToString(const Value &value) {
+	if (value.type().id() == LogicalTypeId::BLOB) {
+		// BLOB bounds are stored as hexadecimal, like the bounds of data files
+		return DuckLakeUtil::BlobToHex(StringValue::Get(value));
+	}
+	return value.ToString();
+}
+
 DuckLakeColumnStats DuckLakeColumnStats::FromConstant(const LogicalType &type, const Value &value, idx_t count) {
 	DuckLakeColumnStats stats(type);
 	stats.has_num_values = true;
@@ -115,7 +124,7 @@ DuckLakeColumnStats DuckLakeColumnStats::FromConstant(const LogicalType &type, c
 	} else if (count == 0) {
 		stats.any_valid = false;
 	} else {
-		stats.min = stats.max = value.ToString();
+		stats.min = stats.max = DuckLakeColumnStats::BoundToString(value);
 		stats.has_min = stats.has_max = true;
 		stats.min_is_exact = stats.max_is_exact = true;
 	}

@@ -57,6 +57,8 @@ public:
 	static string ToQuotedList(const vector<Identifier> &input, char list_separator = ',');
 	static vector<string> ParseQuotedList(const string &input, char list_separator = ',');
 	static string StatsToString(const string &text);
+	//! The hexadecimal form the Parquet writer stores BLOB bounds in
+	static string BlobToHex(string_t blob);
 	static string ValueToSQL(DuckLakeMetadataManager &metadata_manager, ClientContext &context, const Value &val);
 
 	static ParsedCatalogEntry ParseCatalogEntry(const string &input);

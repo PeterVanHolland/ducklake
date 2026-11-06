@@ -130,8 +130,7 @@ void DuckLakeColumnStats::DropTextBlobBounds() {
 		return;
 	}
 	if ((has_min && !IsHexBound(min)) || (has_max && !IsHexBound(max))) {
-		has_min = false;
-		has_max = false;
+		ClearBounds();
 		bounds_unknown = true;
 	}
 }
@@ -225,7 +224,7 @@ static bool TryCastBound(string &bound, const LogicalType &source, const Logical
 	if (!target_value) {
 		return false;
 	}
-	bound = target_value->ToString();
+	bound = DuckLakeColumnStats::BoundToString(*target_value);
 	return true;
 }
 

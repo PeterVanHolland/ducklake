@@ -92,6 +92,7 @@
       "reason": "The TIMESTAMPTZ_NS column type was added in 1.1 and is not available when ducklake_default_version is pinned to 1.0",
       "paths": [
         "test/sql/add_files/add_files_type_check_reader_types.test",
+        "test/sql/alter/promotion_initial_default_timestamptz_ns.test",
         "test/sql/default/literal_default_rendering.test",
         "test/sql/partitioning/partition_transform_column_types.test",
         "test/sql/stats/filter_pushdown_postgres_types.test",

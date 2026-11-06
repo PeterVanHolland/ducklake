@@ -117,7 +117,7 @@ string DuckLakeMetadataManager::StoredMetadataType(const LogicalType &type) cons
 }
 
 bool DuckLakeMetadataManager::KnowsStoredMetadataTypes() const {
-	// the types of a DuckDB catalog round-trip, those of another catalog are only known from its profile
+	// a DuckDB catalog keeps the types as created, another catalog's profile has to list its stored types
 	return transaction.GetCatalog().MetadataCatalogType() == "duckdb" || !GetMetadataProfile().stored_types.empty();
 }
 

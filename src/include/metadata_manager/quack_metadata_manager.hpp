@@ -32,7 +32,7 @@ public:
 	void ProbeServerCapabilities() override;
 	map<Identifier, vector<pair<Identifier, string>>>
 	GetMetadataTableColumns(const vector<Identifier> &table_names) override;
-	//! the server is a DuckDB, whose types round-trip
+	//! the server is a DuckDB, which keeps the types as created
 	bool KnowsStoredMetadataTypes() const override {
 		return true;
 	}

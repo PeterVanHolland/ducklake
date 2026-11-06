@@ -1,0 +1,109 @@
+# name: test/sql/data_inlining/superseded_inlined_table_open_transaction.test
+# description: A flush or an ALTER keeps the superseded inlined tables that an open transaction can still read
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/superseded_inlined_table_open_transaction', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.t (id INTEGER)
+
+statement ok
+CREATE TABLE lake.other (id INTEGER)
+
+statement ok
+INSERT INTO lake.t VALUES (1), (2)
+
+statement ok
+ALTER TABLE lake.t ADD COLUMN c INTEGER
+
+statement ok
+INSERT INTO lake.t VALUES (3, 3)
+
+# con1 fixes its snapshot before the flush without reading t
+statement ok con1
+BEGIN
+
+query I con1
+SELECT count(*) FROM lake.other
+----
+0
+
+statement ok con2
+CALL ducklake_flush_inlined_data('lake')
+
+query I con1
+SELECT sum(id) FROM lake.t
+----
+6
+
+statement ok con1
+COMMIT
+
+# once no transaction can read it, the next flush drops the superseded inlined table
+statement ok con2
+INSERT INTO lake.t VALUES (4, 4)
+
+statement ok con2
+CALL ducklake_flush_inlined_data('lake')
+
+query I con2
+SELECT count(*) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 't' AND end_snapshot IS NULL)
+----
+1
+
+query II con2
+SELECT sum(id), sum(c) FROM lake.t
+----
+10	7
+
+# an ALTER after a flush keeps the emptied inlined table for a transaction that started before the flush
+statement ok
+CREATE TABLE lake.acc (id INTEGER, bal INTEGER)
+
+statement ok
+INSERT INTO lake.acc VALUES (1, 100), (2, 100)
+
+statement ok
+SET VARIABLE before_alter = (SELECT max(snapshot_id) FROM lake.snapshots())
+
+statement ok con3
+BEGIN
+
+query I con3
+SELECT sum(bal) FROM lake.acc
+----
+200
+
+statement ok con2
+CALL ducklake_flush_inlined_data('lake')
+
+statement ok con2
+ALTER TABLE lake.acc ADD COLUMN x INTEGER
+
+# a read of the old schema version loads it with the inlined table of the ALTER
+query I
+SELECT sum(bal) FROM lake.acc AT (VERSION => getvariable('before_alter'))
+----
+200
+
+query I con3
+SELECT sum(bal) FROM lake.acc
+----
+200
+
+statement ok con3
+COMMIT
+
+query II con2
+SELECT count(*), sum(bal) FROM lake.acc
+----
+2	200

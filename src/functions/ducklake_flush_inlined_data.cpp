@@ -35,6 +35,9 @@
 #include "functions/ducklake_compaction_functions.hpp"
 #include "storage/ducklake_sort_data.hpp"
 #include "common/parquet_file_scanner.hpp"
+#include "duckdb/common/bind_helpers.hpp"
+#include "duckdb/parser/parser.hpp"
+#include "duckdb/planner/expression_binder.hpp"
 
 namespace duckdb {
 
@@ -317,12 +320,26 @@ unique_ptr<LogicalOperator> DuckLakeDataFlusher::GenerateFlushCommand() {
 	}
 
 	DuckLakeCopyInput copy_input(context, table);
+	if (!sort_order_sql.empty()) {
+		// the partitioned copy writes each partition in the order the inlined rows are read in
+		auto orders = Parser(context).ParseOrderList(sort_order_sql);
+		auto &columns = table.GetColumns();
+		auto sort_index = binder.GenerateTableIndex();
+		copy_input.sort_orders =
+		    BindOrderByNodes(binder, sort_index, Identifier("inlined_data"),
+		                     StringsToIdentifiers(columns.GetColumnNames()), columns.GetColumnTypes(), orders);
+		for (auto &order : copy_input.sort_orders) {
+			ExpressionBinder::PushCollation(context, order.expression, order.expression->GetReturnType());
+		}
+		DuckLakeInsert::ResolveSortOrders(copy_input.sort_orders, sort_index, columns.GetColumnTypes());
+	}
 	unique_ptr<LogicalCopyToFile> copy;
 	auto root = DuckLakeCompactor::PlanRewriteScan(
 	    context, binder, table, copy_input, true,
 	    [&](DuckLakeFunctionInfo &read_info) {
 		    read_info.scan_type = DuckLakeScanType::SCAN_FOR_FLUSH;
-		    read_info.flush_sort_order_sql = sort_order_sql;
+		    // a partitioned copy sorts its partitions itself, so the inlined rows are read unsorted for it
+		    read_info.flush_sort_order_sql = partition_data ? string() : sort_order_sql;
 		    return make_uniq<DuckLakeMultiFileList>(read_info, inlined_table);
 	    },
 	    copy);

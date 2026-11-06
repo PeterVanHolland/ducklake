@@ -77,6 +77,8 @@ struct DuckLakeInsertPipeline {
 	bool sorted = false;
 	//! Whether the sort keys depend on the session, like getvariable()
 	bool sort_requires_rebind = false;
+	//! The sort keys of the sorted rows, over the physical columns of the table
+	vector<BoundOrderByNode> sort_orders;
 
 	PhysicalOperator &AttachInsert(PhysicalOperator &insert, PhysicalOperator &copy);
 };
@@ -141,6 +143,9 @@ public:
 	                                           DuckLakeCopyInput &copy_input, optional_ptr<PhysicalOperator> plan);
 	//! Makes the copy write sorted input in order, even when it rotates files
 	static void PreserveSortedOrder(PhysicalCopyToFile &physical_copy);
+	//! Binds the column references of sort keys to the positions of the columns
+	static void ResolveSortOrders(vector<BoundOrderByNode> &orders, TableIndex table_index,
+	                              const vector<LogicalType> &types);
 	static PhysicalOperator &PlanInsert(ClientContext &context, PhysicalPlanGenerator &planner,
 	                                    DuckLakeTableEntry &table, string encryption_key);
 	static void RemoveEmptyFiles(ClientContext &context, DuckLakeInsertGlobalState &gstate);
@@ -196,6 +201,8 @@ struct DuckLakeCopyInput {
 	optional_idx get_table_index;
 	//! Whether the rows reach the copy in the order they must be written in
 	bool ordered_input = false;
+	//! The sort keys over the copied columns, which a partitioned copy writes each partition in
+	vector<BoundOrderByNode> sort_orders;
 };
 
 } // namespace duckdb

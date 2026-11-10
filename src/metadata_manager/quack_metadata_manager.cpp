@@ -76,17 +76,22 @@ DuckLakeCommitOutcome QuackMetadataManager::CommitOutcomeAfterError(const ErrorD
 	if (IsConnectionError(error.RawMessage())) {
 		return DuckLakeCommitOutcome::UNKNOWN;
 	}
-	// the client raises these for a reply it cannot use, the server reports its errors with their own type
+	// the server reports a statement it ran and rolled back with one of these types, every other failure can be the
+	// client's while it waited for the reply or read it
 	switch (error.Type()) {
-	case ExceptionType::IO:
-	case ExceptionType::HTTP:
-	case ExceptionType::INTERRUPT:
-	case ExceptionType::SERIALIZATION:
-	case ExceptionType::INTERNAL:
-	case ExceptionType::NOT_IMPLEMENTED:
-		return DuckLakeCommitOutcome::UNKNOWN;
-	default:
+	case ExceptionType::TRANSACTION:
+	case ExceptionType::CONSTRAINT:
+	case ExceptionType::CATALOG:
+	case ExceptionType::BINDER:
+	case ExceptionType::PARSER:
+	case ExceptionType::SYNTAX:
+	case ExceptionType::CONVERSION:
+	case ExceptionType::INVALID_INPUT:
+	case ExceptionType::DEPENDENCY:
+	case ExceptionType::PERMISSION:
 		return DuckLakeCommitOutcome::ROLLED_BACK;
+	default:
+		return DuckLakeCommitOutcome::UNKNOWN;
 	}
 }
 

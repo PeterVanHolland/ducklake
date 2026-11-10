@@ -2818,7 +2818,6 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 		bool can_retry;
 		bool retryable_metadata_error = false;
 		bool commit_sent = false;
-		// a COMMIT whose error leaves the snapshot durable ends the commit, the error follows it
 		auto commit_took_effect = [&](const ErrorData &error) {
 			return RecordErrorAfterCommit(context.commit_outcome(error), error);
 		};
@@ -2894,23 +2893,30 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 				context.flush_cache_if_pending();
 				commit_metadata_connection();
 			};
+			// once the batch is committed, what follows it is best effort
+			auto finish_committed_batch = [&]() {
+				try {
+					finish_batch();
+				} catch (std::exception &ex) {
+					context.report_post_commit_error(ErrorData(ex).Message());
+				}
+			};
 			commit_sent = context.batch_commits;
 			auto res = context.execute_commit_batch(commit_snapshot, batch_queries);
 			if (res->HasError()) {
 				auto &commit_error = res->GetErrorObject();
 				if (commit_sent && commit_took_effect(commit_error)) {
-					// the snapshot is committed, what follows the batch is best effort on the failed database
-					try {
-						finish_batch();
-					} catch (std::exception &ex) {
-						context.report_post_commit_error(ErrorData(ex).Message());
-					}
+					finish_committed_batch();
 					break;
 				}
 				retryable_metadata_error = context.is_retryable_metadata_error(commit_error.RawMessage());
 				commit_error.Throw("Failed to flush changes into DuckLake: ");
 			}
-			finish_batch();
+			if (context.batch_commits) {
+				finish_committed_batch();
+			} else {
+				finish_batch();
+			}
 			break;
 		} catch (std::exception &ex) {
 			ErrorData error(ex);

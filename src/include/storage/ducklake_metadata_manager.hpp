@@ -193,7 +193,7 @@ struct DuckLakeFileListDynamicFilter {
 	LogicalType column_type;
 };
 
-//! What the error of a COMMIT that was sent to the metadata database says about the commit
+//! What the error of a sent COMMIT says about the commit
 enum class DuckLakeCommitOutcome : uint8_t { COMMITTED, ROLLED_BACK, UNKNOWN };
 
 //! The DuckLake metadata manger is the communication layer between the system and the metadata catalog

@@ -27,6 +27,10 @@ BEGIN
 statement ok
 INSERT INTO dl.t VALUES (1)
 
+# the connection secret of the same transaction is committed with the lake
+statement ok
+CREATE SECRET committed_with_lake IN connection (TYPE ducklake, METADATA_PATH '{DUCKLAKE_CONNECTION}')
+
 statement ok
 SET wal_autocheckpoint = '1B'
 
@@ -40,6 +44,12 @@ The DuckLake transaction is committed, but its metadata database reported an err
 
 statement ok
 SET debug_checkpoint_abort = 'NONE'
+
+# the commit took effect for the other states of the connection too
+query I
+SELECT count(*) FROM duckdb_secrets() WHERE name = 'committed_with_lake' AND storage = 'connection'
+----
+1
 
 # the data file of the committed snapshot stays
 query I

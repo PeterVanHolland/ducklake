@@ -1,5 +1,6 @@
 #include "storage/ducklake_transaction_manager.hpp"
 #include "duckdb/main/attached_database.hpp"
+#include "duckdb/transaction/transaction_context.hpp"
 
 #include "duckdb/main/settings.hpp"
 
@@ -46,6 +47,13 @@ ErrorData DuckLakeTransactionManager::CommitTransaction(ClientContext &context, 
 	} catch (...) {
 		RemoveTransaction(transaction);
 		throw;
+	}
+	if (!error.HasError()) {
+		// a durable commit whose metadata database failed afterwards is reported like an autocheckpoint error
+		auto error_after_commit = ducklake_transaction.ErrorAfterCommit();
+		if (error_after_commit.HasError()) {
+			context.transaction.SetAutocheckpointError(std::move(error_after_commit));
+		}
 	}
 	// the caller does not roll back a failed commit, so it is released here without removing its files
 	RemoveTransaction(transaction);

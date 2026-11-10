@@ -9,6 +9,7 @@
 #pragma once
 
 #include "ducklake_macro_entry.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/main/database.hpp"
 #include "common/ducklake_data_file.hpp"
@@ -370,6 +371,8 @@ public:
 	void ApplyServerSideCommit(idx_t schema_version);
 	//! Removes the files that this transaction wrote
 	void CleanupFiles();
+	//! The error the metadata database reported after a durable COMMIT, if any
+	ErrorData ErrorAfterCommit() const;
 	//! Post-commit cleanup of empty inlined-data tables superseded by later schema versions.
 	void DropEmptySupersededInlinedTablesClientSide();
 	void ReportPostCommitError(const string &message);

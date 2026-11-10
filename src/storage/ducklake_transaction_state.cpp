@@ -95,12 +95,21 @@ void DuckLakeTransactionState::CleanupFiles() {
 	local_changes.CleanupFiles(db);
 }
 
-void DuckLakeTransactionState::ThrowErrorAfterCommit() {
+ErrorData DuckLakeTransactionState::ErrorAfterCommit() const {
 	if (!error_after_commit.HasError()) {
-		return;
+		return ErrorData();
 	}
-	error_after_commit.Throw(
-	    "The DuckLake transaction is committed, but its metadata database reported an error after the commit: ");
+	return ErrorData(error_after_commit.Type(),
+	                 "The DuckLake transaction is committed, but its metadata database reported an error after the "
+	                 "commit: " +
+	                     error_after_commit.RawMessage());
+}
+
+void DuckLakeTransactionState::ThrowErrorAfterCommit() {
+	auto error = ErrorAfterCommit();
+	if (error.HasError()) {
+		error.Throw();
+	}
 }
 
 bool DuckLakeTransactionState::SchemaChangesMade() const {
@@ -2874,9 +2883,17 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 				    CommitChanges(commit_state, attempt_changes, stats, context, attempt_dropped_file_stats);
 				batch_queries += WriteSnapshotChanges(commit_state, attempt_changes, context.commit_info);
 			}
+			commit_sent = context.batch_commits;
 			auto res = context.execute_commit_batch(commit_snapshot, batch_queries);
 			if (res->HasError()) {
 				auto &commit_error = res->GetErrorObject();
+				if (commit_sent &&
+				    context.commit_outcome(commit_error.RawMessage()) == DuckLakeCommitOutcome::COMMITTED) {
+					// the batch committed the snapshot, the error follows the finished commit
+					error_after_commit = commit_error;
+					new_entry_oids = std::move(commit_state.new_entry_oids);
+					break;
+				}
 				retryable_metadata_error = context.is_retryable_metadata_error(commit_error.RawMessage());
 				commit_error.Throw("Failed to flush changes into DuckLake: ");
 			}

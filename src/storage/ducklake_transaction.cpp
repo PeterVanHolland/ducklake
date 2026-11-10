@@ -942,7 +942,6 @@ void DuckLakeTransaction::Commit() {
 	config_option_undo.clear();
 	SetRequiresNewInlinedTable(false);
 	ClearSchemaCachePins();
-	state->ThrowErrorAfterCommit();
 }
 
 void DuckLakeTransaction::Rollback() {
@@ -1594,6 +1593,10 @@ void DuckLakeTransaction::CleanupFiles() {
 	state->CleanupFiles();
 }
 
+ErrorData DuckLakeTransaction::ErrorAfterCommit() const {
+	return state->ErrorAfterCommit();
+}
+
 void DuckLakeTransaction::ApplyServerSideCommit(idx_t schema_version) {
 	if (snapshot) {
 		for (auto &entry : state->dropped_file_stats) {
@@ -1716,6 +1719,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	context.commit_error_without_query = [&](const string &message) {
 		return metadata_manager->CommitErrorWithoutQuery(message);
 	};
+	context.batch_commits = metadata_manager->CommitsInBatch();
 	context.commit_outcome = [&](const string &message) {
 		return metadata_manager->CommitOutcomeAfterError(message);
 	};

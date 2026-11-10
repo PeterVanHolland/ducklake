@@ -65,6 +65,18 @@ unique_ptr<QueryResult> QuackMetadataManager::ExecuteInTransaction(string &query
 	return DuckLakeMetadataManager::ExecuteInTransaction(query);
 }
 
+bool QuackMetadataManager::CommitsInBatch() const {
+	return true;
+}
+
+DuckLakeCommitOutcome QuackMetadataManager::CommitOutcomeAfterError(const string &message) const {
+	// a request without a reply fails as a send, the server rolls back what it rejects
+	if (StringUtil::Contains(message, "Failed to send message")) {
+		return DuckLakeCommitOutcome::UNKNOWN;
+	}
+	return DuckDBCommitOutcome(message);
+}
+
 string QuackMetadataManager::MetadataExistsQuery() const {
 	return "SELECT COUNT(*) FROM information_schema.tables "
 	       "WHERE table_name = 'ducklake_metadata' AND table_schema = {METADATA_SCHEMA_NAME_LITERAL}";

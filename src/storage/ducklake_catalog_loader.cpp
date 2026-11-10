@@ -30,7 +30,8 @@ DuckLakeCatalogLoader::entry_names_t &DuckLakeCatalogLoader::EntryNames(DuckLake
 	if (existing != entry_names.end()) {
 		return existing->second;
 	}
-	auto &names = entry_names[schema_id];
+	// the index is published once it is read, a failed query leaves none behind
+	entry_names_t names;
 	idx_t estimate = NODE_OVERHEAD;
 	for (auto &entry : transaction.GetMetadataManager().GetEntryNames(snapshot, schema_id)) {
 		auto &name = entry.first.GetIdentifierName();
@@ -38,7 +39,7 @@ DuckLakeCatalogLoader::entry_names_t &DuckLakeCatalogLoader::EntryNames(DuckLake
 		estimate += name.size() + sizeof(TableIndex) + NODE_OVERHEAD;
 	}
 	AddEstimatedMemory(estimate);
-	return names;
+	return entry_names.emplace(schema_id, std::move(names)).first->second;
 }
 
 optional_ptr<CatalogEntry> DuckLakeCatalogLoader::GetEntry(DuckLakeTransaction &transaction,
@@ -54,16 +55,16 @@ optional_ptr<CatalogEntry> DuckLakeCatalogLoader::GetEntry(DuckLakeTransaction &
 		}
 		auto &names = EntryNames(transaction, schema_id);
 		auto ids = names.find(name.GetIdentifierName());
-		if (ids == names.end()) {
-			return nullptr;
-		}
-		for (auto &entry_id : ids->second) {
-			if (!schemas.GetEntryById(entry_id)) {
-				Load(transaction, DuckLakeCatalogLoadFilter::Entry(entry_id));
+		if (ids != names.end()) {
+			for (auto &entry_id : ids->second) {
+				if (!schemas.GetEntryById(entry_id)) {
+					Load(transaction, DuckLakeCatalogLoadFilter::Entry(entry_id));
+				}
 			}
+			entry = tables.GetEntry(name);
 		}
-		entry = tables.GetEntry(name);
 	}
+	// the index of the names grows the estimate as well
 	RefreshReservation();
 	return entry;
 }

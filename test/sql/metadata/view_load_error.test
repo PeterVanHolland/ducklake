@@ -15,6 +15,9 @@ statement ok
 CREATE TABLE lake.t(i INTEGER)
 
 statement ok
+CREATE TABLE __ducklake_metadata_lake.main.ducklake_view_copy AS FROM __ducklake_metadata_lake.main.ducklake_view
+
+statement ok
 DROP TABLE __ducklake_metadata_lake.main.ducklake_view
 
 statement ok
@@ -32,3 +35,17 @@ statement error
 SELECT count(*) FROM duckdb_tables() WHERE database_name = 'lake'
 ----
 Failed to get view information from DuckLake
+
+# the failed lookups left nothing behind, the repaired catalog loads
+statement ok
+CREATE TABLE __ducklake_metadata_lake.main.ducklake_view AS FROM __ducklake_metadata_lake.main.ducklake_view_copy
+
+query I
+SELECT count(*) FROM lake.t
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'lake'
+----
+1

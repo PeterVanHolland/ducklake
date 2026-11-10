@@ -912,7 +912,10 @@ void DuckLakeTransaction::Commit() {
 				connection->Commit();
 			} catch (std::exception &ex) {
 				ErrorData error(ex);
-				error.Throw(GetMetadataManager().CommitErrorHint(error.Message()));
+				auto &manager = GetMetadataManager();
+				if (!state->RecordErrorAfterCommit(manager.CommitOutcomeAfterError(error), error)) {
+					error.Throw(manager.CommitErrorHint(error.Message()));
+				}
 			}
 			if (!state->flushed_inlined_tables.empty()) {
 				DropEmptySupersededInlinedTablesClientSide();
@@ -1723,7 +1726,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	context.commit_error_without_query = [&](const string &message) {
 		return metadata_manager->CommitErrorWithoutQuery(message);
 	};
-	context.batch_commits = metadata_manager->CommitsInBatch();
+	context.batch_commits = metadata_manager->CommitsEachStatement();
 	context.commit_outcome = [&](const ErrorData &error) {
 		return metadata_manager->CommitOutcomeAfterError(error);
 	};

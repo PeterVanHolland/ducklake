@@ -397,8 +397,10 @@ bool PostgresMetadataManager::IsRetryableCommitError(const string &message) cons
 }
 
 DuckLakeCommitOutcome PostgresMetadataManager::CommitOutcomeAfterError(const ErrorData &error) const {
-	// the server rolls back a COMMIT it rejects with an ERROR, any other failure can be a lost reply
-	if (StringUtil::Contains(error.RawMessage(), "\"COMMIT\": ERROR:")) {
+	// the server rolls back a COMMIT it rejects, a conflict is told apart from a lost reply in any language
+	auto &message = error.RawMessage();
+	if (IsRetryableCommitError(message) || DuckLakeTransaction::RetryOnError(message) ||
+	    StringUtil::Contains(message, "\"COMMIT\": ERROR:")) {
 		return DuckLakeCommitOutcome::ROLLED_BACK;
 	}
 	return DuckLakeCommitOutcome::UNKNOWN;

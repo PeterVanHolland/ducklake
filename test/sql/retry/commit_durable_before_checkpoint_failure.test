@@ -77,3 +77,40 @@ SELECT i FROM dl.t ORDER BY i
 ----
 1
 2
+
+# a transaction that only sets an option commits through its own path
+statement ok
+BEGIN
+
+statement ok
+CALL dl.set_option('parquet_compression', 'uncompressed')
+
+statement ok
+CREATE SECRET committed_with_option IN connection (TYPE ducklake, METADATA_PATH '{DUCKLAKE_CONNECTION}')
+
+statement ok
+SET debug_checkpoint_abort = 'BEFORE_HEADER_NON_FATAL'
+
+statement error
+COMMIT
+----
+The DuckLake transaction is committed, but its metadata database reported an error after the commit: Transaction COMMIT succeeded and is durable
+
+statement ok
+SET debug_checkpoint_abort = 'NONE'
+
+query I
+SELECT count(*) FROM duckdb_secrets() WHERE name = 'committed_with_option' AND storage = 'connection'
+----
+1
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/commit_durable_before_checkpoint_failure', DATA_INLINING_ROW_LIMIT 0)
+
+query I
+SELECT value FROM dl.options() WHERE option_name = 'parquet_compression'
+----
+uncompressed

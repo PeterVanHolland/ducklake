@@ -61,7 +61,7 @@ struct DuckLakeCommitContext {
 	std::function<string(const string &)> commit_error_hint = [](const string &) {
 		return string();
 	};
-	//! Whether the commit batch commits the metadata transaction itself.
+	//! Whether the metadata database commits the commit batch itself.
 	bool batch_commits = false;
 	//! Classifies the error of a COMMIT that was sent.
 	std::function<DuckLakeCommitOutcome(const ErrorData &)> commit_outcome = [](const ErrorData &) {
@@ -289,7 +289,9 @@ public:
 	static void DropEmptySupersededInlinedTables(const DuckLakeCommitContext &context);
 
 	void CleanupFiles();
-	//! The error the metadata database reported after a durable COMMIT, with what it means for the transaction
+	//! Keeps the error of a COMMIT that took effect, so the finished commit reports it
+	bool RecordErrorAfterCommit(DuckLakeCommitOutcome outcome, const ErrorData &error);
+	//! That error with what it means for the transaction
 	ErrorData ErrorAfterCommit() const;
 
 	void EnsureCommitInfoProvided(const DuckLakeSnapshotCommit &commit_info) const;

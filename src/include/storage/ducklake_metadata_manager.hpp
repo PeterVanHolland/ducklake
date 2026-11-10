@@ -254,10 +254,6 @@ public:
 	virtual DuckLakeCommitOutcome CommitOutcomeAfterError(const ErrorData &error) const;
 	//! The outcome a DuckDB database reports with the error of a COMMIT
 	static DuckLakeCommitOutcome DuckDBCommitOutcome(const string &message);
-	//! Whether the commit batch commits the metadata transaction itself
-	virtual bool CommitsInBatch() const {
-		return false;
-	}
 	//! SQL that the commit of a transaction that changed options runs, so two commits cannot both insert an option
 	virtual string ConfigOptionLockSql() const {
 		return string();

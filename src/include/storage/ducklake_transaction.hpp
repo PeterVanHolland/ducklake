@@ -371,7 +371,6 @@ public:
 	void ApplyServerSideCommit(idx_t schema_version);
 	//! Removes the files that this transaction wrote
 	void CleanupFiles();
-	//! The error the metadata database reported after a durable COMMIT, if any
 	ErrorData ErrorAfterCommit() const;
 	void SetErrorAfterCommit(ErrorData error);
 	//! Post-commit cleanup of empty inlined-data tables superseded by later schema versions.

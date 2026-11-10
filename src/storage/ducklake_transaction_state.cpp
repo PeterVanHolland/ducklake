@@ -95,6 +95,14 @@ void DuckLakeTransactionState::CleanupFiles() {
 	local_changes.CleanupFiles(db);
 }
 
+bool DuckLakeTransactionState::RecordErrorAfterCommit(DuckLakeCommitOutcome outcome, const ErrorData &error) {
+	if (outcome != DuckLakeCommitOutcome::COMMITTED) {
+		return false;
+	}
+	error_after_commit = error;
+	return true;
+}
+
 ErrorData DuckLakeTransactionState::ErrorAfterCommit() const {
 	if (!error_after_commit.HasError()) {
 		return ErrorData();
@@ -2812,11 +2820,7 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 		bool commit_sent = false;
 		// a COMMIT whose error leaves the snapshot durable ends the commit, the error follows it
 		auto commit_took_effect = [&](const ErrorData &error) {
-			if (context.commit_outcome(error) != DuckLakeCommitOutcome::COMMITTED) {
-				return false;
-			}
-			error_after_commit = error;
-			return true;
+			return RecordErrorAfterCommit(context.commit_outcome(error), error);
 		};
 		auto commit_metadata_connection = [&]() {
 			commit_sent = true;

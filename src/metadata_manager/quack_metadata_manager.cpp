@@ -65,10 +65,6 @@ unique_ptr<QueryResult> QuackMetadataManager::ExecuteInTransaction(string &query
 	return DuckLakeMetadataManager::ExecuteInTransaction(query);
 }
 
-bool QuackMetadataManager::CommitsInBatch() const {
-	return true;
-}
-
 DuckLakeCommitOutcome QuackMetadataManager::CommitOutcomeAfterError(const ErrorData &error) const {
 	auto outcome = DuckDBCommitOutcome(error.RawMessage());
 	if (outcome == DuckLakeCommitOutcome::COMMITTED) {

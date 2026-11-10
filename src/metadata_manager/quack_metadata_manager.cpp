@@ -69,16 +69,28 @@ unique_ptr<QueryResult> QuackMetadataManager::ExecuteInTransaction(string &query
 }
 
 DuckLakeCommitOutcome QuackMetadataManager::CommitOutcomeAfterError(const ErrorData &error) const {
-	auto outcome = DuckDBCommitOutcome(error.RawMessage());
+	auto type = error.Type();
+	auto message = error.RawMessage();
+	// a server error too severe to rethrow as it was arrives as invalid input, prefixed, with its type in the extra
+	// info
+	auto original_type = error.ExtraInfo().find("original_exception_type");
+	if (original_type != error.ExtraInfo().end()) {
+		type = Exception::StringToExceptionType(original_type->second);
+		auto prefix_end = message.find("Error on the Quack server: ");
+		if (prefix_end != string::npos) {
+			message = message.substr(prefix_end + 27);
+		}
+	}
+	auto outcome = DuckDBCommitOutcome(message);
 	if (outcome == DuckLakeCommitOutcome::COMMITTED) {
 		return outcome;
 	}
-	if (IsConnectionError(error.RawMessage())) {
+	if (IsConnectionError(message)) {
 		return DuckLakeCommitOutcome::UNKNOWN;
 	}
 	// the server reports a statement it ran and rolled back with one of these types, every other failure can be the
 	// client's while it waited for the reply or read it
-	switch (error.Type()) {
+	switch (type) {
 	case ExceptionType::TRANSACTION:
 	case ExceptionType::CONSTRAINT:
 	case ExceptionType::CATALOG:

@@ -250,9 +250,7 @@ public:
 	}
 	//! Advice added to the error of a commit that failed for good
 	virtual string CommitErrorHint(const string &message) const;
-	//! What the error of a COMMIT that was sent says about the commit
 	virtual DuckLakeCommitOutcome CommitOutcomeAfterError(const ErrorData &error) const;
-	//! The outcome a DuckDB database reports with the error of a COMMIT
 	static DuckLakeCommitOutcome DuckDBCommitOutcome(const string &message);
 	//! SQL that the commit of a transaction that changed options runs, so two commits cannot both insert an option
 	virtual string ConfigOptionLockSql() const {

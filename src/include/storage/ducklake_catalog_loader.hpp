@@ -29,6 +29,9 @@ public:
 	DuckLakeCatalogSet &Schemas() {
 		return schemas;
 	}
+	const set<SchemaIndex> &SkippedSchemas() const {
+		return skipped_schemas;
+	}
 	void SetSchemas(ducklake_entries_map_t schema_map);
 	//! The committed table or view with the name in the schema
 	optional_ptr<CatalogEntry> GetEntry(DuckLakeTransaction &transaction, DuckLakeSchemaEntry &schema,

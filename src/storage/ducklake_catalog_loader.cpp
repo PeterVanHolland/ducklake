@@ -27,7 +27,7 @@ void DuckLakeCatalogLoader::Load(DuckLakeTransaction &transaction, const DuckLak
 	DuckLakeCatalogInfo info;
 	info.schemas = schema_infos;
 	transaction.GetMetadataManager().LoadCatalogEntries(info, snapshot, filter);
-	AddEstimatedMemory(catalog.AddCatalogEntries(schemas, skipped_schemas, info));
+	catalog.AddCatalogEntries(*this, info);
 }
 
 DuckLakeCatalogLoader::entry_names_t &DuckLakeCatalogLoader::EntryNames(DuckLakeTransaction &transaction,

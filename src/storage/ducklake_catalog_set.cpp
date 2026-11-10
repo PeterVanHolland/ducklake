@@ -89,16 +89,27 @@ optional_ptr<CatalogEntry> DuckLakeCatalogSet::GetEntryById(TableIndex index) {
 	return entry->second.get();
 }
 
-void DuckLakeCatalogSet::AddEntry(DuckLakeSchemaEntry &schema, TableIndex id, unique_ptr<CatalogEntry> entry) {
+//! Adds the entry to the schema, taking its id out of the map again when the schema does not take it
+template <class MAP, class INDEX>
+static void AddEntryToSchema(MAP &entry_map, DuckLakeSchemaEntry &schema, INDEX id, unique_ptr<CatalogEntry> entry) {
 	auto catalog_type = entry->type;
-	table_entry_map.insert(make_pair(id, reference<CatalogEntry>(*entry)));
-	schema.AddEntry(catalog_type, std::move(entry));
+	auto inserted = entry_map.insert(make_pair(id, reference<CatalogEntry>(*entry)));
+	try {
+		schema.AddEntry(catalog_type, std::move(entry));
+	} catch (...) {
+		if (inserted.second) {
+			entry_map.erase(inserted.first);
+		}
+		throw;
+	}
+}
+
+void DuckLakeCatalogSet::AddEntry(DuckLakeSchemaEntry &schema, TableIndex id, unique_ptr<CatalogEntry> entry) {
+	AddEntryToSchema(table_entry_map, schema, id, std::move(entry));
 }
 
 void DuckLakeCatalogSet::AddEntry(DuckLakeSchemaEntry &schema, MacroIndex id, unique_ptr<CatalogEntry> entry) {
-	auto catalog_type = entry->type;
-	macro_entry_map.insert(make_pair(id, reference<CatalogEntry>(*entry)));
-	schema.AddEntry(catalog_type, std::move(entry));
+	AddEntryToSchema(macro_entry_map, schema, id, std::move(entry));
 }
 
 } // namespace duckdb

@@ -838,18 +838,16 @@ unique_ptr<DuckLakeCatalogLoader> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLak
 		parent->second.get().AddEntry(CatalogType::SCHEMA_ENTRY, std::move(schema_entry));
 	}
 	loader->SetSchemas(std::move(schema_map));
-	auto &schemas = loader->Schemas();
-	auto estimate = EstimateCatalogSetMemory(schemas);
-	estimate += AddMacroEntries(*transaction.context.lock(), schemas, skipped_schemas, catalog);
-	loader->AddEstimatedMemory(estimate);
+	loader->AddEstimatedMemory(EstimateCatalogSetMemory(loader->Schemas()));
+	AddMacroEntries(*transaction.context.lock(), *loader, catalog);
 	return loader;
 }
 
-idx_t DuckLakeCatalog::AddMacroEntries(ClientContext &context, DuckLakeCatalogSet &schemas,
-                                       const set<SchemaIndex> &skipped_schemas, DuckLakeCatalogInfo &catalog) {
-	idx_t estimate = 0;
+void DuckLakeCatalog::AddMacroEntries(ClientContext &context, DuckLakeCatalogLoader &loader,
+                                      DuckLakeCatalogInfo &catalog) {
+	auto &schemas = loader.Schemas();
 	for (auto &macro : catalog.macros) {
-		auto schema = FindSchemaOfEntry(schemas, skipped_schemas, macro.schema_id, "macro", macro.macro_name);
+		auto schema = FindSchemaOfEntry(schemas, loader.SkippedSchemas(), macro.schema_id, "macro", macro.macro_name);
 		if (!schema) {
 			continue;
 		}
@@ -864,14 +862,15 @@ idx_t DuckLakeCatalog::AddMacroEntries(ClientContext &context, DuckLakeCatalogSe
 			    make_uniq<DuckLakeTableMacroEntry>(*this, schema_entry, *create_macro, macro.macro_id);
 		}
 		AssignStableOid(*macro_catalog_entry, macro.macro_id.index);
-		estimate += EstimateAddedEntryMemory(*macro_catalog_entry);
+		auto estimate = EstimateAddedEntryMemory(*macro_catalog_entry);
 		schemas.AddEntry(schema_entry, macro.macro_id, std::move(macro_catalog_entry));
+		loader.AddEstimatedMemory(estimate);
 	}
-	return estimate;
 }
 
-idx_t DuckLakeCatalog::AddCatalogEntries(DuckLakeCatalogSet &schemas, const set<SchemaIndex> &skipped_schemas,
-                                         DuckLakeCatalogInfo &catalog) {
+void DuckLakeCatalog::AddCatalogEntries(DuckLakeCatalogLoader &loader, DuckLakeCatalogInfo &catalog) {
+	auto &schemas = loader.Schemas();
+	auto &skipped_schemas = loader.SkippedSchemas();
 	// the entries are published together once every one of them is built
 	struct NewEntry {
 		reference<DuckLakeSchemaEntry> schema;
@@ -1012,12 +1011,12 @@ idx_t DuckLakeCatalog::AddCatalogEntries(DuckLakeCatalogSet &schemas, const set<
 		table->SetSortData(std::move(sort));
 	}
 
-	idx_t estimate = 0;
+	// the entries published before a failure count
 	for (auto &new_entry : new_entries) {
-		estimate += EstimateAddedEntryMemory(*new_entry.entry);
+		auto estimate = EstimateAddedEntryMemory(*new_entry.entry);
 		schemas.AddEntry(new_entry.schema.get(), new_entry.id, std::move(new_entry.entry));
+		loader.AddEstimatedMemory(estimate);
 	}
-	return estimate;
 }
 
 void DuckLakeCatalog::LoadNameMaps(DuckLakeTransaction &transaction) {

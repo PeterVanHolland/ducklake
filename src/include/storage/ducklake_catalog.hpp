@@ -423,10 +423,9 @@ public:
 	DuckLakeCatalogSet &GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
 	//! The loader of the schema version of the snapshot, pinned by the transaction
 	DuckLakeCatalogLoader &GetLoaderForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
-	//! Adds the tables and views of the catalog info that are not loaded yet, with their partition and sort keys,
-	//! returns their estimated memory
-	idx_t AddCatalogEntries(DuckLakeCatalogSet &schemas, const set<SchemaIndex> &skipped_schemas,
-	                        DuckLakeCatalogInfo &catalog);
+	//! Adds the tables and views of the catalog info that the loader does not hold yet, with their partition and
+	//! sort keys, and their estimated memory
+	void AddCatalogEntries(DuckLakeCatalogLoader &loader, DuckLakeCatalogInfo &catalog);
 	//! Reserves the current estimated memory of the cached schema version, false when its loader left the cache
 	bool RefreshSchemaCacheMemory(idx_t schema_version, const DuckLakeCatalogLoader &loader);
 
@@ -483,8 +482,7 @@ private:
 	void DropSchema(ClientContext &context, DropInfo &info) override;
 	unique_ptr<DuckLakeCatalogLoader> LoadSchemaForSnapshot(DuckLakeTransaction &transaction,
 	                                                        DuckLakeSnapshot snapshot);
-	idx_t AddMacroEntries(ClientContext &context, DuckLakeCatalogSet &schemas, const set<SchemaIndex> &skipped_schemas,
-	                      DuckLakeCatalogInfo &catalog);
+	void AddMacroEntries(ClientContext &context, DuckLakeCatalogLoader &loader, DuckLakeCatalogInfo &catalog);
 	//! Look up (or load) the ObjectCache entry for a given snapshot.
 	shared_ptr<DuckLakeSchemaCacheEntry> GetSchemaCacheEntry(DuckLakeTransaction &transaction,
 	                                                         DuckLakeSnapshot snapshot);

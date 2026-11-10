@@ -360,20 +360,22 @@ string PostgresMetadataManager::GetColumnTypeInternal(const LogicalType &column_
 optional_idx PostgresMetadataManager::BatchServerErrorStart(const string &message) const {
 	// the batch and the server error can contain any text, so the batch is found by its size
 	const string failed_batch = "Failed to execute query \"";
-	auto batch_start = message.find(failed_batch);
-	if (batch_start != string::npos) {
-		auto batch_end = batch_start + failed_batch.size() + executed_query_size;
-		if (batch_end + 3 <= message.size() && message.compare(batch_end, 3, "\": ") == 0) {
-			return batch_end;
-		}
-	}
 	// newer postgres_scanner versions leave the query out of the message
 	const string failed_query = "Failed to execute query: ";
+	// the server error can mention either form, so the first one is the wrapper of the batch
+	auto batch_start = message.find(failed_batch);
 	auto query_start = message.find(failed_query);
-	if (query_start == string::npos) {
+	if (query_start != string::npos && (batch_start == string::npos || query_start < batch_start)) {
+		return query_start + failed_query.size();
+	}
+	if (batch_start == string::npos) {
 		return optional_idx();
 	}
-	return query_start + failed_query.size();
+	auto batch_end = batch_start + failed_batch.size() + executed_query_size;
+	if (batch_end + 3 > message.size() || message.compare(batch_end, 3, "\": ") != 0) {
+		return optional_idx();
+	}
+	return batch_end;
 }
 
 string PostgresMetadataManager::CommitErrorWithoutQuery(const string &message) const {

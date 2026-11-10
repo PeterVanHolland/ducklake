@@ -11,6 +11,12 @@ DuckLakeCatalogLoader::DuckLakeCatalogLoader(DuckLakeCatalog &catalog, DuckLakeS
                                              set<SchemaIndex> skipped_schemas_p)
     : catalog(catalog), snapshot(snapshot), schema_infos(std::move(schema_infos_p)),
       skipped_schemas(std::move(skipped_schemas_p)) {
+	idx_t estimate = skipped_schemas.size() * (sizeof(SchemaIndex) + NODE_OVERHEAD);
+	for (auto &schema : schema_infos) {
+		estimate += sizeof(DuckLakeSchemaInfo) + schema.uuid.size() + schema.name.GetIdentifierName().size() +
+		            schema.path.size();
+	}
+	AddEstimatedMemory(estimate);
 }
 
 void DuckLakeCatalogLoader::SetSchemas(ducklake_entries_map_t schema_map) {

@@ -1,0 +1,200 @@
+# name: test/sql/catalog/lazy_table_load.test
+# description: a lookup loads the table it names from the catalog, not every table of the schema version
+# group: [catalog]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/lazy_table_load', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE SCHEMA lake.s2
+
+statement ok
+CREATE TABLE lake.t1(i INTEGER)
+
+statement ok
+CREATE TABLE lake.t2(i INTEGER, j VARCHAR)
+
+statement ok
+ALTER TABLE lake.t2 SET PARTITIONED BY (i)
+
+statement ok
+CREATE TABLE lake.srt(i INTEGER)
+
+statement ok
+ALTER TABLE lake.srt SET SORTED BY (i DESC)
+
+statement ok
+CREATE TABLE lake.MixedCase(i INTEGER)
+
+statement ok
+CREATE TABLE lake.s2.t3(i INTEGER)
+
+statement ok
+CREATE VIEW lake.v1 AS SELECT 1 AS x
+
+statement ok
+INSERT INTO lake.t2 VALUES (1, 'a'), (2, 'b')
+
+statement ok
+INSERT INTO lake.MixedCase VALUES (7)
+
+statement ok
+SET VARIABLE before_alter = (SELECT max(snapshot_id) FROM lake.snapshots())
+
+statement ok
+ALTER TABLE lake.t1 ADD COLUMN k INTEGER
+
+# a fresh attach has no loaded schema version
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/lazy_table_load', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CALL enable_logging('DuckLakeMetadata')
+
+query II
+SELECT count(*), sum(i) FROM lake.t2
+----
+2	3
+
+# the columns of t2 alone were read, by its id
+query I
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%FROM %ducklake_column%'
+----
+1
+
+query I
+SELECT query LIKE '%tbl.table_id = %' FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%FROM %ducklake_column%'
+----
+true
+
+statement ok
+SET VARIABLE tracked = (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE')
+
+# the name is matched like the catalog does, and a loaded table needs no further lookup
+query I
+SELECT i FROM lake.mixedcase
+----
+7
+
+query I
+SELECT i FROM lake.MIXEDCASE
+----
+7
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%lower(table_name)%'
+----
+2
+
+query I
+SELECT x FROM lake.v1
+----
+1
+
+query I
+SELECT count(*) FROM lake.s2.t3
+----
+0
+
+# an older schema version loads the table as it was
+query I
+SELECT column_name FROM (DESCRIBE FROM lake.t1 AT (VERSION => getvariable('before_alter')))
+----
+i
+
+query I
+SELECT column_name FROM (DESCRIBE lake.t1)
+----
+i
+k
+
+# the partition and sort keys come with the table
+statement ok
+INSERT INTO lake.t2 VALUES (3, 'c')
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/lazy_table_load/main/t2/i=3/*.parquet')
+----
+1
+
+statement ok
+INSERT INTO lake.srt VALUES (1), (3), (2)
+
+query I
+SELECT list(i) FROM lake.srt
+----
+[3, 2, 1]
+
+# the schema stays consistent while the tables are loaded one by one
+statement error
+CREATE TABLE lake.t1(i INTEGER)
+----
+already exists
+
+statement error
+DROP SCHEMA lake.s2
+----
+t3
+
+# a name the snapshot does not have is looked up once
+statement ok
+DROP TABLE IF EXISTS lake.t4
+
+statement ok
+DROP TABLE IF EXISTS lake.t4
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%lower(table_name)%lower(''t4'')%'
+----
+1
+
+# listing the tables loads the rest, whose memory the cache tracks
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'lake'
+----
+5
+
+query I
+SELECT (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') > getvariable('tracked')
+----
+true
+
+query I
+SELECT view_name FROM duckdb_views() WHERE database_name = 'lake' AND NOT internal
+----
+v1
+
+statement error
+SELECT * FROM lake.t4
+----
+does not exist
+
+statement ok
+CALL disable_logging()
+
+statement ok
+DROP SCHEMA lake.s2 CASCADE
+
+statement ok
+CREATE OR REPLACE TABLE lake.t2 AS SELECT 42 AS i
+
+query I
+SELECT i FROM lake.t2
+----
+42
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'lake'
+----
+4

@@ -292,7 +292,7 @@ optional_idx DuckLakeTableRecordCountCacheEntry::GetEstimatedCacheMemory() const
 }
 
 optional_idx DuckLakeSchemaCacheEntry::GetEstimatedCacheMemory() const {
-	return EstimateCatalogSetMemory(catalog_set);
+	return loader->ReserveEstimatedMemory();
 }
 
 void DuckLakeSchemaPinState::Clear() {
@@ -469,8 +469,10 @@ void DuckLakeCatalog::ScanSchemas(ClientContext &context, std::function<void(Sch
 		}
 	}
 	auto snapshot = duck_transaction.GetSnapshot();
-	auto &schemas = GetSchemaForSnapshot(duck_transaction, snapshot);
-	for (auto &schema : schemas.GetEntries()) {
+	auto &loader = GetLoaderForSnapshot(duck_transaction, snapshot);
+	// the schemas are scanned to list their entries, one query loads them all
+	loader.LoadAll(duck_transaction);
+	for (auto &schema : loader.Schemas().GetEntries()) {
 		auto &schema_entry = schema.second->Cast<DuckLakeSchemaEntry>();
 		if (duck_transaction.IsDeleted(schema_entry)) {
 			continue;
@@ -493,8 +495,7 @@ optional_ptr<CatalogEntry> DuckLakeCatalog::GetEntryById(DuckLakeTransaction &tr
 
 optional_ptr<CatalogEntry> DuckLakeCatalog::GetEntryById(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
                                                          TableIndex table_id) {
-	auto &schema = GetSchemaForSnapshot(transaction, snapshot);
-	return schema.GetEntryById(table_id);
+	return GetLoaderForSnapshot(transaction, snapshot).GetEntryById(transaction, table_id);
 }
 
 idx_t DuckLakeCatalog::GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version,
@@ -524,18 +525,23 @@ shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeCatalog::GetSchemaCacheEntry(DuckLa
 	if (cached) {
 		return cached;
 	}
-	auto catalog_set = LoadSchemaForSnapshot(transaction, snapshot);
+	auto loader = LoadSchemaForSnapshot(transaction, snapshot);
 	lock_guard<mutex> guard(cache_entries_lock);
-	auto entry = cache.GetOrCreate<DuckLakeSchemaCacheEntry>(key, std::move(catalog_set));
+	auto entry = cache.GetOrCreate<DuckLakeSchemaCacheEntry>(key, std::move(loader));
 	TrackCacheEntry(key, entry);
 	return entry;
 }
 
-DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
+DuckLakeCatalogLoader &DuckLakeCatalog::GetLoaderForSnapshot(DuckLakeTransaction &transaction,
+                                                             DuckLakeSnapshot snapshot) {
 	auto entry = GetSchemaCacheEntry(transaction, snapshot);
-	auto &catalog_set = entry->catalog_set;
+	auto &loader = *entry->loader;
 	transaction.PinSchemaCacheEntry(std::move(entry));
-	return catalog_set;
+	return loader;
+}
+
+DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
+	return GetLoaderForSnapshot(transaction, snapshot).Schemas();
 }
 
 //! `parent_path` is the quoted path of the enclosing column (e.g. "s"), empty for a top-level column
@@ -767,13 +773,36 @@ void DuckLakeCatalog::SetEntryOids(const ducklake_entry_oids_t &oids) {
 	entry_oids.insert(oids.begin(), oids.end());
 }
 
-unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTransaction &transaction,
-                                                                      DuckLakeSnapshot snapshot) {
+//! The schema of an entry, none when its parent schema is not visible
+static optional_ptr<DuckLakeSchemaEntry> FindSchemaOfEntry(DuckLakeCatalogSet &schemas,
+                                                           const set<SchemaIndex> &skipped_schemas,
+                                                           SchemaIndex schema_id, const char *entry_kind,
+                                                           const Identifier &entry_name) {
+	auto &schema_id_map = schemas.GetSchemaIdMap();
+	auto entry = schema_id_map.find(schema_id);
+	if (entry != schema_id_map.end()) {
+		return entry->second.get();
+	}
+	if (skipped_schemas.find(schema_id) != skipped_schemas.end()) {
+		return nullptr;
+	}
+	throw InvalidInputException("Failed to load DuckLake - could not find schema that corresponds to the %s entry %s",
+	                            entry_kind, entry_name);
+}
+
+//! The memory an entry takes in the sets of its schema version
+static idx_t EstimateAddedEntryMemory(const CatalogEntry &entry) {
+	return EstimateCatalogEntryMemory(entry) + sizeof(string) + sizeof(unique_ptr<CatalogEntry>) + sizeof(idx_t) +
+	       sizeof(reference<CatalogEntry>);
+}
+
+unique_ptr<DuckLakeCatalogLoader> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTransaction &transaction,
+                                                                         DuckLakeSnapshot snapshot) {
 	auto &metadata_manager = transaction.GetMetadataManager();
-	auto catalog = metadata_manager.GetCatalogForSnapshot(snapshot);
+	auto catalog = metadata_manager.GetCatalogForSnapshot(snapshot, DuckLakeCatalogLoadFilter::None());
 	// schemas with invisible parents count as dropped
 	auto skipped_schemas = FindUnreachableSchemas(catalog.schemas);
-	set<TableIndex> skipped_tables;
+	auto loader = make_uniq<DuckLakeCatalogLoader>(*this, snapshot, catalog.schemas, skipped_schemas);
 	map<SchemaIndex, unique_ptr<DuckLakeSchemaEntry>> loaded_schemas;
 	map<SchemaIndex, reference<DuckLakeSchemaEntry>> loaded_schema_refs;
 	for (auto &schema : catalog.schemas) {
@@ -783,7 +812,7 @@ unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTr
 		CreateSchemaInfo schema_info;
 		schema_info.SetSchema(schema.name);
 		auto schema_entry = make_uniq<DuckLakeSchemaEntry>(*this, schema_info, schema.id, std::move(schema.uuid),
-		                                                   std::move(schema.path));
+		                                                   std::move(schema.path), nullptr, loader.get());
 		AssignStableOid(*schema_entry, schema.id.index);
 		loaded_schema_refs.emplace(schema.id, *schema_entry);
 		loaded_schemas.emplace(schema.id, std::move(schema_entry));
@@ -808,25 +837,50 @@ unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTr
 		schema_entry->SetParentSchema(parent->second.get());
 		parent->second.get().AddEntry(CatalogType::SCHEMA_ENTRY, std::move(schema_entry));
 	}
+	loader->SetSchemas(std::move(schema_map));
+	auto &schemas = loader->Schemas();
+	auto estimate = EstimateCatalogSetMemory(schemas);
+	estimate += AddMacroEntries(*transaction.context.lock(), schemas, skipped_schemas, catalog);
+	loader->AddEstimatedMemory(estimate);
+	return loader;
+}
 
-	auto schema_set = make_uniq<DuckLakeCatalogSet>(std::move(schema_map));
-	auto &schema_id_map = schema_set->GetSchemaIdMap();
-	auto find_schema = [&](SchemaIndex schema_id, const char *entry_kind,
-	                       const Identifier &entry_name) -> optional_ptr<DuckLakeSchemaEntry> {
-		auto entry = schema_id_map.find(schema_id);
-		if (entry != schema_id_map.end()) {
-			return entry->second.get();
+idx_t DuckLakeCatalog::AddMacroEntries(ClientContext &context, DuckLakeCatalogSet &schemas,
+                                       const set<SchemaIndex> &skipped_schemas, DuckLakeCatalogInfo &catalog) {
+	idx_t estimate = 0;
+	for (auto &macro : catalog.macros) {
+		auto schema = FindSchemaOfEntry(schemas, skipped_schemas, macro.schema_id, "macro", macro.macro_name);
+		if (!schema) {
+			continue;
 		}
-		if (skipped_schemas.find(schema_id) != skipped_schemas.end()) {
-			return nullptr;
+		auto &schema_entry = *schema;
+		auto create_macro = CreateMacroInfoFromDucklake(context, macro, schema_entry.name);
+		unique_ptr<CatalogEntry> macro_catalog_entry;
+		if (create_macro->type == CatalogType::MACRO_ENTRY) {
+			macro_catalog_entry =
+			    make_uniq<DuckLakeScalarMacroEntry>(*this, schema_entry, *create_macro, macro.macro_id);
+		} else {
+			macro_catalog_entry =
+			    make_uniq<DuckLakeTableMacroEntry>(*this, schema_entry, *create_macro, macro.macro_id);
 		}
-		throw InvalidInputException(
-		    "Failed to load DuckLake - could not find schema that corresponds to the %s entry %s", entry_kind,
-		    entry_name);
-	};
-	// load the table entries
+		AssignStableOid(*macro_catalog_entry, macro.macro_id.index);
+		estimate += EstimateAddedEntryMemory(*macro_catalog_entry);
+		schemas.AddEntry(schema_entry, macro.macro_id, std::move(macro_catalog_entry));
+	}
+	return estimate;
+}
+
+idx_t DuckLakeCatalog::AddCatalogEntries(DuckLakeCatalogSet &schemas, const set<SchemaIndex> &skipped_schemas,
+                                         DuckLakeCatalogInfo &catalog) {
+	idx_t estimate = 0;
+	set<TableIndex> skipped_tables;
+	// a load can read tables that an earlier one loaded, those keep their entries
+	set<TableIndex> added_tables;
 	for (auto &table : catalog.tables) {
-		auto schema = find_schema(table.schema_id, "table", table.name);
+		if (schemas.GetEntryById(table.id)) {
+			continue;
+		}
+		auto schema = FindSchemaOfEntry(schemas, skipped_schemas, table.schema_id, "table", table.name);
 		if (!schema) {
 			skipped_tables.insert(table.id);
 			continue;
@@ -865,12 +919,16 @@ unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTr
 		    *this, schema_entry, *create_table_info, table.id, std::move(table.uuid), std::move(table.path),
 		    std::move(field_data), optional_idx(), std::move(table.inlined_data_tables), LocalChangeType::NONE);
 		AssignStableOid(*table_entry, table.id.index);
-		schema_set->AddEntry(schema_entry, table.id, std::move(table_entry));
+		added_tables.insert(table.id);
+		schemas.AddEntry(schema_entry, table.id, std::move(table_entry));
 	}
 
 	// load the view entries
 	for (auto &view : catalog.views) {
-		auto schema = find_schema(view.schema_id, "view", view.name);
+		if (schemas.GetEntryById(view.id)) {
+			continue;
+		}
+		auto schema = FindSchemaOfEntry(schemas, skipped_schemas, view.schema_id, "view", view.name);
 		if (!schema) {
 			continue;
 		}
@@ -887,38 +945,18 @@ unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTr
 		    make_uniq<DuckLakeViewEntry>(*this, schema_entry, *create_view_info, view.id, std::move(view.uuid),
 		                                 std::move(view.sql), LocalChangeType::NONE);
 		AssignStableOid(*view_entry, view.id.index);
-		schema_set->AddEntry(schema_entry, view.id, std::move(view_entry));
-	}
-
-	// load the macros
-	for (auto &macro : catalog.macros) {
-		auto schema = find_schema(macro.schema_id, "macro", macro.macro_name);
-		if (!schema) {
-			continue;
-		}
-		auto &schema_entry = *schema;
-		auto create_macro = CreateMacroInfoFromDucklake(*transaction.context.lock(), macro, schema_entry.name);
-		unique_ptr<CatalogEntry> macro_catalog_entry;
-		if (create_macro->type == CatalogType::MACRO_ENTRY) {
-			macro_catalog_entry =
-			    make_uniq<DuckLakeScalarMacroEntry>(*this, schema_entry, *create_macro, macro.macro_id);
-		} else {
-			macro_catalog_entry =
-			    make_uniq<DuckLakeTableMacroEntry>(*this, schema_entry, *create_macro, macro.macro_id);
-		}
-		AssignStableOid(*macro_catalog_entry, macro.macro_id.index);
-		schema_set->AddEntry(schema_entry, macro.macro_id, std::move(macro_catalog_entry));
+		estimate += EstimateAddedEntryMemory(*view_entry);
+		schemas.AddEntry(schema_entry, view.id, std::move(view_entry));
 	}
 
 	auto find_table = [&](TableIndex table_id, const char *entry_kind) -> optional_ptr<DuckLakeTableEntry> {
-		auto table = schema_set->GetEntryById(table_id);
-		if (table && table->type == CatalogType::TABLE_ENTRY) {
-			return table->Cast<DuckLakeTableEntry>();
+		if (added_tables.find(table_id) == added_tables.end()) {
+			if (skipped_tables.find(table_id) != skipped_tables.end() || schemas.GetEntryById(table_id)) {
+				return nullptr;
+			}
+			throw InvalidInputException("Could not find matching table for %s entry", entry_kind);
 		}
-		if (skipped_tables.find(table_id) != skipped_tables.end()) {
-			return nullptr;
-		}
-		throw InvalidInputException("Could not find matching table for %s entry", entry_kind);
+		return schemas.GetEntryById(table_id)->Cast<DuckLakeTableEntry>();
 	};
 	// load the partition entries
 	for (auto &entry : catalog.partitions) {
@@ -977,7 +1015,11 @@ unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTr
 		table->SetSortData(std::move(sort));
 	}
 
-	return schema_set;
+	// the keys are part of the estimate of their tables
+	for (auto &table_id : added_tables) {
+		estimate += EstimateAddedEntryMemory(*schemas.GetEntryById(table_id));
+	}
+	return estimate;
 }
 
 void DuckLakeCatalog::LoadNameMaps(DuckLakeTransaction &transaction) {
@@ -1019,12 +1061,13 @@ MappingIndex DuckLakeCatalog::TryGetCompatibleNameMap(DuckLakeTransaction &trans
 	return name_maps.TryGetCompatibleNameMap(name_map);
 }
 
-unique_ptr<DuckLakeStats> DuckLakeCatalog::ConstructStatsMap(vector<DuckLakeGlobalStatsInfo> &global_stats,
-                                                             DuckLakeCatalogSet &schema) {
+unique_ptr<DuckLakeStats> DuckLakeCatalog::ConstructStatsMap(DuckLakeTransaction &transaction,
+                                                             vector<DuckLakeGlobalStatsInfo> &global_stats,
+                                                             DuckLakeCatalogLoader &loader) {
 	auto lake_stats = make_uniq<DuckLakeStats>();
 	for (auto &stats : global_stats) {
 		// find the referenced table entry
-		auto table_entry = schema.GetEntryById(stats.table_id);
+		auto table_entry = loader.GetEntryById(transaction, stats.table_id);
 		if (!table_entry) {
 			// failed to find the referenced table entry - this means the table does not exist for this snapshot
 			// since the global stats are not versioned this is not an error - just skip
@@ -1060,31 +1103,29 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 		return shared_ptr<DuckLakeTableStats>(std::move(cached), &raw->stats);
 	}
 
-	auto schema_entry = GetSchemaCacheEntry(transaction, snapshot);
-	auto &table_map = schema_entry->catalog_set.GetTableIdMap();
-	if (table_map.find(table_id) == table_map.end()) {
+	auto &loader = GetLoaderForSnapshot(transaction, snapshot);
+	if (!loader.GetEntryById(transaction, table_id)) {
 		// a table that is not part of the snapshot, e.g. one created in this transaction, has no stats in it
 		return nullptr;
 	}
-	// one query for the whole snapshot or for the given tables, caching the tables without stats as well
+	// one query for the loaded tables or for the given tables, caching the tables without stats as well
 	vector<TableIndex> cache_tables;
+	bool all_tables = false;
 	if (!load_tables) {
-		for (auto &table_entry : table_map) {
-			cache_tables.push_back(table_entry.first);
-		}
+		cache_tables = loader.LoadedEntryIds(all_tables);
 	} else {
 		unordered_set<idx_t> seen;
 		cache_tables.push_back(table_id);
 		seen.insert(table_id.index);
 		for (auto &load_table : *load_tables) {
-			if (table_map.find(load_table) != table_map.end() && seen.insert(load_table.index).second) {
+			if (seen.insert(load_table.index).second && loader.GetEntryById(transaction, load_table)) {
 				cache_tables.push_back(load_table);
 			}
 		}
 	}
-	auto global_stats = transaction.GetMetadataManager().GetGlobalTableStats(
-	    snapshot, load_tables ? cache_tables : vector<TableIndex>());
-	auto lake_stats = ConstructStatsMap(global_stats, schema_entry->catalog_set);
+	auto global_stats = transaction.GetMetadataManager().GetGlobalTableStats(snapshot, all_tables ? vector<TableIndex>()
+	                                                                                              : cache_tables);
+	auto lake_stats = ConstructStatsMap(transaction, global_stats, loader);
 
 	shared_ptr<DuckLakeTableStatsCacheEntry> requested_entry;
 	vector<pair<TableIndex, shared_ptr<ObjectCacheEntry>>> cache_entries_to_put;
@@ -1628,6 +1669,18 @@ void DuckLakeCatalog::InvalidateTableStatsCaches(const unordered_set<idx_t> &nex
 
 void DuckLakeCatalog::InvalidateSchemaCache(idx_t schema_version) {
 	GetObjectCacheInstance().Delete(SchemaCacheKey(schema_version));
+}
+
+bool DuckLakeCatalog::RefreshSchemaCacheMemory(idx_t schema_version) {
+	auto &cache = GetObjectCacheInstance();
+	auto key = SchemaCacheKey(schema_version);
+	auto entry = cache.Get<DuckLakeSchemaCacheEntry>(key);
+	if (!entry) {
+		return false;
+	}
+	// putting the entry again reserves its current estimate
+	cache.Put(std::move(key), std::move(entry));
+	return true;
 }
 
 void DuckLakeCatalog::InvalidateNameMapCache(MappingIndex mapping_id) {

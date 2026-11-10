@@ -394,6 +394,38 @@ struct DuckLakeCatalogInfo {
 	vector<DuckLakeSortInfo> sorts;
 };
 
+//! The tables and views a catalog load reads, with their partition and sort keys
+struct DuckLakeCatalogLoadFilter {
+	enum class Scope : uint8_t { ALL, NONE, SCHEMA, ENTRY };
+
+	static DuckLakeCatalogLoadFilter All() {
+		return DuckLakeCatalogLoadFilter(Scope::ALL);
+	}
+	static DuckLakeCatalogLoadFilter None() {
+		return DuckLakeCatalogLoadFilter(Scope::NONE);
+	}
+	//! Every table and view of the schema
+	static DuckLakeCatalogLoadFilter OfSchema(SchemaIndex schema_id) {
+		DuckLakeCatalogLoadFilter filter(Scope::SCHEMA);
+		filter.schema_id = schema_id;
+		return filter;
+	}
+	//! The table or view with the id
+	static DuckLakeCatalogLoadFilter Entry(TableIndex entry_id) {
+		DuckLakeCatalogLoadFilter filter(Scope::ENTRY);
+		filter.entry_id = entry_id;
+		return filter;
+	}
+
+	Scope scope;
+	SchemaIndex schema_id;
+	TableIndex entry_id;
+
+private:
+	explicit DuckLakeCatalogLoadFilter(Scope scope) : scope(scope) {
+	}
+};
+
 struct DuckLakeFileData {
 	string path;
 	string encryption_key;

@@ -65,7 +65,7 @@ SELECT * FROM dl.b.v
 ----
 does not exist
 
-# a partition of a table that is not in the catalog at all is reported
+# a partition of a table that is not in the catalog at all is reported when the whole catalog is read
 statement ok
 UPDATE dl_meta.ducklake_schema SET parent_schema_id = NULL WHERE schema_name = 'b' AND end_snapshot IS NULL
 
@@ -78,7 +78,13 @@ DETACH dl
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DUCKLAKE_VERSION '1.1', DATA_PATH '{DATA_PATH}/nested_orphan_entries', METADATA_CATALOG 'dl_meta')
 
-statement error
+# a lookup reads the partitions of its table alone
+query I
 SELECT k FROM dl.main.keep
+----
+42
+
+statement error
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'dl'
 ----
 Could not find matching table for partition entry

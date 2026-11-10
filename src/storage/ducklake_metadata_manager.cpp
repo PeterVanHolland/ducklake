@@ -1179,16 +1179,77 @@ identifier_set_t DuckLakeMetadataManager::GetInlinedTableNames(TableIndex table_
 	return table_names;
 }
 
-DuckLakeCatalogInfo DuckLakeMetadataManager::GetCatalogForSnapshot(DuckLakeSnapshot snapshot) {
+DuckLakeCatalogInfo DuckLakeMetadataManager::GetCatalogForSnapshot(DuckLakeSnapshot snapshot,
+                                                                   const DuckLakeCatalogLoadFilter &filter) {
 	auto &ducklake_catalog = transaction.GetCatalog();
 	return BuildCatalogForSnapshot(
 	    snapshot, [this](DuckLakeSnapshot s, string q) { return Query(s, q); }, ducklake_catalog.DataPath(),
-	    ducklake_catalog.Separator(), ducklake_catalog.SupportsV1_1Metadata());
+	    ducklake_catalog.Separator(), ducklake_catalog.SupportsV1_1Metadata(), filter);
+}
+
+void DuckLakeMetadataManager::LoadCatalogEntries(DuckLakeCatalogInfo &catalog, DuckLakeSnapshot snapshot,
+                                                 const DuckLakeCatalogLoadFilter &filter) {
+	auto &ducklake_catalog = transaction.GetCatalog();
+	LoadCatalogEntries(
+	    catalog, snapshot, [this](DuckLakeSnapshot s, string q) { return Query(s, q); }, ducklake_catalog.Separator(),
+	    ducklake_catalog.SupportsV1_1Metadata(), filter);
+}
+
+vector<TableIndex> DuckLakeMetadataManager::GetEntryIdsByName(DuckLakeSnapshot snapshot, SchemaIndex schema_id,
+                                                              const Identifier &name) {
+	// the catalog matches names without regard to case
+	auto name_literal = SQLString::ToString(name.GetIdentifierName());
+	auto result = Query(snapshot, StringUtil::Format(R"(
+SELECT table_id FROM {METADATA_CATALOG}.ducklake_table
+WHERE schema_id = %d AND lower(table_name) = lower(%s) AND
+      {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
+UNION ALL
+SELECT view_id FROM {METADATA_CATALOG}.ducklake_view
+WHERE schema_id = %d AND lower(view_name) = lower(%s) AND
+      {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
+)",
+	                                                 schema_id.index, name_literal, schema_id.index, name_literal));
+	result->ThrowIfError("Failed to look up a table in DuckLake: ");
+	vector<TableIndex> ids;
+	for (auto &row : *result) {
+		ids.emplace_back(row.GetValue<uint64_t>(0));
+	}
+	return ids;
+}
+
+//! The condition on the table or view rows a load reads, empty for all of them
+static string CatalogEntryCondition(const DuckLakeCatalogLoadFilter &filter, const string &schema_column,
+                                    const string &id_column) {
+	switch (filter.scope) {
+	case DuckLakeCatalogLoadFilter::Scope::SCHEMA:
+		return StringUtil::Format(" AND %s = %d", schema_column, filter.schema_id.index);
+	case DuckLakeCatalogLoadFilter::Scope::ENTRY:
+		return StringUtil::Format(" AND %s = %d", id_column, filter.entry_id.index);
+	default:
+		return string();
+	}
+}
+
+//! The condition on the partition or sort rows of the tables a load read
+static string LoadedTableCondition(const DuckLakeCatalogLoadFilter &filter, const string &table_column) {
+	switch (filter.scope) {
+	case DuckLakeCatalogLoadFilter::Scope::SCHEMA:
+		return StringUtil::Format(
+		    " AND %s IN (SELECT table_id FROM {METADATA_CATALOG}.ducklake_table WHERE schema_id = %d "
+		    "AND {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS "
+		    "NULL))",
+		    table_column, filter.schema_id.index);
+	case DuckLakeCatalogLoadFilter::Scope::ENTRY:
+		return StringUtil::Format(" AND %s = %d", table_column, filter.entry_id.index);
+	default:
+		return string();
+	}
 }
 
 DuckLakeCatalogInfo DuckLakeMetadataManager::BuildCatalogForSnapshot(
     DuckLakeSnapshot snapshot, const std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> &query_executor,
-    const string &base_data_path, const string &separator, bool supports_v1_1_metadata) {
+    const string &base_data_path, const string &separator, bool supports_v1_1_metadata,
+    const DuckLakeCatalogLoadFilter &filter) {
 	DuckLakeCatalogInfo catalog;
 	// load the schema information
 	string parent_schema_select = supports_v1_1_metadata ? ", parent_schema_id" : "";
@@ -1199,7 +1260,6 @@ WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_s
 )",
 	                                                          parent_schema_select));
 	result->ThrowIfError("Failed to get schema information from DuckLake: ");
-	map<SchemaIndex, idx_t> schema_map;
 	for (auto &row : *result) {
 		DuckLakeSchemaInfo schema;
 		schema.id = SchemaIndex(row.GetValue<uint64_t>(0));
@@ -1209,8 +1269,62 @@ WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_s
 		if (supports_v1_1_metadata && !row.IsNull(5)) {
 			schema.parent_id = SchemaIndex(row.GetValue<uint64_t>(5));
 		}
-		schema_map[schema.id] = catalog.schemas.size();
 		catalog.schemas.push_back(std::move(schema));
+	}
+
+	static const vector<pair<string, string>> MACRO_PARAM_FIELDS = {{"parameter_name", "parameter_name"},
+	                                                                {"parameter_type", "parameter_type"},
+	                                                                {"default_value", "default_value"},
+	                                                                {"default_value_type", "default_value_type"}};
+	auto macro_param_query = StringUtil::Format(R"(
+		(
+		SELECT %s
+		FROM {METADATA_CATALOG}.ducklake_macro_parameters
+		WHERE ducklake_macro_impl.macro_id = ducklake_macro_parameters.macro_id
+		AND ducklake_macro_impl.impl_id = ducklake_macro_parameters.impl_id
+		)
+	)",
+	                                            ListAggregation(MACRO_PARAM_FIELDS, "column_id ASC"));
+	const vector<pair<string, string>> MACRO_IMPL_FIELDS = {
+	    {"dialect", "dialect"}, {"sql", "sql"}, {"type", "type"}, {"params", macro_param_query}};
+
+	// load macro information
+	result = query_executor(snapshot, StringUtil::Format(R"(
+SELECT schema_id, ducklake_macro.macro_id, macro_name, (
+		SELECT %s
+		FROM {METADATA_CATALOG}.ducklake_macro_impl
+		WHERE ducklake_macro.macro_id = ducklake_macro_impl.macro_id
+	) AS impl
+FROM {METADATA_CATALOG}.ducklake_macro
+WHERE  {SNAPSHOT_ID} >= ducklake_macro.begin_snapshot AND ({SNAPSHOT_ID} < ducklake_macro.end_snapshot OR ducklake_macro.end_snapshot IS NULL)
+)",
+	                                                     ListAggregation(MACRO_IMPL_FIELDS)));
+	result->ThrowIfError("Failed to get macro information from DuckLake: ");
+	auto &macros = catalog.macros;
+	for (auto &row : *result) {
+		DuckLakeMacroInfo macro_info;
+		macro_info.schema_id = SchemaIndex(row.GetValue<uint64_t>(0));
+		macro_info.macro_id = MacroIndex(row.GetValue<uint64_t>(1));
+		macro_info.macro_name = row.GetValue<Identifier>(2);
+		auto macro_implementations = row.GetValue<Value>(3);
+		macro_info.implementations = LoadMacroImplementations(macro_implementations);
+		macros.push_back(std::move(macro_info));
+	}
+
+	if (filter.scope == DuckLakeCatalogLoadFilter::Scope::NONE) {
+		return catalog;
+	}
+	LoadCatalogEntries(catalog, snapshot, query_executor, separator, supports_v1_1_metadata, filter);
+	return catalog;
+}
+
+void DuckLakeMetadataManager::LoadCatalogEntries(
+    DuckLakeCatalogInfo &catalog, DuckLakeSnapshot snapshot,
+    const std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> &query_executor, const string &separator,
+    bool supports_v1_1_metadata, const DuckLakeCatalogLoadFilter &filter) {
+	map<SchemaIndex, idx_t> schema_map;
+	for (idx_t schema_idx = 0; schema_idx < catalog.schemas.size(); schema_idx++) {
+		schema_map[catalog.schemas[schema_idx].id] = schema_idx;
 	}
 
 	static const vector<pair<string, string>> TAG_FIELDS = {
@@ -1228,8 +1342,8 @@ WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_s
 	};
 
 	// load the table information
-	result = query_executor(snapshot,
-	                        StringUtil::Format(R"(
+	auto result = query_executor(
+	    snapshot, StringUtil::Format(R"(
 SELECT schema_id, tbl.table_id, table_uuid::VARCHAR, table_name,
 	(
 		SELECT %s
@@ -1256,11 +1370,12 @@ LEFT JOIN (
 	FROM {METADATA_CATALOG}.ducklake_column
 	WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
 ) col USING (table_id)
-WHERE {SNAPSHOT_ID} >= tbl.begin_snapshot AND ({SNAPSHOT_ID} < tbl.end_snapshot OR tbl.end_snapshot IS NULL)
+WHERE {SNAPSHOT_ID} >= tbl.begin_snapshot AND ({SNAPSHOT_ID} < tbl.end_snapshot OR tbl.end_snapshot IS NULL)%s
 ORDER BY table_id ASC, parent_column ASC NULLS FIRST, column_order ASC
 )",
-	                                           ListAggregation(TAG_FIELDS), ListAggregation(INLINED_DATA_TABLES_FIELDS),
-	                                           ListAggregation(TAG_FIELDS)));
+	                                 ListAggregation(TAG_FIELDS), ListAggregation(INLINED_DATA_TABLES_FIELDS),
+	                                 ListAggregation(TAG_FIELDS),
+	                                 CatalogEntryCondition(filter, "tbl.schema_id", "tbl.table_id")));
 	result->ThrowIfError("Failed to get table information from DuckLake: ");
 	const idx_t COLUMN_INDEX_START = 8;
 	auto &tables = catalog.tables;
@@ -1356,7 +1471,8 @@ ORDER BY table_id ASC, parent_column ASC NULLS FIRST, column_order ASC
 	) AS view_column_tags)",
 	                                                                           ListAggregation(VIEW_COLUMN_TAG_FIELDS))
 	                                                      : ",\n\tNULL AS view_column_tags";
-	result = query_executor(snapshot, StringUtil::Format(R"(
+	result =
+	    query_executor(snapshot, StringUtil::Format(R"(
 SELECT view_id, view_uuid, schema_id, view_name, dialect, sql, column_aliases,
 	(
 		SELECT %s
@@ -1365,9 +1481,10 @@ SELECT view_id, view_uuid, schema_id, view_name, dialect, sql, column_aliases,
 		      {SNAPSHOT_ID} >= tag.begin_snapshot AND ({SNAPSHOT_ID} < tag.end_snapshot OR tag.end_snapshot IS NULL)
 	) AS tag%s
 FROM {METADATA_CATALOG}.ducklake_view view
-WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < view.end_snapshot OR view.end_snapshot IS NULL)
+WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < view.end_snapshot OR view.end_snapshot IS NULL)%s
 )",
-	                                                     ListAggregation(TAG_FIELDS), view_column_tags_select));
+	                                                ListAggregation(TAG_FIELDS), view_column_tags_select,
+	                                                CatalogEntryCondition(filter, "view.schema_id", "view.view_id")));
 	result->ThrowIfError("Failed to get view information from DuckLake: ");
 	auto &views = catalog.views;
 	for (auto &row : *result) {
@@ -1391,53 +1508,15 @@ WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < view.end_snapshot OR 
 		views.push_back(std::move(view_info));
 	}
 
-	static const vector<pair<string, string>> MACRO_PARAM_FIELDS = {{"parameter_name", "parameter_name"},
-	                                                                {"parameter_type", "parameter_type"},
-	                                                                {"default_value", "default_value"},
-	                                                                {"default_value_type", "default_value_type"}};
-	auto macro_param_query = StringUtil::Format(R"(
-		(
-		SELECT %s
-		FROM {METADATA_CATALOG}.ducklake_macro_parameters
-		WHERE ducklake_macro_impl.macro_id = ducklake_macro_parameters.macro_id
-		AND ducklake_macro_impl.impl_id = ducklake_macro_parameters.impl_id
-		)
-	)",
-	                                            ListAggregation(MACRO_PARAM_FIELDS, "column_id ASC"));
-	const vector<pair<string, string>> MACRO_IMPL_FIELDS = {
-	    {"dialect", "dialect"}, {"sql", "sql"}, {"type", "type"}, {"params", macro_param_query}};
-
-	// load macro information
-	result = query_executor(snapshot, StringUtil::Format(R"(
-SELECT schema_id, ducklake_macro.macro_id, macro_name, (
-		SELECT %s
-		FROM {METADATA_CATALOG}.ducklake_macro_impl
-		WHERE ducklake_macro.macro_id = ducklake_macro_impl.macro_id
-	) AS impl
-FROM {METADATA_CATALOG}.ducklake_macro
-WHERE  {SNAPSHOT_ID} >= ducklake_macro.begin_snapshot AND ({SNAPSHOT_ID} < ducklake_macro.end_snapshot OR ducklake_macro.end_snapshot IS NULL)
-)",
-	                                                     ListAggregation(MACRO_IMPL_FIELDS)));
-	result->ThrowIfError("Failed to get macro information from DuckLake: ");
-	auto &macros = catalog.macros;
-	for (auto &row : *result) {
-		DuckLakeMacroInfo macro_info;
-		macro_info.schema_id = SchemaIndex(row.GetValue<uint64_t>(0));
-		macro_info.macro_id = MacroIndex(row.GetValue<uint64_t>(1));
-		macro_info.macro_name = row.GetValue<Identifier>(2);
-		auto macro_implementations = row.GetValue<Value>(3);
-		macro_info.implementations = LoadMacroImplementations(macro_implementations);
-		macros.push_back(std::move(macro_info));
-	}
-
 	// load partition information
-	result = query_executor(snapshot, R"(
+	result = query_executor(snapshot, StringUtil::Format(R"(
 SELECT partition_id, part.table_id, partition_key_index, column_id, transform
 FROM {METADATA_CATALOG}.ducklake_partition_info part
 JOIN {METADATA_CATALOG}.ducklake_partition_column part_col USING (partition_id)
-WHERE {SNAPSHOT_ID} >= part.begin_snapshot AND ({SNAPSHOT_ID} < part.end_snapshot OR part.end_snapshot IS NULL)
+WHERE {SNAPSHOT_ID} >= part.begin_snapshot AND ({SNAPSHOT_ID} < part.end_snapshot OR part.end_snapshot IS NULL)%s
 ORDER BY part.table_id ASC, partition_id ASC, partition_key_index ASC
-)");
+)",
+	                                                     LoadedTableCondition(filter, "part.table_id")));
 	result->ThrowIfError("Failed to get partition information from DuckLake: ");
 	auto &partitions = catalog.partitions;
 	for (auto &row : *result) {
@@ -1460,13 +1539,14 @@ ORDER BY part.table_id ASC, partition_id ASC, partition_key_index ASC
 	}
 
 	// load sort information
-	result = query_executor(snapshot, R"(
+	result = query_executor(snapshot, StringUtil::Format(R"(
 SELECT sort.sort_id, sort.table_id, sort_expr.sort_key_index, sort_expr.expression, sort_expr.dialect, sort_expr.sort_direction, sort_expr.null_order
 FROM {METADATA_CATALOG}.ducklake_sort_info sort
 JOIN {METADATA_CATALOG}.ducklake_sort_expression sort_expr USING (sort_id)
-WHERE {SNAPSHOT_ID} >= sort.begin_snapshot AND ({SNAPSHOT_ID} < sort.end_snapshot OR sort.end_snapshot IS NULL)
+WHERE {SNAPSHOT_ID} >= sort.begin_snapshot AND ({SNAPSHOT_ID} < sort.end_snapshot OR sort.end_snapshot IS NULL)%s
 ORDER BY sort.table_id ASC, sort.sort_id ASC, sort_expr.sort_key_index ASC
-)");
+)",
+	                                                     LoadedTableCondition(filter, "sort.table_id")));
 	result->ThrowIfError("Failed to get sort information from DuckLake: ");
 	auto &sorts = catalog.sorts;
 	for (auto &row : *result) {
@@ -1495,8 +1575,6 @@ ORDER BY sort.table_id ASC, sort.sort_id ASC, sort_expr.sort_key_index ASC
 		                                                                             : OrderByNullType::NULLS_LAST);
 		sort_entry.fields.push_back(std::move(sort_field));
 	}
-
-	return catalog;
 }
 
 static void TransformGlobalStatsRow(const QueryResultRow &row, vector<DuckLakeGlobalStatsInfo> &global_stats,

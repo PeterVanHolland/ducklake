@@ -10,6 +10,7 @@
 #include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 #include "storage/ducklake_catalog.hpp"
+#include "storage/ducklake_catalog_loader.hpp"
 #include "common/ducklake_types.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "storage/ducklake_table_entry.hpp"
@@ -31,10 +32,11 @@ namespace duckdb {
 
 DuckLakeSchemaEntry::DuckLakeSchemaEntry(Catalog &catalog, CreateSchemaInfo &info, SchemaIndex schema_id,
                                          string schema_uuid, string data_path_p,
-                                         optional_ptr<DuckLakeSchemaEntry> parent_schema_p)
+                                         optional_ptr<DuckLakeSchemaEntry> parent_schema_p,
+                                         optional_ptr<DuckLakeCatalogLoader> loader_p)
     : SchemaCatalogEntry(catalog, info, parent_schema_p.get()), schema_id(schema_id),
       schema_uuid(std::move(schema_uuid)), data_path(std::move(data_path_p)),
-      path_key(ChildPathKey(parent_schema_p.get(), name)) {
+      path_key(ChildPathKey(parent_schema_p.get(), name)), loader(loader_p) {
 }
 
 DuckLakeSchemaEntry::~DuckLakeSchemaEntry() {
@@ -503,6 +505,9 @@ void DuckLakeSchemaEntry::Scan(ClientContext &context, CatalogType type,
 		}
 	}
 	// scan committed entries
+	if (loader && (type == CatalogType::TABLE_ENTRY || type == CatalogType::VIEW_ENTRY)) {
+		loader->LoadSchema(duck_transaction, *this);
+	}
 	auto &catalog_set = GetCatalogSet(type);
 	for (auto &entry : catalog_set.GetEntries()) {
 		if (duck_transaction.IsDeleted(*entry.second) || duck_transaction.IsRenamed(*entry.second)) {
@@ -643,8 +648,7 @@ optional_ptr<CatalogEntry> DuckLakeSchemaEntry::LookupEntry(CatalogTransaction t
 			return transaction_entry;
 		}
 	}
-	auto &catalog_set = GetCatalogSet(catalog_type);
-	auto entry = catalog_set.GetEntry(entry_name);
+	auto entry = GetCommittedEntry(duck_transaction, catalog_type, entry_name);
 	if (!entry) {
 		return nullptr;
 	}
@@ -655,6 +659,14 @@ optional_ptr<CatalogEntry> DuckLakeSchemaEntry::LookupEntry(CatalogTransaction t
 		return duck_transaction.GetTransactionView(entry->Cast<DuckLakeViewEntry>());
 	}
 	return *entry;
+}
+
+optional_ptr<CatalogEntry> DuckLakeSchemaEntry::GetCommittedEntry(DuckLakeTransaction &transaction, CatalogType type,
+                                                                  const Identifier &name) {
+	if (loader && (type == CatalogType::TABLE_ENTRY || type == CatalogType::VIEW_ENTRY)) {
+		return loader->GetEntry(transaction, *this, name);
+	}
+	return GetCatalogSet(type).GetEntry(name);
 }
 
 void DuckLakeSchemaEntry::AddEntry(CatalogType type, unique_ptr<CatalogEntry> entry) {

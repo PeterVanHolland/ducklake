@@ -361,14 +361,19 @@ optional_idx PostgresMetadataManager::BatchServerErrorStart(const string &messag
 	// the batch and the server error can contain any text, so the batch is found by its size
 	const string failed_batch = "Failed to execute query \"";
 	auto batch_start = message.find(failed_batch);
-	if (batch_start == string::npos) {
+	if (batch_start != string::npos) {
+		auto batch_end = batch_start + failed_batch.size() + executed_query_size;
+		if (batch_end + 3 <= message.size() && message.compare(batch_end, 3, "\": ") == 0) {
+			return batch_end;
+		}
+	}
+	// newer postgres_scanner versions leave the query out of the message
+	const string failed_query = "Failed to execute query: ";
+	auto query_start = message.find(failed_query);
+	if (query_start == string::npos) {
 		return optional_idx();
 	}
-	auto batch_end = batch_start + failed_batch.size() + executed_query_size;
-	if (batch_end + 3 > message.size() || message.compare(batch_end, 3, "\": ") != 0) {
-		return optional_idx();
-	}
-	return batch_end;
+	return query_start + failed_query.size();
 }
 
 string PostgresMetadataManager::CommitErrorWithoutQuery(const string &message) const {

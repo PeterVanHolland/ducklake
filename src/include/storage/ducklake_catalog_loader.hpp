@@ -52,6 +52,9 @@ public:
 private:
 	using entry_names_t = case_insensitive_map_t<vector<TableIndex>>;
 
+	//! Runs the function under the lock and renews the reservation of the cache afterwards, also when it throws
+	template <class FUN>
+	void Locked(FUN &&fun);
 	//! Loads the entries the filter selects, requires the lock
 	void Load(DuckLakeTransaction &transaction, const DuckLakeCatalogLoadFilter &filter);
 	//! The names of the tables and views of the schema, read once, requires the lock

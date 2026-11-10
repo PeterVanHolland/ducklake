@@ -289,9 +289,8 @@ public:
 	static void DropEmptySupersededInlinedTables(const DuckLakeCommitContext &context);
 
 	void CleanupFiles();
-	//! Keeps the error of a COMMIT that took effect, so the finished commit reports it
+	//! Whether the COMMIT took effect, its error is then kept for the finished commit
 	bool RecordErrorAfterCommit(DuckLakeCommitOutcome outcome, const ErrorData &error);
-	//! That error with what it means for the transaction
 	ErrorData ErrorAfterCommit() const;
 
 	void EnsureCommitInfoProvided(const DuckLakeSnapshotCommit &commit_info) const;

@@ -396,11 +396,23 @@ bool PostgresMetadataManager::IsRetryableCommitError(const string &message) cons
 	return false;
 }
 
+//! Whether a COMMIT error carries a message of the server, which starts with its severity in any language
+static bool IsServerCommitMessage(const string &message) {
+	auto start = message.find("\"COMMIT\": ");
+	if (start == string::npos) {
+		return false;
+	}
+	auto text = message.substr(start + 10);
+	auto colon = text.find(':');
+	return colon != string::npos && colon > 0 && text.compare(colon, 3, ":  ") == 0 &&
+	       text.find_first_of(" \t\r\n") > colon;
+}
+
 DuckLakeCommitOutcome PostgresMetadataManager::CommitOutcomeAfterError(const ErrorData &error) const {
-	// the server rolls back a COMMIT it rejects, a conflict is told apart from a lost reply in any language
+	// the server rolls back a COMMIT it rejects, a lost reply comes with libpq's text instead
 	auto &message = error.RawMessage();
 	if (IsRetryableCommitError(message) || DuckLakeTransaction::RetryOnError(message) ||
-	    StringUtil::Contains(message, "\"COMMIT\": ERROR:")) {
+	    IsServerCommitMessage(message)) {
 		return DuckLakeCommitOutcome::ROLLED_BACK;
 	}
 	return DuckLakeCommitOutcome::UNKNOWN;

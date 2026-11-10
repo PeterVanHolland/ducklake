@@ -32,6 +32,13 @@ unique_ptr<QueryResult> QuackMetadataManager::Query(string &query) {
 	return result;
 }
 
+//! Whether the error says that a request did not reach the server, or that its reply did not come back
+static bool IsConnectionError(const string &message) {
+	return StringUtil::Contains(message, "Invalid connection id") ||
+	       StringUtil::Contains(message, "Couldn't connect to server") ||
+	       StringUtil::Contains(message, "Failed to send message");
+}
+
 unique_ptr<QueryResult> QuackMetadataManager::AttachMetadata(const string &attach_query) {
 	auto query = attach_query;
 	SubstituteCatalogPlaceholders(query);
@@ -41,11 +48,7 @@ unique_ptr<QueryResult> QuackMetadataManager::AttachMetadata(const string &attac
 	auto result = fresh_conn.Query(query);
 
 	for (idx_t attempt = 0; attempt < 5 && result->HasError(); attempt++) {
-		auto raw_message = result->GetErrorObject().RawMessage();
-		const bool retryable = StringUtil::Contains(raw_message, "Invalid connection id") ||
-		                       StringUtil::Contains(raw_message, "Couldn't connect to server") ||
-		                       StringUtil::Contains(raw_message, "Failed to send message");
-		if (!retryable) {
+		if (!IsConnectionError(result->GetErrorObject().RawMessage())) {
 			break;
 		}
 		result = fresh_conn.Query(query);
@@ -70,7 +73,10 @@ DuckLakeCommitOutcome QuackMetadataManager::CommitOutcomeAfterError(const ErrorD
 	if (outcome == DuckLakeCommitOutcome::COMMITTED) {
 		return outcome;
 	}
-	// the client raises these for a request without a usable reply, the server reports its errors with their own type
+	if (IsConnectionError(error.RawMessage())) {
+		return DuckLakeCommitOutcome::UNKNOWN;
+	}
+	// the client raises these for a reply it cannot use, the server reports its errors with their own type
 	switch (error.Type()) {
 	case ExceptionType::IO:
 	case ExceptionType::SERIALIZATION:

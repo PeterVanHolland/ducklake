@@ -192,6 +192,9 @@ struct DuckLakeFileListDynamicFilter {
 	LogicalType column_type;
 };
 
+//! What the error of a COMMIT that was sent to the metadata database says about the commit
+enum class DuckLakeCommitOutcome : uint8_t { COMMITTED, ROLLED_BACK, UNKNOWN };
+
 //! The DuckLake metadata manger is the communication layer between the system and the metadata catalog
 class DuckLakeMetadataManager {
 public:
@@ -246,6 +249,10 @@ public:
 	}
 	//! Advice added to the error of a commit that failed for good
 	virtual string CommitErrorHint(const string &message) const;
+	//! What the error of a COMMIT that was sent says about the commit
+	virtual DuckLakeCommitOutcome CommitOutcomeAfterError(const string &message) const;
+	//! The outcome a DuckDB database reports with the error of a COMMIT
+	static DuckLakeCommitOutcome DuckDBCommitOutcome(const string &message);
 	//! SQL that the commit of a transaction that changed options runs, so two commits cannot both insert an option
 	virtual string ConfigOptionLockSql() const {
 		return string();

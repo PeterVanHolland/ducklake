@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "duckdb/common/error_data.hpp"
+#include "storage/ducklake_metadata_manager.hpp"
 #include "storage/ducklake_stats.hpp"
 #include "storage/ducklake_transaction.hpp"
 
@@ -58,6 +60,10 @@ struct DuckLakeCommitContext {
 	//! Advice for a commit error that is not retried.
 	std::function<string(const string &)> commit_error_hint = [](const string &) {
 		return string();
+	};
+	//! What the error of a COMMIT that was sent says about the commit.
+	std::function<DuckLakeCommitOutcome(const string &)> commit_outcome = [](const string &) {
+		return DuckLakeCommitOutcome::ROLLED_BACK;
 	};
 	//! Optional hooks below default to a no-op/constant; callers override only the ones they need.
 	//! Clears the metadata manager cache if a clear was pending.
@@ -281,6 +287,8 @@ public:
 	static void DropEmptySupersededInlinedTables(const DuckLakeCommitContext &context);
 
 	void CleanupFiles();
+	//! Throws the error the metadata database reported after a durable COMMIT, once the commit is finished
+	void ThrowErrorAfterCommit();
 
 	void EnsureCommitInfoProvided(const DuckLakeSnapshotCommit &commit_info) const;
 
@@ -313,6 +321,8 @@ public:
 	unique_ptr<DuckLakeCatalogSet> new_schemas;
 	map<SchemaIndex, reference<DuckLakeSchemaEntry>> dropped_schemas;
 	LocalTableChanges local_changes;
+	//! The error the metadata database reported after a durable COMMIT
+	ErrorData error_after_commit;
 	vector<FlushedInlinedTableInfo> flushed_inlined_tables;
 	//! The tables whose inlined file deletions were flushed, with the snapshot of the flush
 	map<TableIndex, idx_t> flushed_inlined_file_deletions;

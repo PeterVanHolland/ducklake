@@ -126,6 +126,18 @@ string DuckLakeMetadataManager::CommitErrorHint(const string &message) const {
 	return rule->hint;
 }
 
+DuckLakeCommitOutcome DuckLakeMetadataManager::DuckDBCommitOutcome(const string &message) {
+	// DuckDB reports a durable COMMIT whose autocheckpoint failed, every other failed COMMIT is rolled back
+	if (StringUtil::Contains(message, "Transaction COMMIT succeeded and is durable")) {
+		return DuckLakeCommitOutcome::COMMITTED;
+	}
+	return DuckLakeCommitOutcome::ROLLED_BACK;
+}
+
+DuckLakeCommitOutcome DuckLakeMetadataManager::CommitOutcomeAfterError(const string &message) const {
+	return DuckDBCommitOutcome(message);
+}
+
 bool DuckLakeMetadataManager::ExecuteRetrialsServerSide() const {
 	return transaction.GetCatalog().RetrialsServerSide();
 }

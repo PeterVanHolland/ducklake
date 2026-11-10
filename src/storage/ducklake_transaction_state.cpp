@@ -95,6 +95,14 @@ void DuckLakeTransactionState::CleanupFiles() {
 	local_changes.CleanupFiles(db);
 }
 
+void DuckLakeTransactionState::ThrowErrorAfterCommit() {
+	if (!error_after_commit.HasError()) {
+		return;
+	}
+	error_after_commit.Throw(
+	    "The DuckLake transaction is committed, but its metadata database reported an error after the commit: ");
+}
+
 bool DuckLakeTransactionState::SchemaChangesMade() const {
 	return !new_tables.empty() || !dropped_tables.empty() || new_schemas || !dropped_schemas.empty() ||
 	       !dropped_views.empty() || !renamed_views.empty() || !new_scalar_macros.empty() ||
@@ -2799,6 +2807,20 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 	for (idx_t i = 0;; i++) {
 		bool can_retry;
 		bool retryable_metadata_error = false;
+		bool commit_sent = false;
+		// a COMMIT whose error leaves the snapshot durable ends the commit, the error follows it
+		auto commit_metadata_connection = [&]() {
+			commit_sent = true;
+			try {
+				context.commit_connection();
+			} catch (std::exception &ex) {
+				ErrorData commit_error(ex);
+				if (context.commit_outcome(commit_error.RawMessage()) != DuckLakeCommitOutcome::COMMITTED) {
+					throw;
+				}
+				error_after_commit = std::move(commit_error);
+			}
+		};
 		auto attempt_changes = transaction_changes;
 		auto attempt_dropped_file_stats = dropped_file_stats;
 		try {
@@ -2827,7 +2849,7 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			wrote_snapshot = context.write_snapshot &&
 			                 (!expired_snapshots.empty() || !expiry.tags.empty() || !context.only_expires_snapshots);
 			if (!wrote_snapshot && !context.locks_config_options) {
-				context.commit_connection();
+				commit_metadata_connection();
 				break;
 			}
 			for (auto &snapshot : expired_snapshots) {
@@ -2863,19 +2885,23 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			}
 			flushed_inlined = !flushed_inlined_tables.empty();
 			context.flush_cache_if_pending();
-			context.commit_connection();
+			commit_metadata_connection();
 			new_entry_oids = std::move(commit_state.new_entry_oids);
 			break;
 		} catch (std::exception &ex) {
 			ErrorData error(ex);
 			RollbackKeepingError(context);
+			// a COMMIT that was sent and not rejected may have taken effect, so it is neither retried nor undone
+			auto outcome =
+			    commit_sent ? context.commit_outcome(error.RawMessage()) : DuckLakeCommitOutcome::ROLLED_BACK;
 			retryable_metadata_error =
 			    retryable_metadata_error || context.is_retryable_metadata_error(error.RawMessage());
 			auto error_without_query = context.commit_error_without_query(error.RawMessage());
 			// an internal error is a bug that a retry cannot fix
 			// a retryable metadata error in the conflict check is retried, a conflict that it finds is not
 			bool retry_on_error =
-			    error.Type() != ExceptionType::INTERNAL && !context.skip_retry() &&
+			    outcome == DuckLakeCommitOutcome::ROLLED_BACK && error.Type() != ExceptionType::INTERNAL &&
+			    !context.skip_retry() &&
 			    (retryable_metadata_error || (can_retry && DuckLakeTransaction::RetryOnError(error_without_query)));
 			if (retry_on_error) {
 				try {
@@ -2894,8 +2920,13 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			}
 			if (!retry_on_error || finished_retrying) {
 				// we abort after the max retry count
-				CleanupFiles();
 				string error_message = "Failed to commit DuckLake transaction.\n";
+				if (outcome == DuckLakeCommitOutcome::ROLLED_BACK) {
+					CleanupFiles();
+				} else {
+					error_message += "The commit may have taken effect, so its files are kept. If it did not, "
+					                 "ducklake_delete_orphaned_files removes them.\n";
+				}
 				// only an error that another retry could solve gets the advice to raise the retry count
 				if (retry_on_error) {
 					auto suggested_count =

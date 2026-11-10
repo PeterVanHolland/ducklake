@@ -1,0 +1,69 @@
+# name: test/sql/retry/commit_durable_before_checkpoint_failure.test
+# description: a commit whose metadata database fails its autocheckpoint after the durable COMMIT keeps its data file
+# group: [retry]
+
+require ducklake
+
+require parquet
+
+# the catalog is attached again after the failure, so its path is fixed
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/commit_durable_before_checkpoint_failure.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/commit_durable_before_checkpoint_failure', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t(i INTEGER)
+
+# the commit writes its WAL entry and then fails the checkpoint that follows it
+statement ok
+SET auto_checkpoint_skip_wal_threshold = 9999999999
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO dl.t VALUES (1)
+
+statement ok
+SET wal_autocheckpoint = '1B'
+
+statement ok
+SET debug_checkpoint_abort = 'BEFORE_HEADER_NON_FATAL'
+
+statement error
+COMMIT
+----
+The DuckLake transaction is committed, but its metadata database reported an error after the commit: Transaction COMMIT succeeded and is durable
+
+statement ok
+SET debug_checkpoint_abort = 'NONE'
+
+# the data file of the committed snapshot stays
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/commit_durable_before_checkpoint_failure/**/*.parquet')
+----
+1
+
+# attached again, the catalog holds the snapshot and reads its file
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/commit_durable_before_checkpoint_failure', DATA_INLINING_ROW_LIMIT 0)
+
+query I
+SELECT i FROM dl.t
+----
+1
+
+statement ok
+INSERT INTO dl.t VALUES (2)
+
+query I
+SELECT i FROM dl.t ORDER BY i
+----
+1
+2

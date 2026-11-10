@@ -114,6 +114,12 @@
       "paths": [
         "test/sql/quack/partial_file_count.test"
       ]
+    },
+    {
+      "reason": "The test fails the autocheckpoint of a DuckDB metadata database with debug_checkpoint_abort, which this catalog does not run",
+      "paths": [
+        "test/sql/retry/commit_durable_before_checkpoint_failure.test"
+      ]
     }
   ]
 }

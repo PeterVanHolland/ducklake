@@ -63,6 +63,7 @@
         "test/sql/migration/postgres_concurrent_migration.test",
         "test/sql/retry/postgres_localized_conflict_retry.test",
         "test/sql/retry/postgres_commit_connection_loss.test",
+        "test/sql/retry/postgres_commit_lost_reply_keeps_files.test",
         "test/sql/concurrent/postgres_concurrent_attach_new.test",
         "test/sql/concurrent/postgres_concurrent_attach_other_catalogs.test",
         "test/sql/metadata/postgres_cache_clear_scope.test",
@@ -246,6 +247,12 @@
       "paths": [
         "test/sql/cleanup/expire_cleanup_in_transaction.test",
         "test/sql/cleanup/expire_cleanup_concurrent_commit.test"
+      ]
+    },
+    {
+      "reason": "The test fails the autocheckpoint of a DuckDB metadata database with debug_checkpoint_abort, which this catalog does not run",
+      "paths": [
+        "test/sql/retry/commit_durable_before_checkpoint_failure.test"
       ]
     }
   ]

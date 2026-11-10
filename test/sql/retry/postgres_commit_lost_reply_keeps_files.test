@@ -1,0 +1,101 @@
+# name: test/sql/retry/postgres_commit_lost_reply_keeps_files.test
+# description: a commit whose connection ends while the server runs COMMIT keeps its data file, a rejected COMMIT does not
+# group: [retry]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require-env DUCKLAKE_CI
+
+require-env DUCKLAKE_CONNECTION
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH '{DUCKLAKE_CONNECTION}' AS pg
+
+statement ok
+CALL postgres_execute('pg', 'DROP SCHEMA IF EXISTS commit_lost_reply CASCADE')
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+(DATA_PATH '{DATA_PATH}/commit_lost_reply', METADATA_SCHEMA 'commit_lost_reply', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t (i INTEGER)
+
+# a deferred trigger ends the connection while the server runs the COMMIT, so its reply is lost
+statement ok
+CALL postgres_execute('pg', 'CREATE FUNCTION commit_lost_reply.end_connection() RETURNS trigger LANGUAGE plpgsql
+AS $$ BEGIN PERFORM pg_terminate_backend(pg_backend_pid()); RETURN NULL; END $$')
+
+statement ok
+CALL postgres_execute('pg', 'CREATE CONSTRAINT TRIGGER end_connection AFTER INSERT ON commit_lost_reply.ducklake_snapshot
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION commit_lost_reply.end_connection()')
+
+statement error
+INSERT INTO dl.t VALUES (1)
+----
+The commit may have taken effect, so its files are kept
+
+# the file stays, since the client cannot know that the server rolled back
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/commit_lost_reply/**/*.parquet')
+----
+1
+
+# the snapshot was not committed, so the file is an orphan
+query I
+SELECT count(*) FROM dl.t
+----
+0
+
+statement ok
+CALL ducklake_delete_orphaned_files('dl', cleanup_all => true)
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/commit_lost_reply/**/*.parquet')
+----
+0
+
+# a COMMIT the server rejects with an error is rolled back, so the file goes at once
+statement ok
+CALL postgres_execute('pg', 'DROP TRIGGER end_connection ON commit_lost_reply.ducklake_snapshot')
+
+statement ok
+CALL postgres_execute('pg', 'CREATE FUNCTION commit_lost_reply.refuse_commit() RETURNS trigger LANGUAGE plpgsql
+AS $$ BEGIN RAISE EXCEPTION ''snapshot refused by the trigger''; END $$')
+
+statement ok
+CALL postgres_execute('pg', 'CREATE CONSTRAINT TRIGGER refuse_commit AFTER INSERT ON commit_lost_reply.ducklake_snapshot
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION commit_lost_reply.refuse_commit()')
+
+statement error
+INSERT INTO dl.t VALUES (2)
+----
+snapshot refused by the trigger
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/commit_lost_reply/**/*.parquet')
+----
+0
+
+statement ok
+CALL postgres_execute('pg', 'DROP TRIGGER refuse_commit ON commit_lost_reply.ducklake_snapshot')
+
+statement ok
+INSERT INTO dl.t VALUES (3)
+
+query I
+SELECT i FROM dl.t
+----
+3
+
+statement ok
+DETACH dl
+
+statement ok
+CALL postgres_execute('pg', 'DROP SCHEMA commit_lost_reply CASCADE')

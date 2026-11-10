@@ -1114,11 +1114,21 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 		// a table that is not part of the snapshot, e.g. one created in this transaction, has no stats in it
 		return nullptr;
 	}
-	// one query for the loaded tables or for the given tables, caching the tables without stats as well
+	// one query for the loaded tables without cached stats or for the given tables, caching the tables without stats
+	// as well
 	vector<TableIndex> cache_tables;
 	bool all_tables = false;
 	if (!load_tables) {
-		cache_tables = loader.LoadedEntryIds(all_tables);
+		auto loaded_tables = loader.LoadedTableIds(all_tables);
+		for (auto &loaded_table : loaded_tables) {
+			auto loaded_entry =
+			    cache.Get<DuckLakeTableStatsCacheEntry>(StatsCacheKey(snapshot.next_file_id, loaded_table));
+			if (loaded_table == table_id || !loaded_entry || loaded_entry->schema_version != snapshot.schema_version) {
+				cache_tables.push_back(loaded_table);
+			}
+		}
+		// the query without a table list reads every table, which the cache then holds
+		all_tables = all_tables && cache_tables.size() == loaded_tables.size();
 	} else {
 		unordered_set<idx_t> seen;
 		cache_tables.push_back(table_id);

@@ -39,8 +39,8 @@ public:
 	void LoadSchema(DuckLakeTransaction &transaction, DuckLakeSchemaEntry &schema);
 	//! Loads every table and view
 	void LoadAll(DuckLakeTransaction &transaction);
-	//! The ids of the loaded tables and views, and whether these are all of the snapshot
-	vector<TableIndex> LoadedEntryIds(bool &all_loaded);
+	//! The ids of the loaded tables, and whether every table and view of the snapshot is loaded
+	vector<TableIndex> LoadedTableIds(bool &all_loaded);
 	//! Adds the estimated memory of loaded entries
 	void AddEstimatedMemory(idx_t bytes);
 	//! The estimated memory of the loaded entries, which the cache reserves when it is called

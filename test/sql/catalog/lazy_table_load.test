@@ -126,6 +126,12 @@ SELECT count(*) FROM lake.s2.t3
 ----
 0
 
+# the stats of a table are read once, a later lookup reads those of its own table
+query I
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_table_stats%' AND query LIKE '%IN (%,%'
+----
+0
+
 # an older schema version loads the table as it was
 query I
 SELECT column_name FROM (DESCRIBE FROM lake.t1 AT (VERSION => getvariable('before_alter')))

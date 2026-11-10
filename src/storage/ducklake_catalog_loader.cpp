@@ -45,7 +45,7 @@ DuckLakeCatalogLoader::entry_names_t &DuckLakeCatalogLoader::EntryNames(DuckLake
 optional_ptr<CatalogEntry> DuckLakeCatalogLoader::GetEntry(DuckLakeTransaction &transaction,
                                                            DuckLakeSchemaEntry &schema, const Identifier &name) {
 	optional_ptr<CatalogEntry> entry;
-	{
+	try {
 		lock_guard<mutex> guard(lock);
 		auto &tables = schema.GetCatalogSet(CatalogType::TABLE_ENTRY);
 		entry = tables.GetEntry(name);
@@ -63,6 +63,10 @@ optional_ptr<CatalogEntry> DuckLakeCatalogLoader::GetEntry(DuckLakeTransaction &
 			}
 			entry = tables.GetEntry(name);
 		}
+	} catch (...) {
+		// the index read before a failed load stays
+		RefreshReservation();
+		throw;
 	}
 	// the index of the names grows the estimate as well
 	RefreshReservation();
@@ -122,11 +126,13 @@ void DuckLakeCatalogLoader::LoadAll(DuckLakeTransaction &transaction) {
 	RefreshReservation();
 }
 
-vector<TableIndex> DuckLakeCatalogLoader::LoadedEntryIds(bool &all_loaded_p) {
+vector<TableIndex> DuckLakeCatalogLoader::LoadedTableIds(bool &all_loaded_p) {
 	lock_guard<mutex> guard(lock);
 	vector<TableIndex> ids;
 	for (auto &entry : schemas.GetTableIdMap()) {
-		ids.push_back(entry.first);
+		if (entry.second.get().type == CatalogType::TABLE_ENTRY) {
+			ids.push_back(entry.first);
+		}
 	}
 	all_loaded_p = all_loaded;
 	return ids;

@@ -105,13 +105,6 @@ ErrorData DuckLakeTransactionState::ErrorAfterCommit() const {
 	                     error_after_commit.RawMessage());
 }
 
-void DuckLakeTransactionState::ThrowErrorAfterCommit() {
-	auto error = ErrorAfterCommit();
-	if (error.HasError()) {
-		error.Throw();
-	}
-}
-
 bool DuckLakeTransactionState::SchemaChangesMade() const {
 	return !new_tables.empty() || !dropped_tables.empty() || new_schemas || !dropped_schemas.empty() ||
 	       !dropped_views.empty() || !renamed_views.empty() || !new_scalar_macros.empty() ||
@@ -2818,16 +2811,21 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 		bool retryable_metadata_error = false;
 		bool commit_sent = false;
 		// a COMMIT whose error leaves the snapshot durable ends the commit, the error follows it
+		auto commit_took_effect = [&](const ErrorData &error) {
+			if (context.commit_outcome(error) != DuckLakeCommitOutcome::COMMITTED) {
+				return false;
+			}
+			error_after_commit = error;
+			return true;
+		};
 		auto commit_metadata_connection = [&]() {
 			commit_sent = true;
 			try {
 				context.commit_connection();
 			} catch (std::exception &ex) {
-				ErrorData commit_error(ex);
-				if (context.commit_outcome(commit_error.RawMessage()) != DuckLakeCommitOutcome::COMMITTED) {
+				if (!commit_took_effect(ErrorData(ex))) {
 					throw;
 				}
-				error_after_commit = std::move(commit_error);
 			}
 		};
 		auto attempt_changes = transaction_changes;
@@ -2887,10 +2885,7 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			auto res = context.execute_commit_batch(commit_snapshot, batch_queries);
 			if (res->HasError()) {
 				auto &commit_error = res->GetErrorObject();
-				if (commit_sent &&
-				    context.commit_outcome(commit_error.RawMessage()) == DuckLakeCommitOutcome::COMMITTED) {
-					// the batch committed the snapshot, the error follows the finished commit
-					error_after_commit = commit_error;
+				if (commit_sent && commit_took_effect(commit_error)) {
 					new_entry_oids = std::move(commit_state.new_entry_oids);
 					break;
 				}
@@ -2909,8 +2904,7 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			ErrorData error(ex);
 			RollbackKeepingError(context);
 			// a COMMIT that was sent and not rejected may have taken effect, so it is neither retried nor undone
-			auto outcome =
-			    commit_sent ? context.commit_outcome(error.RawMessage()) : DuckLakeCommitOutcome::ROLLED_BACK;
+			auto outcome = commit_sent ? context.commit_outcome(error) : DuckLakeCommitOutcome::ROLLED_BACK;
 			retryable_metadata_error =
 			    retryable_metadata_error || context.is_retryable_metadata_error(error.RawMessage());
 			auto error_without_query = context.commit_error_without_query(error.RawMessage());

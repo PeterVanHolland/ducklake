@@ -1597,6 +1597,10 @@ ErrorData DuckLakeTransaction::ErrorAfterCommit() const {
 	return state->ErrorAfterCommit();
 }
 
+void DuckLakeTransaction::SetErrorAfterCommit(ErrorData error) {
+	state->error_after_commit = std::move(error);
+}
+
 void DuckLakeTransaction::ApplyServerSideCommit(idx_t schema_version) {
 	if (snapshot) {
 		for (auto &entry : state->dropped_file_stats) {
@@ -1720,8 +1724,8 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		return metadata_manager->CommitErrorWithoutQuery(message);
 	};
 	context.batch_commits = metadata_manager->CommitsInBatch();
-	context.commit_outcome = [&](const string &message) {
-		return metadata_manager->CommitOutcomeAfterError(message);
+	context.commit_outcome = [&](const ErrorData &error) {
+		return metadata_manager->CommitOutcomeAfterError(error);
 	};
 	context.commit_error_hint = [&](const string &message) {
 		if (context.skip_retry()) {

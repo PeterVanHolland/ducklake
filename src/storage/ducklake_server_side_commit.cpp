@@ -126,12 +126,12 @@ DuckLakeServerSideCommitResult DuckLakeServerSideCommit::Run() {
 	fresh_conn.BeginTransaction();
 	state->Commit(transaction_snapshot, transaction_changes, retry_config,
 	              BuildContext(committed_snapshot_id, committed_schema_version));
-	state->ThrowErrorAfterCommit();
 
 	DuckLakeServerSideCommitResult result;
 	result.committed_snapshot_id = static_cast<int64_t>(committed_snapshot_id);
 	result.committed_schema_version = static_cast<int64_t>(committed_schema_version);
 	result.had_flushes = !state->flushed_inlined_tables.empty();
+	result.error_after_commit = state->error_after_commit.RawMessage();
 	return result;
 }
 
@@ -666,8 +666,8 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
 	ctx.commit_connection = [this]() {
 		fresh_conn.Commit();
 	};
-	ctx.commit_outcome = [](const string &message) {
-		return DuckLakeMetadataManager::DuckDBCommitOutcome(message);
+	ctx.commit_outcome = [](const ErrorData &error) {
+		return DuckLakeMetadataManager::DuckDBCommitOutcome(error.RawMessage());
 	};
 	ctx.try_rollback = [this]() {
 		if (fresh_conn.context->transaction.HasActiveTransaction()) {

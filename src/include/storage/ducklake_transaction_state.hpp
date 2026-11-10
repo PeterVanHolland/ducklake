@@ -64,7 +64,7 @@ struct DuckLakeCommitContext {
 	//! Whether the commit batch commits the metadata transaction itself.
 	bool batch_commits = false;
 	//! Classifies the error of a COMMIT that was sent.
-	std::function<DuckLakeCommitOutcome(const string &)> commit_outcome = [](const string &) {
+	std::function<DuckLakeCommitOutcome(const ErrorData &)> commit_outcome = [](const ErrorData &) {
 		return DuckLakeCommitOutcome::ROLLED_BACK;
 	};
 	//! Optional hooks below default to a no-op/constant; callers override only the ones they need.
@@ -291,8 +291,6 @@ public:
 	void CleanupFiles();
 	//! The error the metadata database reported after a durable COMMIT, with what it means for the transaction
 	ErrorData ErrorAfterCommit() const;
-	//! Throws that error, once the commit is finished
-	void ThrowErrorAfterCommit();
 
 	void EnsureCommitInfoProvided(const DuckLakeSnapshotCommit &commit_info) const;
 

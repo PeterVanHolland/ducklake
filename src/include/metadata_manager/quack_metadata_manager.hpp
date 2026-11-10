@@ -38,7 +38,7 @@ public:
 	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query) override;
 	unique_ptr<QueryResult> ExecuteInTransaction(string &query) override;
 	bool CommitsInBatch() const override;
-	DuckLakeCommitOutcome CommitOutcomeAfterError(const string &message) const override;
+	DuckLakeCommitOutcome CommitOutcomeAfterError(const ErrorData &error) const override;
 	unique_ptr<QueryResult> Query(string &query) override;
 	unique_ptr<QueryResult> AttachMetadata(const string &attach_query) override;
 	void ClearCache() override;

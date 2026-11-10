@@ -69,12 +69,21 @@ bool QuackMetadataManager::CommitsInBatch() const {
 	return true;
 }
 
-DuckLakeCommitOutcome QuackMetadataManager::CommitOutcomeAfterError(const string &message) const {
-	// a request without a reply fails as a send, the server rolls back what it rejects
-	if (StringUtil::Contains(message, "Failed to send message")) {
-		return DuckLakeCommitOutcome::UNKNOWN;
+DuckLakeCommitOutcome QuackMetadataManager::CommitOutcomeAfterError(const ErrorData &error) const {
+	auto outcome = DuckDBCommitOutcome(error.RawMessage());
+	if (outcome == DuckLakeCommitOutcome::COMMITTED) {
+		return outcome;
 	}
-	return DuckDBCommitOutcome(message);
+	// the client raises these for a request without a usable reply, the server reports its errors with their own type
+	switch (error.Type()) {
+	case ExceptionType::IO:
+	case ExceptionType::SERIALIZATION:
+	case ExceptionType::INTERNAL:
+	case ExceptionType::NOT_IMPLEMENTED:
+		return DuckLakeCommitOutcome::UNKNOWN;
+	default:
+		return DuckLakeCommitOutcome::ROLLED_BACK;
+	}
 }
 
 string QuackMetadataManager::MetadataExistsQuery() const {
@@ -187,6 +196,10 @@ void QuackMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tra
 	}
 	flush_transaction.GetCatalog().SetCommittedSnapshotId(AsIdx(*row, 0));
 	flush_transaction.ApplyServerSideCommit(AsIdx(*row, 1));
+	if (result->ColumnCount() > 3 && !(*row).IsNull(3)) {
+		// an older server has no such column
+		flush_transaction.SetErrorAfterCommit(ErrorData(ExceptionType::IO, (*row).GetValue<string>(3)));
+	}
 	if (OptBoolFalse(*row, 2)) {
 		// With quack we need to clear up superseded inlines tables on the client side to avoid dangling caching
 		// references

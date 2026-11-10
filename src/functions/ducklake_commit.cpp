@@ -39,6 +39,8 @@ static unique_ptr<FunctionData> DuckLakeCommitBind(ClientContext &, TableFunctio
 	return_types.emplace_back(LogicalType::BIGINT);
 	names.emplace_back("had_flushes");
 	return_types.emplace_back(LogicalType::BOOLEAN);
+	names.emplace_back("error_after_commit");
+	return_types.emplace_back(LogicalType::VARCHAR);
 	return std::move(result);
 }
 
@@ -69,6 +71,8 @@ static void DuckLakeCommitExecute(ClientContext &context, TableFunctionInput &da
 	output.data[0].Append(Value::BIGINT(result.committed_snapshot_id));
 	output.data[1].Append(Value::BIGINT(result.committed_schema_version));
 	output.data[2].Append(Value::BOOLEAN(result.had_flushes));
+	output.data[3].Append(result.error_after_commit.empty() ? Value(LogicalType::VARCHAR)
+	                                                        : Value(result.error_after_commit));
 	output.SetChildCardinality(1);
 }
 

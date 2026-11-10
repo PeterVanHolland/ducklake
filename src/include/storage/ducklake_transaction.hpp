@@ -373,6 +373,7 @@ public:
 	void CleanupFiles();
 	//! The error the metadata database reported after a durable COMMIT, if any
 	ErrorData ErrorAfterCommit() const;
+	void SetErrorAfterCommit(ErrorData error);
 	//! Post-commit cleanup of empty inlined-data tables superseded by later schema versions.
 	void DropEmptySupersededInlinedTablesClientSide();
 	void ReportPostCommitError(const string &message);

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/set.hpp"
 #include "duckdb/common/unordered_set.hpp"
@@ -250,7 +251,7 @@ public:
 	//! Advice added to the error of a commit that failed for good
 	virtual string CommitErrorHint(const string &message) const;
 	//! What the error of a COMMIT that was sent says about the commit
-	virtual DuckLakeCommitOutcome CommitOutcomeAfterError(const string &message) const;
+	virtual DuckLakeCommitOutcome CommitOutcomeAfterError(const ErrorData &error) const;
 	//! The outcome a DuckDB database reports with the error of a COMMIT
 	static DuckLakeCommitOutcome DuckDBCommitOutcome(const string &message);
 	//! Whether the commit batch commits the metadata transaction itself

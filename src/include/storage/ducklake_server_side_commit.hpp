@@ -21,6 +21,8 @@ struct DuckLakeServerSideCommitResult {
 	int64_t committed_snapshot_id = 0;
 	int64_t committed_schema_version = 0;
 	bool had_flushes = false;
+	//! The error the metadata database reported after the durable commit, empty without one
+	string error_after_commit;
 };
 
 //! Executes a DuckLake commit server-side from staged tables.

@@ -134,8 +134,8 @@ DuckLakeCommitOutcome DuckLakeMetadataManager::DuckDBCommitOutcome(const string 
 	return DuckLakeCommitOutcome::ROLLED_BACK;
 }
 
-DuckLakeCommitOutcome DuckLakeMetadataManager::CommitOutcomeAfterError(const string &message) const {
-	return DuckDBCommitOutcome(message);
+DuckLakeCommitOutcome DuckLakeMetadataManager::CommitOutcomeAfterError(const ErrorData &error) const {
+	return DuckDBCommitOutcome(error.RawMessage());
 }
 
 bool DuckLakeMetadataManager::ExecuteRetrialsServerSide() const {

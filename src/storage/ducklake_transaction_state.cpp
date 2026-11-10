@@ -2885,24 +2885,32 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 				    CommitChanges(commit_state, attempt_changes, stats, context, attempt_dropped_file_stats);
 				batch_queries += WriteSnapshotChanges(commit_state, attempt_changes, context.commit_info);
 			}
+			auto finish_batch = [&]() {
+				new_entry_oids = std::move(commit_state.new_entry_oids);
+				if (!expired_snapshots.empty()) {
+					context.cleanup_expired_snapshots(expired_snapshots);
+				}
+				flushed_inlined = !flushed_inlined_tables.empty();
+				context.flush_cache_if_pending();
+				commit_metadata_connection();
+			};
 			commit_sent = context.batch_commits;
 			auto res = context.execute_commit_batch(commit_snapshot, batch_queries);
 			if (res->HasError()) {
 				auto &commit_error = res->GetErrorObject();
 				if (commit_sent && commit_took_effect(commit_error)) {
-					new_entry_oids = std::move(commit_state.new_entry_oids);
+					// the snapshot is committed, what follows the batch is best effort on the failed database
+					try {
+						finish_batch();
+					} catch (std::exception &ex) {
+						context.report_post_commit_error(ErrorData(ex).Message());
+					}
 					break;
 				}
 				retryable_metadata_error = context.is_retryable_metadata_error(commit_error.RawMessage());
 				commit_error.Throw("Failed to flush changes into DuckLake: ");
 			}
-			if (!expired_snapshots.empty()) {
-				context.cleanup_expired_snapshots(expired_snapshots);
-			}
-			flushed_inlined = !flushed_inlined_tables.empty();
-			context.flush_cache_if_pending();
-			commit_metadata_connection();
-			new_entry_oids = std::move(commit_state.new_entry_oids);
+			finish_batch();
 			break;
 		} catch (std::exception &ex) {
 			ErrorData error(ex);

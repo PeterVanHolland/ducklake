@@ -289,7 +289,6 @@ public:
 	static void DropEmptySupersededInlinedTables(const DuckLakeCommitContext &context);
 
 	void CleanupFiles();
-	//! Whether the COMMIT took effect, its error is then kept for the finished commit
 	bool RecordErrorAfterCommit(DuckLakeCommitOutcome outcome, const ErrorData &error);
 	ErrorData ErrorAfterCommit() const;
 
@@ -324,7 +323,6 @@ public:
 	unique_ptr<DuckLakeCatalogSet> new_schemas;
 	map<SchemaIndex, reference<DuckLakeSchemaEntry>> dropped_schemas;
 	LocalTableChanges local_changes;
-	//! The error the metadata database reported after a durable COMMIT
 	ErrorData error_after_commit;
 	vector<FlushedInlinedTableInfo> flushed_inlined_tables;
 	//! The tables whose inlined file deletions were flushed, with the snapshot of the flush

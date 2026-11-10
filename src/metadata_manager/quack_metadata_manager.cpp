@@ -79,6 +79,8 @@ DuckLakeCommitOutcome QuackMetadataManager::CommitOutcomeAfterError(const ErrorD
 	// the client raises these for a reply it cannot use, the server reports its errors with their own type
 	switch (error.Type()) {
 	case ExceptionType::IO:
+	case ExceptionType::HTTP:
+	case ExceptionType::INTERRUPT:
 	case ExceptionType::SERIALIZATION:
 	case ExceptionType::INTERNAL:
 	case ExceptionType::NOT_IMPLEMENTED:

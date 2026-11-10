@@ -24,6 +24,23 @@ void DuckLakeCatalogLoader::Load(DuckLakeTransaction &transaction, const DuckLak
 	AddEstimatedMemory(catalog.AddCatalogEntries(schemas, skipped_schemas, info));
 }
 
+DuckLakeCatalogLoader::entry_names_t &DuckLakeCatalogLoader::EntryNames(DuckLakeTransaction &transaction,
+                                                                        SchemaIndex schema_id) {
+	auto existing = entry_names.find(schema_id);
+	if (existing != entry_names.end()) {
+		return existing->second;
+	}
+	auto &names = entry_names[schema_id];
+	idx_t estimate = NODE_OVERHEAD;
+	for (auto &entry : transaction.GetMetadataManager().GetEntryNames(snapshot, schema_id)) {
+		auto &name = entry.first.GetIdentifierName();
+		names[name].push_back(entry.second);
+		estimate += name.size() + sizeof(TableIndex) + NODE_OVERHEAD;
+	}
+	AddEstimatedMemory(estimate);
+	return names;
+}
+
 optional_ptr<CatalogEntry> DuckLakeCatalogLoader::GetEntry(DuckLakeTransaction &transaction,
                                                            DuckLakeSchemaEntry &schema, const Identifier &name) {
 	optional_ptr<CatalogEntry> entry;
@@ -35,20 +52,17 @@ optional_ptr<CatalogEntry> DuckLakeCatalogLoader::GetEntry(DuckLakeTransaction &
 		if (entry || all_loaded || loaded_schemas.find(schema_id) != loaded_schemas.end()) {
 			return entry;
 		}
-		auto &missing = missing_names[schema_id];
-		auto &name_string = name.GetIdentifierName();
-		if (missing.find(name_string) != missing.end()) {
+		auto &names = EntryNames(transaction, schema_id);
+		auto ids = names.find(name.GetIdentifierName());
+		if (ids == names.end()) {
 			return nullptr;
 		}
-		for (auto &entry_id : transaction.GetMetadataManager().GetEntryIdsByName(snapshot, schema_id, name)) {
+		for (auto &entry_id : ids->second) {
 			if (!schemas.GetEntryById(entry_id)) {
 				Load(transaction, DuckLakeCatalogLoadFilter::Entry(entry_id));
 			}
 		}
 		entry = tables.GetEntry(name);
-		if (!entry) {
-			missing.insert(name_string);
-		}
 	}
 	RefreshReservation();
 	return entry;
@@ -59,14 +73,19 @@ optional_ptr<CatalogEntry> DuckLakeCatalogLoader::GetEntryById(DuckLakeTransacti
 	{
 		lock_guard<mutex> guard(lock);
 		entry = schemas.GetEntryById(entry_id);
-		if (entry || all_loaded || DuckLakeTransaction::IsTransactionLocal(entry_id.index) ||
-		    missing_ids.find(entry_id) != missing_ids.end()) {
+		if (entry || all_loaded || missing_ids.find(entry_id) != missing_ids.end()) {
 			return entry;
+		}
+		// a commit assigns ids from the next catalog id on, a snapshot without it loads any id
+		bool after_snapshot = snapshot.next_catalog_id > 0 && entry_id.index >= snapshot.next_catalog_id;
+		if (after_snapshot || DuckLakeTransaction::IsTransactionLocal(entry_id.index)) {
+			return nullptr;
 		}
 		Load(transaction, DuckLakeCatalogLoadFilter::Entry(entry_id));
 		entry = schemas.GetEntryById(entry_id);
 		if (!entry) {
 			missing_ids.insert(entry_id);
+			AddEstimatedMemory(sizeof(TableIndex) + NODE_OVERHEAD);
 		}
 	}
 	RefreshReservation();
@@ -82,7 +101,7 @@ void DuckLakeCatalogLoader::LoadSchema(DuckLakeTransaction &transaction, DuckLak
 		}
 		Load(transaction, DuckLakeCatalogLoadFilter::OfSchema(schema_id));
 		loaded_schemas.insert(schema_id);
-		missing_names.erase(schema_id);
+		entry_names.erase(schema_id);
 	}
 	RefreshReservation();
 }
@@ -96,7 +115,7 @@ void DuckLakeCatalogLoader::LoadAll(DuckLakeTransaction &transaction) {
 		Load(transaction, DuckLakeCatalogLoadFilter::All());
 		all_loaded = true;
 		loaded_schemas.clear();
-		missing_names.clear();
+		entry_names.clear();
 		missing_ids.clear();
 	}
 	RefreshReservation();
@@ -127,7 +146,7 @@ void DuckLakeCatalogLoader::RefreshReservation() {
 	if (bytes < 2 * reserved_memory.load()) {
 		return;
 	}
-	if (!catalog.RefreshSchemaCacheMemory(snapshot.schema_version)) {
+	if (!catalog.RefreshSchemaCacheMemory(snapshot.schema_version, *this)) {
 		// the entry left the cache, the transactions that pinned it keep using it
 		reserved_memory = bytes;
 	}

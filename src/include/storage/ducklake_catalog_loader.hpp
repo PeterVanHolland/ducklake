@@ -29,9 +29,6 @@ public:
 	DuckLakeCatalogSet &Schemas() {
 		return schemas;
 	}
-	const set<SchemaIndex> &SkippedSchemas() const {
-		return skipped_schemas;
-	}
 	void SetSchemas(ducklake_entries_map_t schema_map);
 	//! The committed table or view with the name in the schema
 	optional_ptr<CatalogEntry> GetEntry(DuckLakeTransaction &transaction, DuckLakeSchemaEntry &schema,
@@ -50,12 +47,19 @@ public:
 	idx_t ReserveEstimatedMemory() const;
 
 private:
+	using entry_names_t = case_insensitive_map_t<vector<TableIndex>>;
+
 	//! Loads the entries the filter selects, requires the lock
 	void Load(DuckLakeTransaction &transaction, const DuckLakeCatalogLoadFilter &filter);
+	//! The names of the tables and views of the schema, read once, requires the lock
+	entry_names_t &EntryNames(DuckLakeTransaction &transaction, SchemaIndex schema_id);
 	//! Renews the reservation of the cache once the loaded entries outgrew it
 	void RefreshReservation();
 
 private:
+	//! The memory an entry of a map or set takes beyond its key
+	static constexpr idx_t NODE_OVERHEAD = 48;
+
 	DuckLakeCatalog &catalog;
 	//! The snapshot the entries are loaded at
 	DuckLakeSnapshot snapshot;
@@ -67,8 +71,9 @@ private:
 	DuckLakeCatalogSet schemas;
 	bool all_loaded = false;
 	set<SchemaIndex> loaded_schemas;
-	//! Names and ids looked up before that the snapshot does not have
-	map<SchemaIndex, case_insensitive_set_t> missing_names;
+	//! The ids of the tables and views of a schema by name, for the schemas that are not loaded as a whole
+	map<SchemaIndex, entry_names_t> entry_names;
+	//! Ids looked up before that the snapshot does not have
 	set<TableIndex> missing_ids;
 	atomic<idx_t> estimated_memory {0};
 	mutable atomic<idx_t> reserved_memory {0};

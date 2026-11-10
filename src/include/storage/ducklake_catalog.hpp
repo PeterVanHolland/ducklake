@@ -414,9 +414,11 @@ public:
 	optional_ptr<DuckLakeTableEntry> GetTableAtSchemaVersion(DuckLakeTransaction &transaction, TableIndex table_id,
 	                                                         idx_t schema_version);
 
+	//! The stats of the tables, or of those of the given tables, that the loader has at its snapshot
 	static unique_ptr<DuckLakeStats> ConstructStatsMap(DuckLakeTransaction &transaction,
 	                                                   vector<DuckLakeGlobalStatsInfo> &global_stats,
-	                                                   DuckLakeCatalogLoader &loader);
+	                                                   DuckLakeCatalogLoader &loader,
+	                                                   optional_ptr<const vector<TableIndex>> tables = nullptr);
 	//! Return the schema for the given snapshot - loading it if it is not yet loaded
 	DuckLakeCatalogSet &GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
 	//! The loader of the schema version of the snapshot, pinned by the transaction
@@ -425,8 +427,8 @@ public:
 	//! returns their estimated memory
 	idx_t AddCatalogEntries(DuckLakeCatalogSet &schemas, const set<SchemaIndex> &skipped_schemas,
 	                        DuckLakeCatalogInfo &catalog);
-	//! Reserves the current estimated memory of the cached schema version, false when it left the cache
-	bool RefreshSchemaCacheMemory(idx_t schema_version);
+	//! Reserves the current estimated memory of the cached schema version, false when its loader left the cache
+	bool RefreshSchemaCacheMemory(idx_t schema_version, const DuckLakeCatalogLoader &loader);
 
 	//! Callback type for instrumenting metadata queries
 	using QueryCallback = std::function<void(const string &query, std::chrono::steady_clock::duration elapsed)>;

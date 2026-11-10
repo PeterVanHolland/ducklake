@@ -26,4 +26,9 @@ ATTACH 'ducklake:{TEST_DIR}/view_load_error.db' AS lake (DATA_PATH '{DATA_PATH}/
 statement error
 SELECT * FROM lake.t
 ----
+Failed to list the tables and views of a schema in DuckLake
+
+statement error
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'lake'
+----
 Failed to get view information from DuckLake

@@ -11,7 +11,7 @@ test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
 test-env DATA_PATH {TEST_DIR}
 
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/lazy_table_load', DATA_INLINING_ROW_LIMIT 0)
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/lazy_table_load', DATA_INLINING_ROW_LIMIT 0, METADATA_CATALOG 'lazy_meta')
 
 statement ok
 CREATE SCHEMA lake.s2
@@ -33,6 +33,25 @@ ALTER TABLE lake.srt SET SORTED BY (i DESC)
 
 statement ok
 CREATE TABLE lake.MixedCase(i INTEGER)
+
+statement ok
+CREATE TABLE lake.p2(i INTEGER, j VARCHAR)
+
+statement ok
+ALTER TABLE lake.p2 SET PARTITIONED BY (i)
+
+statement ok
+CREATE TABLE lake.broken(i INTEGER)
+
+loop i 0 8
+
+statement ok
+CREATE TABLE lake.c{i}(i INTEGER)
+
+statement ok
+INSERT INTO lake.c{i} VALUES ({i})
+
+endloop
 
 statement ok
 CREATE TABLE lake.s2.t3(i INTEGER)
@@ -57,7 +76,7 @@ statement ok
 DETACH lake
 
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/lazy_table_load', DATA_INLINING_ROW_LIMIT 0)
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/lazy_table_load', DATA_INLINING_ROW_LIMIT 0, METADATA_CATALOG 'lazy_meta')
 
 statement ok
 CALL enable_logging('DuckLakeMetadata')
@@ -81,7 +100,7 @@ true
 statement ok
 SET VARIABLE tracked = (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE')
 
-# the name is matched like the catalog does, and a loaded table needs no further lookup
+# the names of a schema are read once, a name is matched like the catalog does
 query I
 SELECT i FROM lake.mixedcase
 ----
@@ -93,9 +112,9 @@ SELECT i FROM lake.MIXEDCASE
 7
 
 query I
-SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%lower(table_name)%'
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%view_name FROM %ducklake_view%'
 ----
-2
+1
 
 query I
 SELECT x FROM lake.v1
@@ -147,23 +166,59 @@ DROP SCHEMA lake.s2
 ----
 t3
 
-# a name the snapshot does not have is looked up once
+# a name the snapshot does not have needs no load
 statement ok
-DROP TABLE IF EXISTS lake.t4
+CREATE MACRO load_queries() AS (SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%ducklake_column%' OR query LIKE '%view_name FROM %')
+
+statement ok
+SET VARIABLE loads = load_queries()
 
 statement ok
 DROP TABLE IF EXISTS lake.t4
 
 query I
-SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%lower(table_name)%lower(''t4'')%'
+SELECT load_queries() = getvariable('loads')
+----
+true
+
+# concurrent lookups load the tables of a new schema version
+statement ok
+CREATE OR REPLACE TABLE lake.bump AS SELECT 1 AS i
+
+concurrentloop threadid 0 8
+
+query I
+SELECT i = {threadid} FROM lake.c{threadid}
+----
+true
+
+endloop
+
+# a load that fails leaves no half built entries, the partition keys of p2 come with its table
+statement ok
+UPDATE lazy_meta.ducklake_column SET column_type = 'nonsense' WHERE table_id = (SELECT table_id FROM lazy_meta.ducklake_table WHERE table_name = 'broken' AND end_snapshot IS NULL)
+
+statement error
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'lake'
+----
+nonsense
+
+statement ok
+INSERT INTO lake.p2 VALUES (4, 'd')
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/lazy_table_load/main/p2/i=4/*.parquet')
 ----
 1
+
+statement ok
+UPDATE lazy_meta.ducklake_column SET column_type = 'int32' WHERE column_type = 'nonsense'
 
 # listing the tables loads the rest, whose memory the cache tracks
 query I
 SELECT count(*) FROM duckdb_tables() WHERE database_name = 'lake'
 ----
-5
+16
 
 query I
 SELECT (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') > getvariable('tracked')
@@ -197,4 +252,4 @@ SELECT i FROM lake.t2
 query I
 SELECT count(*) FROM duckdb_tables() WHERE database_name = 'lake'
 ----
-4
+15

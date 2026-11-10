@@ -362,8 +362,8 @@ public:
 	//! Reads the tables and views the filter selects into a catalog whose schemas are loaded
 	void LoadCatalogEntries(DuckLakeCatalogInfo &catalog, DuckLakeSnapshot snapshot,
 	                        const DuckLakeCatalogLoadFilter &filter);
-	//! The ids of the table or view with the name in the schema at the snapshot, matched like the catalog does
-	vector<TableIndex> GetEntryIdsByName(DuckLakeSnapshot snapshot, SchemaIndex schema_id, const Identifier &name);
+	//! The names and ids of the tables and views of the schema at the snapshot
+	vector<pair<Identifier, TableIndex>> GetEntryNames(DuckLakeSnapshot snapshot, SchemaIndex schema_id);
 	//! Transaction-free build of the catalog snapshot. Caller supplies a snapshot-aware query
 	//! executor (responsible for `{METADATA_CATALOG}` / `{SNAPSHOT_ID}` substitution) plus the
 	//! data path and separator used for resolving stored relative paths.
@@ -704,8 +704,14 @@ protected:
 	static vector<DuckLakeViewColumnTag> LoadViewColumnTags(const Value &list);
 	//! Parse inlined data tables list from ListAggregation value
 	static vector<DuckLakeInlinedTableInfo> LoadInlinedDataTables(const Value &list);
+	static DuckLakePartitionInfo LoadPartitionKeys(TableIndex table_id, const Value &list);
+	static DuckLakeSortInfo LoadSortKeys(TableIndex table_id, const Value &list);
 	//! Parse macro implementations list from ListAggregation value
 	static vector<DuckLakeMacroImplementation> LoadMacroImplementations(const Value &list);
+	//! Reads the views the filter selects into the catalog
+	static void LoadViews(DuckLakeCatalogInfo &catalog, DuckLakeSnapshot snapshot,
+	                      const std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> &query_executor,
+	                      bool supports_v1_1_metadata, const DuckLakeCatalogLoadFilter &filter);
 
 public:
 	//! Get path relative to catalog path

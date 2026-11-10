@@ -1856,7 +1856,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		// flushed data commits across a concurrent alter, so its stats take the latest schema
 		auto stats_snapshot = transaction_changes.tables_flushed_inlined.empty() ? transaction_snapshot : GetSnapshot();
 		auto &loader = ducklake_catalog.GetLoaderForSnapshot(*this, stats_snapshot);
-		return DuckLakeCatalog::ConstructStatsMap(*this, stats, loader);
+		return DuckLakeCatalog::ConstructStatsMap(*this, stats, loader, &commit_tables);
 	};
 	context.invalidate_schema_cache = [&](idx_t schema_version) {
 		ducklake_catalog.InvalidateSchemaCache(schema_version);

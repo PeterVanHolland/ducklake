@@ -53,6 +53,27 @@ SELECT * FROM dl.t
 ----
 1
 
+# a detail that quotes a text as long as the failed batch is not taken for the batch itself
+statement ok
+CALL postgres_execute('pg', 'CREATE OR REPLACE FUNCTION localized_retry.fail_once() RETURNS trigger AS $$
+BEGIN
+	IF nextval(''localized_retry.attempts'') = 3 THEN
+		RAISE unique_violation USING MESSAGE =
+			''podwójna wartość klucza narusza ograniczenie unikalności "ducklake_snapshot_pkey"'',
+			DETAIL = ''Failed to execute query "'' || repeat(''x'', octet_length(current_query())) || ''": zajęty'';
+	END IF;
+	RETURN NEW;
+END $$ LANGUAGE plpgsql')
+
+statement ok
+INSERT INTO dl.t VALUES (4)
+
+query I
+SELECT * FROM dl.t ORDER BY ALL
+----
+1
+4
+
 # an error that names no DuckLake primary key is still not retried
 statement ok
 CALL postgres_execute('pg', 'CREATE OR REPLACE FUNCTION localized_retry.fail_once() RETURNS trigger AS $$
@@ -82,11 +103,11 @@ COMMIT
 ----
 inny_klucz
 
-# one attempt for each of these inserts after two for the first one
+# one attempt for each of these inserts after two for each of the retried ones
 query I
 SELECT last_value FROM postgres_query('pg', 'SELECT last_value FROM localized_retry.attempts')
 ----
-4
+6
 
 statement ok
 CALL postgres_execute('pg', 'DROP TRIGGER fail_once ON localized_retry.ducklake_snapshot')
@@ -99,6 +120,7 @@ SELECT * FROM dl.t ORDER BY ALL
 ----
 1
 3
+4
 
 statement ok
 DETACH dl

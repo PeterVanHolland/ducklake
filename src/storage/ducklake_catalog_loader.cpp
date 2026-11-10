@@ -157,12 +157,19 @@ idx_t DuckLakeCatalogLoader::ReserveEstimatedMemory() const {
 
 void DuckLakeCatalogLoader::RefreshReservation() {
 	auto bytes = estimated_memory.load();
-	if (bytes < 2 * reserved_memory.load()) {
+	auto reserved = reserved_memory.load();
+	if (bytes < 2 * reserved) {
 		return;
 	}
-	if (!catalog.RefreshSchemaCacheMemory(snapshot.schema_version, *this)) {
-		// the entry left the cache, the transactions that pinned it keep using it
-		reserved_memory = bytes;
+	try {
+		if (!catalog.RefreshSchemaCacheMemory(snapshot.schema_version, *this)) {
+			// the entry left the cache, the transactions that pinned it keep using it
+			reserved_memory = bytes;
+		}
+	} catch (...) {
+		// the cache keeps the reservation it had
+		reserved_memory = reserved;
+		throw;
 	}
 }
 

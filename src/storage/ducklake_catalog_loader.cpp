@@ -44,8 +44,9 @@ DuckLakeCatalogLoader::entry_names_t &DuckLakeCatalogLoader::EntryNames(DuckLake
 		names[name].push_back(entry.second);
 		estimate += name.size() + sizeof(TableIndex) + NODE_OVERHEAD;
 	}
+	auto &published = entry_names.emplace(schema_id, std::move(names)).first->second;
 	AddEstimatedMemory(estimate);
-	return entry_names.emplace(schema_id, std::move(names)).first->second;
+	return published;
 }
 
 template <class FUN>

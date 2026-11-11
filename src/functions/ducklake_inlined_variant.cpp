@@ -451,7 +451,7 @@ void DecodeInlinedVariant(DataChunk &args, ExpressionState &state, Vector &resul
 			continue;
 		}
 		auto types = blob.GetData() + size;
-		if (types[0] != static_cast<char>(DECIMAL_TYPES_FORMAT) || types_size % 2 == 0) {
+		if (types_size < 3 || types[0] != static_cast<char>(DECIMAL_TYPES_FORMAT) || types_size % 2 == 0) {
 			throw IOException("Corrupted inlined VARIANT, unknown decimal types format");
 		}
 		row_types[row] = string_t(types + 1, NumericCast<uint32_t>(types_size - 1));

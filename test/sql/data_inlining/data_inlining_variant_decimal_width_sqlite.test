@@ -78,8 +78,17 @@ SELECT v FROM lk.w WHERE id = 1
 ----
 unknown decimal types format
 
+# a format byte without a type
 statement ok
-UPDATE lk_meta.ducklake_inlined_data_1_1 SET v = v[1:-3] || '\x01\x05\x03'::BLOB WHERE id = 1
+UPDATE lk_meta.ducklake_inlined_data_1_1 SET v = v[1:-3] || '\x01'::BLOB WHERE id = 1
+
+statement error
+SELECT v FROM lk.w WHERE id = 1
+----
+unknown decimal types format
+
+statement ok
+UPDATE lk_meta.ducklake_inlined_data_1_1 SET v = v[1:-2] || '\x01\x05\x03'::BLOB WHERE id = 1
 
 statement error
 SELECT v FROM lk.w WHERE id = 1

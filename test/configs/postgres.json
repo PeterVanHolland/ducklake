@@ -47,6 +47,7 @@
       "reason": "Tests only for DuckDB as a catalog",
       "paths": [
         "test/sql/general/missing_parquet.test",
+        "test/sql/general/scan_without_parquet.test",
         "test/sql/general/paths.test",
         "test/sql/general/default_path.test",
         "test/sql/autoloading/autoload_data_path.test",

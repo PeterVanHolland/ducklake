@@ -195,7 +195,8 @@
     {
       "reason": "Test requires the parquet extension to NOT be loaded.",
       "paths": [
-        "test/sql/general/missing_parquet.test"
+        "test/sql/general/missing_parquet.test",
+        "test/sql/general/scan_without_parquet.test"
       ]
     },
     {

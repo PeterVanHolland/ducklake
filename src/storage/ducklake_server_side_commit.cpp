@@ -679,6 +679,14 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
 		auto sql = SubstitutePlaceholders(std::move(q), empty);
 		return fresh_conn.Query(sql);
 	};
+	ctx.inlined_table_columns = [this](TableIndex table_id) -> unique_ptr<QueryResult> {
+		auto query = [this](string q) -> unique_ptr<QueryResult> {
+			DuckLakeSnapshot empty {};
+			return fresh_conn.Query(SubstitutePlaceholders(std::move(q), empty));
+		};
+		return DuckLakeMetadataManager::InlinedTableColumns(query, DuckLakeInlinedColNames(supports_v1_1_metadata),
+		                                                    table_id.index);
+	};
 	ctx.query_metadata_with_snapshot = [this](DuckLakeSnapshot snapshot, string q) -> unique_ptr<QueryResult> {
 		auto sql = SubstitutePlaceholders(std::move(q), snapshot);
 		return fresh_conn.Query(sql);

@@ -98,7 +98,8 @@ SELECT a, b FROM read_parquet(getvariable('m_files'))
 statement ok
 DETACH lake
 
-# once the snapshot before the commit of an inlined table is expired, the rows of the table name the commit
+# once the snapshot before the commit of an inlined table is expired, the migration adds no row for its version, and
+# a read takes the columns the inlined table holds
 unzip data/old_ducklake/inlined_schema_versions.db.gz {TEST_DIR}/v10_inlined_schema_versions_expired.db
 
 statement ok
@@ -123,15 +124,12 @@ JOIN meta.ducklake_table tbl USING (table_id)
 ORDER BY ALL
 ----
 m	3	3
-m	7	7
 m	7	8
 n	5	5
 r	4	4
-r	7	7
 r	7	8
 t	1	1
 t	2	2
-t	6	6
 z	8	9
 
 query II

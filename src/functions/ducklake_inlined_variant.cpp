@@ -146,6 +146,17 @@ void CollectDecimalTypes(const VariantNode &node, string &types) {
 	}
 }
 
+//! Whether a row of an unshredded VARIANT holds a decimal anywhere, read off its type ids
+bool HoldsDecimal(const UnifiedVariantVectorData &variant, idx_t row) {
+	auto values = variant.GetValuesListEntry(row);
+	for (idx_t i = 0; i < values.length; i++) {
+		if (variant.GetTypeId(row, values.offset + i) == VariantLogicalType::DECIMAL) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void EncodeInlinedVariant(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &input = args.data[0];
 	auto count = args.size();
@@ -162,9 +173,16 @@ void EncodeInlinedVariant(DataChunk &args, ExpressionState &state, Vector &resul
 	auto metadata_data = UnifiedVectorFormat::GetData<string_t>(metadata_format);
 	auto value_data = UnifiedVectorFormat::GetData<string_t>(value_format);
 
+	// the decimals of a shredded vector sit in its typed part, so only an unshredded one is scanned for them
 	VariantIterator iterator(input);
+	unique_ptr<RecursiveUnifiedVectorFormat> unshredded_format;
+	unique_ptr<UnifiedVariantVectorData> unshredded;
+	if (input.GetVectorType() != VectorType::SHREDDED_VECTOR) {
+		unshredded_format = make_uniq<RecursiveUnifiedVectorFormat>();
+		Vector::RecursiveToUnifiedFormat(input, *unshredded_format);
+		unshredded = make_uniq<UnifiedVariantVectorData>(*unshredded_format);
+	}
 	auto writer = FlatVector::Writer<string_t>(result, count);
-	string blob;
 	string types;
 	for (idx_t row = 0; row < count; row++) {
 		auto root = iterator.Root(row);
@@ -173,17 +191,24 @@ void EncodeInlinedVariant(DataChunk &args, ExpressionState &state, Vector &resul
 			continue;
 		}
 		types.clear();
-		CollectDecimalTypes(root, types);
+		if (!unshredded || HoldsDecimal(*unshredded, row)) {
+			CollectDecimalTypes(root, types);
+		}
 		auto &metadata = metadata_data[metadata_format.sel->get_index(row)];
 		auto &value = value_data[value_format.sel->get_index(row)];
-		blob.clear();
-		blob.append(metadata.GetData(), metadata.GetSize());
-		blob.append(value.GetData(), value.GetSize());
+		auto size = metadata.GetSize() + value.GetSize() + (types.empty() ? 0 : 1 + types.size());
+		auto blob = StringVector::EmptyString(result, size);
+		auto data = blob.GetDataWriteable();
+		memcpy(data, metadata.GetData(), metadata.GetSize());
+		data += metadata.GetSize();
+		memcpy(data, value.GetData(), value.GetSize());
+		data += value.GetSize();
 		if (!types.empty()) {
-			blob.push_back(static_cast<char>(DECIMAL_TYPES_FORMAT));
-			blob.append(types);
+			*data++ = static_cast<char>(DECIMAL_TYPES_FORMAT);
+			memcpy(data, types.data(), types.size());
 		}
-		writer.WriteValue(string_t(blob));
+		blob.Finalize();
+		writer.WriteStringRef(blob);
 	}
 	if (args.AllConstant()) {
 		result.SetVectorType(VectorType::CONSTANT_VECTOR);

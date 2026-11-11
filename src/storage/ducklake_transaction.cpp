@@ -1610,8 +1610,8 @@ void DuckLakeTransaction::ApplyServerSideCommit(idx_t schema_version, idx_t comm
 	if (snapshot) {
 		auto compacted_tables = state->local_changes.GetCompactedTables();
 		if (!state->dropped_file_stats.empty() || !compacted_tables.empty()) {
-			// cached stats are keyed by the next file id of the committed snapshot, as after a client side commit: a
-			// commit that recomputed bounds advanced it, and the readers of older snapshots keep their stats
+			// cached stats are keyed by the next file id of the committed snapshot, which a recompute advanced
+			// so that the readers of older snapshots keep their stats
 			auto next_file_id = CommittedNextFileId(committed_snapshot_id);
 			for (auto &entry : state->dropped_file_stats) {
 				ducklake_catalog.InvalidateTableStatsCache(next_file_id, entry.first);

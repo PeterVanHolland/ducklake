@@ -23,15 +23,18 @@ INSERT INTO lk.w VALUES
 	(1, 1.5::DECIMAL(5,2)::VARIANT),
 	(2, {'b': [1::DECIMAL(3,1)::VARIANT, {'c': -7.25::DECIMAL(12,4)}::VARIANT], 'a': 'x', 'z': 2::DECIMAL(2,0)}::VARIANT),
 	(3, 42::VARIANT),
-	(4, 'decimal'::VARIANT)
+	(4, 'decimal'::VARIANT),
+	(5, 7::DECIMAL(18,9)::VARIANT)
 
-# the Parquet Variant bytes end with a format byte and a (width, scale) pair per decimal, values without decimals have none
+# the Parquet Variant bytes end with a format byte and a (width, scale) pair per decimal, values without decimals have
+# none, and a decimal after rows without one keeps its types
 query II
-SELECT id, hex(v) FROM lk_meta.ducklake_inlined_data_1_1 WHERE id IN (1, 3, 4) ORDER BY id
+SELECT id, hex(v) FROM lk_meta.ducklake_inlined_data_1_1 WHERE id IN (1, 3, 4, 5) ORDER BY id
 ----
 1	010000200296000000010502
 3	010000142A000000
 4	0100001D646563696D616C
+5	010000240900863BA101000000011209
 
 query I
 SELECT hex(v[-7:]) FROM lk_meta.ducklake_inlined_data_1_1 WHERE id = 2
@@ -46,6 +49,7 @@ SELECT id, variant_bytes_to_variant(v)::VARCHAR, variant_typeof(variant_bytes_to
 2	{'a': x, 'b': [1.0, {'c': -7.2500}], 'z': 2}	OBJECT(a, b, z)
 3	42	INT32
 4	decimal	VARCHAR
+5	7.000000000	DECIMAL(10, 9)
 
 query III
 SELECT id, v, variant_typeof(v) FROM lk.w ORDER BY id
@@ -54,6 +58,7 @@ SELECT id, v, variant_typeof(v) FROM lk.w ORDER BY id
 2	{'a': x, 'b': [1.0, {'c': -7.2500}], 'z': 2}	OBJECT(a, b, z)
 3	42	INT32
 4	decimal	VARCHAR
+5	7.000000000	DECIMAL(18, 9)
 
 # rows written without the types read as before
 statement ok

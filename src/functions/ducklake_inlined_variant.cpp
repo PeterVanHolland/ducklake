@@ -150,7 +150,7 @@ void CollectDecimalTypes(const VariantNode &node, string &types) {
 bool HoldsDecimal(const UnifiedVariantVectorData &variant, idx_t row) {
 	auto values = variant.GetValuesListEntry(row);
 	for (idx_t i = 0; i < values.length; i++) {
-		if (variant.GetTypeId(row, values.offset + i) == VariantLogicalType::DECIMAL) {
+		if (variant.GetTypeId(row, i) == VariantLogicalType::DECIMAL) {
 			return true;
 		}
 	}

@@ -59,6 +59,12 @@ struct DuckLakeCommitContext {
 	std::function<string(const string &)> commit_error_hint = [](const string &) {
 		return string();
 	};
+	//! Whether the error of a COMMIT that was sent leaves open whether the commit took effect.
+	std::function<bool(const ErrorData &)> commit_outcome_unknown = [](const ErrorData &) {
+		return false;
+	};
+	//! Whether the executor of the commit batch commits it on the metadata server, so its error can be the COMMIT's
+	bool batch_commits = false;
 	//! Optional hooks below default to a no-op/constant; callers override only the ones they need.
 	//! Clears the metadata manager cache if a clear was pending.
 	std::function<void()> flush_cache_if_pending = []() {

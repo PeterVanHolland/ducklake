@@ -32,6 +32,7 @@
 
 namespace duckdb {
 class ColumnList;
+class Connection;
 class DuckLakeCatalogSet;
 class DuckLakeSchemaEntry;
 class DuckLakeTableEntry;
@@ -246,6 +247,12 @@ public:
 	}
 	//! Advice added to the error of a commit that failed for good
 	virtual string CommitErrorHint(const string &message) const;
+	//! Whether the error of a COMMIT that was sent leaves open whether the commit took effect
+	virtual bool CommitOutcomeUnknown(const ErrorData &error) {
+		return false;
+	}
+	//! Commits the metadata connection, invalidated tells whether DuckDB invalidated its database or the instance
+	static void CommitConnection(Connection &connection, bool &invalidated);
 	//! SQL that the commit of a transaction that changed options runs, so two commits cannot both insert an option
 	virtual string ConfigOptionLockSql() const {
 		return string();

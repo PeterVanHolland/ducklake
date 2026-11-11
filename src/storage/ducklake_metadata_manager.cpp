@@ -1,4 +1,6 @@
 #include "storage/ducklake_metadata_manager.hpp"
+#include "duckdb/main/valid_checker.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 #include "storage/ducklake_metadata_profile.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/path.hpp"
@@ -124,6 +126,39 @@ string DuckLakeMetadataManager::CommitErrorHint(const string &message) const {
 		}
 	}
 	return rule->hint;
+}
+
+namespace {
+
+template <class T>
+bool Invalidated(T &checked) {
+	// the message of an invalidation stays where the disable_database_invalidation setting hides its flag
+	return ValidChecker::IsInvalidated(checked) || !ValidChecker::InvalidatedMessage(checked).empty();
+}
+
+} // namespace
+
+void DuckLakeMetadataManager::CommitConnection(Connection &connection, bool &invalidated) {
+	auto &context = *connection.context;
+	// the databases of the transaction, found again when another connection detached one of them meanwhile
+	vector<weak_ptr<AttachedDatabase>> databases;
+	for (auto &database : MetaTransaction::Get(context).OpenedTransactions()) {
+		databases.emplace_back(database.get().shared_from_this());
+	}
+	try {
+		connection.Commit();
+	} catch (std::exception &ex) {
+		// DuckDB invalidates a database whose checkpoint failed after its COMMIT, every other error rolls back
+		// a fatal error invalidates the instance only after the COMMIT returns
+		invalidated = Exception::InvalidatesDatabase(ErrorData(ex).Type()) || Invalidated(*context.db);
+		// a database the transaction only read fails its commit after the metadata database committed
+		// a database closed by the detach during the commit cannot be checked
+		for (auto &weak_database : databases) {
+			auto database = weak_database.lock();
+			invalidated = invalidated || !database || Invalidated(*database);
+		}
+		throw;
+	}
 }
 
 bool DuckLakeMetadataManager::ExecuteRetrialsServerSide() const {

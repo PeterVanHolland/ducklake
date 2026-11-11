@@ -663,7 +663,10 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
 		return fresh_conn.Query(query);
 	};
 	ctx.commit_connection = [this]() {
-		fresh_conn.Commit();
+		DuckLakeMetadataManager::CommitConnection(fresh_conn, commit_invalidated);
+	};
+	ctx.commit_outcome_unknown = [this](const ErrorData &) {
+		return commit_invalidated;
 	};
 	ctx.try_rollback = [this]() {
 		if (fresh_conn.context->transaction.HasActiveTransaction()) {

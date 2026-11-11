@@ -31,6 +31,7 @@ public:
 	}
 	void ProbeServerCapabilities() override;
 	bool CanSkipSnapshotFetch(const TransactionChangeInformation &changes) const override;
+	bool CommitOutcomeUnknown(const ErrorData &error) override;
 	void FlushChangesServerSide(DuckLakeTransaction &transaction, DuckLakeSnapshot transaction_snapshot,
 	                            const TransactionChangeInformation &transaction_changes,
 	                            const DuckLakeRetryConfig &retry_config) override;

@@ -96,3 +96,21 @@ query II
 SELECT v, variant_typeof(v) FROM lk.w WHERE id = 1
 ----
 1.50	DECIMAL(5, 2)
+
+# a width the value does not fit
+statement ok
+UPDATE lk_meta.ducklake_inlined_data_1_1 SET v = v[1:-4] || '\x01\x02\x02'::BLOB WHERE id = 1
+
+statement error
+SELECT v FROM lk.w WHERE id = 1
+----
+does not hold DECIMAL(3, 2)
+
+# bytes whose metadata runs past their end
+statement ok
+UPDATE lk_meta.ducklake_inlined_data_1_1 SET v = from_hex('C100000000FFFFFFFF') WHERE id = 1
+
+statement error
+SELECT v FROM lk.w WHERE id = 1
+----
+no value follows the metadata

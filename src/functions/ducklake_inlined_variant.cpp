@@ -112,6 +112,9 @@ idx_t ParquetVariantValueSize(const_data_ptr_t value, idx_t capacity) {
 idx_t ParquetVariantSize(const string_t &blob) {
 	VariantMetadata metadata(blob);
 	auto size = metadata.total_size;
+	if (size >= blob.GetSize()) {
+		throw IOException("Corrupted inlined VARIANT, no value follows the metadata");
+	}
 	auto data = const_data_ptr_cast(blob.GetData());
 	return size + ParquetVariantValueSize(data + size, blob.GetSize() - size);
 }
@@ -286,10 +289,10 @@ public:
 		return node.GetString();
 	}
 	VariantDecimalProperties GetDecimalProperties() const {
-		auto decoded = node.GetDecimalProperties();
+		auto decoded = node.GetDecimal();
 		if (types.count == 0) {
 			// written without declared types, the digits of the value stay its width
-			return decoded;
+			return VariantDecimalProperties(decoded.width, decoded.scale);
 		}
 		if (types.next >= types.count) {
 			throw IOException("Corrupted inlined VARIANT, it holds more decimals than declared types");
@@ -297,7 +300,16 @@ public:
 		uint32_t width = types.data[2 * types.next];
 		uint32_t scale = types.data[2 * types.next + 1];
 		types.next++;
-		if (scale != decoded.scale || width < decoded.width || width > Decimal::MAX_WIDTH_DECIMAL) {
+		// the payload has to fit the declared type, at a physical size the declared width widens to
+		bool fits = Decimal::IsValidWidthScale(width, scale) && scale == decoded.scale &&
+		            GetTypeIdSize(VariantDecimalPhysicalType(width)) >=
+		                GetTypeIdSize(VariantDecimalPhysicalType(decoded.width));
+		if (fits) {
+			auto value = LoadWidenedDecimal<hugeint_t>(decoded);
+			auto &limit = Hugeint::POWERS_OF_TEN[width];
+			fits = value < limit && value > -limit;
+		}
+		if (!fits) {
 			throw IOException("Corrupted inlined VARIANT, the declared DECIMAL(%d, %d) does not hold DECIMAL(%d, %d)",
 			                  width, scale, decoded.width, decoded.scale);
 		}
@@ -326,10 +338,10 @@ public:
 			entries.push_back(Entry {entry.key, TypedVariantNode(entry.value, types)});
 		}
 	}
-	vector<Entry>::const_iterator begin() const { // NOLINT: match stl API
+	vector<Entry>::const_iterator begin() const { // NOLINT
 		return entries.begin();
 	}
-	vector<Entry>::const_iterator end() const { // NOLINT: match stl API
+	vector<Entry>::const_iterator end() const { // NOLINT
 		return entries.end();
 	}
 
@@ -342,7 +354,7 @@ class TypedVariantNode::ArrayChildren {
 public:
 	ArrayChildren(const VariantNode &array, DecimalTypes &types) : elements(array.GetArrayChildren()), types(types) {
 	}
-	idx_t size() const { // NOLINT: match stl API
+	idx_t size() const { // NOLINT
 		return elements.size();
 	}
 	TypedVariantNode operator[](idx_t i) const {

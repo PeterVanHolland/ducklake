@@ -197,28 +197,29 @@ struct DecimalTypes {
 	idx_t next = 0;
 };
 
-//! The decimal payload of a value, widened to the physical type of its declared width
-template <class T>
-T LoadWidenedDecimal(const VariantDecimalData &decimal) {
+//! The payload of a decimal, whatever its physical size
+hugeint_t LoadDecimalPayload(const VariantDecimalData &decimal) {
 	switch (VariantDecimalPhysicalType(decimal.width)) {
 	case PhysicalType::INT16:
-		return static_cast<T>(Load<int16_t>(decimal.value_ptr));
+		return hugeint_t(Load<int16_t>(decimal.value_ptr));
 	case PhysicalType::INT32:
-		return static_cast<T>(Load<int32_t>(decimal.value_ptr));
+		return hugeint_t(Load<int32_t>(decimal.value_ptr));
 	case PhysicalType::INT64:
-		return static_cast<T>(Load<int64_t>(decimal.value_ptr));
+		return hugeint_t(Load<int64_t>(decimal.value_ptr));
 	default:
-		throw InternalException("A DECIMAL(%d, %d) value does not widen to a narrower physical type", decimal.width,
-		                        decimal.scale);
+		return Load<hugeint_t>(decimal.value_ptr);
 	}
 }
 
+//! The payload of a decimal at the physical type of its declared width, which the decoded digits need not share
+template <class T>
+T ConvertDecimalPayload(const VariantDecimalData &decimal) {
+	return Hugeint::Cast<T>(LoadDecimalPayload(decimal));
+}
+
 template <>
-hugeint_t LoadWidenedDecimal<hugeint_t>(const VariantDecimalData &decimal) {
-	if (VariantDecimalPhysicalType(decimal.width) == PhysicalType::INT128) {
-		return Load<hugeint_t>(decimal.value_ptr);
-	}
-	return hugeint_t(LoadWidenedDecimal<int64_t>(decimal));
+hugeint_t ConvertDecimalPayload<hugeint_t>(const VariantDecimalData &decimal) {
+	return LoadDecimalPayload(decimal);
 }
 
 //! The payload of a value, which the builder loads as the type of a decimal only for the decimal physical types
@@ -230,38 +231,38 @@ struct VariantPayload {
 };
 
 template <class T>
-T LoadDecimalPayload(const VariantNode &node) {
+T LoadVariantPayload(const VariantNode &node) {
 	if (node.GetTypeId() != VariantLogicalType::DECIMAL) {
 		return node.GetData<T>();
 	}
-	return LoadWidenedDecimal<T>(node.GetDecimal());
+	return ConvertDecimalPayload<T>(node.GetDecimal());
 }
 
 template <>
 struct VariantPayload<int16_t> {
 	static int16_t Load(const VariantNode &node) {
-		return LoadDecimalPayload<int16_t>(node);
+		return LoadVariantPayload<int16_t>(node);
 	}
 };
 
 template <>
 struct VariantPayload<int32_t> {
 	static int32_t Load(const VariantNode &node) {
-		return LoadDecimalPayload<int32_t>(node);
+		return LoadVariantPayload<int32_t>(node);
 	}
 };
 
 template <>
 struct VariantPayload<int64_t> {
 	static int64_t Load(const VariantNode &node) {
-		return LoadDecimalPayload<int64_t>(node);
+		return LoadVariantPayload<int64_t>(node);
 	}
 };
 
 template <>
 struct VariantPayload<hugeint_t> {
 	static hugeint_t Load(const VariantNode &node) {
-		return LoadDecimalPayload<hugeint_t>(node);
+		return LoadVariantPayload<hugeint_t>(node);
 	}
 };
 
@@ -300,12 +301,10 @@ public:
 		uint32_t width = types.data[2 * types.next];
 		uint32_t scale = types.data[2 * types.next + 1];
 		types.next++;
-		// the payload has to fit the declared type, at a physical size the declared width widens to
-		bool fits = Decimal::IsValidWidthScale(width, scale) && scale == decoded.scale &&
-		            GetTypeIdSize(VariantDecimalPhysicalType(width)) >=
-		                GetTypeIdSize(VariantDecimalPhysicalType(decoded.width));
+		// the payload has to fit the declared type, the decoded digits can be off by one
+		bool fits = Decimal::IsValidWidthScale(width, scale) && scale == decoded.scale;
 		if (fits) {
-			auto value = LoadWidenedDecimal<hugeint_t>(decoded);
+			auto value = LoadDecimalPayload(decoded);
 			auto &limit = Hugeint::POWERS_OF_TEN[width];
 			fits = value < limit && value > -limit;
 		}

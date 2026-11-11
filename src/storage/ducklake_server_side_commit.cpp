@@ -589,7 +589,8 @@ unique_ptr<DuckLakeStats> DuckLakeServerSideCommit::BuildStatsMap(vector<DuckLak
 
 vector<Identifier> DuckLakeServerSideCommit::LookupInlinedTableNames(TableIndex table_id) {
 	vector<Identifier> names;
-	auto sql = SubstitutePlaceholders(DuckLakeMetadataManager::GetInlinedTableNamesSql(table_id), transaction_snapshot);
+	auto sql =
+	    SubstitutePlaceholders(DuckLakeMetadataManager::GetInlinedTableNamesSql(table_id.index), transaction_snapshot);
 	auto result = RunQuery(sql, "lookup inlined table names");
 	for (auto &row : *result) {
 		names.push_back(row.GetValue<Identifier>(0));
@@ -699,14 +700,11 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
 	};
 	ctx.get_table_column_schema = [this](TableIndex table_id) {
 		vector<DuckLakeColumnSchemaEntry> schema;
-		auto sql =
-		    SubstitutePlaceholders(DuckLakeMetadataManager::GetTableColumnSchemaSql(table_id), transaction_snapshot);
+		auto sql = SubstitutePlaceholders(DuckLakeMetadataManager::GetTableColumnSchemaSql(table_id.index),
+		                                  transaction_snapshot);
 		auto result = RunQuery(sql, "read table column schema");
 		for (auto &row : *result) {
-			// parent_column IS NULL => top-level root; otherwise a nested leaf carrying its own leaf type.
-			bool is_root = row.IsNull(3);
-			schema.push_back({FieldIndex(static_cast<idx_t>(row.GetValue<int64_t>(0))), row.GetValue<Identifier>(1),
-			                  DuckLakeTypes::FromString(row.GetValue<string>(2)), is_root});
+			schema.push_back(DuckLakeColumnSchemaEntry::FromRow(row));
 		}
 		return schema;
 	};

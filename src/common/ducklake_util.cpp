@@ -538,14 +538,11 @@ string DuckLakeUtil::InlinedVariantExpression(const string &expression, const Lo
 		return expression;
 	}
 	switch (type.id()) {
-	case LogicalTypeId::VARIANT: {
+	case LogicalTypeId::VARIANT:
 		if (!encode) {
-			return "variant_bytes_to_variant(" + expression + ")";
+			return "ducklake_decode_inlined_variant(" + expression + ")";
 		}
-		auto parquet = "(CAST(variant_to_parquet_variant(" + expression + ") AS STRUCT(metadata BLOB, value BLOB)))";
-		return "CASE WHEN " + expression + " IS NULL THEN NULL ELSE " + parquet + ".metadata || " + parquet +
-		       ".value END";
-	}
+		return "ducklake_encode_inlined_variant(" + expression + ")";
 	case LogicalTypeId::LIST: {
 		auto element = "__ducklake_element_" + to_string(depth);
 		return "list_transform(" + expression + ", lambda " + element + ": " +

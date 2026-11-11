@@ -55,7 +55,7 @@ SELECT * FROM lake.p1
 statement ok
 DETACH lake
 
-# without the row, a read takes the columns of the surviving snapshot of the version
+# without the row, a read takes the columns at the commit of the inlined rows, which they name
 unzip data/old_ducklake/inlined_schema_version_expired.db.gz {TEST_DIR}/v10_inlined_schema_version_fallback.db
 
 statement ok
@@ -83,7 +83,7 @@ SELECT count(*) FROM meta.ducklake_schema_versions WHERE schema_version = 3
 ----
 0
 
-# once that snapshot is expired too, the version recorded before it has the same columns
+# the commit stays known once its snapshot is expired too
 statement ok
 CALL ducklake_expire_snapshots('lake', older_than => now())
 

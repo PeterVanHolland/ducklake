@@ -52,7 +52,7 @@ SELECT * FROM lake.p1
 ----
 26	2.5
 
-# the ALTER routes the inlined table through its schema version, whose snapshot holds the renamed column
+# the ALTER routes the inlined table through its schema version, and its rows name the commit with the renamed column
 statement ok
 ALTER TABLE lake.p1 ADD COLUMN x INTEGER
 
@@ -73,7 +73,7 @@ SELECT begin_snapshot, schema_version, table_id FROM meta.ducklake_schema_versio
 2	2	1
 4	4	1
 
-# once that snapshot is expired, the version recorded before it has the same columns
+# the commit of the rows stays known once its snapshot is expired
 statement ok
 CALL ducklake_expire_snapshots('lake', older_than => now())
 
@@ -101,13 +101,30 @@ SELECT * FROM lake.p1
 ----
 26	2.5	NULL
 
+# an inlined table without rows takes a snapshot of its version, or, with none left, the version recorded before it
+statement ok
+DELETE FROM meta.ducklake_inlined_data_1_2
+
+query I
+SELECT count(*) FROM lake.p1
+----
+0
+
+statement ok
+INSERT INTO lake.p1 VALUES (27, 3.5, 1)
+
+query III
+SELECT * FROM lake.p1
+----
+27	3.5	1
+
 statement ok
 CALL ducklake_flush_inlined_data('lake', table_name => 'p1')
 
 query III
 SELECT * FROM lake.p1
 ----
-26	2.5	NULL
+27	3.5	1
 
 query I
 SELECT count(*) FROM ducklake_list_files('lake', 'p1')

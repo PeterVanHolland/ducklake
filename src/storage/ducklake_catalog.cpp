@@ -497,17 +497,21 @@ optional_ptr<CatalogEntry> DuckLakeCatalog::GetEntryById(DuckLakeTransaction &tr
 	return schema.GetEntryById(table_id);
 }
 
-idx_t DuckLakeCatalog::GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version,
-                                                        DuckLakeTransaction &transaction) {
-	auto &metadata_manager = transaction.GetMetadataManager();
-	return metadata_manager.GetBeginSnapshotForSchemaVersion(table_id, schema_version);
-}
-
 optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLakeTransaction &transaction,
                                                                           TableIndex table_id, idx_t schema_version) {
-	DuckLakeSnapshot snapshot(GetBeginSnapshotForSchemaVersion(table_id, schema_version, transaction), schema_version,
-	                          0, 0);
-	auto entry = GetEntryById(transaction, snapshot, table_id);
+	auto version_snapshot = transaction.GetMetadataManager().GetSchemaVersionSnapshot(table_id, schema_version);
+	DuckLakeSnapshot snapshot(version_snapshot.begin_snapshot, schema_version, 0, 0);
+	optional_ptr<CatalogEntry> entry;
+	if (version_snapshot.recorded) {
+		entry = GetEntryById(transaction, snapshot, table_id);
+	} else {
+		// a stand-in snapshot can differ per table, so its catalog is cached apart from the one of the version
+		auto key = SchemaCacheKey(schema_version) + StringUtil::Format(":snapshot:%llu", snapshot.snapshot_id);
+		auto cache_entry = GetSchemaCacheEntry(transaction, snapshot, key);
+		auto &catalog_set = cache_entry->catalog_set;
+		transaction.PinSchemaCacheEntry(std::move(cache_entry));
+		entry = catalog_set.GetEntryById(table_id);
+	}
 	if (!entry) {
 		// LCOV_EXCL_START
 		return nullptr;
@@ -518,8 +522,12 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
 
 shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeCatalog::GetSchemaCacheEntry(DuckLakeTransaction &transaction,
                                                                           DuckLakeSnapshot snapshot) {
+	return GetSchemaCacheEntry(transaction, snapshot, SchemaCacheKey(snapshot.schema_version));
+}
+
+shared_ptr<DuckLakeSchemaCacheEntry>
+DuckLakeCatalog::GetSchemaCacheEntry(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot, const string &key) {
 	auto &cache = GetObjectCacheInstance();
-	auto key = SchemaCacheKey(snapshot.schema_version);
 	auto cached = cache.Get<DuckLakeSchemaCacheEntry>(key);
 	if (cached) {
 		return cached;

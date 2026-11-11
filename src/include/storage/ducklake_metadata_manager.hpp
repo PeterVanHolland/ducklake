@@ -391,7 +391,11 @@ public:
 	                                                                  double deletion_threshold,
 	                                                                  DuckLakeSnapshot snapshot,
 	                                                                  DuckLakeFileSizeOptions options);
-	virtual idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version);
+	//! The snapshot at which a schema version of a table begins, stood in for when the version has no row
+	virtual DuckLakeSchemaVersionSnapshot GetSchemaVersionSnapshot(TableIndex table_id, idx_t schema_version);
+	//! The snapshot of the first rows of the inlined tables of a schema version, which name their commit
+	optional_idx GetFirstInlinedRowSnapshot(TableIndex table_id, idx_t schema_version,
+	                                        const DuckLakeInlinedColNames &col_names);
 	DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! The net row count of the data files that were committed before the snapshot's next file id
 	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);

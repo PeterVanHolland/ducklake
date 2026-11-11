@@ -1,0 +1,106 @@
+# name: test/sql/migration/inlined_schema_version_stand_in_cache.test
+# description: two tables whose inlined tables share a schema version without a row read at their own commits
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/inlined_schema_version_stand_in_cache', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.a (id INTEGER, c0 DOUBLE)
+
+statement ok
+CREATE TABLE lake.b (id INTEGER, d0 DOUBLE)
+
+statement ok
+ALTER TABLE lake.a RENAME COLUMN c0 TO c0r
+
+statement ok
+INSERT INTO lake.a VALUES (1, 1.5)
+
+statement ok
+ALTER TABLE lake.b RENAME COLUMN d0 TO d0r
+
+statement ok
+INSERT INTO lake.b VALUES (2, 2.5)
+
+query III
+SELECT begin_snapshot, schema_version, table_id FROM meta.ducklake_schema_versions ORDER BY ALL
+----
+1	1	1
+2	2	2
+3	3	1
+5	4	2
+
+# the rows of a were committed before the rename of b, the rows of b after it
+query II
+SELECT table_name, schema_version FROM meta.ducklake_inlined_data_tables WHERE schema_version > 2 ORDER BY ALL
+----
+ducklake_inlined_data_1_3	3
+ducklake_inlined_data_2_4	4
+
+# the 1.0 release could leave both inlined tables at one version without a row
+statement ok
+UPDATE meta.ducklake_inlined_data_tables SET schema_version = 5 WHERE schema_version IN (3, 4)
+
+statement ok
+UPDATE meta.ducklake_snapshot SET schema_version = 5 WHERE snapshot_id = 6
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/inlined_schema_version_stand_in_cache', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+ALTER TABLE lake.a ADD COLUMN x INTEGER
+
+statement ok
+ALTER TABLE lake.b ADD COLUMN y INTEGER
+
+# each table reads at the commit of its own rows, whichever is read first
+query III
+SELECT * FROM lake.a
+----
+1	1.5	NULL
+
+query III
+SELECT * FROM lake.b
+----
+2	2.5	NULL
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/inlined_schema_version_stand_in_cache', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 10)
+
+query III
+SELECT * FROM lake.b
+----
+2	2.5	NULL
+
+query III
+SELECT * FROM lake.a
+----
+1	1.5	NULL
+
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+query III
+SELECT * FROM lake.a
+----
+1	1.5	NULL
+
+query III
+SELECT * FROM lake.b
+----
+2	2.5	NULL

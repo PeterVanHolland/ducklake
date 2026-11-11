@@ -120,6 +120,44 @@ SELECT v FROM lk.w WHERE id = 1
 ----
 does not hold DECIMAL(3, 2)
 
+# a width outside the decimal range
+statement ok
+UPDATE lk_meta.ducklake_inlined_data_1_1 SET v = v[1:-4] || '\x01\x27\x02'::BLOB WHERE id = 1
+
+statement error
+SELECT v FROM lk.w WHERE id = 1
+----
+does not hold DECIMAL(3, 2)
+
+# a format byte that is not known
+statement ok
+UPDATE lk_meta.ducklake_inlined_data_1_1 SET v = v[1:-4] || '\x02\x05\x02'::BLOB WHERE id = 1
+
+statement error
+SELECT v FROM lk.w WHERE id = 1
+----
+unknown decimal types format
+
+# fewer types than decimals, with the first row readable again
+statement ok
+UPDATE lk_meta.ducklake_inlined_data_1_1 SET v = v[1:-4] || '\x01\x05\x02'::BLOB WHERE id = 1
+
+statement ok
+UPDATE lk_meta.ducklake_inlined_data_1_1 SET v = v[1:-8] || '\x01\x03\x01'::BLOB WHERE id = 2
+
+statement error
+SELECT v FROM lk.w WHERE id = 2
+----
+holds more decimals than declared types
+
+statement ok
+UPDATE lk_meta.ducklake_inlined_data_1_1 SET v = v[1:-4] || '\x01\x03\x01\x0C\x04\x02\x00'::BLOB WHERE id = 2
+
+query I
+SELECT variant_typeof(v.b[2].c) FROM lk.w WHERE id = 2
+----
+DECIMAL(12, 4)
+
 # bytes whose metadata runs past their end
 statement ok
 UPDATE lk_meta.ducklake_inlined_data_1_1 SET v = from_hex('C100000000FFFFFFFF') WHERE id = 1

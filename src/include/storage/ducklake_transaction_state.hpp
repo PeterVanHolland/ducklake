@@ -86,6 +86,8 @@ struct DuckLakeCommitContext {
 	// LCOV_EXCL_STOP
 	//! Runs a metadata-DB query during post-commit cleanup.
 	std::function<unique_ptr<QueryResult>(string)> query_metadata;
+	//! The top-level columns of the inlined tables of a table at the snapshots of their schema versions
+	std::function<unique_ptr<QueryResult>(TableIndex)> inlined_table_columns;
 	//! Runs cleanup statements that drop metadata tables atomically.
 	std::function<unique_ptr<QueryResult>(string)> execute_in_transaction;
 	//! Runs a snapshot-templated metadata-DB query (handles {SNAPSHOT_ID} substitution).

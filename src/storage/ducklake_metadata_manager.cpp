@@ -580,7 +580,8 @@ AND NOT EXISTS (
 ) > 1;
 )");
 	result->ThrowIfError("Failed to add the schema versions of inlined-data tables while migrating to v1.1: ");
-	// the first rows of an inlined table name the snapshot of its commit, also once that snapshot is expired
+	// the row of another table or the first rows of the inlined tables of the version name its commit, also once
+	// the snapshot before that commit is expired
 	auto missing = Query(R"(
 SELECT DISTINCT idt.table_id, idt.schema_version
 FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
@@ -596,21 +597,24 @@ WHERE NOT EXISTS (
 	DuckLakeInlinedColNames col_names(true);
 	string inserts;
 	for (auto &version : versions) {
-		auto first_snapshot = GetFirstInlinedRowSnapshot(version.first, version.second, col_names);
-		if (!first_snapshot.IsValid()) {
+		auto commit_snapshot = GetRecordedSchemaVersionSnapshot(version.second);
+		if (!commit_snapshot.IsValid()) {
+			commit_snapshot = GetFirstInlinedRowSnapshot(version.second, col_names);
+		}
+		if (!commit_snapshot.IsValid()) {
 			continue;
 		}
 		// like above, a table whose schema never changed up to that commit reads with its creation columns
 		auto changes = Query(StringUtil::Format(R"(
 SELECT COUNT(*) FROM {METADATA_CATALOG}.ducklake_schema_versions
 WHERE table_id = %d AND begin_snapshot <= %d)",
-		                                        version.first.index, first_snapshot.GetIndex()));
+		                                        version.first.index, commit_snapshot.GetIndex()));
 		changes->ThrowIfError("Failed to count the schema versions of a table while migrating to v1.1: ");
 		for (auto &row : *changes) {
 			if (row.GetValue<idx_t>(0) > 1) {
 				inserts += StringUtil::Format("INSERT INTO {METADATA_CATALOG}.ducklake_schema_versions "
 				                              "(begin_snapshot, schema_version, table_id) VALUES (%d, %d, %d);\n",
-				                              first_snapshot.GetIndex(), version.second, version.first.index);
+				                              commit_snapshot.GetIndex(), version.second, version.first.index);
 			}
 		}
 	}
@@ -993,16 +997,17 @@ vector<DuckLakeMacroImplementation> DuckLakeMetadataManager::LoadMacroImplementa
 	return result;
 }
 
-//! The begin snapshot of a schema version of a table that has no row for it: the first snapshot of the version, else
-//! the begin snapshot of the last version recorded before it, else the creation of the table
-static string MissingSchemaVersionSnapshotSql(const string &table_id, const string &schema_version) {
-	return StringUtil::Format(R"(COALESCE(
-	(SELECT MIN(snap.snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot snap WHERE snap.schema_version = %s),
+//! The begin snapshot of a schema version that no row and no inlined row names: the first surviving snapshot of the
+//! version, else the begin snapshot of the version recorded before it, else the creation of the table
+static string MissingSchemaVersionSnapshotSql(TableIndex table_id, idx_t schema_version) {
+	return StringUtil::Format(R"(
+SELECT COALESCE(
+	(SELECT MIN(snap.snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot snap WHERE snap.schema_version = %d),
 	(SELECT MAX(older.begin_snapshot) FROM {METADATA_CATALOG}.ducklake_schema_versions older
-		WHERE older.table_id = %s AND older.schema_version < %s),
-	(SELECT MIN(tbl.begin_snapshot) FROM {METADATA_CATALOG}.ducklake_table tbl WHERE tbl.table_id = %s)
+		WHERE older.schema_version < %d),
+	(SELECT MIN(tbl.begin_snapshot) FROM {METADATA_CATALOG}.ducklake_table tbl WHERE tbl.table_id = %d)
 ))",
-	                          schema_version, table_id, schema_version, table_id);
+	                          schema_version, schema_version, table_id.index);
 }
 
 DuckLakeTableSchemaVersions DuckLakeMetadataManager::GetTableSchemaVersions(TableIndex table_id,
@@ -1021,13 +1026,24 @@ DuckLakeTableSchemaVersions DuckLakeMetadataManager::GetTableSchemaVersions(Tabl
 	return schema_versions;
 }
 
-optional_idx DuckLakeMetadataManager::GetFirstInlinedRowSnapshot(TableIndex table_id, idx_t schema_version,
+optional_idx DuckLakeMetadataManager::GetRecordedSchemaVersionSnapshot(idx_t schema_version) {
+	auto result = Query(StringUtil::Format(
+	    "SELECT MIN(begin_snapshot) FROM {METADATA_CATALOG}.ducklake_schema_versions WHERE schema_version = %d",
+	    schema_version));
+	result->ThrowIfError("Failed to read the begin snapshot of a schema version from DuckLake: ");
+	for (auto &row : *result) {
+		return OptIdx(row, 0);
+	}
+	return optional_idx();
+}
+
+optional_idx DuckLakeMetadataManager::GetFirstInlinedRowSnapshot(idx_t schema_version,
                                                                  const DuckLakeInlinedColNames &col_names) {
 	auto tables = Query(StringUtil::Format(R"(
 SELECT table_name
 FROM {METADATA_CATALOG}.ducklake_inlined_data_tables
-WHERE table_id = %d AND schema_version = %d)",
-	                                       table_id.index, schema_version));
+WHERE schema_version = %d)",
+	                                       schema_version));
 	tables->ThrowIfError("Failed to read the inlined data tables of a schema version from DuckLake: ");
 	vector<Identifier> table_names;
 	for (auto &row : *tables) {
@@ -1074,14 +1090,18 @@ WHERE table_id = {TABLE_ID} AND schema_version = {SCHEMA_VERSION})";
 		}
 		return {begin_snapshot, true};
 	}
-	// a version without a row belongs to an inlined table of a 1.0 catalog, whose rows name their commit
-	auto first_row_snapshot = GetFirstInlinedRowSnapshot(table_id, schema_version, InlinedColNames());
+	// a version without a row of this table came from an inlined table of a 1.0 catalog: the row of another table
+	// names its commit, else the first inlined rows of the version do
+	auto recorded_snapshot = GetRecordedSchemaVersionSnapshot(schema_version);
+	if (recorded_snapshot.IsValid()) {
+		return {recorded_snapshot.GetIndex(), true};
+	}
+	auto first_row_snapshot = GetFirstInlinedRowSnapshot(schema_version, InlinedColNames());
 	if (first_row_snapshot.IsValid()) {
 		return {first_row_snapshot.GetIndex(), false};
 	}
 	// without rows, a snapshot of the version, else the version recorded before it, else the creation of the table
-	query = "SELECT " + MissingSchemaVersionSnapshotSql(to_string(table_id.index), to_string(schema_version));
-	result = Query(query);
+	result = Query(MissingSchemaVersionSnapshotSql(table_id, schema_version));
 	for (auto &row : *result) {
 		auto begin_snapshot = OptIdx(row, 0);
 		if (begin_snapshot.IsValid()) {
@@ -1228,24 +1248,54 @@ WHERE table_id = %d AND schema_version < (
 	                          table_id.index, table_id.index);
 }
 
-string DuckLakeMetadataManager::GetInlinedTableColumnsSql(optional_idx table_id) {
+unique_ptr<QueryResult> DuckLakeMetadataManager::GetInlinedTableColumns(optional_idx table_id) {
 	string table_filter;
 	if (table_id.IsValid()) {
-		table_filter = StringUtil::Format("\n\tWHERE idt.table_id = %d", table_id.GetIndex());
+		table_filter = StringUtil::Format("\nWHERE idt.table_id = %d", table_id.GetIndex());
 	}
-	return StringUtil::Format(R"(
-WITH inlined AS (
-	SELECT idt.table_id, idt.table_name, COALESCE(sv.begin_snapshot, %s) AS snapshot_id
-	FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
-	LEFT JOIN {METADATA_CATALOG}.ducklake_schema_versions sv
-		ON sv.table_id = idt.table_id AND sv.schema_version = idt.schema_version%s
-)
+	// the inlined tables with the begin snapshot of their schema version, stood in for when it has no row
+	auto tables = Query(StringUtil::Format(R"(
+SELECT idt.table_id, idt.table_name, idt.schema_version, sv.begin_snapshot
+FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
+LEFT JOIN {METADATA_CATALOG}.ducklake_schema_versions sv
+	ON sv.table_id = idt.table_id AND sv.schema_version = idt.schema_version%s)",
+	                                       table_filter));
+	tables->ThrowIfError("Failed to read the inlined data tables from DuckLake: ");
+	struct InlinedTableVersion {
+		idx_t table_id;
+		string table_name;
+		idx_t schema_version;
+		optional_idx begin_snapshot;
+	};
+	vector<InlinedTableVersion> inlined_tables;
+	for (auto &row : *tables) {
+		inlined_tables.push_back(
+		    {row.GetValue<idx_t>(0), row.GetValue<string>(1), row.GetValue<idx_t>(2), OptIdx(row, 3)});
+	}
+	if (inlined_tables.empty()) {
+		return std::move(tables);
+	}
+	string values;
+	for (auto &inlined_table : inlined_tables) {
+		auto begin_snapshot = inlined_table.begin_snapshot;
+		if (!begin_snapshot.IsValid()) {
+			begin_snapshot = GetSchemaVersionSnapshot(TableIndex(inlined_table.table_id), inlined_table.schema_version)
+			                     .begin_snapshot;
+		}
+		if (!values.empty()) {
+			values += ", ";
+		}
+		values += StringUtil::Format("(%d, %s, %d)", inlined_table.table_id,
+		                             SQLString::ToString(inlined_table.table_name), begin_snapshot.GetIndex());
+	}
+	return Query(StringUtil::Format(R"(
+WITH inlined(table_id, table_name, snapshot_id) AS (VALUES %s)
 SELECT inlined.table_name, col.column_name, col.column_type, col.column_id
 FROM inlined
 JOIN {METADATA_CATALOG}.ducklake_column col ON col.table_id = inlined.table_id AND col.parent_column IS NULL
 WHERE col.begin_snapshot <= inlined.snapshot_id AND (col.end_snapshot IS NULL OR col.end_snapshot > inlined.snapshot_id)
 )",
-	                          MissingSchemaVersionSnapshotSql("idt.table_id", "idt.schema_version"), table_filter);
+	                                values));
 }
 
 identifier_set_t DuckLakeMetadataManager::GetInlinedTableNames(TableIndex table_id) {

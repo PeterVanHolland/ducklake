@@ -1613,6 +1613,9 @@ void DuckLakeTransaction::DropEmptySupersededInlinedTablesClientSide() {
 	context.query_metadata = [&](string q) {
 		return metadata_manager->Query(q);
 	};
+	context.inlined_table_columns = [&](TableIndex table_id) {
+		return metadata_manager->GetInlinedTableColumns(table_id.index);
+	};
 	context.execute_in_transaction = [&](string q) {
 		return metadata_manager->ExecuteDropInTransaction(q);
 	};
@@ -1760,6 +1763,9 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	};
 	context.query_metadata = [&](string q) {
 		return metadata_manager->Query(q);
+	};
+	context.inlined_table_columns = [&](TableIndex table_id) {
+		return metadata_manager->GetInlinedTableColumns(table_id.index);
 	};
 	context.execute_in_transaction = [&](string q) {
 		return metadata_manager->ExecuteDropInTransaction(q);

@@ -1002,10 +1002,11 @@ optional_idx DuckLakeMetadataManager::InlinedTableLayoutSnapshot(const MetadataQ
 			user_columns.insert(column);
 		}
 	}
+	// every change of a column, nested ones included, starts a layout
 	auto history = query(StringUtil::Format(R"(
-SELECT column_name, begin_snapshot, end_snapshot
+SELECT column_name, begin_snapshot, end_snapshot, parent_column IS NULL
 FROM {METADATA_CATALOG}.ducklake_column
-WHERE table_id = %d AND parent_column IS NULL)",
+WHERE table_id = %d)",
 	                                        table_id.index));
 	history->ThrowIfError("Failed to read the column history of a table from DuckLake: ");
 	struct ColumnLifetime {
@@ -1018,9 +1019,15 @@ WHERE table_id = %d AND parent_column IS NULL)",
 	for (auto &row : *history) {
 		ColumnLifetime column {row.GetValue<Identifier>(0), row.GetValue<idx_t>(1), OptIdx(row, 2)};
 		changes.insert(column.begin_snapshot);
-		columns.push_back(std::move(column));
+		if (column.end_snapshot.IsValid()) {
+			changes.insert(column.end_snapshot.GetIndex());
+		}
+		if (row.GetValue<bool>(3)) {
+			columns.push_back(std::move(column));
+		}
 	}
-	// the commit of the version lies between the begin snapshots of the versions recorded before and after it
+	// the commit of the version lies between the begin snapshots of the versions recorded before and after it, and
+	// the table existed at the commit of its first rows
 	auto bounds = query(StringUtil::Format(R"(
 SELECT (SELECT MAX(begin_snapshot) FROM {METADATA_CATALOG}.ducklake_schema_versions WHERE schema_version < %d),
 	(SELECT MIN(begin_snapshot) FROM {METADATA_CATALOG}.ducklake_schema_versions WHERE schema_version > %d))",
@@ -1032,7 +1039,16 @@ SELECT (SELECT MAX(begin_snapshot) FROM {METADATA_CATALOG}.ducklake_schema_versi
 		lower_bound = OptIdx(row, 0);
 		upper_bound = OptIdx(row, 1);
 	}
-	// every change of the top-level columns starts a layout, the latest one in that range with these names is taken
+	auto first_rows = query(
+	    StringUtil::Format("SELECT MIN(%s) FROM {METADATA_CATALOG}.%s", col_names.begin_snapshot, inlined_table_name));
+	first_rows->ThrowIfError("Failed to read the first rows of an inlined data table from DuckLake: ");
+	for (auto &row : *first_rows) {
+		auto first_row = OptIdx(row, 0);
+		if (first_row.IsValid() && (!upper_bound.IsValid() || first_row.GetIndex() < upper_bound.GetIndex())) {
+			upper_bound = first_row;
+		}
+	}
+	// the latest layout in that range with the names of the table is taken
 	optional_idx layout_end;
 	for (auto change = changes.rbegin(); change != changes.rend(); change++) {
 		bool in_range =

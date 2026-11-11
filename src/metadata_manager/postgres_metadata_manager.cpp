@@ -411,7 +411,11 @@ bool PostgresMetadataManager::InlinedDeletionTableExists(const Identifier &table
 }
 
 void PostgresMetadataManager::MigrateInlinedDataTypes() {
-	auto columns = GetInlinedTableColumns();
+	// the metadata columns of the inlined tables are renamed by now, whatever version the catalog still has
+	auto metadata_query = [this](string sql) {
+		return DuckLakeMetadataManager::Query(std::move(sql));
+	};
+	auto columns = InlinedTableColumns(metadata_query, DuckLakeInlinedColNames(true), optional_idx());
 	columns->ThrowIfError("Failed to read the columns of inlined-data tables while migrating: ");
 	map<Identifier, identifier_map_t<string>> inlined_tables;
 	for (auto &row : *columns) {

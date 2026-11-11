@@ -144,3 +144,62 @@ query I
 SELECT a FROM lake.n
 ----
 1
+
+statement ok
+DETACH lake
+
+# written by DuckDB 1.5.6 with DuckLake 1.0, every snapshot but the last expired: the inlined tables of replaced and
+# promoted were written before a commit that replaced b by a column of the same name with the default 42 and that
+# promoted a to DOUBLE, those of nested and dropped in the commit that renamed a.x to y and dropped b
+unzip data/old_ducklake/inlined_schema_versions_layouts.db.gz {TEST_DIR}/v10_inlined_schema_version_layouts.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_schema_version_layouts.db' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_schema_version_layouts', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT a, b FROM lake.replaced
+----
+10	42
+
+query I
+SELECT a FROM lake.promoted
+----
+0.5
+
+query II
+SELECT a.y, a.z FROM lake.nested
+----
+42	99
+
+query II
+SELECT a, c FROM lake.dropped
+----
+10	30
+
+query I
+SELECT count(*) FROM lake.n
+----
+2
+
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+query II
+SELECT a, b FROM lake.replaced
+----
+10	42
+
+query I
+SELECT a FROM lake.promoted
+----
+0.5
+
+query II
+SELECT a.y, a.z FROM lake.nested
+----
+42	99
+
+query II
+SELECT a, c FROM lake.dropped
+----
+10	30

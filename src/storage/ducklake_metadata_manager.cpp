@@ -504,7 +504,7 @@ DELETE FROM {METADATA_CATALOG}.ducklake_schema_versions WHERE table_id IS NULL;
 	if (!allow_failures) {
 		delete_global_entries->ThrowIfError("Failed to clean up global schema_versions entries: ");
 	}
-	MigrateInlinedDataTypes();
+	MigrateInlinedDataTypes(false);
 }
 
 void DuckLakeMetadataManager::MigrateV04() {
@@ -703,7 +703,8 @@ void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	MigrateInlinedSchemaVersions();
 	MigrateRenamedFieldDefaults();
 	MigrateRetypedBounds();
-	MigrateInlinedDataTypes();
+	// the metadata columns of the inlined tables are renamed by now, whatever version the catalog still has
+	MigrateInlinedDataTypes(true);
 	// DDL locks the metadata tables exclusively on Postgres, skip it when a dev catalog has every addition
 	auto has_additions = from_dev1 && HasV1_1Additions();
 	ExecuteMigration(V1_1MigrationQuery(has_additions), from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");

@@ -672,7 +672,8 @@ public:
 	//! Clears the bounds that older versions may have stored in the type of a file or of an earlier column type
 	void MigrateRetypedBounds();
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
-	virtual void MigrateInlinedDataTypes() {
+	//! Converts the types of the inlined data tables, whose metadata columns carry the given naming by then
+	virtual void MigrateInlinedDataTypes(bool prefixed_inlined_columns) {
 	}
 	virtual void ExecuteMigration(string migrate_query, bool allow_failures, const string &from_version,
 	                              const string &to_version);

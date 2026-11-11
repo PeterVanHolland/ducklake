@@ -394,18 +394,15 @@ public:
 	virtual idx_t GetBeginSnapshotForTable(TableIndex table_id);
 	virtual idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version);
 	DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
-	//! The net row count of the data files that were committed before the snapshot's next file id, without the
-	//! excluded files and their deletions
-	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot,
-	                                     const set<DataFileIndex> &excluded_files);
+	//! The net row count of the data files that were committed before the snapshot's next file id
+	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);
 	optional_idx GetNetDataFileRowCountForStats(TableIndex table_id, DuckLakeSnapshot snapshot);
 	virtual idx_t GetNetInlinedRowCount(const Identifier &inlined_table_name, DuckLakeSnapshot snapshot);
 	//! SQL builders for stats-refresh metadata lookups; caller substitutes placeholders + executes.
 	//! With require_exact, the count is NULL if any visible file is only partially visible to the snapshot.
 	//! With exclude_new_files, the files of the commit, which can already be in the catalog, are not counted.
 	static string GetNetDataFileRowCountSql(TableIndex table_id, const Identifier &inlined_deletion_table,
-	                                        bool require_exact = false, bool exclude_new_files = false,
-	                                        const set<DataFileIndex> &excluded_files = set<DataFileIndex>());
+	                                        bool require_exact = false, bool exclude_new_files = false);
 	static string GetNetInlinedRowCountSql(const Identifier &inlined_table_name,
 	                                       const DuckLakeInlinedColNames &col_names);
 	//! The rows that are stored, deleted ones included, and the rows that are live
@@ -520,6 +517,9 @@ public:
 	static string InlinedTableRegistrationTuple(idx_t table_id, const Identifier &table_name, idx_t schema_version);
 	static string LatestInlinedTableQuery(idx_t table_id);
 	static string DropDataFiles(const set<DataFileIndex> &dropped_files);
+	//! The deletes recorded against the given data files of the table at the snapshot
+	static string GetDeleteCountForDataFilesSql(TableIndex table_id, const set<DataFileIndex> &file_ids,
+	                                            const Identifier &inlined_deletion_table);
 	//! Selects the given data files that are still in the metadata
 	static string GetExistingDataFilesSql(const set<DataFileIndex> &files);
 	//! Selects the given columns that a live data file of the table records values of, or holds the default of
@@ -596,7 +596,7 @@ public:
 	                                                           const DuckLakeTableEntry &table,
 	                                                           const string &sort_order_sql,
 	                                                           const vector<string> &columns_to_read);
-	//! SQL builders for the stats-refresh queries used by DuckLakeTransactionState::RecomputeGlobalStats.
+	//! SQL builders for the stats-refresh queries used by DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite.
 	//! Caller substitutes `{METADATA_CATALOG}` / `{SNAPSHOT_ID}` and executes via the commit context's executor.
 	static string ReadInlinedDataAggregatesSql(const Identifier &inlined_table_name, const string &select_list,
 	                                           const DuckLakeInlinedColNames &col_names);
@@ -735,6 +735,8 @@ protected:
 	string FromRelativePath(TableIndex table_id, const DuckLakePath &path);
 	string GetPath(TableIndex table_id, const vector<DuckLakeTableInfo> &new_tables,
 	               const vector<DuckLakeSchemaInfo> &new_schemas_result);
+	//! Loads the paths of tables that are not in the current snapshot with a single query
+	void LoadTablePaths(const vector<TableIndex> &table_ids);
 	FileSystem &GetFileSystem();
 
 private:

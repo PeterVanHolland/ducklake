@@ -511,10 +511,9 @@ shared_ptr<DuckLakeTableStats> DuckLakeTableEntry::GetTableStats(DuckLakeTransac
 	return dl_catalog.GetTableStats(transaction, GetTableId());
 }
 
-idx_t DuckLakeTableEntry::GetNetDataFileRowCount(DuckLakeTransaction &transaction,
-                                                 const duckdb::set<DataFileIndex> &excluded_files) {
+idx_t DuckLakeTableEntry::GetNetDataFileRowCount(DuckLakeTransaction &transaction) {
 	auto &metadata_manager = transaction.GetMetadataManager();
-	return metadata_manager.GetNetDataFileRowCount(GetTableId(), transaction.GetSnapshot(), excluded_files);
+	return metadata_manager.GetNetDataFileRowCount(GetTableId(), transaction.GetSnapshot());
 }
 
 vector<DuckLakeInlinedTableInfo> DuckLakeTableEntry::GetInlinedDataTables(DuckLakeTransaction &transaction,

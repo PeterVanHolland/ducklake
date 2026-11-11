@@ -1867,9 +1867,9 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		}
 		return names;
 	};
-	context.get_net_data_file_row_count = [&](TableIndex table_id, const set<DataFileIndex> &excluded_files) -> idx_t {
+	context.get_net_data_file_row_count = [&](TableIndex table_id) -> idx_t {
 		auto table = get_table_entry(table_id);
-		return table ? table->GetNetDataFileRowCount(*this, excluded_files) : 0;
+		return table ? table->GetNetDataFileRowCount(*this) : 0;
 	};
 	context.build_stats_map = [&](vector<DuckLakeGlobalStatsInfo> &stats) {
 		// flushed data commits across a concurrent alter, so its stats take the latest schema
@@ -2747,7 +2747,6 @@ void DuckLakeTransaction::DropFile(TableIndex table_id, DataFileIndex data_file_
 	auto &stats = state->dropped_file_stats[table_id];
 	stats.row_count += row_count;
 	stats.file_size_bytes += file_size_bytes;
-	stats.file_ids.insert(data_file_id);
 }
 
 void DuckLakeTransaction::MarkDeleteAttempted(TableIndex table_id) {

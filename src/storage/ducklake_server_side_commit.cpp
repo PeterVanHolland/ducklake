@@ -185,15 +185,13 @@ void DuckLakeServerSideCommit::ReadStagedDroppedFileEntries() {
 	if (!dropped_file_ids.empty()) {
 		auto dropped_stats = RunQuery(
 		    StringUtil::Format(
-		        "SELECT table_id, record_count, file_size_bytes, data_file_id FROM %s.ducklake_data_file WHERE "
-		        "data_file_id IN (%s)",
+		        "SELECT table_id, record_count, file_size_bytes FROM %s.ducklake_data_file WHERE data_file_id IN (%s)",
 		        schema_id, JoinIds(dropped_file_ids)),
 		    "read dropped file stats");
 		for (auto &row : *dropped_stats) {
 			auto &stats = staged_dropped_file_stats[TableIndex(AsIdx(row, 0))];
 			stats.row_count += AsIdx(row, 1);
 			stats.file_size_bytes += AsIdx(row, 2);
-			stats.file_ids.insert(DataFileIndex(AsIdx(row, 3)));
 		}
 	}
 	staged_dropped_files_read = true;
@@ -718,14 +716,14 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
 	ctx.inlined_file_deletion_table_exists = [this](TableIndex table_id) {
 		return InlinedFileDeletionTableExists(table_id);
 	};
-	ctx.get_net_data_file_row_count = [this](TableIndex table_id, const set<DataFileIndex> &excluded_files) -> idx_t {
+	ctx.get_net_data_file_row_count = [this](TableIndex table_id) -> idx_t {
 		Identifier inlined_deletion_table;
 		if (InlinedFileDeletionTableExists(table_id)) {
 			inlined_deletion_table = DuckLakeMetadataManager::InlinedFileDeletionTableName(table_id);
 		}
-		auto sql = SubstitutePlaceholders(DuckLakeMetadataManager::GetNetDataFileRowCountSql(
-		                                      table_id, inlined_deletion_table, false, true, excluded_files),
-		                                  transaction_snapshot);
+		auto sql = SubstitutePlaceholders(
+		    DuckLakeMetadataManager::GetNetDataFileRowCountSql(table_id, inlined_deletion_table, false, true),
+		    transaction_snapshot);
 		auto result = RunQuery(sql, "read net data file row count");
 		for (auto &row : *result) {
 			return row.GetValue<idx_t>(0);

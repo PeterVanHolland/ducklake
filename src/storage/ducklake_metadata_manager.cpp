@@ -1432,36 +1432,18 @@ void DuckLakeMetadataManager::LoadCatalogEntries(
 		schema_map[catalog.schemas[schema_idx].id] = schema_idx;
 	}
 
-	// load the table information
+	// the condition of a load of one entry as a clause of its own, for the lists that have no other condition
+	auto entry_clause = [&](const string &id_column) {
+		auto condition = EntryIdCondition(filter, id_column);
+		return condition.empty() ? string() : "\n\tWHERE" + condition.substr(4);
+	};
+	// load the table information, the lists of a table are grouped before the join, as a correlated list for every
+	// table costs the planner more than the load saves
 	auto result = query_executor(
-	    snapshot, StringUtil::Format(R"(
-SELECT schema_id, tbl.table_id, table_uuid::VARCHAR, table_name,
-	(
-		SELECT %s
-		FROM {METADATA_CATALOG}.ducklake_tag tag
-		WHERE object_id=table_id AND
-		      {SNAPSHOT_ID} >= tag.begin_snapshot AND ({SNAPSHOT_ID} < tag.end_snapshot OR tag.end_snapshot IS NULL)%s
-	) AS tag,
-	(
-		SELECT %s
-		FROM {METADATA_CATALOG}.ducklake_inlined_data_tables inlined_data_tables
-		WHERE inlined_data_tables.table_id = tbl.table_id%s
-	) AS inlined_data_tables,
-	(
-		SELECT %s
-		FROM {METADATA_CATALOG}.ducklake_partition_info part
-		JOIN {METADATA_CATALOG}.ducklake_partition_column part_col USING (partition_id)
-		WHERE part.table_id = tbl.table_id AND
-		      {SNAPSHOT_ID} >= part.begin_snapshot AND ({SNAPSHOT_ID} < part.end_snapshot OR part.end_snapshot IS NULL)%s
-	) AS partition_keys,
-	(
-		SELECT %s
-		FROM {METADATA_CATALOG}.ducklake_sort_info sort
-		JOIN {METADATA_CATALOG}.ducklake_sort_expression sort_expr USING (sort_id)
-		WHERE sort.table_id = tbl.table_id AND
-		      {SNAPSHOT_ID} >= sort.begin_snapshot AND ({SNAPSHOT_ID} < sort.end_snapshot OR sort.end_snapshot IS NULL)%s
-	) AS sort_keys,
-	path, path_is_relative,
+	    snapshot,
+	    StringUtil::Format(R"(
+SELECT schema_id, tbl.table_id, table_uuid::VARCHAR, table_name, tags.tag, inlined.inlined_data_tables,
+	partitions.partition_keys, sorts.sort_keys, path, path_is_relative,
 	col.column_id, column_name, column_type, initial_default, default_value, nulls_allowed, parent_column,
 	(
 		SELECT %s
@@ -1475,18 +1457,42 @@ LEFT JOIN (
 	FROM {METADATA_CATALOG}.ducklake_column
 	WHERE {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
 ) col USING (table_id)
+LEFT JOIN (
+	SELECT object_id AS table_id, %s AS tag
+	FROM {METADATA_CATALOG}.ducklake_tag tag
+	WHERE {SNAPSHOT_ID} >= tag.begin_snapshot AND ({SNAPSHOT_ID} < tag.end_snapshot OR tag.end_snapshot IS NULL)%s
+	GROUP BY object_id
+) tags ON tags.table_id = tbl.table_id
+LEFT JOIN (
+	SELECT table_id, %s AS inlined_data_tables
+	FROM {METADATA_CATALOG}.ducklake_inlined_data_tables inlined_data_tables%s
+	GROUP BY table_id
+) inlined ON inlined.table_id = tbl.table_id
+LEFT JOIN (
+	SELECT part.table_id, %s AS partition_keys
+	FROM {METADATA_CATALOG}.ducklake_partition_info part
+	JOIN {METADATA_CATALOG}.ducklake_partition_column part_col USING (partition_id)
+	WHERE {SNAPSHOT_ID} >= part.begin_snapshot AND ({SNAPSHOT_ID} < part.end_snapshot OR part.end_snapshot IS NULL)%s
+	GROUP BY part.table_id
+) partitions ON partitions.table_id = tbl.table_id
+LEFT JOIN (
+	SELECT sort.table_id, %s AS sort_keys
+	FROM {METADATA_CATALOG}.ducklake_sort_info sort
+	JOIN {METADATA_CATALOG}.ducklake_sort_expression sort_expr USING (sort_id)
+	WHERE {SNAPSHOT_ID} >= sort.begin_snapshot AND ({SNAPSHOT_ID} < sort.end_snapshot OR sort.end_snapshot IS NULL)%s
+	GROUP BY sort.table_id
+) sorts ON sorts.table_id = tbl.table_id
 WHERE {SNAPSHOT_ID} >= tbl.begin_snapshot AND ({SNAPSHOT_ID} < tbl.end_snapshot OR tbl.end_snapshot IS NULL)%s
-ORDER BY table_id ASC, parent_column ASC NULLS FIRST, column_order ASC
+ORDER BY tbl.table_id ASC, parent_column ASC NULLS FIRST, column_order ASC
 )",
-	                                 ListAggregation(TAG_FIELDS), EntryIdCondition(filter, "tag.object_id"),
-	                                 ListAggregation(INLINED_DATA_TABLES_FIELDS),
-	                                 EntryIdCondition(filter, "inlined_data_tables.table_id"),
-	                                 ListAggregation(PARTITION_KEY_FIELDS, "partition_id ASC, partition_key_index ASC"),
-	                                 EntryIdCondition(filter, "part.table_id"),
-	                                 ListAggregation(SORT_KEY_FIELDS, "sort_id ASC, sort_key_index ASC"),
-	                                 EntryIdCondition(filter, "sort.table_id"), ListAggregation(TAG_FIELDS),
-	                                 EntryIdCondition(filter, "col_tag.table_id"),
-	                                 CatalogEntryCondition(filter, "tbl.schema_id", "tbl.table_id")));
+	                       ListAggregation(TAG_FIELDS), EntryIdCondition(filter, "col_tag.table_id"),
+	                       ListAggregation(TAG_FIELDS), EntryIdCondition(filter, "tag.object_id"),
+	                       ListAggregation(INLINED_DATA_TABLES_FIELDS), entry_clause("inlined_data_tables.table_id"),
+	                       ListAggregation(PARTITION_KEY_FIELDS, "partition_id ASC, partition_key_index ASC"),
+	                       EntryIdCondition(filter, "part.table_id"),
+	                       ListAggregation(SORT_KEY_FIELDS, "sort_id ASC, sort_key_index ASC"),
+	                       EntryIdCondition(filter, "sort.table_id"),
+	                       CatalogEntryCondition(filter, "tbl.schema_id", "tbl.table_id")));
 	result->ThrowIfError("Failed to get table information from DuckLake: ");
 	const idx_t COLUMN_INDEX_START = 10;
 	auto &tables = catalog.tables;

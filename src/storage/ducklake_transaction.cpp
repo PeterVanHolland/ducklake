@@ -26,6 +26,7 @@
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "storage/ducklake_catalog.hpp"
 #include "storage/ducklake_macro_entry.hpp"
+#include "storage/ducklake_metadata_profile.hpp"
 #include "storage/ducklake_multi_file_list.hpp"
 #include "storage/ducklake_schema_entry.hpp"
 #include "storage/ducklake_table_entry.hpp"
@@ -904,7 +905,7 @@ void DuckLakeTransaction::Commit() {
 		}
 	}
 	try {
-		if (ChangesMade()) {
+		if (ChangesMade() || !ConfigOptionLockSql().empty()) {
 			FlushChanges();
 		} else if (connection) {
 			try {
@@ -920,8 +921,10 @@ void DuckLakeTransaction::Commit() {
 	} catch (...) {
 		// a failed commit never reaches Rollback - the transaction manager only reports the error
 		UndoConfigOptions();
+		ClearMaintenanceChanges();
 		throw;
 	}
+	ClearMaintenanceChanges();
 	if (rewrote_config_options) {
 		// the retried commit wrote its options last, also where another transaction set them meanwhile
 		for (auto &change : config_option_undo) {
@@ -943,6 +946,7 @@ void DuckLakeTransaction::Commit() {
 
 void DuckLakeTransaction::Rollback() {
 	UndoConfigOptions();
+	ClearMaintenanceChanges();
 	if (connection) {
 		// rollback any changes made to the metadata catalog
 		try {
@@ -980,6 +984,7 @@ Connection &DuckLakeTransaction::GetConnection() {
 		if (caller_context) {
 			DuckLakeUtil::CopyExtensionSettings(*caller_context, *connection->context);
 		}
+		DuckLakeUtil::ResetExtensionSettings(*connection->context, ducklake_catalog.MetadataProfile().reset_settings);
 		// set the search path to the metadata catalog
 		auto &client_data = ClientData::Get(*connection->context);
 		// ensure we are only looking in the ducklake catalog schema during querying
@@ -1553,7 +1558,7 @@ idx_t DuckLakeRetryConfig::WaitMs(idx_t attempt, idx_t remaining_ms, double mult
 }
 
 void DuckLakeTransaction::FlushChanges() {
-	if (!ChangesMade()) {
+	if (!ChangesMade() && ConfigOptionLockSql().empty()) {
 		// LCOV_EXCL_START
 		return;
 		// LCOV_EXCL_STOP
@@ -1670,8 +1675,15 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		// the client context has no active transaction during the commit
 		state->local_changes.SetDeleteCommitSnapshot(*GetConnection().context, *this, commit_snapshot);
 	};
+	auto config_option_lock = ConfigOptionLockSql();
+	context.locks_config_options = !config_option_lock.empty();
+	bool option_lock_failed = false;
 	context.execute_commit_batch = [&](DuckLakeSnapshot snapshot, string &query) {
-		auto result = metadata_manager->Execute(snapshot, query);
+		option_lock_failed = false;
+		unique_ptr<QueryResult> result;
+		if (!query.empty()) {
+			result = metadata_manager->Execute(snapshot, query);
+		}
 		for (auto &insert : inlined_inserts) {
 			if (result->HasError()) {
 				break;
@@ -1680,12 +1692,35 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 			result = ExecuteStatement(std::move(insert));
 		}
 		inlined_inserts.clear();
+		if ((!result || !result->HasError()) && !config_option_lock.empty()) {
+			// the lock is taken last, so that it is only held until the commit
+			auto lock = config_option_lock;
+			result = metadata_manager->Execute(snapshot, lock);
+			// the update of the version row fails after another commit updated it, or under READ COMMITTED waits
+			// for that commit and then sees its options
+			option_lock_failed = result->HasError() || ConfigOptionsWrittenByOthers();
+			if (option_lock_failed && !result->HasError()) {
+				throw TransactionException("Another transaction wrote options that this transaction changed");
+			}
+		}
 		return result;
 	};
 	context.is_retryable_metadata_error = [&](const string &message) {
-		return metadata_manager->IsRetryableCommitError(message);
+		return option_lock_failed || metadata_manager->IsRetryableCommitError(message);
+	};
+	// a retry rolls back what the statements wrote to the metadata
+	context.skip_retry = [&]() {
+		return option_lock_failed && metadata_written;
+	};
+	context.commit_error_without_query = [&](const string &message) {
+		return metadata_manager->CommitErrorWithoutQuery(message);
 	};
 	context.commit_error_hint = [&](const string &message) {
+		if (context.skip_retry()) {
+			return string("Another transaction changed options at the same time, and a retry would undo what the "
+			              "statements of this transaction wrote to the metadata, such as expired snapshots. Run the "
+			              "transaction again.\n");
+		}
 		return metadata_manager->CommitErrorHint(message);
 	};
 	context.flush_cache_if_pending = [&]() {
@@ -1704,13 +1739,24 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		metadata_manager->ClearCache();
 	};
 	context.prepare_retry = [&]() {
+		option_lock_failed = false;
 		inlined_inserts.clear();
 		metadata_manager->ClearInlinedTableCaches();
 		connection->BeginTransaction();
 		snapshot.reset();
 	};
+	context.verify_retry = [&]() {
+		if (ExpiredSnapshotsInMetadataTransaction() && !ExpiresSnapshotsOnCommit()) {
+			// the rollback of the failed attempt undid the expiry, which only a catalog with snapshot tags repeats
+			throw TransactionException("Transaction conflict - a concurrent commit preceded the commit of a "
+			                           "transaction that expires snapshots, run the transaction again");
+		}
+	};
 	context.rewrite_before_retry = [&]() {
 		RewriteConfigOptions();
+		if (!cleaned_up_files.empty()) {
+			metadata_manager->RemoveFilesScheduledForCleanup(cleaned_up_files);
+		}
 	};
 	context.query_metadata = [&](string q) {
 		return metadata_manager->Query(q);
@@ -1807,7 +1853,9 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		return table ? table->GetNetDataFileRowCount(*this) : 0;
 	};
 	context.build_stats_map = [&](vector<DuckLakeGlobalStatsInfo> &stats) {
-		auto &schema = ducklake_catalog.GetSchemaForSnapshot(*this, GetSnapshot());
+		// flushed data commits across a concurrent alter, so its stats take the latest schema
+		auto stats_snapshot = transaction_changes.tables_flushed_inlined.empty() ? transaction_snapshot : GetSnapshot();
+		auto &schema = ducklake_catalog.GetSchemaForSnapshot(*this, stats_snapshot);
 		return DuckLakeCatalog::ConstructStatsMap(stats, schema);
 	};
 	context.invalidate_schema_cache = [&](idx_t schema_version) {
@@ -1834,6 +1882,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	context.report_post_commit_error = [&](const string &message) {
 		ReportPostCommitError(message);
 	};
+	context.write_snapshot = ChangesMade();
 	context.commit_info = state->commit_info;
 	context.supports_v1_1_metadata = ducklake_catalog.SupportsV1_1Metadata();
 	context.snapshot_and_stats_query =
@@ -1850,9 +1899,10 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 
 void DuckLakeTransaction::SetConfigOption(const DuckLakeConfigOption &option) {
 	// write the config option to the metadata
-	metadata_manager->SetConfigOption(option);
+	auto metadata_rows = metadata_manager->SetConfigOption(option);
 	// the catalog copy is not transactional - remember the previous value so a rollback can restore it
 	config_option_undo.push_back(ducklake_catalog.SetConfigOption(option));
+	config_option_undo.back().metadata_rows = ConfigOptionRows(config_option_undo.size() - 1, metadata_rows);
 }
 
 void DuckLakeTransaction::ResetConfigOption(const DuckLakeConfigOption &option) {
@@ -1861,16 +1911,78 @@ void DuckLakeTransaction::ResetConfigOption(const DuckLakeConfigOption &option) 
 	}
 }
 
+void DuckLakeTransaction::ClearMaintenanceChanges() {
+	lock_guard<mutex> guard(maintenance_lock);
+	expired_in_metadata_transaction = false;
+	cleaned_up_files.clear();
+}
+
+string DuckLakeTransaction::ConfigOptionLockSql() const {
+	// a commit that failed on the lock would restore expired snapshots whose files are gone, so it takes none
+	if (config_option_undo.empty() || removed_files_after_expiry) {
+		return string();
+	}
+	return metadata_manager->ConfigOptionLockSql();
+}
+
+static bool IsSameConfigOption(const DuckLakeConfigOption &a, const DuckLakeConfigOption &b) {
+	return a.option.key == b.option.key && a.schema_id == b.schema_id && a.table_id == b.table_id;
+}
+
+optional_idx DuckLakeTransaction::EarlierConfigOptionChange(const DuckLakeConfigOption &option,
+                                                            idx_t change_index) const {
+	for (idx_t earlier = change_index; earlier > 0; earlier--) {
+		if (IsSameConfigOption(config_option_undo[earlier - 1].option, option)) {
+			return earlier - 1;
+		}
+	}
+	return optional_idx();
+}
+
+idx_t DuckLakeTransaction::ConfigOptionRows(idx_t change_index, idx_t written_rows) const {
+	auto earlier = EarlierConfigOptionChange(config_option_undo[change_index].option, change_index);
+	if (!earlier.IsValid()) {
+		return written_rows;
+	}
+	// the rows that other commits added since the earlier change are not the transaction's
+	return MaxValue<idx_t>(config_option_undo[earlier.GetIndex()].metadata_rows, 1);
+}
+
+bool DuckLakeTransaction::ConfigOptionsWrittenByOthers() {
+	for (idx_t i = 0; i < config_option_undo.size(); i++) {
+		auto &change = config_option_undo[i];
+		// the last change of an option decides the rows it has
+		bool changed_again = false;
+		for (idx_t later = i + 1; later < config_option_undo.size(); later++) {
+			changed_again = changed_again || IsSameConfigOption(config_option_undo[later].option, change.option);
+		}
+		if (changed_again) {
+			continue;
+		}
+		auto rows = metadata_manager->ConfigOptionRowCount(change.option);
+		if (rows != change.metadata_rows) {
+			return true;
+		}
+		// under READ COMMITTED a set matches no row when another commit reset the option and set it again
+		if (!change.reset &&
+		    metadata_manager->ConfigOptionRowCount(change.option, &change.option.option.value) != rows) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void DuckLakeTransaction::RewriteConfigOptions() {
 	if (metadata_manager->CommitsEachStatement()) {
 		// the option writes were committed when they were made, the rollback kept them
 		return;
 	}
-	for (auto &change : config_option_undo) {
+	for (idx_t i = 0; i < config_option_undo.size(); i++) {
+		auto &change = config_option_undo[i];
 		if (change.reset) {
 			metadata_manager->ResetConfigOption(change.option);
 		} else {
-			metadata_manager->SetConfigOption(change.option);
+			change.metadata_rows = ConfigOptionRows(i, metadata_manager->SetConfigOption(change.option));
 		}
 		rewrote_config_options = true;
 	}
@@ -2156,7 +2268,19 @@ vector<DuckLakeSnapshotInfo> DuckLakeTransaction::ExpireSnapshotsNow(const strin
 		metadata_manager.GetSnapshot();
 	}
 	if (!expired.empty()) {
+		if (!metadata_manager.CommitsEachStatement()) {
+			// set first, a failure part way leaves some of the snapshots deleted
+			lock_guard<mutex> guard(maintenance_lock);
+			expired_in_metadata_transaction = true;
+		}
 		metadata_manager.DeleteSnapshots(expired);
+		if (!metadata_manager.CommitsEachStatement()) {
+			snapshots_expired = true;
+			if (!ExpiresSnapshotsOnCommit()) {
+				// without snapshot tags a retried commit does not expire again
+				MarkMetadataWritten();
+			}
+		}
 	}
 	if (latest_snapshot_id.IsValid()) {
 		if (!expiry_snapshot_id.IsValid()) {
@@ -2172,16 +2296,48 @@ vector<DuckLakeSnapshotInfo> DuckLakeTransaction::ExpireSnapshotsNow(const strin
 		ducklake_catalog.InvalidateSchemaCache(snapshot.schema_version);
 		expired_ids.insert(snapshot.id);
 	}
-	// the transaction resolved versions it has expired since
-	lock_guard<mutex> guard(snapshot_lock);
-	for (auto entry = snapshot_cache.begin(); entry != snapshot_cache.end();) {
-		if (expired_ids.find(entry->second.snapshot_id) != expired_ids.end()) {
-			entry = snapshot_cache.erase(entry);
-		} else {
-			entry++;
+	if (!expired_ids.empty()) {
+		// the transaction resolved versions it has expired since, and the gap changes what a timestamp reaches
+		lock_guard<mutex> guard(snapshot_lock);
+		if (!metadata_manager.CommitsEachStatement()) {
+			// a catalog that commits each statement deletes them when the transaction commits
+			expired_snapshot_ids.insert(expired_ids.begin(), expired_ids.end());
+		}
+		for (auto entry = snapshot_cache.begin(); entry != snapshot_cache.end();) {
+			auto &unit = StructType::GetChildName(entry->first.type(), 0);
+			if (expired_ids.find(entry->second.snapshot_id) != expired_ids.end() || unit == "timestamp") {
+				entry = snapshot_cache.erase(entry);
+			} else {
+				entry++;
+			}
 		}
 	}
 	return expired;
+}
+
+void DuckLakeTransaction::RemoveFilesScheduledForCleanup(const vector<DuckLakeFileForCleanup> &files) {
+	auto &metadata_manager = GetMetadataManager();
+	metadata_manager.RemoveFilesScheduledForCleanup(files);
+	MarkMetadataWritten();
+	if (snapshots_expired) {
+		removed_files_after_expiry = true;
+	}
+	if (!metadata_manager.CommitsEachStatement()) {
+		// a retried commit removes them from the schedule again
+		lock_guard<mutex> guard(maintenance_lock);
+		cleaned_up_files.insert(cleaned_up_files.end(), files.begin(), files.end());
+	}
+}
+
+bool DuckLakeTransaction::ExpiredSnapshotsInMetadataTransaction() {
+	lock_guard<mutex> guard(maintenance_lock);
+	return expired_in_metadata_transaction;
+}
+
+void DuckLakeTransaction::MarkMetadataWritten() {
+	if (!GetMetadataManager().CommitsEachStatement()) {
+		metadata_written = true;
+	}
 }
 
 void DuckLakeTransaction::MarkInlinedDataForDeletion(DuckLakeInlinedTableInfo inlined_table, idx_t flush_snapshot_id,
@@ -2310,14 +2466,26 @@ DuckLakeSnapshot DuckLakeTransaction::GetSnapshot(optional_ptr<BoundAtClause> at
 	}
 	auto snapshot_value = Value::STRUCT(std::move(values));
 
+	// time travel by timestamp refuses times before expired snapshots, which the catalog records from DuckLake 2.0 on
+	bool check_expired = bound == SnapshotBound::TIME_TRAVEL && at_clause->Unit() == "timestamp" &&
+	                     ducklake_catalog.RecordsExpiredSnapshots();
 	lock_guard<mutex> guard(snapshot_lock);
 	auto entry = snapshot_cache.find(snapshot_value);
 	if (entry != snapshot_cache.end()) {
+		if (check_expired && metadata_manager->ShowsConcurrentCommits()) {
+			// a concurrent expiry may be visible to the next metadata read
+			metadata_manager->CheckSnapshotAfterExpiredGap(entry->second, version, newest_snapshot_id,
+			                                               expired_snapshot_ids);
+		}
 		// we already found this snapshot - return it
 		return entry->second;
 	}
 	// find the snapshot and cache it
 	auto result_snapshot = *metadata_manager->GetSnapshot(*at_clause, bound, newest_snapshot_id);
+	if (check_expired) {
+		metadata_manager->CheckSnapshotAfterExpiredGap(result_snapshot, version, newest_snapshot_id,
+		                                               expired_snapshot_ids);
+	}
 	// a change feed start after the newest snapshot is not a snapshot that AT clauses can read
 	if (result_snapshot.snapshot_id <= newest_snapshot_id) {
 		snapshot_cache.insert(make_pair(std::move(snapshot_value), result_snapshot));

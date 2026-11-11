@@ -618,9 +618,9 @@ void DuckLakeUtil::CopyExtensionSettings(ClientContext &from, ClientContext &to)
 		}
 		auto setting_index = option.setting_index.GetIndex();
 		// these change the types or values read from the metadata and data files
-		static const case_insensitive_set_t READ_SETTINGS {
-		    "sqlite_all_varchar", "binary_as_string",    "pg_use_text_protocol", "pg_query_mode",
-		    "pg_use_binary_copy", "pg_array_as_varchar", "pg_numeric_as_varchar"};
+		static const case_insensitive_set_t READ_SETTINGS {"binary_as_string",    "pg_use_text_protocol",
+		                                                   "pg_query_mode",       "pg_use_binary_copy",
+		                                                   "pg_array_as_varchar", "pg_numeric_as_varchar"};
 		if (READ_SETTINGS.count(entry.first.GetIdentifierName())) {
 			to.config.user_settings.SetUserSetting(setting_index, option.default_value);
 			continue;
@@ -631,6 +631,17 @@ void DuckLakeUtil::CopyExtensionSettings(ClientContext &from, ClientContext &to)
 		Value value;
 		from.TryGetCurrentUserSetting(setting_index, value);
 		to.config.user_settings.SetUserSetting(setting_index, std::move(value));
+	}
+}
+
+void DuckLakeUtil::ResetExtensionSettings(ClientContext &context, const vector<string> &names) {
+	auto &db_config = DBConfig::GetConfig(context);
+	for (auto &name : names) {
+		ExtensionOption option;
+		if (!db_config.TryGetExtensionOption(Identifier(name), option) || !option.setting_index.IsValid()) {
+			continue;
+		}
+		context.config.user_settings.SetUserSetting(option.setting_index.GetIndex(), option.default_value);
 	}
 }
 

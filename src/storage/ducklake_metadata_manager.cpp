@@ -5924,7 +5924,7 @@ string DuckLakeMetadataManager::WriteCompactions(const vector<DuckLakeCompactedF
 	}
 }
 
-//! Selects the files the filter matches or whose range no remaining snapshot lies in, with the two reasons as flags
+//! Files the filter matches or whose range no remaining snapshot lies in, flagging a match and a remaining end snapshot
 static string UnusedFilesQuery(const string &file_table, const string &file_id_column, const string &filter) {
 	// only the first remaining snapshot at or after begin_snapshot matters
 	return StringUtil::Format(R"(

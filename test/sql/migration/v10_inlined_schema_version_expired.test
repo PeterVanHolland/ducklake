@@ -1,0 +1,112 @@
+# name: test/sql/migration/v10_inlined_schema_version_expired.test
+# description: migrating a v1.0 catalog whose expired snapshots held the schema version of an inlined table keeps it readable after an ALTER
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.6 with DuckLake 1.0: a rolled back insert registered the inlined table of p1 at schema version 3,
+# the committed insert wrote into it, and the expiry left only snapshot 3, so no row says where version 3 begins
+unzip data/old_ducklake/inlined_schema_version_expired.db.gz {TEST_DIR}/v10_inlined_schema_version_expired.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_schema_version_expired.db' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_schema_version_expired', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+# the migration takes the begin snapshot of version 3 from its surviving snapshot
+query III
+SELECT begin_snapshot, schema_version, table_id FROM meta.ducklake_schema_versions ORDER BY ALL
+----
+1	1	1
+2	2	1
+3	3	1
+
+query II
+SELECT table_name, schema_version FROM meta.ducklake_inlined_data_tables
+----
+ducklake_inlined_data_1_3	3
+
+query II
+SELECT * FROM lake.p1
+----
+26	2.5
+
+statement ok
+ALTER TABLE lake.p1 ADD COLUMN x INTEGER
+
+query III
+SELECT * FROM lake.p1
+----
+26	2.5	NULL
+
+query I
+SELECT c0r FROM lake.p1
+----
+2.5
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'p1')
+
+query III
+SELECT * FROM lake.p1
+----
+26	2.5	NULL
+
+statement ok
+DETACH lake
+
+# without the row, a read takes the columns of the surviving snapshot of the version
+unzip data/old_ducklake/inlined_schema_version_expired.db.gz {TEST_DIR}/v10_inlined_schema_version_fallback.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_schema_version_fallback.db' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_schema_version_fallback', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+DELETE FROM meta.ducklake_schema_versions WHERE schema_version = 3
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_schema_version_fallback.db' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_schema_version_fallback', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+ALTER TABLE lake.p1 ADD COLUMN x INTEGER
+
+query III
+SELECT * FROM lake.p1
+----
+26	2.5	NULL
+
+query I
+SELECT count(*) FROM meta.ducklake_schema_versions WHERE schema_version = 3
+----
+0
+
+# once that snapshot is expired too, the version recorded before it has the same columns
+statement ok
+CALL ducklake_expire_snapshots('lake', older_than => now())
+
+query I
+SELECT count(*) FROM meta.ducklake_snapshot WHERE snapshot_id <= 3
+----
+0
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_schema_version_fallback.db' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_schema_version_fallback', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 10)
+
+query III
+SELECT * FROM lake.p1
+----
+26	2.5	NULL
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'p1')
+
+query III
+SELECT * FROM lake.p1
+----
+26	2.5	NULL

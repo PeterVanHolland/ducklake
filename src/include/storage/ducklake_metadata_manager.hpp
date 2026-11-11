@@ -391,7 +391,6 @@ public:
 	                                                                  double deletion_threshold,
 	                                                                  DuckLakeSnapshot snapshot,
 	                                                                  DuckLakeFileSizeOptions options);
-	virtual idx_t GetBeginSnapshotForTable(TableIndex table_id);
 	virtual idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version);
 	DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! The net row count of the data files that were committed before the snapshot's next file id

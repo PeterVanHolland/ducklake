@@ -1,0 +1,115 @@
+# name: test/sql/migration/inlined_schema_version_missing_row.test
+# description: an inlined table whose schema version has no row reads with the columns of the nearest snapshot of that version
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/inlined_schema_version_missing_row', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.p1 (id INTEGER, c0 DOUBLE)
+
+statement ok
+ALTER TABLE lake.p1 RENAME COLUMN c0 TO c0r
+
+statement ok
+INSERT INTO lake.p1 VALUES (26, 2.5)
+
+# SQLite and PostgreSQL catalogs register an inlined table at the creation of the table as well
+query II
+SELECT table_name, schema_version FROM meta.ducklake_inlined_data_tables WHERE schema_version > 1
+----
+ducklake_inlined_data_1_2	2
+
+query III
+SELECT begin_snapshot, schema_version, table_id FROM meta.ducklake_schema_versions ORDER BY ALL
+----
+1	1	1
+2	2	1
+
+# the 1.0 release registered an inlined table at the version its commit raised the schema to, without a row for it
+statement ok
+UPDATE meta.ducklake_inlined_data_tables SET schema_version = 3 WHERE schema_version = 2
+
+statement ok
+UPDATE meta.ducklake_snapshot SET schema_version = 3 WHERE snapshot_id = 3
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/inlined_schema_version_missing_row', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 10)
+
+query II
+SELECT * FROM lake.p1
+----
+26	2.5
+
+# the ALTER routes the inlined table through its schema version, whose snapshot holds the renamed column
+statement ok
+ALTER TABLE lake.p1 ADD COLUMN x INTEGER
+
+query III
+SELECT * FROM lake.p1
+----
+26	2.5	NULL
+
+query I
+SELECT c0r FROM lake.p1
+----
+2.5
+
+query III
+SELECT begin_snapshot, schema_version, table_id FROM meta.ducklake_schema_versions ORDER BY ALL
+----
+1	1	1
+2	2	1
+4	4	1
+
+# once that snapshot is expired, the version recorded before it has the same columns
+statement ok
+CALL ducklake_expire_snapshots('lake', older_than => now())
+
+query I
+SELECT count(*) FROM meta.ducklake_snapshot WHERE snapshot_id <= 3
+----
+0
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/inlined_schema_version_missing_row', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 10)
+
+query III
+SELECT * FROM lake.p1
+----
+26	2.5	NULL
+
+statement ok
+ALTER TABLE lake.p1 RENAME COLUMN x TO y
+
+query III
+SELECT * FROM lake.p1
+----
+26	2.5	NULL
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'p1')
+
+query III
+SELECT * FROM lake.p1
+----
+26	2.5	NULL
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 'p1')
+----
+1

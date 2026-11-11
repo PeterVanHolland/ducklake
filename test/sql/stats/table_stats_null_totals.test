@@ -83,7 +83,7 @@ FROM ducklake_meta.ducklake_table_stats
 ----
 1	NULL	6	true
 
-# dropping a whole data file without totals: the stats are recomputed from the remaining files, so the count is
+# dropping a whole data file without totals recomputes the stats from the remaining files, so the count is
 # known again and the bounds are theirs
 statement ok
 UPDATE ducklake_meta.ducklake_table_stats SET file_size_bytes = NULL

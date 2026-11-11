@@ -31,7 +31,7 @@ SELECT (SELECT count(*) FROM __ducklake_metadata_lake.ducklake_data_file WHERE t
 ----
 1	2
 
-# the delete drops the file and deletes the inlined row: the column stats rows stay, with unknown bounds
+# the delete drops the file and deletes the inlined row, the column stats rows stay with unknown bounds
 query I
 DELETE FROM lake.t
 ----

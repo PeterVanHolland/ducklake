@@ -138,9 +138,9 @@ struct DuckLakeCommitContext {
 	std::function<vector<Identifier>(TableIndex)> get_inlined_table_names = [](TableIndex) {
 		return vector<Identifier> {};
 	};
-	//! Net (delete-adjusted) row count of a table's regular data files.
-	std::function<idx_t(TableIndex)> get_net_data_file_row_count = [](TableIndex) {
-		return 0;
+	//! Net (delete-adjusted) row count of a table's regular data files, unknown when a file has no record count.
+	std::function<optional_idx(TableIndex)> get_net_data_file_row_count = [](TableIndex) {
+		return optional_idx();
 	};
 	//! Builds a DuckLakeStats map from a vector of per-snapshot global stats (retry path).
 	std::function<unique_ptr<DuckLakeStats>(vector<DuckLakeGlobalStatsInfo> &)> build_stats_map;
@@ -260,17 +260,18 @@ public:
 	//! After a REWRITE_DELETES compaction, recompute EXACT global stats for `table_id` from the post-rewrite file set
 	//! (+ committed inlined data) and append the UpdateGlobalTableStats SQL to `batch_query`. No-op (leaving the
 	//! existing stale stats, and the scan fallback) if the table is not fully delete-free post-rewrite or the
-	//! inlined data cannot be accounted for exactly. Returns whether it wrote the stats.
+	//! inlined data cannot be accounted for exactly. Returns whether it wrote the stats. `refresh_record_count` is set
+	//! when the live files decide the count instead: deleted rows remain, or a file has no record count.
 	bool RecomputeGlobalStatsAfterRewrite(string &batch_query, TableIndex table_id, DuckLakeSnapshot snapshot,
 	                                      const CompactionInformation &rewrite_changes,
 	                                      const set<DataFileIndex> &removed_source_ids,
-	                                      const DuckLakeCommitContext &context, bool &deleted_rows_remain);
+	                                      const DuckLakeCommitContext &context, bool &refresh_record_count);
 	//! The recompute of RecomputeGlobalStatsAfterRewrite into `new_stats`, without writing it. `dropped_row_count`
 	//! live rows of files dropped by this commit are still part of the net row count of the table.
 	bool TryRecomputeGlobalStats(TableIndex table_id, DuckLakeSnapshot snapshot,
 	                             const CompactionInformation &rewrite_changes,
 	                             const set<DataFileIndex> &removed_source_ids, const DuckLakeCommitContext &context,
-	                             bool &deleted_rows_remain, idx_t dropped_row_count, DuckLakeTableStats &new_stats);
+	                             bool &refresh_record_count, idx_t dropped_row_count, DuckLakeTableStats &new_stats);
 	//! After dropping whole data files, recompute the EXACT global stats of `table_id` from the files that remain
 	//! instead of discarding its column stats. Returns false, leaving the stats to the caller, when the remaining
 	//! files are not delete-free.

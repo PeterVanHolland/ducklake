@@ -1,0 +1,166 @@
+# name: test/sql/metadata/data_file_null_stats.test
+# description: a data file without a record count or a size in the metadata leaves totals unknown and gives plain errors
+# group: [metadata]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/data_file_null_stats.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/data_file_null_stats', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t(i INTEGER)
+
+statement ok
+INSERT INTO lake.t VALUES (0), (1)
+
+statement ok
+INSERT INTO lake.t SELECT range FROM range(2, 6)
+
+statement ok
+DELETE FROM lake.t WHERE i = 0
+
+# another writer or an edit of the metadata leaves a file without a record count
+statement ok
+UPDATE meta.ducklake_data_file SET record_count = NULL WHERE record_count = 4
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/data_file_null_stats', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 0)
+
+# the count is read from the files, the metadata cannot answer it
+query I
+SELECT count(*) FROM lake.t
+----
+5
+
+query II
+SELECT sum(i), max(i) FROM lake.t
+----
+15	5
+
+# a delete needs the row count of every file of the table
+statement error
+DELETE FROM lake.t WHERE i = 3
+----
+has no record_count in the DuckLake metadata
+
+# the rewrite of the other file commits, and the row count of the table becomes unknown
+statement ok
+CALL ducklake_rewrite_data_files('lake', delete_threshold => 0.4)
+
+query I
+SELECT count(*) FROM lake.t
+----
+5
+
+query II
+SELECT record_count, file_size_bytes IS NOT NULL FROM meta.ducklake_table_stats
+----
+NULL	true
+
+# the count stays unknown
+statement ok
+INSERT INTO lake.t VALUES (10)
+
+query II
+SELECT record_count, (SELECT count(*) FROM lake.t) FROM meta.ducklake_table_stats
+----
+NULL	6
+
+# a file without a size
+statement ok
+CREATE TABLE lake.s(i INTEGER)
+
+statement ok
+INSERT INTO lake.s VALUES (1), (2)
+
+statement ok
+INSERT INTO lake.s VALUES (3)
+
+statement ok
+DELETE FROM lake.s WHERE i = 1
+
+statement ok
+UPDATE meta.ducklake_data_file SET file_size_bytes = NULL
+WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 's') AND record_count = 1
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/data_file_null_stats', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 0)
+
+# the count needs no size
+query I
+SELECT count(*) FROM lake.s
+----
+2
+
+# a scan passes the size of each file to the reader
+statement error
+SELECT sum(i) FROM lake.s
+----
+has no file_size_bytes in the DuckLake metadata
+
+# the rewrite of the other file commits, and the size of the table becomes unknown
+statement ok
+CALL ducklake_rewrite_data_files('lake', delete_threshold => 0.4)
+
+query III
+SELECT stats.record_count, stats.file_size_bytes, (SELECT count(*) FROM lake.s)
+FROM meta.ducklake_table_stats stats JOIN meta.ducklake_table t USING (table_id) WHERE t.table_name = 's'
+----
+2	NULL	2
+
+# the size stays unknown through a reattach and an insert
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/data_file_null_stats', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+INSERT INTO lake.s VALUES (4)
+
+query II
+SELECT stats.record_count, stats.file_size_bytes
+FROM meta.ducklake_table_stats stats JOIN meta.ducklake_table t USING (table_id) WHERE t.table_name = 's'
+----
+3	NULL
+
+# a drop of a whole file next to a file without a size leaves the size of the table unknown
+statement ok
+CREATE TABLE lake.u(i INTEGER)
+
+statement ok
+INSERT INTO lake.u VALUES (1), (2)
+
+statement ok
+INSERT INTO lake.u VALUES (3), (4)
+
+statement ok
+UPDATE meta.ducklake_data_file SET file_size_bytes = NULL
+WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 'u') AND data_file_id = (SELECT min(data_file_id) FROM meta.ducklake_data_file WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 'u'))
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/data_file_null_stats', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+DELETE FROM lake.u WHERE i >= 3
+
+query III
+SELECT stats.record_count, stats.file_size_bytes, (SELECT count(*) FROM lake.u)
+FROM meta.ducklake_table_stats stats JOIN meta.ducklake_table t USING (table_id) WHERE t.table_name = 'u'
+----
+2	NULL	2

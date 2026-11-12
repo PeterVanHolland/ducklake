@@ -140,6 +140,8 @@ struct DuckLakeTableStats {
 	idx_t record_count = 0;
 	bool record_count_unknown = false;
 	idx_t table_size_bytes = 0;
+	//! The stats row has no file_size_bytes, or a live data file has none
+	bool table_size_unknown = false;
 	idx_t next_row_id = 0;
 	map<FieldIndex, DuckLakeColumnStats> column_stats;
 

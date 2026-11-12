@@ -1016,7 +1016,9 @@ string DuckLakeMetadataManager::GetNetDataFileRowCountSql(TableIndex table_id, c
 	// Delete files are only counted if their corresponding data file is still visible.
 	// (When a data file's end_snapshot is set — e.g. TRUNCATE — associated deletes don't count.)
 	auto count_aggregate = [&](const string &count_column, const string &partial_max_column) {
-		auto count = StringUtil::Format("COALESCE(SUM(%s), 0)", count_column);
+		// a file without a count, which another writer or an edit of the metadata can leave, makes the sum unknown
+		auto count = StringUtil::Format("CASE WHEN COUNT(*) = COUNT(%s) THEN COALESCE(SUM(%s), 0) END", count_column,
+		                                count_column);
 		if (require_exact) {
 			// Partially visible files cannot supply an exact count for this snapshot.
 			return StringUtil::Format("CASE WHEN MAX(%s) > {SNAPSHOT_ID} THEN NULL ELSE %s END", partial_max_column,
@@ -1058,14 +1060,15 @@ SELECT
 	return StringUtil::Replace(query, "{TABLE_ID}", to_string(table_id.index));
 }
 
-idx_t DuckLakeMetadataManager::GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot) {
+optional_idx DuckLakeMetadataManager::GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot) {
 	auto query = GetNetDataFileRowCountSql(table_id, GetInlinedDeletionTableName(table_id, snapshot), false, true);
 	auto result = Query(snapshot, query);
+	result->ThrowIfError("Failed to get the net data file row count from DuckLake: ");
 	for (auto &row : *result) {
-		return row.GetValue<idx_t>(0);
+		return OptIdx(row, 0);
 	}
 	// LCOV_EXCL_START
-	return 0;
+	return optional_idx();
 	// LCOV_EXCL_STOP
 }
 
@@ -1599,8 +1602,9 @@ void DuckLakeMetadataManager::FillMissingTableSizes(vector<DuckLakeGlobalStatsIn
 	if (table_ids.empty()) {
 		return;
 	}
+	// a file without a size leaves the size of the table unknown
 	auto result = executor(StringUtil::Format(R"(
-SELECT table_id, SUM(file_size_bytes)
+SELECT table_id, CASE WHEN COUNT(*) = COUNT(file_size_bytes) THEN SUM(file_size_bytes) END
 FROM {METADATA_CATALOG}.ducklake_data_file
 WHERE end_snapshot IS NULL AND table_id IN (%s)
 GROUP BY table_id;)",
@@ -1608,12 +1612,16 @@ GROUP BY table_id;)",
 	result->ThrowIfError("Failed to get the table sizes from DuckLake: ");
 	map<TableIndex, idx_t> table_sizes;
 	for (auto &row : *result) {
-		table_sizes.emplace(TableIndex(row.GetValue<idx_t>(0)), row.GetValue<idx_t>(1));
+		auto table_size = OptIdx(row, 1);
+		if (table_size.IsValid()) {
+			table_sizes.emplace(TableIndex(row.GetValue<idx_t>(0)), table_size.GetIndex());
+		}
 	}
 	for (auto &entry : stats) {
 		auto table_size = table_sizes.find(entry.table_id);
 		if (entry.missing_table_size && table_size != table_sizes.end()) {
 			entry.table_size_bytes = table_size->second;
+			entry.missing_table_size = false;
 		}
 	}
 }
@@ -1668,6 +1676,14 @@ string DuckLakeMetadataManager::GetDeleteFileSelectList(const string &prefix) {
 	return GetFileSelectList(prefix) + ", " + prefix + ".format AS " + prefix + "_format";
 }
 
+//! A count of a file that DuckLake needs, which another writer or an edit of the metadata can leave NULL
+static idx_t RequiredFileStat(const QueryResultRow &row, idx_t col_idx, DataFileIndex file_id, const char *column) {
+	if (row.IsNull(col_idx)) {
+		throw InvalidInputException("File %d has no %s in the DuckLake metadata", file_id.index, column);
+	}
+	return row.GetValue<idx_t>(col_idx);
+}
+
 DuckLakeFileData DuckLakeMetadataManager::ReadFile(DuckLakeTableEntry &table, const QueryResultRow &row, idx_t &col_idx,
                                                    bool is_encrypted) {
 	DuckLakeFileData data;
@@ -1681,6 +1697,10 @@ DuckLakeFileData DuckLakeMetadataManager::ReadFile(DuckLakeTableEntry &table, co
 	}
 	data.path = FromRelativePath(ReadPath(row, col_idx), table.DataPath());
 	col_idx += 2;
+	if (row.IsNull(col_idx)) {
+		throw InvalidInputException("File \"%s\" of table %s has no file_size_bytes in the DuckLake metadata",
+		                            data.path, table.name);
+	}
 	data.file_size_bytes = row.GetValue<idx_t>(col_idx++);
 	data.footer_size = OptIdx(row, col_idx++);
 	if (is_encrypted) {
@@ -2790,7 +2810,7 @@ FROM main_results
 		entry.file_id = DataFileIndex(file_id);
 		entry.file = ReadDataFile(table, row, col_idx, IsEncrypted());
 		entry.row_id_start = OptIdx(row, col_idx++);
-		entry.row_count = row.GetValue<idx_t>(col_idx++);
+		entry.row_count = RequiredFileStat(row, col_idx++, entry.file_id, "record_count");
 		if (!row.IsNull(col_idx)) {
 			entry.mapping_id = MappingIndex(row.GetValue<idx_t>(col_idx));
 		}
@@ -2902,7 +2922,7 @@ DuckLakeMetadataManager::GetExtendedFilesForTable(DuckLakeTableEntry &table, Duc
 		if (!row.IsNull(1)) {
 			file_entry.delete_file_id = DataFileIndex(row.GetValue<idx_t>(1));
 		}
-		file_entry.row_count = row.GetValue<idx_t>(2);
+		file_entry.row_count = RequiredFileStat(row, 2, file_entry.file_id, "record_count");
 		idx_t col_idx = 3;
 		file_entry.file = ReadDataFile(table, row, col_idx, IsEncrypted());
 		file_entry.row_id_start = OptIdx(row, col_idx++);
@@ -3091,7 +3111,7 @@ ORDER BY data.begin_snapshot ASC, data.row_id_start ASC, data.data_file_id ASC, 
 		DuckLakeCompactionFileEntry new_entry;
 		// parse the data file
 		new_entry.file.id = DataFileIndex(row.GetValue<idx_t>(col_idx++));
-		new_entry.file.row_count = row.GetValue<idx_t>(col_idx++);
+		new_entry.file.row_count = RequiredFileStat(row, col_idx++, new_entry.file.id, "record_count");
 		new_entry.file.row_id_start = OptIdx(row, col_idx++);
 		new_entry.file.begin_snapshot = row.GetValue<idx_t>(col_idx++);
 		new_entry.file.end_snapshot = OptIdx(row, col_idx++);
@@ -3123,7 +3143,7 @@ ORDER BY data.begin_snapshot ASC, data.row_id_start ASC, data.data_file_id ASC, 
 		DuckLakeCompactionDeleteFileData delete_file;
 		delete_file.id = DataFileIndex(row.GetValue<idx_t>(col_idx++));
 		delete_file.delete_file_id = DataFileIndex(row.GetValue<idx_t>(col_idx++));
-		delete_file.row_count = row.GetValue<idx_t>(col_idx++);
+		delete_file.row_count = RequiredFileStat(row, col_idx++, delete_file.delete_file_id, "delete_count");
 		delete_file.begin_snapshot = row.GetValue<idx_t>(col_idx++);
 		delete_file.end_snapshot = OptIdx(row, col_idx++);
 		delete_file.max_snapshot = OptIdx(row, col_idx++);
@@ -5564,18 +5584,19 @@ string DuckLakeMetadataManager::UpdateGlobalTableStatsSql(const DuckLakeGlobalSt
                                                           bool write_stats_exactness) {
 	string batch_query;
 	auto record_count = stats.record_count_unknown ? string("NULL") : to_string(stats.record_count);
+	auto table_size = stats.missing_table_size ? string("NULL") : to_string(stats.table_size_bytes);
 
 	if (!stats.initialized) {
 		batch_query +=
-		    StringUtil::Format("INSERT INTO {METADATA_CATALOG}.ducklake_table_stats VALUES (%d, %s, %d, %d);",
-		                       stats.table_id.index, record_count, stats.next_row_id, stats.table_size_bytes);
+		    StringUtil::Format("INSERT INTO {METADATA_CATALOG}.ducklake_table_stats VALUES (%d, %s, %d, %s);",
+		                       stats.table_id.index, record_count, stats.next_row_id, table_size);
 		batch_query += InsertTableColumnStatsSql(stats, write_stats_exactness);
 	} else {
 		// stats have been initialized - update them
 		batch_query += StringUtil::Format(
-		    "UPDATE {METADATA_CATALOG}.ducklake_table_stats SET record_count=%s, file_size_bytes=%d, "
+		    "UPDATE {METADATA_CATALOG}.ducklake_table_stats SET record_count=%s, file_size_bytes=%s, "
 		    "next_row_id=%d WHERE table_id=%d;",
-		    record_count, stats.table_size_bytes, stats.next_row_id, stats.table_id.index);
+		    record_count, table_size, stats.next_row_id, stats.table_id.index);
 		// One UPDATE for all columns, which only changes existing rows: a column without a stats row, such as a struct
 		// container, stays without one. ANSI CAST(... AS BOOLEAN) works on DuckDB, Postgres and SQLite, where `::` does
 		// not parse.
@@ -5630,17 +5651,18 @@ string DuckLakeMetadataManager::RefreshTableSizesSql(const set<TableIndex> &tabl
 	for (auto &table_id : table_ids) {
 		string record_count;
 		if (record_count_tables.find(table_id) != record_count_tables.end()) {
-			// an unknown count stays unknown
+			// an unknown count stays unknown, and a file without a count makes the count unknown
 			record_count = StringUtil::Format(R"(, record_count = CASE WHEN record_count IS NULL THEN NULL ELSE (
-	SELECT COALESCE(SUM(data.record_count), 0)
+	SELECT CASE WHEN COUNT(*) = COUNT(data.record_count) THEN COALESCE(SUM(data.record_count), 0) END
 	FROM {METADATA_CATALOG}.ducklake_data_file data
 	WHERE data.table_id = %d AND data.end_snapshot IS NULL
 ) END)",
 			                                  table_id.index);
 		}
+		// a file without a size makes the size unknown
 		batch_query += StringUtil::Format(R"(
 UPDATE {METADATA_CATALOG}.ducklake_table_stats SET file_size_bytes = (
-	SELECT COALESCE(SUM(data.file_size_bytes), 0)
+	SELECT CASE WHEN COUNT(*) = COUNT(data.file_size_bytes) THEN COALESCE(SUM(data.file_size_bytes), 0) END
 	FROM {METADATA_CATALOG}.ducklake_data_file data
 	WHERE data.table_id = %d AND data.end_snapshot IS NULL
 )%s WHERE table_id = %d;)",

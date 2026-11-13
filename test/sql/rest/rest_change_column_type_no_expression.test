@@ -53,7 +53,13 @@ SELECT status < 500, response->>'$.error.message' FROM ducklake_rest_request('{r
 ----
 true	Cannot change type of column "i" from BIGINT to INTEGER - only widening type promotions are allowed
 
-# an expression is still taken
+# an expression is still taken, and checked
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"change_column_type": {"column_path": ["i"], "column_type": {"id": "int128"}, "expression": "i + 1"}}}}]}')
+----
+501	Column type cannot be modified using an expression
+
 query I
 SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
 '{"requests": [{"alter": {"entry_id": 1, "alter": {"change_column_type": {"column_path": ["i"], "column_type": {"id": "int128"}, "expression": "CAST(i AS HUGEINT)"}}}}]}')
@@ -71,6 +77,13 @@ SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_se
 '{"requests": [{"alter": {"entry_id": 1, "alter": {"change_column_type": {"column_path": [], "column_type": {"id": "int64"}}}}}]}')
 ----
 400	change_column_type requires a column_path
+
+# an empty name in the path, which the parser refuses as an identifier
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"change_column_type": {"column_path": [""], "column_type": {"id": "int64"}}}}}]}')
+----
+400	change_column_type requires a column_path without empty names
 
 query II
 SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',

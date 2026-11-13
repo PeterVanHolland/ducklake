@@ -26,6 +26,9 @@ static vector<Identifier> ReadPath(const vector<string> &path, const char *alter
 	}
 	vector<Identifier> result;
 	for (auto &name : path) {
+		if (name.empty()) {
+			throw InvalidInputException("%s requires a column_path without empty names", alteration);
+		}
 		result.emplace_back(name);
 	}
 	return result;

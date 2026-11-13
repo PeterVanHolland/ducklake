@@ -273,6 +273,8 @@ public:
 	}
 	//! Whether transactions that started before a metadata table was dropped still read it
 	virtual bool DroppedTablesStayReadable() const;
+	//! Whether another transaction may still read a metadata table that a drop would remove
+	virtual bool OtherTransactionsMayReadDroppedTables();
 	//! Whether a commit inserts inlined rows after its batch instead of sending them as VALUES text in it
 	virtual bool InsertsInlinedRowsAfterBatch(idx_t row_count) const {
 		return !CommitsEachStatement();

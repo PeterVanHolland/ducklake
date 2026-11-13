@@ -1185,9 +1185,11 @@ vector<DuckLakeInlinedTableInfo> DuckLakeMetadataManager::GetInlinedDataTables(c
 	// another attach can drop superseded inlined tables without bumping the schema version
 	bool may_be_dropped = inlined_data_tables.size() > 1;
 	if (inlined_data_tables.size() == 1) {
-		// the only inlined table can be superseded after an older or pinned snapshot
+		// the only inlined table can be superseded after an older or pinned snapshot, or come from a newer schema
+		// version when another transaction loaded this one after a schema change
 		may_be_dropped = transaction.GetCatalog().CatalogSnapshot() ||
-		                 snapshot.schema_version < transaction.GetSnapshot().schema_version;
+		                 snapshot.schema_version < transaction.GetSnapshot().schema_version ||
+		                 inlined_data_tables[0].schema_version > snapshot.schema_version;
 	}
 	if (!may_be_dropped) {
 		return inlined_data_tables;
@@ -3718,6 +3720,10 @@ string DuckLakeMetadataManager::WriteNewInlinedTables(DuckLakeSnapshot commit_sn
 	return InsertValuesSql("ducklake_inlined_data_tables", inlined_tables) + inlined_table_queries + drop_queries;
 }
 
+bool DuckLakeMetadataManager::OtherTransactionsMayReadDroppedTables() {
+	return transaction.GetCatalog().OtherTransactionHasMetadataConnection(transaction);
+}
+
 string DuckLakeMetadataManager::InlinedTableHasRowsQuery(const Identifier &table_name) {
 	return StringUtil::Format("SELECT 1 FROM {METADATA_CATALOG}.%s LIMIT 1;", table_name);
 }
@@ -3747,6 +3753,10 @@ string DuckLakeMetadataManager::DropInlinedTableIfEmpty(TableIndex table_id, con
 	auto result = Query(query);
 	result->ThrowIfError("Failed to check emptiness of an inlined data table in DuckLake: ");
 	if (result->begin() != result->end()) {
+		return string();
+	}
+	// a transaction that started before the table was emptied can still read its rows
+	if (OtherTransactionsMayReadDroppedTables()) {
 		return string();
 	}
 	// readers of older schema versions skip dropped inlined tables, so the cached versions stay valid

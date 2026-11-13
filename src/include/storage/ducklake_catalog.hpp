@@ -494,6 +494,9 @@ public:
 	void InvalidateTableStatsCaches(const unordered_set<idx_t> &next_file_ids);
 	//! Invalidate the cached schema entry for a given schema_version.
 	void InvalidateSchemaCache(idx_t schema_version);
+	//! Whether a transaction other than the given one has a metadata connection, through any attach that shares the
+	//! metadata catalog
+	bool OtherTransactionHasMetadataConnection(DuckLakeTransaction &transaction);
 	//! Invalidate a cached name map for a deleted mapping ID.
 	void InvalidateNameMapCache(MappingIndex mapping_id);
 
@@ -526,6 +529,7 @@ private:
 	void RegisterCatalog();
 	//! Returns whether no other DuckLake uses the metadata catalog
 	bool UnregisterCatalog();
+
 	//! Gives an entry loaded from the catalog the oid of its id, so it keeps its oid across snapshots
 	void AssignStableOid(CatalogEntry &entry, idx_t id);
 

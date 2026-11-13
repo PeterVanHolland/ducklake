@@ -1,0 +1,59 @@
+# name: test/sql/rest/rest_insert_delete_conflict.test
+# description: REST commits carry neither the tables a client read nor its delete filters, so the table rule stays
+# group: [rest]
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl
+
+statement ok
+CREATE TABLE dl.t(i INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1), (2), (3)
+
+# an insert of the rows the transaction read conflicts with a concurrent delete
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO dl.t SELECT i + 10 FROM dl.t
+
+statement ok con2
+DELETE FROM dl.t WHERE i = 1
+
+statement error con1
+COMMIT
+----
+deleted from it
+
+query I
+SELECT count(*) FROM dl.t
+----
+2
+
+# a delete conflicts with a concurrent insert of rows its filter cannot match
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM dl.t WHERE i = 2
+
+statement ok con2
+INSERT INTO dl.t VALUES (100)
+
+statement error con1
+COMMIT
+----
+inserted into it
+
+query I
+SELECT count(*) FROM dl.t
+----
+3
+
+statement ok
+DETACH dl
+
+include test/template/rest_teardown.test_template

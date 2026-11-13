@@ -295,6 +295,8 @@ public:
 	void DropFile(TableIndex table_id, DataFileIndex data_file_id, string path, idx_t row_count, idx_t file_size_bytes);
 	//! Record that a delete predicate was evaluated against a table, even if no rows matched
 	void MarkDeleteAttempted(TableIndex table_id);
+	//! Record a read of the table, on whose rows the inserts of the transaction can depend
+	void MarkTableRead(TableIndex table_id);
 	//! Record a delete of the statement with the filters of its scan, none when the delete keeps the table rule
 	void RecordStatementDeleteFilter(DuckLakeTableEntry &table, idx_t query_id,
 	                                 optional_ptr<const FilterPushdownInfo> filter);

@@ -2785,6 +2785,11 @@ void DuckLakeTransaction::MarkDeleteAttempted(TableIndex table_id) {
 	state->tables_delete_attempted.insert(table_id);
 }
 
+void DuckLakeTransaction::MarkTableRead(TableIndex table_id) {
+	lock_guard<mutex> guard(delete_attempted_lock);
+	state->tables_read.insert(table_id);
+}
+
 void DuckLakeTransaction::RecordStatementDeleteFilter(DuckLakeTableEntry &table, idx_t query_id,
                                                       optional_ptr<const FilterPushdownInfo> filter) {
 	string query;

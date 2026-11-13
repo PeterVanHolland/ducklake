@@ -23,6 +23,11 @@ void DuckLakeCatalogLoader::SetSchemas(ducklake_entries_map_t schema_map) {
 	schemas = DuckLakeCatalogSet(std::move(schema_map));
 }
 
+void DuckLakeCatalogLoader::AddAllEntries(DuckLakeCatalogInfo &catalog_info) {
+	catalog.AddCatalogEntries(*this, catalog_info);
+	all_loaded = true;
+}
+
 void DuckLakeCatalogLoader::Load(DuckLakeTransaction &transaction, const DuckLakeCatalogLoadFilter &filter) {
 	DuckLakeCatalogInfo info;
 	info.schemas = schema_infos;

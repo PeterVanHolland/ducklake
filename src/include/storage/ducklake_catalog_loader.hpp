@@ -33,6 +33,8 @@ public:
 		return skipped_schemas;
 	}
 	void SetSchemas(ducklake_entries_map_t schema_map);
+	//! Adds every table and view of the snapshot, read together with the schemas
+	void AddAllEntries(DuckLakeCatalogInfo &catalog_info);
 	//! The committed table or view with the name in the schema
 	optional_ptr<CatalogEntry> GetEntry(DuckLakeTransaction &transaction, DuckLakeSchemaEntry &schema,
 	                                    const Identifier &name);

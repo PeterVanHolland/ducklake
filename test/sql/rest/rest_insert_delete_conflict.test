@@ -4,8 +4,9 @@
 
 include test/template/rest_setup.test_template
 
+# the rows go to data files
 statement ok
-ATTACH 'ducklake:rest:{rest_server}' AS dl
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 0)
 
 statement ok
 CREATE TABLE dl.t(i INTEGER)
@@ -50,6 +51,54 @@ inserted into it
 
 query I
 SELECT count(*) FROM dl.t
+----
+3
+
+# the same with inlined rows
+statement ok
+CREATE TABLE dl.inlined(i INTEGER)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'inlined')
+
+statement ok
+INSERT INTO dl.inlined VALUES (1), (2), (3)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO dl.inlined SELECT i + 10 FROM dl.inlined
+
+statement ok con2
+DELETE FROM dl.inlined WHERE i = 1
+
+statement error con1
+COMMIT
+----
+deleted inlined data from it
+
+query I
+SELECT count(*) FROM dl.inlined
+----
+2
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM dl.inlined WHERE i = 2
+
+statement ok con2
+INSERT INTO dl.inlined VALUES (100)
+
+statement error con1
+COMMIT
+----
+inserted into it
+
+query I
+SELECT count(*) FROM dl.inlined
 ----
 3
 

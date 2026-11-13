@@ -697,6 +697,12 @@
         "test/sql/secrets/ducklake_secret_null_options.test",
         "test/sql/transaction/transaction_conflict_inlining.test"
       ]
+    },
+    {
+      "reason": "Expects a delete to conflict with concurrent inserts only when its filters can match them and an insert with concurrent deletes only after a read of the table, but the commits of a REST client carry neither the filters nor the reads, so the REST server keeps the table rule",
+      "paths": [
+        "test/sql/transaction/transaction_conflicts_delete_insert_filters.test"
+      ]
     }
   ]
 }

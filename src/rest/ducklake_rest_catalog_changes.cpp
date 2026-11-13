@@ -38,6 +38,8 @@ static void CheckColumnType(const LogicalType &type) {
 	switch (type.id()) {
 	case LogicalTypeId::UNKNOWN:
 		throw InvalidInputException("A column cannot have the type unknown");
+	case LogicalTypeId::TUPLE:
+		// a struct whose fields all lack a name
 	case LogicalTypeId::STRUCT:
 		for (auto &child : StructType::GetChildTypes(type)) {
 			if (child.first.GetIdentifierName().empty()) {

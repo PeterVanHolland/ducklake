@@ -2528,7 +2528,7 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 		bool recomputed_stats = false;
 		batch_queries += UpdateStatsForDroppedFiles(stats, context, attempt_dropped_file_stats, recomputed_stats);
 		if (recomputed_stats && commit_snapshot.next_file_id == initial_next_file_id) {
-			// cached stats are keyed by the next file id, which a commit without new files keeps
+			// REST clients cache the statistics by the next file id, which a commit without new files keeps
 			commit_snapshot.next_file_id++;
 		}
 	}

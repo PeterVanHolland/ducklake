@@ -999,6 +999,13 @@ void DuckLakeRESTCommit::CreateSchema(RESTCreateSchemaRequest &parameters) {
 
 void DuckLakeRESTCommit::CreateTable(RESTCreateTableRequest &parameters) {
 	CheckPlaceholderId(parameters.placeholder_id);
+	// the checks of the parser of CREATE TABLE: a name and at least one column
+	if (parameters.table_name.empty()) {
+		throw InvalidInputException("create_table requires a table_name");
+	}
+	if (parameters.columns.empty()) {
+		throw InvalidInputException("create_table requires at least one column");
+	}
 	auto schema_path = GetSchemaPath(parameters.schema_id);
 	auto &schema = GetSchema(schema_path);
 	auto info = make_uniq<CreateTableInfo>(schema, Identifier(parameters.table_name));
@@ -1048,6 +1055,9 @@ void DuckLakeRESTCommit::CreateTable(RESTCreateTableRequest &parameters) {
 
 void DuckLakeRESTCommit::CreateView(RESTCreateViewRequest &parameters) {
 	CheckPlaceholderId(parameters.placeholder_id);
+	if (parameters.view_name.empty()) {
+		throw InvalidInputException("create_view requires a view_name");
+	}
 	auto schema_path = GetSchemaPath(parameters.schema_id);
 	auto &schema = GetSchema(schema_path);
 	if (parameters.dialect != "duckdb") {

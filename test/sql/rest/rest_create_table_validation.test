@@ -1,0 +1,147 @@
+# name: test/sql/rest/rest_create_table_validation.test
+# description: The REST server checks a create_table request like CREATE TABLE does: at least one column and no empty names
+# group: [rest]
+
+require json
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl
+
+statement ok
+CREATE TABLE dl.t(i INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1), (2), (3)
+
+statement ok
+CREATE TABLE dl.t2(s STRUCT(x INTEGER))
+
+statement ok
+CREATE VIEW dl.v AS SELECT 42 AS i
+
+# a table without columns
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_table": {"placeholder_id": -1, "schema_id": 0, "table_name": "nocols", "columns": []}}]}')
+----
+400	create_table requires at least one column
+
+# empty names
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_table": {"placeholder_id": -1, "schema_id": 0, "table_name": "", "columns": [{"column_name": "i", "column_type": {"id": "int32"}}]}}]}')
+----
+400	create_table requires a table_name
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_table": {"placeholder_id": -1, "schema_id": 0, "table_name": "e", "columns": [{"column_name": "", "column_type": {"id": "int32"}}]}}]}')
+----
+400	A column requires a column_name
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_table": {"placeholder_id": -1, "schema_id": 0, "table_name": "e", "columns": [{"column_name": "l", "column_type": {"id": "list", "child": {"id": "struct", "children": [{"name": "x", "type": {"id": "int32"}}, {"name": "", "type": {"id": "int32"}}]}}}]}}]}')
+----
+400	A struct field requires a name
+
+# the same names in the alterations and in create_view
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"add_column": {"column": {"column_name": "", "column_type": {"id": "int32"}}}}}}]}')
+----
+400	A column requires a column_name
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 2, "alter": {"add_field": {"column_path": ["s"], "field": {"column_name": "", "column_type": {"id": "int32"}}}}}}]}')
+----
+400	A column requires a column_name
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"rename_table": {"new_name": ""}}}}]}')
+----
+400	rename_table requires a new_name
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"rename_column": {"old_name": "i", "new_name": ""}}}}]}')
+----
+400	rename_column requires a new_name
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 2, "alter": {"rename_field": {"column_path": ["s", "x"], "new_name": ""}}}}]}')
+----
+400	rename_field requires a new_name
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 3, "alter": {"rename_view": {"new_name": ""}}}}]}')
+----
+400	rename_view requires a new_name
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_view": {"placeholder_id": -1, "schema_id": 0, "view_name": "", "sql": "SELECT 1"}}]}')
+----
+400	create_view requires a view_name
+
+# the refused requests changed nothing
+query II rest_db:rest_server_con
+SELECT table_id, table_name FROM __ducklake_metadata_rest_lake.ducklake_table WHERE end_snapshot IS NULL ORDER BY table_id
+----
+1	t
+2	t2
+
+query II rest_db:rest_server_con
+SELECT view_id, view_name FROM __ducklake_metadata_rest_lake.ducklake_view WHERE end_snapshot IS NULL
+----
+3	v
+
+query II rest_db:rest_server_con
+SELECT table_id, column_name FROM __ducklake_metadata_rest_lake.ducklake_column WHERE end_snapshot IS NULL ORDER BY table_id, column_id
+----
+1	i
+2	s
+2	x
+
+query I
+SELECT count(*) FROM dl.t
+----
+3
+
+query I
+SELECT * FROM dl.v
+----
+42
+
+# the catalog still attaches
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl
+
+query I
+SELECT count(*) FROM dl.t
+----
+3
+
+# a valid request still creates its table
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_table": {"placeholder_id": -1, "schema_id": 0, "table_name": "t3", "columns": [{"column_name": "j", "column_type": {"id": "int32"}}]}}]}')
+----
+200
+
+statement ok
+INSERT INTO dl.t3 VALUES (7)
+
+query I
+SELECT j FROM dl.t3
+----
+7

@@ -5935,10 +5935,28 @@ FROM {METADATA_CATALOG}.ducklake_files_scheduled_for_deletion
 		info.time = row.GetBaseValue(3).CastAs(*context, LogicalType::TIMESTAMP_TZ).GetValue<timestamp_tz_t>();
 		result.push_back(std::move(info));
 	}
-	return result;
+	if (result.empty()) {
+		return result;
+	}
+	// a file that a data or delete file of the catalog or of an open transaction uses waits until no file uses it
+	// each directory is resolved once, so a symlink to the file under another name does not count
+	unordered_map<string, string> directories;
+	auto live_files = GetCanonicalFilePaths(GetLiveFilesForCleanupQuery(), directories);
+	vector<string> written_files;
+	transaction.manager.Cast<DuckLakeTransactionManager>().GetWrittenFiles(written_files);
+	for (auto &path : written_files) {
+		live_files.insert(CanonicalFilePath(path, directories));
+	}
+	vector<DuckLakeFileForCleanup> unused_files;
+	for (auto &file : result) {
+		if (!live_files.count(CanonicalFilePath(file.path, directories))) {
+			unused_files.push_back(std::move(file));
+		}
+	}
+	return unused_files;
 }
 
-string DuckLakeMetadataManager::GetKnownFilesForCleanupQuery() const {
+string DuckLakeMetadataManager::GetLiveFilesForCleanupQuery() const {
 	return R"(SELECT REPLACE(
            CASE
                WHEN NOT file_relative THEN file_path
@@ -5965,7 +5983,11 @@ FROM
   ) AS f
    JOIN {METADATA_CATALOG}.ducklake_table t ON f.table_id = t.table_id
    JOIN {METADATA_CATALOG}.ducklake_schema s ON t.schema_id = s.schema_id) AS r
-UNION ALL
+)";
+}
+
+string DuckLakeMetadataManager::GetKnownFilesForCleanupQuery() const {
+	return GetLiveFilesForCleanupQuery() + R"(UNION ALL
 SELECT REPLACE(
     CASE
         WHEN NOT f.path_is_relative THEN f.path
@@ -5976,6 +5998,41 @@ SELECT REPLACE(
 ) AS full_path
 FROM {METADATA_CATALOG}.ducklake_files_scheduled_for_deletion f
 )";
+}
+
+string DuckLakeMetadataManager::CanonicalFilePath(const string &path,
+                                                  optional_ptr<unordered_map<string, string>> directories) {
+	auto normalized = StringUtil::Replace(path, "\\", "/");
+	auto parsed = Path::FromString(normalized);
+	auto separator = normalized.rfind('/');
+	if (parsed.IsLocal() && directories && separator != string::npos) {
+		auto directory = normalized.substr(0, separator + 1);
+		auto entry = directories->find(directory);
+		if (entry == directories->end()) {
+			entry = directories->emplace(directory, GetFileSystem().CanonicalizePath(directory)).first;
+		}
+		// a case insensitive file system can spell one file name in two ways
+		return StringUtil::Lower(entry->second + normalized.substr(separator));
+	}
+	if (parsed.IsLocal()) {
+		return GetFileSystem().CanonicalizePath(normalized);
+	}
+	// key remote paths by authority and path so scheme aliases and query strings match
+	auto path_start = parsed.GetScheme().size();
+	auto query_start = normalized.find('?', path_start);
+	auto path_end = query_start == string::npos ? normalized.size() : query_start;
+	return normalized.substr(path_start, path_end - path_start);
+}
+
+unordered_set<string>
+DuckLakeMetadataManager::GetCanonicalFilePaths(string query, optional_ptr<unordered_map<string, string>> directories) {
+	auto result = Query(query);
+	result->ThrowIfError("Failed to get files scheduled for deletion from DuckLake: ");
+	unordered_set<string> paths;
+	for (auto &row : *result) {
+		paths.insert(CanonicalFilePath(row.GetValue<string>(0), directories));
+	}
+	return paths;
 }
 
 vector<string> DuckLakeMetadataManager::GetKnownFilePaths() {
@@ -6017,27 +6074,13 @@ vector<DuckLakeFileForCleanup> DuckLakeMetadataManager::GetOrphanFilesForCleanup
 		filter = StringUtil::Format(" AND last_modified::TIMESTAMPTZ < %s", SQLString::ToString(older_than));
 	}
 
-	// compare canonical paths so differently spelled paths to the same file match
-	auto &fs = GetFileSystem();
-	auto canonical_path = [&](const string &path) {
-		auto normalized = StringUtil::Replace(path, "\\", "/");
-		auto parsed = Path::FromString(normalized);
-		if (parsed.IsLocal()) {
-			return fs.CanonicalizePath(normalized);
-		}
-		// key remote paths by authority and path so scheme aliases and query strings match
-		auto path_start = parsed.GetScheme().size();
-		auto query_start = normalized.find('?', path_start);
-		auto path_end = query_start == string::npos ? normalized.size() : query_start;
-		return normalized.substr(path_start, path_end - path_start);
-	};
 	// files of open transactions, collected before the metadata read and again after the listing
 	auto &transaction_manager = transaction.manager.Cast<DuckLakeTransactionManager>();
 	vector<string> written_files;
 	transaction_manager.GetWrittenFiles(written_files);
 	unordered_set<string> known_files;
 	for (auto &path : GetKnownFilePaths()) {
-		known_files.insert(canonical_path(path));
+		known_files.insert(CanonicalFilePath(path));
 	}
 
 	auto query = StringUtil::Format(R"(SELECT filename
@@ -6050,13 +6093,13 @@ WHERE (suffix(filename, '.parquet') OR suffix(filename, '.puffin'))
 	res->ThrowIfError("Failed to get files scheduled for deletion from DuckLake: ");
 	transaction_manager.GetWrittenFiles(written_files);
 	for (auto &path : written_files) {
-		known_files.insert(canonical_path(path));
+		known_files.insert(CanonicalFilePath(path));
 	}
 
 	vector<DuckLakeFileForCleanup> result;
 	for (auto &row : *res) {
 		auto path = row.GetValue<string>(0);
-		if (known_files.count(canonical_path(path))) {
+		if (known_files.count(CanonicalFilePath(path))) {
 			continue;
 		}
 		DuckLakeFileForCleanup info;

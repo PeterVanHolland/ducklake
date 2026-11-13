@@ -17,13 +17,22 @@ statement ok
 COPY (SELECT TIMESTAMP_NS '2020-01-01 00:00:00.000000001' AS t) TO '{DATA_PATH}/finer_ns.parquet'
 
 statement ok
+COPY (SELECT TIMESTAMP_NS '2020-01-01 00:00:00.000000001' AS t) TO '{DATA_PATH}/finer_ns_second.parquet'
+
+statement ok
 COPY (SELECT TIMESTAMP_NS '2020-01-01 00:00:00.000000001' AS t, i FROM range(2) t(i)) TO '{DATA_PATH}/finer_ns_rows.parquet'
 
 statement ok
 COPY (SELECT TIMESTAMP '2020-01-01 00:00:00.123456' AS t) TO '{DATA_PATH}/finer_us.parquet'
 
 statement ok
+COPY (SELECT TIMESTAMP '2020-01-01 00:00:00.123456' AS t) TO '{DATA_PATH}/finer_us_second.parquet'
+
+statement ok
 COPY (SELECT {'t': TIMESTAMP_NS '2020-01-01 00:00:00.000000001'} AS s) TO '{DATA_PATH}/finer_struct.parquet'
+
+statement ok
+COPY (SELECT {'t': TIMESTAMP_NS '2020-01-01 00:00:00.000000001'} AS s) TO '{DATA_PATH}/finer_struct_second.parquet'
 
 # nanoseconds in a TIMESTAMP column, shown after the type change
 statement ok
@@ -33,7 +42,7 @@ statement ok
 CALL ducklake_add_data_files('ducklake', 't', '{DATA_PATH}/finer_ns.parquet')
 
 statement ok
-CALL ducklake_add_data_files('ducklake', 't', '{DATA_PATH}/finer_ns.parquet')
+CALL ducklake_add_data_files('ducklake', 't', '{DATA_PATH}/finer_ns_second.parquet')
 
 statement ok
 ALTER TABLE ducklake.t ALTER COLUMN t TYPE TIMESTAMP_NS
@@ -76,7 +85,7 @@ statement ok
 CALL ducklake_add_data_files('ducklake', 's', '{DATA_PATH}/finer_us.parquet')
 
 statement ok
-CALL ducklake_add_data_files('ducklake', 's', '{DATA_PATH}/finer_us.parquet')
+CALL ducklake_add_data_files('ducklake', 's', '{DATA_PATH}/finer_us_second.parquet')
 
 statement ok
 ALTER TABLE ducklake.s ALTER COLUMN t TYPE TIMESTAMP
@@ -98,7 +107,7 @@ statement ok
 CALL ducklake_add_data_files('ducklake', 'n', '{DATA_PATH}/finer_struct.parquet')
 
 statement ok
-CALL ducklake_add_data_files('ducklake', 'n', '{DATA_PATH}/finer_struct.parquet')
+CALL ducklake_add_data_files('ducklake', 'n', '{DATA_PATH}/finer_struct_second.parquet')
 
 statement ok
 ALTER TABLE ducklake.n ALTER COLUMN s TYPE STRUCT(t TIMESTAMP_NS)

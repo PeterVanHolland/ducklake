@@ -67,6 +67,7 @@ public:
 	GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                 const FilterPushdownInfo *filter_info = nullptr, bool include_local_changes = true,
 	                 optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr) override;
+	bool HasDataFile(const DuckLakeTableEntry &table, DuckLakeSnapshot snapshot, const string &path) override;
 	vector<DuckLakeFileListExtendedEntry>
 	GetExtendedFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                         const FilterPushdownInfo *filter_info = nullptr,

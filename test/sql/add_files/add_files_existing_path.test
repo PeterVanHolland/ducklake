@@ -1,0 +1,536 @@
+# name: test/sql/add_files/add_files_existing_path.test
+# description: ducklake_add_data_files fails for a path the table already holds
+# group: [add_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+# For remote data path tests, environment variable DATA_PATH is overriden, so we use LOCAL_DATA_PATH.
+test-env DATA_PATH {TEST_DIR}
+
+test-env LOCAL_DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (
+  DATA_PATH '{DATA_PATH}/add_files_existing_path',
+  METADATA_CATALOG 'metadata',
+  DATA_INLINING_ROW_LIMIT 0
+)
+
+statement ok
+COPY (SELECT 42::INT AS i) TO '{LOCAL_DATA_PATH}/existing_one.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 43::INT AS i) TO '{LOCAL_DATA_PATH}/existing_two.parquet' (FORMAT parquet)
+
+statement ok
+CREATE TABLE ducklake.t(i INTEGER)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 't', '{LOCAL_DATA_PATH}/existing_one.parquet')
+
+# the same path in a later call
+statement error
+CALL ducklake_add_data_files('ducklake', 't', '{LOCAL_DATA_PATH}/existing_one.parquet')
+----
+existing_one.parquet" is already a data file of table "t"
+
+# an equivalent path in a later transaction
+statement ok
+BEGIN
+
+statement error
+CALL ducklake_add_data_files('ducklake', 't', '{LOCAL_DATA_PATH}/./existing_one.parquet')
+----
+existing_one.parquet" is already a data file of table "t"
+
+statement ok
+ROLLBACK
+
+# the same path in a transaction that altered the table
+statement ok
+BEGIN
+
+statement ok
+COMMENT ON TABLE ducklake.t IS 'holds existing_one'
+
+statement error
+CALL ducklake_add_data_files('ducklake', 't', '{LOCAL_DATA_PATH}/existing_one.parquet')
+----
+existing_one.parquet" is already a data file of table "t"
+
+statement ok
+ROLLBACK
+
+# a path added earlier in the same transaction
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 't', '{LOCAL_DATA_PATH}/existing_two.parquet')
+
+statement error
+CALL ducklake_add_data_files('ducklake', 't', '{LOCAL_DATA_PATH}/existing_two.parquet')
+----
+existing_two.parquet" is already a data file of table "t"
+
+statement ok
+ROLLBACK
+
+query I
+SELECT i FROM ducklake.t
+----
+42
+
+query I
+SELECT COUNT(*) FROM metadata.ducklake_data_file WHERE end_snapshot IS NULL
+----
+1
+
+# a glob that matches a held file fails before the new file is added
+statement error
+CALL ducklake_add_data_files('ducklake', 't', '{LOCAL_DATA_PATH}/existing_*.parquet')
+----
+existing_one.parquet" is already a data file of table "t"
+
+query I
+SELECT COUNT(*) FROM metadata.ducklake_data_file WHERE end_snapshot IS NULL
+----
+1
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 't', '{LOCAL_DATA_PATH}/existing_two.parquet')
+
+query I
+SELECT i FROM ducklake.t ORDER BY i
+----
+42
+43
+
+# the same path in a transaction that created the table
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE ducklake.t2(i INTEGER)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 't2', '{LOCAL_DATA_PATH}/existing_one.parquet')
+
+statement error
+CALL ducklake_add_data_files('ducklake', 't2', '{LOCAL_DATA_PATH}/existing_one.parquet')
+----
+existing_one.parquet" is already a data file of table "t2"
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE ducklake.t2(i INTEGER)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 't2', '{LOCAL_DATA_PATH}/existing_one.parquet')
+
+statement ok
+COMMIT
+
+query I
+SELECT i FROM ducklake.t2
+----
+42
+
+# deletes and updates reach every row
+statement ok
+DELETE FROM ducklake.t WHERE i = 42
+
+query I
+SELECT i FROM ducklake.t
+----
+43
+
+statement ok
+UPDATE ducklake.t2 SET i = 1
+
+query I
+SELECT i FROM ducklake.t2
+----
+1
+
+# a partial delete, then expiry and cleanup keep the rows of the file
+statement ok
+COPY (SELECT i FROM range(2) t(i)) TO '{LOCAL_DATA_PATH}/existing_rows.parquet' (FORMAT parquet)
+
+statement ok
+CREATE TABLE ducklake.r(i BIGINT)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'r', '{LOCAL_DATA_PATH}/existing_rows.parquet')
+
+statement error
+CALL ducklake_add_data_files('ducklake', 'r', '{LOCAL_DATA_PATH}/existing_rows.parquet')
+----
+existing_rows.parquet" is already a data file of table "r"
+
+statement ok
+DELETE FROM ducklake.r WHERE i = 0
+
+statement ok
+CALL ducklake_expire_snapshots('ducklake', older_than => now())
+
+statement ok
+CALL ducklake_cleanup_old_files('ducklake', cleanup_all => true)
+
+query I
+SELECT i FROM ducklake.r
+----
+1
+
+# two transactions that register the same path before either commits
+statement ok
+COPY (SELECT 44::INT AS i) TO '{LOCAL_DATA_PATH}/existing_concurrent.parquet' (FORMAT parquet)
+
+statement ok
+CREATE TABLE ducklake.c(i INTEGER)
+
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+CALL ducklake_add_data_files('ducklake', 'c', '{LOCAL_DATA_PATH}/existing_concurrent.parquet')
+
+statement ok con2
+CALL ducklake_add_data_files('ducklake', 'c', '{LOCAL_DATA_PATH}/existing_concurrent.parquet')
+
+statement ok con1
+COMMIT
+
+statement error con2
+COMMIT
+----
+another transaction has added it already
+
+# the call itself fails when the losing transaction runs it again
+statement error con2
+CALL ducklake_add_data_files('ducklake', 'c', '{LOCAL_DATA_PATH}/existing_concurrent.parquet')
+----
+existing_concurrent.parquet" is already a data file of table "c"
+
+query I
+SELECT i FROM ducklake.c
+----
+44
+
+query I
+SELECT COUNT(*) FROM metadata.ducklake_data_file WHERE table_id = (SELECT table_id FROM metadata.ducklake_table WHERE table_name = 'c')
+----
+1
+
+# files DuckLake wrote under a data path that is not canonical
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/existing_local.db' AS local_lake (
+  DATA_PATH '{LOCAL_DATA_PATH}/./existing_local',
+  METADATA_CATALOG 'local_metadata',
+  DATA_INLINING_ROW_LIMIT 0
+)
+
+statement ok
+CREATE TABLE local_lake.n(i INTEGER)
+
+statement ok
+INSERT INTO local_lake.n VALUES (1)
+
+statement ok
+INSERT INTO local_lake.n VALUES (2)
+
+statement error
+CALL ducklake_add_data_files('local_lake', 'n', '{LOCAL_DATA_PATH}/existing_local/main/n/*.parquet')
+----
+is already a data file of table "n"
+
+# the output of a compaction the transaction has not committed yet
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_merge_adjacent_files('local_lake', 'n')
+
+statement ok
+SET VARIABLE merged = (SELECT LIST(file) FROM glob('{LOCAL_DATA_PATH}/existing_local/main/n/*.parquet') WHERE parse_filename(file) NOT IN (SELECT parse_filename(data_file) FROM ducklake_list_files('local_lake', 'n')))
+
+query I
+SELECT len(getvariable('merged'))
+----
+1
+
+statement error
+CALL ducklake_add_data_files('local_lake', 'n', getvariable('merged'))
+----
+is already a data file of table "n"
+
+statement ok
+ROLLBACK
+
+query I
+SELECT i FROM local_lake.n ORDER BY i
+----
+1
+2
+
+query I
+SELECT COUNT(*) FROM local_metadata.ducklake_data_file WHERE end_snapshot IS NULL
+----
+2
+
+# concurrent registrations of a path inside the table directory, which the metadata stores relative to it
+statement ok
+COPY (SELECT 45::INT AS i) TO '{LOCAL_DATA_PATH}/existing_local/main/n/extern.parquet' (FORMAT parquet)
+
+statement ok con1
+BEGIN
+
+statement ok con2
+BEGIN
+
+statement ok con1
+CALL ducklake_add_data_files('local_lake', 'n', '{LOCAL_DATA_PATH}/existing_local/main/n/extern.parquet')
+
+statement ok con2
+CALL ducklake_add_data_files('local_lake', 'n', '{LOCAL_DATA_PATH}/existing_local/main/n/extern.parquet')
+
+statement ok con1
+COMMIT
+
+statement error con2
+COMMIT
+----
+another transaction has added it already
+
+query I
+SELECT i FROM local_lake.n ORDER BY i
+----
+1
+2
+45
+
+query I
+SELECT COUNT(*) FROM local_metadata.ducklake_data_file WHERE end_snapshot IS NULL
+----
+3
+
+# the output of a compaction that another transaction committed after the snapshot of the registering transaction
+statement ok
+CREATE TABLE local_lake.m(i INTEGER)
+
+statement ok
+INSERT INTO local_lake.m VALUES (1)
+
+statement ok
+INSERT INTO local_lake.m VALUES (2)
+
+statement ok con1
+BEGIN
+
+query I con1
+SELECT COUNT(*) FROM local_lake.m
+----
+2
+
+statement ok con2
+CALL ducklake_merge_adjacent_files('local_lake', 'm')
+
+statement ok con1
+SET VARIABLE merged = (SELECT LIST(file) FROM glob('{LOCAL_DATA_PATH}/existing_local/main/m/*.parquet') WHERE parse_filename(file) NOT IN (SELECT parse_filename(data_file) FROM ducklake_list_files('local_lake', 'm')))
+
+query I con1
+SELECT len(getvariable('merged'))
+----
+1
+
+statement ok con1
+CALL ducklake_add_data_files('local_lake', 'm', getvariable('merged'), ignore_extra_columns => true)
+
+statement error con1
+COMMIT
+----
+another transaction has added it already
+
+query I
+SELECT i FROM local_lake.m ORDER BY i
+----
+1
+2
+
+query I
+SELECT COUNT(*) FROM local_metadata.ducklake_data_file WHERE end_snapshot IS NULL AND table_id = (SELECT table_id FROM local_metadata.ducklake_table WHERE table_name = 'm')
+----
+1
+
+# a file a merge scheduled for deletion cannot be added again before the cleanup removes it
+statement ok
+CREATE TABLE ducklake.m(i INTEGER)
+
+statement ok
+COPY (SELECT 1::INT AS i) TO '{LOCAL_DATA_PATH}/merge_one.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 2::INT AS i) TO '{LOCAL_DATA_PATH}/merge_two.parquet' (FORMAT parquet)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'm', '{LOCAL_DATA_PATH}/merge_one.parquet')
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'm', '{LOCAL_DATA_PATH}/merge_two.parquet')
+
+statement ok
+CALL ducklake_merge_adjacent_files('ducklake', 'm')
+
+statement error
+CALL ducklake_add_data_files('ducklake', 'm', '{LOCAL_DATA_PATH}/merge_one.parquet')
+----
+merge_one.parquet" is already a data file of table "m"
+
+query I
+SELECT i FROM ducklake.m ORDER BY i
+----
+1
+2
+
+# the same for a table the transaction creates
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE ducklake.n(i INTEGER)
+
+statement error
+CALL ducklake_add_data_files('ducklake', 'n', '{LOCAL_DATA_PATH}/merge_one.parquet')
+----
+merge_one.parquet" is already a data file of table "n"
+
+statement ok
+ROLLBACK
+
+# a merged file DuckLake wrote is scheduled with a path relative to the data path
+statement ok
+CREATE TABLE ducklake.rm(i INTEGER)
+
+statement ok
+INSERT INTO ducklake.rm VALUES (1)
+
+statement ok
+INSERT INTO ducklake.rm VALUES (2)
+
+statement ok
+CALL ducklake_merge_adjacent_files('ducklake', 'rm')
+
+statement ok
+SET VARIABLE scheduled_file = (SELECT '{DATA_PATH}/add_files_existing_path/' || path FROM metadata.ducklake_files_scheduled_for_deletion WHERE path_is_relative AND path LIKE '%/rm/%' LIMIT 1)
+
+statement error
+CALL ducklake_add_data_files('ducklake', 'rm', getvariable('scheduled_file'))
+----
+is already a data file of table "rm"
+
+query I
+SELECT i FROM ducklake.rm ORDER BY i
+----
+1
+2
+
+# a file whose rows were all deleted keeps its path until the cleanup after the expiry removed it
+statement ok
+CREATE TABLE ducklake.e(i INTEGER)
+
+statement ok
+COPY (SELECT 7::INT AS i) TO '{LOCAL_DATA_PATH}/ended.parquet' (FORMAT parquet)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'e', '{LOCAL_DATA_PATH}/ended.parquet')
+
+statement ok
+DELETE FROM ducklake.e
+
+statement error
+CALL ducklake_add_data_files('ducklake', 'e', '{LOCAL_DATA_PATH}/ended.parquet')
+----
+ended.parquet" is already a data file of table "e"
+
+# a merge in another transaction schedules a path a transaction is adding
+statement ok
+COPY (SELECT 8::INT AS i) TO '{LOCAL_DATA_PATH}/merged_a.parquet' (FORMAT parquet)
+
+statement ok
+COPY (SELECT 9::INT AS i) TO '{LOCAL_DATA_PATH}/merged_b.parquet' (FORMAT parquet)
+
+statement ok
+CREATE TABLE ducklake.cm(i INTEGER)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+CALL ducklake_add_data_files('ducklake', 'cm', '{LOCAL_DATA_PATH}/merged_a.parquet')
+
+statement ok con2
+CALL ducklake_add_data_files('ducklake', 'cm', ['{LOCAL_DATA_PATH}/merged_a.parquet', '{LOCAL_DATA_PATH}/merged_b.parquet'])
+
+statement ok con2
+CALL ducklake_merge_adjacent_files('ducklake', 'cm')
+
+statement error con1
+COMMIT
+----
+Transaction conflict
+
+query I
+SELECT i FROM ducklake.cm ORDER BY i
+----
+8
+9
+
+# a rewrite in another transaction ends a file a transaction is adding, the file keeps its path until its expiry
+statement ok
+COPY (SELECT i FROM range(10) t(i)) TO '{LOCAL_DATA_PATH}/rewritten.parquet' (FORMAT parquet)
+
+statement ok
+CREATE TABLE ducklake.rw(i BIGINT)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+CALL ducklake_add_data_files('ducklake', 'rw', '{LOCAL_DATA_PATH}/rewritten.parquet')
+
+statement ok con2
+BEGIN
+
+statement ok con2
+CALL ducklake_add_data_files('ducklake', 'rw', '{LOCAL_DATA_PATH}/rewritten.parquet')
+
+statement ok con2
+DELETE FROM ducklake.rw WHERE i = 1
+
+statement ok con2
+COMMIT
+
+statement ok con2
+CALL ducklake_rewrite_data_files('ducklake', 'rw', delete_threshold => 0.0)
+
+statement error con1
+COMMIT
+----
+Transaction conflict
+
+query I
+SELECT count(*) FROM ducklake.rw
+----
+9

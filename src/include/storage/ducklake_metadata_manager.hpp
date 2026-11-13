@@ -445,6 +445,9 @@ public:
 	virtual DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! The net row count of the data files that were committed before the snapshot's next file id
 	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);
+	//! The minimum and maximum of a column in each of the data files that has them
+	map<DataFileIndex, pair<string, string>> GetFileColumnBounds(TableIndex table_id, FieldIndex column_id,
+	                                                             const set<DataFileIndex> &files);
 	virtual optional_idx GetNetDataFileRowCountForStats(TableIndex table_id, DuckLakeSnapshot snapshot);
 	virtual idx_t GetNetInlinedRowCount(const Identifier &inlined_table_name, DuckLakeSnapshot snapshot);
 	//! The number of rows of a table, in data files and inlined, or invalid if it cannot be computed exactly

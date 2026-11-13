@@ -1,0 +1,124 @@
+# name: test/sql/rest/rest_add_column_not_null.test
+# description: A REST add_column with not_null adds the NOT NULL constraint, as ALTER TABLE ADD COLUMN ... NOT NULL does
+# group: [rest]
+
+require json
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl
+
+statement ok
+CREATE TABLE dl.t(i INTEGER)
+
+statement ok
+CREATE TABLE dl.u(i INTEGER)
+
+statement ok
+INSERT INTO dl.u VALUES (1)
+
+statement ok
+CREATE TABLE dl.s(s STRUCT(x INTEGER))
+
+# a NOT NULL column added to an empty table
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"add_column": {"column": {"column_name": "n", "column_type": {"id": "int32"}, "not_null": true}}}}}]}')
+----
+200
+
+query III rest_db:rest_server_con
+SELECT table_id, column_name, nulls_allowed FROM __ducklake_metadata_rest_lake.ducklake_column WHERE end_snapshot IS NULL AND table_id = 1 ORDER BY column_order
+----
+1	i	true
+1	n	false
+
+statement error
+INSERT INTO dl.t VALUES (1, NULL)
+----
+NOT NULL constraint failed: t.n
+
+statement ok
+INSERT INTO dl.t VALUES (1, 2)
+
+query II
+SELECT i, n FROM dl.t
+----
+1	2
+
+# a table with rows needs a default for the new column, like SET NOT NULL
+query II
+SELECT status < 500, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 2, "alter": {"add_column": {"column": {"column_name": "n", "column_type": {"id": "int32"}, "not_null": true}}}}}]}')
+----
+true	Cannot SET NOT NULL on column "n" - the column has NULL values
+
+query II rest_db:rest_server_con
+SELECT column_name, nulls_allowed FROM __ducklake_metadata_rest_lake.ducklake_column WHERE end_snapshot IS NULL AND table_id = 2 ORDER BY column_order
+----
+i	true
+
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 2, "alter": {"add_column": {"column": {"column_name": "n", "column_type": {"id": "int32"}, "default": "7", "not_null": true}}}}}]}')
+----
+200
+
+query II rest_db:rest_server_con
+SELECT column_name, nulls_allowed FROM __ducklake_metadata_rest_lake.ducklake_column WHERE end_snapshot IS NULL AND table_id = 2 ORDER BY column_order
+----
+i	true
+n	false
+
+query II
+SELECT i, n FROM dl.u
+----
+1	7
+
+statement error
+INSERT INTO dl.u VALUES (2, NULL)
+----
+NOT NULL constraint failed: u.n
+
+# what the parser refuses for ALTER TABLE
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"add_column": {"column": {"column_name": "m", "column_type": {"id": "int32"}, "not_null": true}, "if_not_exists": true}}}}]}')
+----
+501	Adding a NOT NULL column with IF NOT EXISTS is not supported
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 3, "alter": {"add_field": {"column_path": ["s"], "field": {"column_name": "y", "column_type": {"id": "int32"}, "not_null": true}}}}}]}')
+----
+501	Adding NOT NULL constraints to nested fields is not supported
+
+query III rest_db:rest_server_con
+SELECT table_id, column_name, nulls_allowed FROM __ducklake_metadata_rest_lake.ducklake_column WHERE end_snapshot IS NULL AND table_id IN (1, 3) ORDER BY table_id, column_id
+----
+1	i	true
+1	n	false
+3	s	true
+3	x	true
+
+# the REST client sends the constraint as a second alteration, as before
+statement ok
+ALTER TABLE dl.t ADD COLUMN m INTEGER DEFAULT 5 NOT NULL
+
+query II rest_db:rest_server_con
+SELECT column_name, nulls_allowed FROM __ducklake_metadata_rest_lake.ducklake_column WHERE end_snapshot IS NULL AND table_id = 1 ORDER BY column_order
+----
+i	true
+n	false
+m	false
+
+query III
+SELECT i, n, m FROM dl.t
+----
+1	2	5
+
+statement error
+INSERT INTO dl.t VALUES (2, 2, NULL)
+----
+NOT NULL constraint failed: t.m

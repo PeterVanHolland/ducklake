@@ -256,12 +256,18 @@ unique_ptr<AlterInfo> DuckLakeRESTCatalogChanges::ReadAlter(ClientContext &conte
 	}
 	case RESTAlterationType::ADD_COLUMN: {
 		auto &add = alteration.Cast<RESTAddColumn>();
+		if (add.column.not_null && add.if_not_exists) {
+			throw NotImplementedException("Adding a NOT NULL column with IF NOT EXISTS is not supported");
+		}
 		AddColumnConstraints constraints;
 		constraints.add_not_null = add.column.not_null;
 		return make_uniq<AddColumnInfo>(entry, ReadColumn(context, add.column), add.if_not_exists, constraints);
 	}
 	case RESTAlterationType::ADD_FIELD: {
 		auto &add = alteration.Cast<RESTAddField>();
+		if (add.field.not_null) {
+			throw NotImplementedException("Adding NOT NULL constraints to nested fields is not supported");
+		}
 		return make_uniq<AddFieldInfo>(entry, ReadPath(add.column_path), ReadColumn(context, add.field),
 		                               add.if_not_exists);
 	}

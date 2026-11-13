@@ -116,6 +116,13 @@ SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_se
 ----
 400	A column cannot have the type unknown
 
+# the type is checked before the initial default is cast to it
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_table": {"placeholder_id": -1, "schema_id": 0, "table_name": "unk", "columns": [{"column_name": "u", "column_type": {"id": "unknown"}, "initial_default": "1"}]}}]}')
+----
+400	A column cannot have the type unknown
+
 query II
 SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
 '{"requests": [{"alter": {"entry_id": 1, "alter": {"add_column": {"column": {"column_name": "u", "column_type": {"id": "map", "key": {"id": "varchar"}, "value": {"id": "unknown"}}}}}}}]}')

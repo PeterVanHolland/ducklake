@@ -1012,11 +1012,12 @@ void DuckLakeRESTCommit::CreateTable(RESTCreateTableRequest &parameters) {
 	vector<Value> initial_defaults;
 	for (auto &column : parameters.columns) {
 		auto logical_index = LogicalIndex(info->columns.LogicalColumnCount());
-		initial_defaults.push_back(DuckLakeRESTCatalogChanges::ReadInitialDefault(context, column));
+		// the column is checked before its initial default is cast to its type
 		auto column_definition = DuckLakeRESTCatalogChanges::ReadColumn(context, column);
 		if (info->columns.ColumnExists(column_definition.Name())) {
 			throw InvalidInputException("create_table defines column \"%s\" twice", column.column_name);
 		}
+		initial_defaults.push_back(DuckLakeRESTCatalogChanges::ReadInitialDefault(context, column));
 		info->columns.AddColumn(std::move(column_definition));
 		if (column.not_null) {
 			info->constraints.push_back(make_uniq<NotNullConstraint>(logical_index));

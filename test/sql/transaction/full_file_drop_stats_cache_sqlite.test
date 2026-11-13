@@ -1,0 +1,73 @@
+# name: test/sql/transaction/full_file_drop_stats_cache_sqlite.test
+# description: A delete that drops a whole file changes the table stats but not the next file id, on a SQLite catalog in WAL mode
+# group: [transaction]
+
+require ducklake
+
+require parquet
+
+require sqlite_scanner
+
+test-env DATA_PATH {TEST_DIR}
+
+# the SQLite config skips errors about locks, which none of these statements may raise
+set ignore_error_messages
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/full_file_drop_stats_cache.db' AS ducklake (DATA_PATH '{DATA_PATH}/full_file_drop_stats_cache_sqlite', METADATA_CATALOG 'metadata', META_JOURNAL_MODE 'wal', DATA_INLINING_ROW_LIMIT 0)
+
+# con2 drops the one-row file con3 dropped already, whose snapshot has the same next file id, and con1 reads the
+# stats of that snapshot before con2 commits
+statement ok
+CREATE TABLE ducklake.acc (id INTEGER, bal INTEGER, note VARCHAR)
+
+statement ok
+INSERT INTO ducklake.acc SELECT range + 1, 100, 'init' FROM range(8)
+
+statement ok con2
+INSERT INTO ducklake.acc (id, bal) VALUES (1003, 0)
+
+statement ok con2
+BEGIN
+
+statement ok con2
+UPDATE ducklake.acc SET bal = bal - 19 WHERE id = 6
+
+statement ok con2
+UPDATE ducklake.acc SET bal = bal + 19 WHERE id = 2
+
+statement ok con3
+DELETE FROM ducklake.acc WHERE bal = 0 AND id > 1000 AND id % 2 = 1
+
+statement ok con2
+MERGE INTO ducklake.acc USING (VALUES (3, -29), (4, 29)) v(vid, d) ON ducklake.acc.id = v.vid WHEN MATCHED THEN UPDATE SET bal = bal + d
+
+statement ok con2
+MERGE INTO ducklake.acc USING (VALUES (5, -15), (1, 15)) v(vid, d) ON ducklake.acc.id = v.vid WHEN MATCHED THEN UPDATE SET bal = bal + d
+
+statement ok con2
+UPDATE ducklake.acc SET bal = bal - 16 WHERE id = 8
+
+statement ok con2
+UPDATE ducklake.acc SET bal = bal + 16 WHERE id = 7
+
+statement ok con2
+DELETE FROM ducklake.acc WHERE bal = 0 AND id > 1000 AND id % 2 = 1
+
+statement ok con1
+INSERT INTO ducklake.acc (id, bal) VALUES (1006, 0)
+
+statement error con2
+COMMIT
+----
+Transaction conflict
+
+query II
+SELECT count(*), sum(bal) FROM ducklake.acc
+----
+9	800
+
+query I
+SELECT record_count FROM metadata.ducklake_table_stats
+----
+9

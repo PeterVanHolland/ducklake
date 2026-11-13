@@ -491,6 +491,7 @@
         "test/sql/stats/variant_stats_large_counts.test",
         "test/sql/stats/variant_stats_quote_rewrite.test",
         "test/sql/stats/variant_stats_special_chars.test",
+        "test/sql/transaction/full_file_drop_stats_cache.test",
         "test/sql/transaction/partition_commit_retry_remap.test",
         "test/sql/transaction/transaction_conflicts_replaced_delete_file.test",
         "test/sql/types/null_type.test",

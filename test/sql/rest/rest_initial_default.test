@@ -71,7 +71,7 @@ SELECT initial_default FROM __ducklake_metadata_rest_lake.ducklake_column WHERE 
 ----
 2024-01-01 08:00:00+00
 
-# a VARIANT column of a new table has no initial default, an added VARIANT column keeps the text of the client's value
+# a time zone literal gives a VARIANT column of a new table no initial default, an added one the text of the client's value
 statement ok
 CREATE TABLE dl.v(i INTEGER, v VARIANT DEFAULT TIMESTAMPTZ '2024-01-01 00:00:00')
 

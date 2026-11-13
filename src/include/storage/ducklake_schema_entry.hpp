@@ -17,13 +17,16 @@
 #include "storage/ducklake_sort_data.hpp"
 
 namespace duckdb {
+class DuckLakeCatalogLoader;
 class DuckLakeTransaction;
 struct DefaultTableMacro;
 
 class DuckLakeSchemaEntry : public SchemaCatalogEntry {
 public:
+	//! A schema loaded from the catalog has the loader of its schema version, which loads its tables and views
 	DuckLakeSchemaEntry(Catalog &catalog, CreateSchemaInfo &info, SchemaIndex schema_id, string schema_uuid,
-	                    string data_path, optional_ptr<DuckLakeSchemaEntry> parent_schema = nullptr);
+	                    string data_path, optional_ptr<DuckLakeSchemaEntry> parent_schema = nullptr,
+	                    optional_ptr<DuckLakeCatalogLoader> loader = nullptr);
 	~DuckLakeSchemaEntry() override;
 
 public:
@@ -77,11 +80,14 @@ public:
 
 	void AddEntry(CatalogType type, unique_ptr<CatalogEntry> entry);
 	void TryDropSchema(CatalogTransaction transaction, bool cascade);
+	DuckLakeCatalogSet &GetCatalogSet(CatalogType type);
 
 	static bool CatalogTypeIsSupported(CatalogType type);
 
 private:
-	DuckLakeCatalogSet &GetCatalogSet(CatalogType type);
+	//! The committed entry with the name, loaded when it is not yet
+	optional_ptr<CatalogEntry> GetCommittedEntry(DuckLakeTransaction &transaction, CatalogType type,
+	                                             const Identifier &name);
 	bool HandleCreateConflict(CatalogTransaction transaction, CatalogType type, const Identifier &name,
 	                          CreateInfo &info);
 
@@ -93,6 +99,7 @@ private:
 	string schema_uuid;
 	string data_path;
 	string path_key;
+	optional_ptr<DuckLakeCatalogLoader> loader;
 	DuckLakeCatalogSet child_schemas;
 	DuckLakeCatalogSet tables;
 	DuckLakeCatalogSet scalar_macros;

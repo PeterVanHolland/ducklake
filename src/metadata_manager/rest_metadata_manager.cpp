@@ -238,7 +238,9 @@ unique_ptr<DuckLakeSnapshot> RESTMetadataManager::GetSnapshot(BoundAtClause &at_
 	return make_uniq<DuckLakeSnapshot>(response.snapshot);
 }
 
-DuckLakeCatalogInfo RESTMetadataManager::GetCatalogForSnapshot(DuckLakeSnapshot snapshot) {
+DuckLakeCatalogInfo RESTMetadataManager::GetCatalogForSnapshot(DuckLakeSnapshot snapshot,
+                                                               const DuckLakeCatalogLoadFilter &filter) {
+	// the server sends the whole catalog of the snapshot, whatever the filter selects
 	auto &client = GetClient();
 	{
 		lock_guard<mutex> guard(cache_lock);

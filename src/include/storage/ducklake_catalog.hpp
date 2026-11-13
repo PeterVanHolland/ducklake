@@ -20,6 +20,7 @@
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/main/client_context_state.hpp"
 #include "duckdb/storage/object_cache.hpp"
+#include "storage/ducklake_catalog_loader.hpp"
 #include "storage/ducklake_catalog_set.hpp"
 #include "storage/ducklake_metadata_info.hpp"
 #include "storage/ducklake_partition_data.hpp"
@@ -114,11 +115,11 @@ struct DuckLakeTableRecordCountCacheEntry : public ObjectCacheEntry {
 
 //! Cache entry for a DuckLake schema version
 struct DuckLakeSchemaCacheEntry : public ObjectCacheEntry {
-	explicit DuckLakeSchemaCacheEntry(unique_ptr<DuckLakeCatalogSet> catalog_set_p)
-	    : catalog_set(std::move(*catalog_set_p)) {
+	explicit DuckLakeSchemaCacheEntry(unique_ptr<DuckLakeCatalogLoader> loader_p) : loader(std::move(loader_p)) {
 	}
 
-	DuckLakeCatalogSet catalog_set;
+	//! The schemas of the version, loading their tables and views as they are looked up
+	unique_ptr<DuckLakeCatalogLoader> loader;
 
 	static string ObjectType() {
 		return "ducklake_schema";
@@ -443,10 +444,20 @@ public:
 	optional_ptr<DuckLakeTableEntry> GetTableAtSchemaVersion(DuckLakeTransaction &transaction, TableIndex table_id,
 	                                                         idx_t schema_version);
 
-	static unique_ptr<DuckLakeStats> ConstructStatsMap(vector<DuckLakeGlobalStatsInfo> &global_stats,
-	                                                   DuckLakeCatalogSet &schema);
+	//! The stats of the tables, or of those of the given tables, that the loader has at its snapshot
+	static unique_ptr<DuckLakeStats> ConstructStatsMap(DuckLakeTransaction &transaction,
+	                                                   vector<DuckLakeGlobalStatsInfo> &global_stats,
+	                                                   DuckLakeCatalogLoader &loader,
+	                                                   optional_ptr<const vector<TableIndex>> tables = nullptr);
 	//! Return the schema for the given snapshot - loading it if it is not yet loaded
 	DuckLakeCatalogSet &GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
+	//! The loader of the schema version of the snapshot, pinned by the transaction
+	DuckLakeCatalogLoader &GetLoaderForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
+	//! Adds the tables and views of the catalog info that the loader does not hold yet, with their partition and
+	//! sort keys, and their estimated memory
+	void AddCatalogEntries(DuckLakeCatalogLoader &loader, DuckLakeCatalogInfo &catalog);
+	//! Reserves the current estimated memory of the cached schema version, false when its loader left the cache
+	bool RefreshSchemaCacheMemory(idx_t schema_version, const DuckLakeCatalogLoader &loader);
 
 	//! Callback type for instrumenting metadata queries
 	using QueryCallback = std::function<void(const string &query, std::chrono::steady_clock::duration elapsed)>;
@@ -499,7 +510,9 @@ public:
 
 private:
 	void DropSchema(ClientContext &context, DropInfo &info) override;
-	unique_ptr<DuckLakeCatalogSet> LoadSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
+	unique_ptr<DuckLakeCatalogLoader> LoadSchemaForSnapshot(DuckLakeTransaction &transaction,
+	                                                        DuckLakeSnapshot snapshot);
+	void AddMacroEntries(ClientContext &context, DuckLakeCatalogLoader &loader, DuckLakeCatalogInfo &catalog);
 	//! Look up (or load) the ObjectCache entry for a given snapshot.
 	shared_ptr<DuckLakeSchemaCacheEntry> GetSchemaCacheEntry(DuckLakeTransaction &transaction,
 	                                                         DuckLakeSnapshot snapshot);

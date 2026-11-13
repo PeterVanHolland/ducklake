@@ -401,15 +401,26 @@ public:
 	//! Whether the result contains a column with the given name
 	static bool ResultHasColumn(QueryResult &result, const string &name);
 
-	//! Get the catalog information for a specific snapshot
-	virtual DuckLakeCatalogInfo GetCatalogForSnapshot(DuckLakeSnapshot snapshot);
+	//! The schemas and macros of the snapshot, with the tables and views the filter selects
+	virtual DuckLakeCatalogInfo GetCatalogForSnapshot(DuckLakeSnapshot snapshot,
+	                                                  const DuckLakeCatalogLoadFilter &filter);
+	//! Reads the tables and views the filter selects into a catalog whose schemas are loaded
+	void LoadCatalogEntries(DuckLakeCatalogInfo &catalog, DuckLakeSnapshot snapshot,
+	                        const DuckLakeCatalogLoadFilter &filter);
+	//! The names and ids of the tables and views of the schema at the snapshot
+	vector<pair<Identifier, TableIndex>> GetEntryNames(DuckLakeSnapshot snapshot, SchemaIndex schema_id);
 	//! Transaction-free build of the catalog snapshot. Caller supplies a snapshot-aware query
 	//! executor (responsible for `{METADATA_CATALOG}` / `{SNAPSHOT_ID}` substitution) plus the
 	//! data path and separator used for resolving stored relative paths.
 	static DuckLakeCatalogInfo
 	BuildCatalogForSnapshot(DuckLakeSnapshot snapshot,
 	                        const std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> &query_executor,
-	                        const string &base_data_path, const string &separator, bool supports_v1_1_metadata = false);
+	                        const string &base_data_path, const string &separator, bool supports_v1_1_metadata = false,
+	                        const DuckLakeCatalogLoadFilter &filter = DuckLakeCatalogLoadFilter::All());
+	static void
+	LoadCatalogEntries(DuckLakeCatalogInfo &catalog, DuckLakeSnapshot snapshot,
+	                   const std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> &query_executor,
+	                   const string &separator, bool supports_v1_1_metadata, const DuckLakeCatalogLoadFilter &filter);
 	//! The global stats of every table of the snapshot, or of the given tables
 	virtual vector<DuckLakeGlobalStatsInfo> GetGlobalTableStats(DuckLakeSnapshot snapshot,
 	                                                            const vector<TableIndex> &table_ids = {});
@@ -770,8 +781,14 @@ protected:
 	static vector<DuckLakeViewColumnTag> LoadViewColumnTags(const Value &list);
 	//! Parse inlined data tables list from ListAggregation value
 	static vector<DuckLakeInlinedTableInfo> LoadInlinedDataTables(const Value &list);
+	static DuckLakePartitionInfo LoadPartitionKeys(TableIndex table_id, const Value &list);
+	static DuckLakeSortInfo LoadSortKeys(TableIndex table_id, const Value &list);
 	//! Parse macro implementations list from ListAggregation value
 	static vector<DuckLakeMacroImplementation> LoadMacroImplementations(const Value &list);
+	//! Reads the views the filter selects into the catalog
+	static void LoadViews(DuckLakeCatalogInfo &catalog, DuckLakeSnapshot snapshot,
+	                      const std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> &query_executor,
+	                      bool supports_v1_1_metadata, const DuckLakeCatalogLoadFilter &filter);
 
 public:
 	//! Get path relative to catalog path

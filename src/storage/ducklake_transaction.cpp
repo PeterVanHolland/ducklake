@@ -887,8 +887,12 @@ void DuckLakeTransaction::Start() {
 }
 
 void DuckLakeTransaction::UndoConfigOptions() {
-	for (auto it = config_option_undo.rbegin(); it != config_option_undo.rend(); ++it) {
-		ducklake_catalog.UndoConfigOption(*it);
+	if (HasDeferredConfigOptions()) {
+		ducklake_catalog.EndDeferredConfigOptions(*this, false);
+	} else {
+		for (auto it = config_option_undo.rbegin(); it != config_option_undo.rend(); ++it) {
+			ducklake_catalog.UndoConfigOption(*it);
+		}
 	}
 	config_option_undo.clear();
 }
@@ -912,16 +916,23 @@ void DuckLakeTransaction::Commit() {
 	try {
 		if (ChangesMade() || !ConfigOptionLockSql().empty()) {
 			FlushChanges();
-		} else if (!state->flushed_inlined_tables.empty()) {
-			// flushes of only empty inlined tables drop the superseded tables
-			GetConnection().Commit();
-			DropEmptySupersededInlinedTablesClientSide();
-		} else if (connection) {
-			try {
-				connection->Commit();
-			} catch (std::exception &ex) {
-				ErrorData error(ex);
-				error.Throw(GetMetadataManager().CommitErrorHint(error.Message()));
+		} else {
+			if (HasDeferredConfigOptions()) {
+				auto option_changes = DeferredConfigOptionsSql();
+				auto result = metadata_manager->Execute(GetSnapshot(), option_changes);
+				result->ThrowIfError("Failed to write config options to DuckLake: ");
+			}
+			if (!state->flushed_inlined_tables.empty()) {
+				// flushes of only empty inlined tables drop the superseded tables
+				GetConnection().Commit();
+				DropEmptySupersededInlinedTablesClientSide();
+			} else if (connection) {
+				try {
+					connection->Commit();
+				} catch (std::exception &ex) {
+					ErrorData error(ex);
+					error.Throw(GetMetadataManager().CommitErrorHint(error.Message()));
+				}
 			}
 		}
 	} catch (...) {
@@ -931,6 +942,10 @@ void DuckLakeTransaction::Commit() {
 		throw;
 	}
 	ClearMaintenanceChanges();
+	if (HasDeferredConfigOptions()) {
+		// keep the cached options in commit order
+		ducklake_catalog.EndDeferredConfigOptions(*this, true);
+	}
 	if (rewrote_config_options) {
 		// the retried commit wrote its options last, also where another transaction set them meanwhile
 		for (auto &change : config_option_undo) {
@@ -1655,6 +1670,12 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		                     "snapshot changes for conflict resolution:");
 		return result;
 	};
+	context.write_config_options = [&]() {
+		return DeferredConfigOptionsSql();
+	};
+	context.find_written_table_option = [&](TableIndex table_id, const string &option) {
+		return FindDeferredTableOption(table_id, option);
+	};
 	context.inlined_file_deletion_table_exists = [&](TableIndex table_id) {
 		return metadata_manager->InlinedDeletionTableExists(
 		    DuckLakeMetadataManager::InlinedFileDeletionTableName(table_id));
@@ -1917,7 +1938,20 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	}
 }
 
+void DuckLakeTransaction::DeferConfigOption(const DuckLakeConfigOption &option, bool reset) {
+	DuckLakeConfigOptionUndo change;
+	change.option = option;
+	change.reset = reset;
+	ducklake_catalog.AddDeferredConfigOption(*this, change);
+	config_option_undo.push_back(std::move(change));
+}
+
 void DuckLakeTransaction::SetConfigOption(const DuckLakeConfigOption &option) {
+	// a metadata catalog that commits each statement gets the option when the transaction commits
+	if (DefersConfigOptions()) {
+		DeferConfigOption(option, false);
+		return;
+	}
 	// write the config option to the metadata
 	auto metadata_rows = metadata_manager->SetConfigOption(option);
 	// the catalog copy is not transactional - remember the previous value so a rollback can restore it
@@ -1926,9 +1960,75 @@ void DuckLakeTransaction::SetConfigOption(const DuckLakeConfigOption &option) {
 }
 
 void DuckLakeTransaction::ResetConfigOption(const DuckLakeConfigOption &option) {
-	if (metadata_manager->ResetConfigOption(option)) {
+	if (DefersConfigOptions()) {
+		DeferConfigOption(option, true);
+	} else if (metadata_manager->ResetConfigOption(option)) {
 		config_option_undo.push_back(ducklake_catalog.ResetConfigOption(option));
 	}
+}
+
+template <class SETTING, class MATCHES>
+static void ApplyDeferredConfigOption(vector<SETTING> &settings, const DuckLakeConfigOptionUndo &undo, SETTING setting,
+                                      MATCHES matches) {
+	settings.erase(std::remove_if(settings.begin(), settings.end(), matches), settings.end());
+	if (!undo.reset) {
+		settings.push_back(std::move(setting));
+	}
+}
+
+void DuckLakeTransaction::ApplyDeferredConfigOptions(DuckLakeMetadata &metadata) const {
+	if (!HasDeferredConfigOptions()) {
+		return;
+	}
+	for (auto &undo : config_option_undo) {
+		auto &option = undo.option;
+		auto &key = option.option.key;
+		if (option.table_id.IsValid()) {
+			ApplyDeferredConfigOption(metadata.table_settings, undo,
+			                          DuckLakeTableSetting {option.table_id, option.option},
+			                          [&](const DuckLakeTableSetting &setting) {
+				                          return setting.table_id == option.table_id && setting.tag.key == key;
+			                          });
+		} else if (option.schema_id.IsValid()) {
+			ApplyDeferredConfigOption(metadata.schema_settings, undo,
+			                          DuckLakeSchemaSetting {option.schema_id, option.option},
+			                          [&](const DuckLakeSchemaSetting &setting) {
+				                          return setting.schema_id == option.schema_id && setting.tag.key == key;
+			                          });
+		} else {
+			ApplyDeferredConfigOption(metadata.tags, undo, option.option,
+			                          [&](const DuckLakeTag &tag) { return tag.key == key; });
+		}
+	}
+}
+
+bool DuckLakeTransaction::DefersConfigOptions() const {
+	// a remote catalog sends its option changes with its own commit
+	return metadata_manager->CommitsEachStatement() && !metadata_manager->IsRemote();
+}
+
+bool DuckLakeTransaction::HasDeferredConfigOptions() const {
+	return DefersConfigOptions() && !config_option_undo.empty();
+}
+
+string DuckLakeTransaction::DeferredConfigOptionsSql() const {
+	if (!HasDeferredConfigOptions()) {
+		return string();
+	}
+	return DuckLakeMetadataManager::WriteConfigOptionChangesSql(config_option_undo);
+}
+
+optional_ptr<const DuckLakeConfigOptionUndo> DuckLakeTransaction::FindDeferredTableOption(TableIndex table_id,
+                                                                                          const string &option) const {
+	if (!HasDeferredConfigOptions()) {
+		return nullptr;
+	}
+	for (auto it = config_option_undo.rbegin(); it != config_option_undo.rend(); ++it) {
+		if (it->option.IsOption(SchemaIndex(), table_id, option)) {
+			return *it;
+		}
+	}
+	return nullptr;
 }
 
 void DuckLakeTransaction::ClearMaintenanceChanges() {
@@ -1994,7 +2094,7 @@ bool DuckLakeTransaction::ConfigOptionsWrittenByOthers() {
 
 void DuckLakeTransaction::RewriteConfigOptions() {
 	if (metadata_manager->CommitsEachStatement()) {
-		// the option writes were committed when they were made, the rollback kept them
+		// each commit attempt writes the deferred options in its batch
 		return;
 	}
 	for (idx_t i = 0; i < config_option_undo.size(); i++) {

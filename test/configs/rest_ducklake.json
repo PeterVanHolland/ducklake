@@ -98,7 +98,8 @@
         "test/sql/tags/tags_expire_open_conflict.test",
         "test/sql/time_travel/at_timestamp_expired_in_transaction.test",
         "test/sql/time_travel/at_timestamp_expired_snapshots.test",
-        "test/sql/time_travel/snapshot_attach_maintenance.test"
+        "test/sql/time_travel/snapshot_attach_maintenance.test",
+        "test/sql/transaction/set_option_rollback.test"
       ]
     },
     {
@@ -660,6 +661,8 @@
         "test/sql/quack/inlined_superseded_drop_failure.test",
         "test/sql/quack/partial_file_count.test",
         "test/sql/quack/quack_at_timestamp_expired_concurrent.test",
+        "test/sql/quack/quack_option_flush_superseded.test",
+        "test/sql/quack/quack_set_option_concurrent.test",
         "test/sql/quack/server_default_order.test",
         "test/sql/quack/server_side_commit_cache_clear.test",
         "test/sql/quack/staged_commit_added_files.test",

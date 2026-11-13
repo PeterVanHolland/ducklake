@@ -11,7 +11,8 @@
 
 namespace duckdb {
 
-static void HandleDuckLakeOption(DuckLakeOptions &options, const string &option, const Value &value) {
+static void HandleDuckLakeOption(ClientContext &context, DuckLakeOptions &options, const string &option,
+                                 const Value &value) {
 	// options of a secret skip the NULL check of ATTACH
 	if (value.IsNull()) {
 		throw BinderException("NULL is not supported as a valid option for ATTACH option \"%s\"", option);
@@ -51,7 +52,8 @@ static void HandleDuckLakeOption(DuckLakeOptions &options, const string &option,
 		if (options.at_clause) {
 			throw InvalidInputException("Cannot specify both VERSION and TIMESTAMP");
 		}
-		options.at_clause = make_uniq<BoundAtClause>("timestamp", value.DefaultCastAs(LogicalType::TIMESTAMP_TZ));
+		// a time without an offset is read in the time zone of the session, as in an AT clause
+		options.at_clause = make_uniq<BoundAtClause>("timestamp", value.CastAs(context, LogicalType::TIMESTAMP_TZ));
 	} else if (StringUtil::StartsWith(lcase, "meta_")) {
 		auto parameter_name = lcase.substr(5);
 		options.metadata_parameters[parameter_name] = value;
@@ -68,6 +70,19 @@ static void HandleDuckLakeOption(DuckLakeOptions &options, const string &option,
 		options.ducklake_version = ParseWritableDuckLakeVersion(value.ToString(), "ducklake_version");
 	} else {
 		throw NotImplementedException("Unsupported option %s for DuckLake", option);
+	}
+}
+
+//! ducklake:rest: connects to a DuckLake REST server, it does not start one (see ducklake_rest_serve)
+static void CheckRESTPath(const DuckLakeOptions &options) {
+	if (!StringUtil::StartsWith(options.metadata_path, "rest:")) {
+		return;
+	}
+	auto url = options.metadata_path.substr(5);
+	if (!StringUtil::StartsWith(url, "http://") && !StringUtil::StartsWith(url, "https://")) {
+		throw InvalidInputException("ducklake:rest: requires the URL of a DuckLake REST server (http:// or https://), "
+		                            "but got \"%s\". Use ducklake_rest_serve to start a server.",
+		                            url);
 	}
 }
 
@@ -105,7 +120,7 @@ static unique_ptr<Catalog> DuckLakeAttach(optional_ptr<StorageExtensionInfo> sto
 		// if we have a secret - handle the options
 		auto &kv_secret = secret->secret->Cast<KeyValueSecret>();
 		for (auto &entry : kv_secret.secret_map) {
-			HandleDuckLakeOption(options, entry.first.GetIdentifierName(), entry.second);
+			HandleDuckLakeOption(context, options, entry.first.GetIdentifierName(), entry.second);
 		}
 	}
 	options.access_mode = attach_options.access_mode;
@@ -115,7 +130,7 @@ static unique_ptr<Catalog> DuckLakeAttach(optional_ptr<StorageExtensionInfo> sto
 		if (StringUtil::Lower(entry.first) == "create_if_not_exists") {
 			is_create_if_not_exists_set = true;
 		}
-		HandleDuckLakeOption(options, entry.first, entry.second);
+		HandleDuckLakeOption(context, options, entry.first, entry.second);
 	}
 	if (options.access_mode == AccessMode::READ_ONLY && !is_create_if_not_exists_set) {
 		options.create_if_not_exists = false;
@@ -131,6 +146,7 @@ static unique_ptr<Catalog> DuckLakeAttach(optional_ptr<StorageExtensionInfo> sto
 		attach_options.access_mode = AccessMode::READ_ONLY;
 		db.SetReadOnlyDatabase();
 	}
+	CheckRESTPath(options);
 	attach_options.options["busy_timeout"] = Value::INTEGER(options.busy_timeout);
 	return make_uniq<DuckLakeCatalog>(db, std::move(options));
 }

@@ -136,6 +136,17 @@ static bool HasNewInlinedFileDeletes(DuckLakeTransaction &transaction) {
 	return false;
 }
 
+bool QuackMetadataManager::CommitOutcomeUnknown(const ErrorData &error) {
+	// the server commits the batch and sends the type of its error, only a constraint or transaction error refuses
+	if (error.Type() != ExceptionType::CONSTRAINT && error.Type() != ExceptionType::TRANSACTION) {
+		return true;
+	}
+	// a checkpoint that fails after the commit invalidates the server's database, which then answers no query
+	string probe = "SELECT NULL FROM {METADATA_CATALOG}.ducklake_metadata LIMIT 1";
+	auto result = Query(probe);
+	return !result || result->HasError();
+}
+
 bool QuackMetadataManager::CanSkipSnapshotFetch(const TransactionChangeInformation &changes) const {
 	if (RequiresClientSideCommit(transaction)) {
 		return false;

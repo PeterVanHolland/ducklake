@@ -48,6 +48,7 @@
       "paths": [
         "test/sql/metadata/ducklake_settings_sqlite.test",
         "test/sql/metadata/sqlite_all_varchar.test",
+        "test/sql/metadata/metadata_table_validation_sqlite.test",
         "test/sql/data_inlining/sqlite_column_limit.test",
         "test/sql/data_inlining/sqlite_system_column_names.test",
         "test/sql/data_inlining/data_inlining_variant_sql_rollback.test"
@@ -60,6 +61,7 @@
         "test/sql/metadata/postgres_long_metadata_schema.test",
         "test/sql/retry/postgres_rollback_connection_loss.test",
         "test/sql/metadata/metadata_schema_scoped_attach.test",
+        "test/sql/metadata/metadata_table_validation_postgres.test",
         "test/sql/migration/postgres_concurrent_migration.test",
         "test/sql/retry/postgres_localized_conflict_retry.test",
         "test/sql/retry/postgres_commit_connection_loss.test",

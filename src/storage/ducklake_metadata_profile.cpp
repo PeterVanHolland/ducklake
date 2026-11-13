@@ -78,6 +78,12 @@ private:
 				value.IterateObject([&](const string &name, JSONValue column_type) {
 					profile.column_type_overrides[GetTypeId(name)] = GetString(name, column_type);
 				});
+			} else if (key == "stored_types") {
+				ExpectObject(key, value);
+				profile.stored_types.clear();
+				value.IterateObject([&](const string &name, JSONValue stored_type) {
+					profile.stored_types[GetTypeId(name)] = GetString(name, stored_type);
+				});
 			} else {
 				throw InvalidInputException("unknown field \"types.%s\"", key);
 			}

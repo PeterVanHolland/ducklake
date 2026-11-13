@@ -1,0 +1,288 @@
+# name: test/sql/metadata/variant_stats_shredded_type_children.test
+# description: invalid stored VARIANT statistics report an error when the column is read and are dropped by the next append, reversed bounds are unknown bounds
+# group: [metadata]
+
+require ducklake
+
+require parquet
+
+test-env DATA_PATH {TEST_DIR}
+
+foreach nested_type list struct map
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_{nested_type}.db' AS dl (DATA_PATH '{DATA_PATH}/shredded_{nested_type}', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t AS SELECT 1::VARIANT AS v
+
+statement ok
+CREATE TABLE dl.healthy AS SELECT 2::VARIANT AS w
+
+query I
+SELECT stats(v) IS NOT NULL FROM dl.t
+----
+true
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"\"a\"","shredded_type":"int32","min":"1","max":"1"},{"field_name":"\"b\"","shredded_type":"{nested_type}"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 't')
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_{nested_type}.db' AS dl (DATA_INLINING_ROW_LIMIT 0)
+
+# the other table loads, and a count needs no column statistics
+query I
+SELECT stats(w) IS NOT NULL FROM dl.healthy
+----
+true
+
+query I
+SELECT count(*) FROM dl.t
+----
+1
+
+# reading the column asks for its statistics
+statement error
+SELECT stats(v) FROM dl.t
+----
+<REGEX>:.*Invalid Input Error.*Column "v".*shredded type "(list|struct|map)".*
+
+statement error
+SELECT v FROM dl.t
+----
+<REGEX>:.*Invalid Input Error.*Column "v" has invalid stored statistics.*
+
+# an append restores the column reads and drops the stored statistics, the valid field with them
+statement ok
+INSERT INTO dl.t VALUES (4::VARIANT)
+
+query I
+SELECT count(*) FROM dl.t WHERE v IS NOT NULL
+----
+2
+
+query I
+SELECT DISTINCT stats(v) IS NOT NULL FROM dl.t
+----
+true
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_{nested_type}.db' AS dl
+
+query I
+SELECT count(*) FROM dl.t WHERE v IS NOT NULL
+----
+2
+
+query I
+SELECT extra_stats IS NULL FROM __ducklake_metadata_dl.ducklake_table_column_stats WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 't')
+----
+true
+
+statement ok
+DETACH dl
+
+endloop
+
+# other invalid statistics are reported the same way
+foreach payload [{"field_name":"root","shredded_type":"int3"}] [{"field_name":"root","shredded_type":"decimal"}] [{"field_name":"root","shredded_type":"decimal(foo,2)"}] [{"field_name":"root","shredded_type":"decimal(8)"}] [{"field_name":"root","shredded_type":"decimal(264,2)"}] [{"field_name":"root","shredded_type":"decimal(8junk,2)"}] [{"field_name":"root","shredded_type":"decimal(2,8)"}] [{"field_name":"root","shredded_type":"decimal(0x8,2)"}] [{"field_name":"root","shredded_type":"decimal(8,2,)"}] [{"field_name":"root","shredded_type":"int32","min":[1]}] [{"field_name":"root","shredded_type":"int32","null_count":-1}] [{"field_name":"root","shredded_type":"int32","num_values":1.5}] [{"field_name":"root","shredded_type":"int32","contains_nan":"true"}] [{"field_name":"root","shredded_type":"int32","min":"1","max":"1","any_valid":false}] [{"field_name":"root","shredded_type":"int32"},{"field_name":"\"x\"","shredded_type":"int32"}] [{"field_name":"element","shredded_type":"int32"},{"field_name":"\"x\"","shredded_type":"int32"}] [{"field_name":"root","shredded_type":"int32","null_count":2,"num_values":1}] [{"field_name":"root","shredded_type":"int32","min":"1","max":"1","null_count":1,"num_values":1}] [{"field_name":"root","shredded_type":"int32","min":"1","max":"1","null_count":0,"num_values":1,"any_valid":false}] [{"field_name":"root","shredded_type":"int32","null_count":0,"num_values":1,"any_valid":false}] [{"field_name":"root","shredded_type":"int32"},{"field_name":"root","shredded_type":"int32"}] {} [1] [{"field_name":["x"],"shredded_type":"int32"}] notjson
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl (DATA_PATH '{DATA_PATH}/shredded_other', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE IF NOT EXISTS dl.t AS SELECT 1::VARIANT AS v
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '{payload}'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
+
+statement error
+SELECT stats(v) FROM dl.t
+----
+<REGEX>:.*Invalid Input Error.*Column "v" has invalid stored statistics.*
+
+statement ok
+DETACH dl
+
+endloop
+
+# a path that is nested too deeply is reported, a quoted field name may hold any number of dots
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"' || repeat('element.', 1200) || 'element","shredded_type":"int32"}]'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
+
+statement error
+SELECT stats(v) FROM dl.t
+----
+<REGEX>:.*Invalid Input Error.*Column "v" has invalid stored statistics.*nested too deeply.*
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"\"' || repeat('a.', 1200) || 'a\"","shredded_type":"int32"}]'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
+
+query I
+SELECT DISTINCT stats(v) IS NOT NULL FROM dl.t
+----
+true
+
+statement ok
+DETACH dl
+
+# bounds that do not parse or are reversed give unknown statistics, not empty ones
+# a count that overflows at the append is dropped
+foreach bounds "min":"bad","max":"bad" "min":"2","max":"1" "min":"1","max":"1","null_count":0,"num_values":18446744073709551615
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"int32",{bounds}}]'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl (DATA_INLINING_ROW_LIMIT 0)
+
+query I
+SELECT count(*) FROM dl.t WHERE v::INTEGER = 1
+----
+1
+
+query I
+SELECT DISTINCT stats(v) IS NOT NULL FROM dl.t
+----
+true
+
+# an append must not trust the stored bounds either
+statement ok
+INSERT INTO dl.t VALUES (4::VARIANT)
+
+query I
+SELECT count(*) FROM dl.t WHERE v::INTEGER = 1
+----
+1
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
+
+query I
+SELECT count(*) FROM dl.t WHERE v::INTEGER = 1
+----
+1
+
+statement ok
+DETACH dl
+
+endloop
+
+# reversed BOOLEAN, VARCHAR and UUID bounds are unknown bounds as well, in VARIANT fields and in ordinary columns
+# the stored bounds are a lower and an upper bound in text order whether they are exact or not
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl (DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.tb AS SELECT false::VARIANT AS b, 'a'::VARIANT AS s, 'a0000000-0000-0000-0000-000000000000'::UUID::VARIANT AS u, 'a0000000-0000-0000-0000-000000000000'::UUID AS p, 'ab' AS q
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"boolean","min":"true","max":"false"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'tb') AND column_id = (SELECT column_id FROM __ducklake_metadata_dl.ducklake_column WHERE column_name = 'b')
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"varchar","min":"b","max":"a"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'tb') AND column_id = (SELECT column_id FROM __ducklake_metadata_dl.ducklake_column WHERE column_name = 's')
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET min_value = 'ab', max_value = 'a' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'tb') AND column_id = (SELECT column_id FROM __ducklake_metadata_dl.ducklake_column WHERE column_name = 'q')
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET extra_stats = '[{"field_name":"root","shredded_type":"uuid","min":"B0000000-0000-0000-0000-000000000000","max":"a0000000-0000-0000-0000-000000000000"}]' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'tb') AND column_id = (SELECT column_id FROM __ducklake_metadata_dl.ducklake_column WHERE column_name = 'u')
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET min_value = 'B0000000-0000-0000-0000-000000000000' WHERE table_id = (SELECT table_id FROM __ducklake_metadata_dl.ducklake_table WHERE table_name = 'tb') AND column_id = (SELECT column_id FROM __ducklake_metadata_dl.ducklake_column WHERE column_name = 'p')
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl (DATA_INLINING_ROW_LIMIT 0)
+
+query IIIII
+SELECT (SELECT count(*) FROM dl.tb WHERE b::BOOLEAN = false), (SELECT count(*) FROM dl.tb WHERE s::VARCHAR = 'a'), (SELECT count(*) FROM dl.tb WHERE u::UUID = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE p = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE q = 'ab')
+----
+1	1	1	1	1
+
+query I
+SELECT stats(q)['min'] IS NULL FROM dl.tb LIMIT 1
+----
+true
+
+# an append must not trust the stored bounds either
+statement ok
+INSERT INTO dl.tb VALUES (true::VARIANT, 'b'::VARIANT, 'c0000000-0000-0000-0000-000000000000'::UUID::VARIANT, 'c0000000-0000-0000-0000-000000000000'::UUID, 'ac')
+
+query IIIII
+SELECT (SELECT count(*) FROM dl.tb WHERE b::BOOLEAN = false), (SELECT count(*) FROM dl.tb WHERE s::VARCHAR = 'a'), (SELECT count(*) FROM dl.tb WHERE u::UUID = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE p = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE q = 'ab')
+----
+1	1	1	1	1
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
+
+query IIIII
+SELECT (SELECT count(*) FROM dl.tb WHERE b::BOOLEAN = false), (SELECT count(*) FROM dl.tb WHERE s::VARCHAR = 'a'), (SELECT count(*) FROM dl.tb WHERE u::UUID = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE p = 'a0000000-0000-0000-0000-000000000000'), (SELECT count(*) FROM dl.tb WHERE q = 'ab')
+----
+1	1	1	1	1
+
+statement ok
+DETACH dl
+
+# a malformed DECIMAL column type is rejected when the catalog loads
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_column SET column_type = 'decimal(264,2)' WHERE column_name = 'v'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/shredded_other.db' AS dl
+
+statement error
+SELECT v FROM dl.t
+----
+<REGEX>:.*Invalid Input Error.*Invalid DECIMAL type "decimal\(264,2\)".*
+
+statement ok
+DETACH dl

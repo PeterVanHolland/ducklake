@@ -38,6 +38,8 @@ public:
 	// map of field name -> field stats
 	unordered_map<string, DuckLakeVariantStats> shredded_field_stats;
 	LogicalType variant_type;
+	//! Why the stored statistics cannot be used, reported when they are read
+	string invalid_reason;
 };
 
 //! Helper class for constructing variant stats from the stats returned by the Parquet writer

@@ -75,6 +75,8 @@ struct DuckLakeCommitState {
 	map<TableIndex, set<FieldIndex>> float_bounds_to_clear;
 	//! The columns this commit retypes to a finer timestamp unit
 	map<TableIndex, set<FieldIndex>> refined_timestamp_columns;
+	//! Columns retyped from BOOLEAN to a number
+	map<TableIndex, set<FieldIndex>> boolean_to_number_columns;
 	//! The oid of each entry that gets its id in this commit
 	ducklake_entry_oids_t new_entry_oids;
 	//! The existing tables that get a new inlined data table in this commit

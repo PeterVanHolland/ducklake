@@ -98,6 +98,9 @@ public:
 	                  optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr) override;
 	void RemoveFilesScheduledForCleanup(const vector<DuckLakeFileForCleanup> &cleaned_up_files) override;
 	optional_idx GetNetRowCount(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot) override;
+	vector<DuckLakeFileColumnBounds> GetLiveFileBounds(DuckLakeTableEntry &table, const set<FieldIndex> &column_ids,
+	                                                   const set<DataFileIndex> &excluded_files,
+	                                                   DuckLakeSnapshot snapshot) override;
 	vector<DuckLakeInlinedTableInfo> GetInlinedDataTables(const DuckLakeTableEntry &table,
 	                                                      DuckLakeSnapshot snapshot) override;
 

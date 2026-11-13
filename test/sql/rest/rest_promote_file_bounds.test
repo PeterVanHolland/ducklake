@@ -1,0 +1,81 @@
+# name: test/sql/rest/rest_promote_file_bounds.test
+# description: A type promotion over REST checks the bounds of the data files, which come with the file list of a scan
+# group: [rest]
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.far (d DATE)
+
+statement ok
+INSERT INTO dl.far VALUES (DATE '2000-01-01'), (DATE '5000000-01-01')
+
+statement error
+ALTER TABLE dl.far ALTER d SET DATA TYPE TIMESTAMP
+----
+holds the value 5000000-01-01, which is out of range for TIMESTAMP
+
+# a deleted value stays in the bounds of its file
+statement ok
+DELETE FROM dl.far WHERE d > DATE '3000-01-01'
+
+statement error
+ALTER TABLE dl.far ALTER d SET DATA TYPE TIMESTAMP
+----
+a data file of the column holds the value 5000000-01-01, which is out of range for TIMESTAMP
+
+query I
+SELECT d FROM dl.far ORDER BY d
+----
+2000-01-01
+
+# the bounds of the other files convert
+statement ok
+CREATE TABLE dl.near (d DATE)
+
+statement ok
+INSERT INTO dl.near VALUES (DATE '2000-01-01'), (NULL)
+
+statement ok
+INSERT INTO dl.near VALUES (DATE '2100-01-01')
+
+statement ok
+ALTER TABLE dl.near ALTER d SET DATA TYPE TIMESTAMP
+
+query I
+SELECT d FROM dl.near WHERE d > TIMESTAMP '1999-01-01' ORDER BY d
+----
+2000-01-01 00:00:00
+2100-01-01 00:00:00
+
+# a file the transaction drops as a whole is not checked
+statement ok
+CREATE TABLE dl.dropped (d DATE)
+
+statement ok
+INSERT INTO dl.dropped VALUES (DATE '5000000-01-01')
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM dl.dropped
+
+statement ok
+ALTER TABLE dl.dropped ALTER d SET DATA TYPE TIMESTAMP
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM dl.dropped
+----
+0
+
+statement ok
+DETACH dl
+
+include test/template/rest_teardown.test_template

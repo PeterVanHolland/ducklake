@@ -54,6 +54,13 @@ struct FlushedInlinedTableInfo;
 //! timestamp, time travel takes the newest snapshot at or before it and refuses times before expired snapshots
 enum class SnapshotBound { LOWER_BOUND, UPPER_BOUND, TIME_TRAVEL };
 
+//! The bounds of a column in a data file, NULL when unknown
+struct DuckLakeFileColumnBounds {
+	FieldIndex column_id;
+	Value min_value;
+	Value max_value;
+};
+
 //! A check whether the live rows of an inlined data table hold a value of a column
 struct DuckLakeInlinedValueCheck {
 	Identifier table_name;
@@ -445,6 +452,11 @@ public:
 	virtual DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! The net row count of the data files that were committed before the snapshot's next file id
 	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);
+	//! The known bounds of columns in the live data files of a table, without the excluded files
+	virtual vector<DuckLakeFileColumnBounds> GetLiveFileBounds(DuckLakeTableEntry &table,
+	                                                           const set<FieldIndex> &column_ids,
+	                                                           const set<DataFileIndex> &excluded_files,
+	                                                           DuckLakeSnapshot snapshot);
 	virtual optional_idx GetNetDataFileRowCountForStats(TableIndex table_id, DuckLakeSnapshot snapshot);
 	virtual idx_t GetNetInlinedRowCount(const Identifier &inlined_table_name, DuckLakeSnapshot snapshot);
 	//! The number of rows of a table, in data files and inlined, or invalid if it cannot be computed exactly

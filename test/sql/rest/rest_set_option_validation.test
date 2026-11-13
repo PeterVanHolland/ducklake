@@ -189,3 +189,27 @@ SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_se
 '{"requests": [{"set_option": {"option": {"key": "parquet_row_group_size_bytes", "value": "0"}}}]}')
 ----
 501	Row group size bytes cannot be 0
+
+# only the plain decimal count is a stored form, other spellings of a number are parsed like the SQL function does
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "target_file_size", "value": "-0"}}}]}')
+----
+200
+
+query I rest_db:rest_server_con
+SELECT value FROM __ducklake_metadata_rest_lake.ducklake_metadata WHERE key = 'target_file_size'
+----
+18446744073709551615
+
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "target_file_size", "value": "0x10"}}}]}')
+----
+400
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "parquet_row_group_size_bytes", "value": "-0"}}}]}')
+----
+400	Row group size bytes must be a finite size, not "-0"

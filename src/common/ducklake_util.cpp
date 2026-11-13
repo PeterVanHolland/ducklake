@@ -816,7 +816,8 @@ string DuckLakeUtil::ParseSentConfigOptionValue(ClientContext &context, const st
 	}
 	if (option == "target_file_size" || option == "parquet_row_group_size_bytes") {
 		idx_t bytes;
-		if (TryCast::Operation<string_t, idx_t>(string_t(value), bytes, true)) {
+		// the stored form is the plain decimal count, other spellings of a number go to the parser like any value
+		if (TryCast::Operation<string_t, idx_t>(string_t(value), bytes, true) && to_string(bytes) == value) {
 			if (option == "parquet_row_group_size_bytes") {
 				if (bytes == 0) {
 					throw NotImplementedException("Row group size bytes cannot be 0");

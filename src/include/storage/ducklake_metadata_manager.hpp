@@ -415,6 +415,9 @@ public:
 	                                                            const vector<TableIndex> &table_ids = {});
 	//! Get the record count of every table that has global stats
 	virtual map<TableIndex, idx_t> GetTableRecordCounts(DuckLakeSnapshot snapshot);
+	//! The query for an inserted file the filters can match, empty when they cannot be written into a query
+	virtual string InsertedFilesMatchingSql(DuckLakeTableEntry &table, const FilterPushdownInfo &filters,
+	                                        const string &metadata_table_prefix = "{METADATA_CATALOG}");
 	//! The projection lists the top-level columns that the scan reads, all of them if it is not set
 	virtual vector<DuckLakeFileListEntry>
 	GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
@@ -846,6 +849,9 @@ protected:
 	string GenerateFilterTreeCondition(const DuckLakeFilterNode &node, FilterSQLResult &result,
 	                                   bool splice_into_parent = false);
 	virtual FilterSQLResult ConvertFilterPushdownToSQL(const FilterPushdownInfo &filter_info);
+	//! The conditions on the files of a table from its filters, the column statistics and the bucket partitions
+	FilterSQLResult GenerateFileFilterConditions(DuckLakeTableEntry &table, const FilterPushdownInfo &filter_info,
+	                                             const string &metadata_table_prefix);
 	string GenerateCTESectionFromRequirements(const map<idx_t, CTERequirement> &requirements, TableIndex table_id,
 	                                          const string &metadata_table_prefix);
 	//! Whether the stats CTEs of the file list query are materialized, for a database that plans the query itself

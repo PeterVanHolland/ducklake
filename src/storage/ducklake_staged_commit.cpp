@@ -49,6 +49,10 @@ const char *DuckLakeStagedTable::BaseName(DuckLakeStagedTableType type) {
 		return "ducklake_staged_tables_deleted_from";
 	case DuckLakeStagedTableType::TABLES_DELETE_ATTEMPTED:
 		return "ducklake_staged_tables_delete_attempted";
+	case DuckLakeStagedTableType::TABLES_READ:
+		return "ducklake_staged_tables_read";
+	case DuckLakeStagedTableType::DELETE_FILTER:
+		return "ducklake_staged_delete_filter";
 	case DuckLakeStagedTableType::FLUSHED_INLINED:
 		return "ducklake_staged_flushed_inlined";
 	case DuckLakeStagedTableType::COMPACTION:
@@ -105,6 +109,10 @@ string DuckLakeStagedTable::Columns(DuckLakeStagedTableType type) {
 		return "table_id BIGINT";
 	case DuckLakeStagedTableType::TABLES_DELETE_ATTEMPTED:
 		return "table_id BIGINT";
+	case DuckLakeStagedTableType::TABLES_READ:
+		return "table_id BIGINT";
+	case DuckLakeStagedTableType::DELETE_FILTER:
+		return "table_id BIGINT, query VARCHAR";
 	case DuckLakeStagedTableType::FLUSHED_INLINED:
 		return "inlined_table_name VARCHAR, schema_version BIGINT, flush_snapshot_id BIGINT";
 	case DuckLakeStagedTableType::COMPACTION:
@@ -140,6 +148,8 @@ const vector<DuckLakeStagedTableType> &DuckLakeStagedTable::AllTypes() {
 	                                                      DuckLakeStagedTableType::DROPPED_FILE,
 	                                                      DuckLakeStagedTableType::TABLES_DELETED_FROM,
 	                                                      DuckLakeStagedTableType::TABLES_DELETE_ATTEMPTED,
+	                                                      DuckLakeStagedTableType::TABLES_READ,
+	                                                      DuckLakeStagedTableType::DELETE_FILTER,
 	                                                      DuckLakeStagedTableType::FLUSHED_INLINED,
 	                                                      DuckLakeStagedTableType::COMPACTION,
 	                                                      DuckLakeStagedTableType::COMPACTION_SOURCE,
@@ -482,6 +492,27 @@ string DuckLakeStagedCommit::EmitDroppedFiles(DuckLakeTransaction &transaction) 
 		sql += StringUtil::Format("INSERT INTO %s VALUES (%llu);",
 		                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::TABLES_DELETE_ATTEMPTED),
 		                          table_id.index);
+	}
+	vector<string> read_rows;
+	for (auto &table_id : transaction.GetTablesRead()) {
+		read_rows.push_back(StringUtil::Format("(%llu)", table_id.index));
+	}
+	if (!read_rows.empty()) {
+		sql += DuckLakeMetadataManager::InsertValuesIntoSql(
+		    DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::TABLES_READ), read_rows);
+	}
+	vector<string> filter_rows;
+	for (auto &entry : transaction.GetDeleteFilters()) {
+		if (entry.second.unfiltered) {
+			filter_rows.push_back(StringUtil::Format("(%llu, NULL)", entry.first.index));
+		}
+		for (auto &query : entry.second.queries) {
+			filter_rows.push_back(StringUtil::Format("(%llu, %s)", entry.first.index, SQLString(query)));
+		}
+	}
+	if (!filter_rows.empty()) {
+		sql += DuckLakeMetadataManager::InsertValuesIntoSql(
+		    DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::DELETE_FILTER), filter_rows);
 	}
 	return sql;
 }

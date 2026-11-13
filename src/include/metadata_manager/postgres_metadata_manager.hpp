@@ -67,6 +67,8 @@ protected:
 	                             const FilterPushdownInfo *filter_info, const vector<DuckLakeFileListOrder> &file_order,
 	                             vector<idx_t> &runtime_filter_stats_columns, FileListType file_list_type,
 	                             const string &metadata_table_prefix) override;
+	string InsertedFilesMatchingSql(DuckLakeTableEntry &table, const FilterPushdownInfo &filters,
+	                                const string &metadata_table_prefix) override;
 	bool MaterializeStatsCTEs() const override;
 	string CastValueToTarget(const Value &value, const LogicalType &type) override;
 	string CastStatsToTarget(const string &stats, const LogicalType &type, StatsCastType cast_type) override;

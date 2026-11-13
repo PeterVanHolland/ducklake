@@ -2419,17 +2419,7 @@ string DuckLakeMetadataManager::GenerateFileListQuery(DuckLakeTableEntry &table,
 	D_ASSERT(file_list_type == FileListType::SCAN || runtime_filter_stats_columns.empty());
 	FilterSQLResult filter_result;
 	if (filter_info && !filter_info->Empty()) {
-		filter_result = ConvertFilterPushdownToSQL(*filter_info);
-		if (table.GetPartitionData()) {
-			auto partition_value_table = metadata_table_prefix + ".ducklake_file_partition_value";
-			auto bucket_clause = BuildBucketPartitionPruningClause(table, *filter_info, partition_value_table);
-			if (!bucket_clause.empty()) {
-				if (!filter_result.where_conditions.empty()) {
-					filter_result.where_conditions += " AND ";
-				}
-				filter_result.where_conditions += bucket_clause;
-			}
-		}
+		filter_result = GenerateFileFilterConditions(table, *filter_info, metadata_table_prefix);
 	}
 	auto table_id = table.GetTableId();
 
@@ -2523,6 +2513,42 @@ WHERE data.table_id=%d AND {SNAPSHOT_ID} >= data.begin_snapshot AND ({SNAPSHOT_I
 		query += "\nAND " + filter_result.where_conditions;
 	}
 	return query + order_by_clause;
+}
+
+FilterSQLResult DuckLakeMetadataManager::GenerateFileFilterConditions(DuckLakeTableEntry &table,
+                                                                      const FilterPushdownInfo &filter_info,
+                                                                      const string &metadata_table_prefix) {
+	auto filter_result = ConvertFilterPushdownToSQL(filter_info);
+	if (table.GetPartitionData()) {
+		auto partition_value_table = metadata_table_prefix + ".ducklake_file_partition_value";
+		auto bucket_clause = BuildBucketPartitionPruningClause(table, filter_info, partition_value_table);
+		if (!bucket_clause.empty()) {
+			if (!filter_result.where_conditions.empty()) {
+				filter_result.where_conditions += " AND ";
+			}
+			filter_result.where_conditions += bucket_clause;
+		}
+	}
+	return filter_result;
+}
+
+string DuckLakeMetadataManager::InsertedFilesMatchingSql(DuckLakeTableEntry &table, const FilterPushdownInfo &filters,
+                                                         const string &metadata_table_prefix) {
+	auto filter_result = GenerateFileFilterConditions(table, filters, metadata_table_prefix);
+	if (filter_result.where_conditions.empty()) {
+		return string();
+	}
+	auto table_id = table.GetTableId();
+	auto query = GenerateCTESectionFromRequirements(filter_result.required_ctes, table_id, metadata_table_prefix);
+	query += StringUtil::Format(R"(
+SELECT data.data_file_id
+FROM %s.ducklake_data_file data%s
+WHERE data.table_id = %d AND %s
+  AND (data.begin_snapshot > {SNAPSHOT_ID} OR (data.partial_max IS NOT NULL AND data.partial_max > {SNAPSHOT_ID}))
+LIMIT 1)",
+	                            metadata_table_prefix, GenerateStatsJoinList(filter_result.required_ctes),
+	                            table_id.index, filter_result.where_conditions);
+	return query;
 }
 
 vector<DuckLakeFileListEntry>

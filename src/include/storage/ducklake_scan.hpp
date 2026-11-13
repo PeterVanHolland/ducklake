@@ -60,9 +60,13 @@ struct DuckLakeFunctionInfo : public TableFunctionInfo {
 	string flush_sort_order_sql;
 	//! Whether the scan sees the uncommitted changes of its transaction, which an AT clause excludes
 	bool include_local_changes = true;
+	//! Numbers the scan within its transaction
+	idx_t scan_id = 0;
 
 	shared_ptr<DuckLakeTransaction> GetTransaction();
 	bool CanUseGlobalStats();
+	//! Whether the scan reads the current rows of a committed table
+	bool ReadsCurrentRows() const;
 };
 
 } // namespace duckdb

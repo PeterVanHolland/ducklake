@@ -9,6 +9,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/storage/data_table.hpp"
@@ -118,6 +119,15 @@ DuckLakeServerSideCommitResult DuckLakeServerSideCommit::Run() {
 	                                               state->tables_deleted_from.end());
 	transaction_changes.tables_delete_attempted.insert(state->tables_delete_attempted.begin(),
 	                                                   state->tables_delete_attempted.end());
+	transaction_changes.delete_filters = state->delete_filters;
+	transaction_changes.tables_read = state->tables_read;
+	if (!tables_read_staged) {
+		// a client that does not stage its reads gets the table level rule
+		transaction_changes.tables_read.insert(transaction_changes.tables_inserted_into.begin(),
+		                                       transaction_changes.tables_inserted_into.end());
+		transaction_changes.tables_read.insert(transaction_changes.tables_inserted_inlined.begin(),
+		                                       transaction_changes.tables_inserted_inlined.end());
+	}
 	commit_tables = transaction_changes.GetChangedTables();
 
 	idx_t committed_snapshot_id = 0;
@@ -426,6 +436,26 @@ void DuckLakeServerSideCommit::ReadStagedDroppedFiles() {
 	for (auto &row : *delete_attempted) {
 		state->tables_delete_attempted.insert(TableIndex(AsIdx(row, 0)));
 	}
+	tables_read_staged = StagedTableExists(DuckLakeStagedTableType::TABLES_READ);
+	if (!tables_read_staged) {
+		return;
+	}
+	auto tables_read = ScanStagedTable(DuckLakeStagedTableType::TABLES_READ);
+	for (auto &row : *tables_read) {
+		state->tables_read.insert(TableIndex(AsIdx(row, 0)));
+	}
+	auto delete_filters = ScanStagedTable(DuckLakeStagedTableType::DELETE_FILTER);
+	for (auto &row : *delete_filters) {
+		auto &filters = state->delete_filters[TableIndex(AsIdx(row, 0))];
+		if (row.IsNull(1)) {
+			filters.unfiltered = true;
+			continue;
+		}
+		filters.queries.push_back(row.GetValue<string>(1));
+	}
+	// a client that does not know these tables must not inherit them from an earlier commit of the session
+	DropStagedTable(DuckLakeStagedTableType::TABLES_READ);
+	DropStagedTable(DuckLakeStagedTableType::DELETE_FILTER);
 }
 
 void DuckLakeServerSideCommit::ReadStagedFlushedInlinedTables() {
@@ -762,14 +792,35 @@ unique_ptr<QueryResult> DuckLakeServerSideCommit::RunQuery(const string &query, 
 	return result;
 }
 
-unique_ptr<QueryResult> DuckLakeServerSideCommit::ScanStagedTable(DuckLakeStagedTableType kind) {
-	string table_name = DuckLakeStagedTable::BaseName(kind);
+optional_ptr<TableCatalogEntry> DuckLakeServerSideCommit::StagedTableEntry(DuckLakeStagedTableType kind) {
 	auto &temp_catalog = Catalog::GetCatalog(context, TEMP_CATALOG);
-	auto &table_entry =
-	    temp_catalog
-	        .GetEntry<TableCatalogEntry>(
-	            context, QualifiedName(temp_catalog.GetName(), Identifier(DEFAULT_SCHEMA), Identifier(table_name)))
-	        .Cast<DuckTableEntry>();
+	return temp_catalog.GetEntry<TableCatalogEntry>(context,
+	                                                QualifiedName(temp_catalog.GetName(), Identifier(DEFAULT_SCHEMA),
+	                                                              Identifier(DuckLakeStagedTable::BaseName(kind))),
+	                                                OnEntryNotFound::RETURN_NULL);
+}
+
+bool DuckLakeServerSideCommit::StagedTableExists(DuckLakeStagedTableType kind) {
+	return StagedTableEntry(kind) != nullptr;
+}
+
+void DuckLakeServerSideCommit::DropStagedTable(DuckLakeStagedTableType kind) {
+	auto &temp_catalog = Catalog::GetCatalog(context, TEMP_CATALOG);
+	DropInfo info;
+	info.type = CatalogType::TABLE_ENTRY;
+	info.SetQualifiedName(QualifiedName(temp_catalog.GetName(), Identifier(DEFAULT_SCHEMA),
+	                                    Identifier(DuckLakeStagedTable::BaseName(kind))));
+	info.if_not_found = OnEntryNotFound::RETURN_NULL;
+	temp_catalog.DropEntry(context, info);
+}
+
+unique_ptr<QueryResult> DuckLakeServerSideCommit::ScanStagedTable(DuckLakeStagedTableType kind) {
+	auto entry = StagedTableEntry(kind);
+	if (!entry) {
+		throw InternalException("Staged table %s not found", DuckLakeStagedTable::BaseName(kind));
+	}
+	auto &table_entry = entry->Cast<DuckTableEntry>();
+	auto &temp_catalog = Catalog::GetCatalog(context, TEMP_CATALOG);
 	auto &storage = table_entry.GetStorage();
 
 	auto types = storage.GetTypes();

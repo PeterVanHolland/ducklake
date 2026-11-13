@@ -108,6 +108,16 @@ vector<string> DuckLakeMetadataManager::SystemColumnNames() const {
 	return GetMetadataProfile().system_column_names;
 }
 
+string DuckLakeMetadataManager::TimestampTzColumnType() const {
+	auto &profile = GetMetadataProfile();
+	auto entry = profile.column_type_overrides.find(LogicalTypeId::TIMESTAMP_TZ);
+	if (entry != profile.column_type_overrides.end()) {
+		return entry->second;
+	}
+	// a catalog without the type stores it as text, like the tag table it creates
+	return profile.natively_unsupported_types.count(LogicalTypeId::TIMESTAMP_TZ) ? "VARCHAR" : "TIMESTAMPTZ";
+}
+
 bool DuckLakeMetadataManager::IsRetryableCommitError(const string &message) const {
 	auto rule = GetMetadataProfile().FindCommitErrorRule(message);
 	return rule && rule->retryable;
@@ -701,6 +711,22 @@ void DuckLakeMetadataManager::MigrateV11() {
 UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '2.0-dev1' WHERE key = 'version';
 )";
 	ExecuteMigration(migrate_query, false, "1.1", "2.0-dev1");
+}
+
+unique_ptr<QueryResult> DuckLakeMetadataManager::ProbeSnapshotTagTable() {
+	return Query("SELECT * FROM {METADATA_CATALOG}.ducklake_snapshot_tag LIMIT 0");
+}
+
+bool DuckLakeMetadataManager::HasSnapshotTagExpiry() {
+	auto probe = ProbeSnapshotTagTable();
+	probe->ThrowIfError("Failed to probe the snapshot tag table in DuckLake: ");
+	return ResultHasColumn(*probe, "expires_at");
+}
+
+void DuckLakeMetadataManager::AddSnapshotTagExpiry() {
+	auto result = Execute(StringUtil::Format(
+	    "ALTER TABLE {METADATA_CATALOG}.ducklake_snapshot_tag ADD COLUMN expires_at %s;", TimestampTzColumnType()));
+	result->ThrowIfError("Failed to add the expiry time of snapshot tags to the DuckLake catalog: ");
 }
 
 void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed) {
@@ -6250,6 +6276,15 @@ WHERE tag.end_snapshot IS NULL
 ORDER BY tag.begin_snapshot ASC, tag_name ASC;)";
 	}
 	auto result = Query(query);
+	if (result->HasError()) {
+		// a probe that fails for another reason leaves the error of the query to the caller
+		auto probe = ProbeSnapshotTagTable();
+		if (!probe->HasError() && !ResultHasColumn(*probe, "expires_at")) {
+			result->GetErrorObject().Throw("Failed to get snapshot tags from DuckLake. The catalog was written by a "
+			                               "development build without the expiry time of tags, reattach with "
+			                               "AUTOMATIC_MIGRATION TRUE to add the expires_at column: ");
+		}
+	}
 	result->ThrowIfError("Failed to get snapshot tags from DuckLake: ");
 	auto context = transaction.context.lock();
 	vector<DuckLakeSnapshotTagInfo> tags;

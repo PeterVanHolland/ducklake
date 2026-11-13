@@ -1,0 +1,77 @@
+# name: test/sql/rest/rest_inlined_update_after_schema_change.test
+# description: A REST transaction that updates an inlined row written before a schema change hides the old version of the row
+# group: [rest]
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.acc(id INTEGER, bal INTEGER)
+
+statement ok
+INSERT INTO dl.acc SELECT range + 1, 100 FROM range(8)
+
+# the schema change opens a new inlined data table, which holds the new version of row 1
+statement ok
+ALTER TABLE dl.acc ADD COLUMN x INTEGER DEFAULT 1
+
+statement ok
+UPDATE dl.acc SET bal = bal + 25 WHERE id = 1
+
+query II
+SELECT count(*), sum(bal) FROM dl.acc
+----
+8	825
+
+statement ok
+BEGIN
+
+# row 8 is in the older inlined data table, row 1 in the newer one
+statement ok
+UPDATE dl.acc SET bal = bal - 5 WHERE id = 8
+
+statement ok
+UPDATE dl.acc SET bal = bal + 5 WHERE id = 1
+
+query III
+SELECT id, bal, rowid FROM dl.acc WHERE id IN (1, 8) ORDER BY id
+----
+1	130	0
+8	95	7
+
+query II
+SELECT count(*), sum(bal) FROM dl.acc
+----
+8	825
+
+# a second update of row 8 changes its one version
+statement ok
+UPDATE dl.acc SET bal = bal - 1 WHERE id = 8
+
+query III
+SELECT id, bal, rowid FROM dl.acc WHERE id IN (1, 8) ORDER BY id
+----
+1	130	0
+8	94	7
+
+statement ok
+COMMIT
+
+query II
+SELECT count(*), sum(bal) FROM dl.acc
+----
+8	824
+
+query III
+SELECT id, bal, rowid FROM dl.acc WHERE id IN (1, 8) ORDER BY id
+----
+1	130	0
+8	94	7
+
+# the server reads the same rows from its catalog
+query II rest_db:rest_server_con
+SELECT count(*), sum(bal) FROM rest_lake.acc
+----
+8	824

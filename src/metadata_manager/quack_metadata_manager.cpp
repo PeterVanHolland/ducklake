@@ -175,7 +175,12 @@ void QuackMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tra
 	}
 	auto committed_snapshot_id = AsIdx(*row, 0);
 	flush_transaction.GetCatalog().SetCommittedSnapshotId(committed_snapshot_id);
-	flush_transaction.ApplyServerSideCommit(AsIdx(*row, 1), committed_snapshot_id);
+	// the server does not report the next file id of its snapshot, which keys the stats the commit invalidates
+	optional_idx committed_next_file_id;
+	if (flush_transaction.HasDroppedFiles() || !flush_transaction.GetLocalChanges().GetCompactedTables().empty()) {
+		committed_next_file_id = flush_transaction.CommittedNextFileId(committed_snapshot_id);
+	}
+	flush_transaction.ApplyServerSideCommit(AsIdx(*row, 1), committed_next_file_id);
 	if (OptBoolFalse(*row, 2)) {
 		// With quack we need to clear up superseded inlines tables on the client side to avoid dangling caching
 		// references

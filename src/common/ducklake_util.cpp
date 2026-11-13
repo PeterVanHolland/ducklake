@@ -28,6 +28,7 @@
 #include "duckdb/catalog/catalog_entry/copy_function_catalog_entry.hpp"
 #include "duckdb/parser/parsed_data/copy_info.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/execution/operator/helper/physical_set.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/unordered_map.hpp"
@@ -85,6 +86,15 @@ ParsedCatalogEntry DuckLakeUtil::ParseCatalogEntry(const string &input) {
 	parts.pop_back();
 	result_data.schema_path = std::move(parts);
 	return result_data;
+}
+
+string DuckLakeUtil::UnquoteSQLString(const string &str) {
+	idx_t pos = 0;
+	string result;
+	if (StringUtil::TryParseQuotedString(str, pos, result, '\'') && pos == str.size()) {
+		return result;
+	}
+	return str;
 }
 
 string DuckLakeUtil::StatsToString(const string &text) {
@@ -618,20 +628,43 @@ void DuckLakeUtil::CopyExtensionSettings(ClientContext &from, ClientContext &to)
 		}
 		auto setting_index = option.setting_index.GetIndex();
 		// these change the types or values read from the metadata and data files
-		static const case_insensitive_set_t READ_SETTINGS {
-		    "sqlite_all_varchar", "binary_as_string",    "pg_use_text_protocol", "pg_query_mode",
-		    "pg_use_binary_copy", "pg_array_as_varchar", "pg_numeric_as_varchar"};
+		static const case_insensitive_set_t READ_SETTINGS {"binary_as_string",    "pg_use_text_protocol",
+		                                                   "pg_query_mode",       "pg_use_binary_copy",
+		                                                   "pg_array_as_varchar", "pg_numeric_as_varchar"};
 		if (READ_SETTINGS.count(entry.first.GetIdentifierName())) {
-			to.config.user_settings.SetUserSetting(setting_index, option.default_value);
+			ClientConfig::GetConfig(to).user_settings.SetUserSetting(setting_index, option.default_value);
 			continue;
 		}
-		if (!from.config.user_settings.IsSet(setting_index)) {
+		if (!ClientConfig::GetConfig(from).user_settings.IsSet(setting_index)) {
 			continue;
 		}
 		Value value;
 		from.TryGetCurrentUserSetting(setting_index, value);
-		to.config.user_settings.SetUserSetting(setting_index, std::move(value));
+		ClientConfig::GetConfig(to).user_settings.SetUserSetting(setting_index, std::move(value));
 	}
+}
+
+void DuckLakeUtil::ResetExtensionSettings(ClientContext &context, const vector<string> &names) {
+	auto &db_config = DBConfig::GetConfig(context);
+	for (auto &name : names) {
+		ExtensionOption option;
+		if (!db_config.TryGetExtensionOption(Identifier(name), option) || !option.setting_index.IsValid()) {
+			continue;
+		}
+		ClientConfig::GetConfig(context).user_settings.SetUserSetting(option.setting_index.GetIndex(),
+		                                                              option.default_value);
+	}
+}
+
+void DuckLakeUtil::SetExtensionSetting(ClientContext &context, const string &name, const Value &value) {
+	ExtensionOption option;
+	if (!DBConfig::GetConfig(context).TryGetExtensionOption(Identifier(name), option)) {
+		// LCOV_EXCL_START
+		// the settings are registered by the extension itself
+		return;
+		// LCOV_EXCL_STOP
+	}
+	PhysicalSet::SetExtensionVariable(context, option, SetScope::SESSION, value);
 }
 
 using config_option_parser_t = string (*)(ClientContext &context, const string &option, const Value &val);
@@ -780,7 +813,21 @@ void DuckLakeUtil::ValidateConfigOptionScope(const string &option, bool has_sche
 	}
 }
 
-bool DuckLakeUtil::TryGetLiteralValue(const ParsedExpression &expr, Value &result) {
+bool DuckLakeUtil::DependsOnTimeZone(const LogicalType &type) {
+	return TypeVisitor::Contains(type, [](const LogicalType &child) {
+		switch (child.id()) {
+		case LogicalTypeId::TIMESTAMP_TZ:
+		case LogicalTypeId::TIMESTAMP_TZ_NS:
+		case LogicalTypeId::TIME_TZ:
+			return true;
+		default:
+			return false;
+		}
+	});
+}
+
+bool DuckLakeUtil::TryGetLiteralValue(const ParsedExpression &expr, Value &result,
+                                      optional_ptr<ClientContext> context) {
 	if (expr.GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
 		result = expr.Cast<ConstantExpression>().GetLiteral().ToValue();
 		return true;
@@ -796,7 +843,16 @@ bool DuckLakeUtil::TryGetLiteralValue(const ParsedExpression &expr, Value &resul
 	if (target_type.id() == LogicalTypeId::INVALID || target_type.id() == LogicalTypeId::UNBOUND) {
 		return false;
 	}
-	auto value = cast.Child().Cast<ConstantExpression>().GetLiteral().ToValue().DefaultTryCastAs(target_type);
+	auto literal = cast.Child().Cast<ConstantExpression>().GetLiteral().ToValue();
+	optional<Value> value;
+	if (context) {
+		value = literal.TryCastAs(*context, target_type);
+	} else if (DuckLakeUtil::DependsOnTimeZone(target_type) || DuckLakeUtil::DependsOnTimeZone(literal.type())) {
+		// the session decides what the cast gives, so it stays an expression
+		return false;
+	} else {
+		value = literal.DefaultTryCastAs(target_type);
+	}
 	if (!value) {
 		return false;
 	}

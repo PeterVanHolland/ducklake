@@ -235,9 +235,11 @@ private:
 	                                         shared_ptr<DuckLakeFieldData> new_field_data);
 
 	unique_ptr<DuckLakeFieldId> GetNestedEvolution(const DuckLakeFieldId &source_id, const LogicalType &target,
-	                                               ColumnChangeInfo &result, optional_idx parent_idx);
+	                                               ColumnChangeInfo &result, optional_idx parent_idx,
+	                                               optional_ptr<ClientContext> context);
 	unique_ptr<DuckLakeFieldId> TypePromotion(const DuckLakeFieldId &source_id, const LogicalType &target,
-	                                          ColumnChangeInfo &result, optional_idx parent_idx);
+	                                          ColumnChangeInfo &result, optional_idx parent_idx,
+	                                          optional_ptr<ClientContext> context);
 
 	void CheckSupportedType(const LogicalType &type);
 

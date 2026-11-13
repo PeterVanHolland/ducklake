@@ -6,6 +6,8 @@ argument lake big_lake_v1
 
 argument tables 2000
 
+argument ducklake_version 1.1
+
 cache_file ${lake}_ready.marker
 
 # Each of the first 50 generated commits creates tables / 50 main tables and 2 inl tables, then 10 frag tables get
@@ -25,7 +27,7 @@ COPY (SELECT 'CREATE TABLE lake.main.created_' || i || ' (' || (SELECT string_ag
 || ['BIGINT', 'DOUBLE', 'VARCHAR', 'DATE'][j % 4 + 1], ', ' ORDER BY j) FROM range(20) u(j)) || ');'
 FROM range(500) t(i) ORDER BY i) TO '${BENCHMARK_DIR}/${lake}_create500/schema.sql' (HEADER false, QUOTE '');
 @create ${lake}_pristine
-@attach ${lake}_pristine AS lake (DATA_PATH '${BENCHMARK_DIR}/${lake}_files')
+@attach ${lake}_pristine AS lake (DATA_PATH '${BENCHMARK_DIR}/${lake}_files', DUCKLAKE_VERSION '${ducklake_version}')
 CALL lake.set_option('data_inlining_row_limit', 0);
 CREATE SCHEMA lake.inl;
 CALL lake.set_option('data_inlining_row_limit', 100, schema => 'inl');

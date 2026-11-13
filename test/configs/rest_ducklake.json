@@ -25,6 +25,8 @@
     {
       "reason": "Tests the migration of metadata that the test writes to the metadata catalog directly",
       "paths": [
+        "test/sql/migration/v10_unmigrated_bounds.test",
+        "test/sql/migration/v10_unmigrated_field_defaults.test",
         "test/sql/migration/stale_version_after_migration.test",
         "test/sql/migration/v01_partitioned.test"
       ]

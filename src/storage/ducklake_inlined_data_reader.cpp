@@ -211,7 +211,7 @@ bool DuckLakeInlinedDataReader::TryInitializeScan(ClientContext &context, Global
 				auto &row_id_vector = chunk.data.back();
 				auto row_id_data = FlatVector::GetData<int64_t>(row_id_vector);
 				for (idx_t r = 0; r < chunk.size(); r++) {
-					// a REST catalog merges the rows of several inlined tables, so they are not in row id order
+					// the rows of a REST catalog are not in row id order
 					auto row_id = NumericCast<idx_t>(row_id_data[r]);
 					if (std::binary_search(deleted_row_ids.begin(), deleted_row_ids.end(), row_id)) {
 						deleted_ordinals.push_back(ordinal_position);

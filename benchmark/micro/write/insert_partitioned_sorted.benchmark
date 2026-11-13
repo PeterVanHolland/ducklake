@@ -1,0 +1,26 @@
+# name: benchmark/micro/write/insert_partitioned_sorted.benchmark
+# description: INSERT 5M permuted keys into an empty table with 64 partitions and a sort key, including the commit
+# group: [write]
+
+name Partitioned Sorted Insert
+group micro
+subgroup write
+
+require ducklake
+
+require parquet
+
+argument work partitioned_sorted_insert_work
+
+include benchmark/micro/fixtures/partitioned_sorted.benchmark.in
+
+include benchmark/micro/fixtures/restore_cleanup.benchmark.in
+
+run
+INSERT INTO lake.ins SELECT i % 64, (i * 7919) % 5000000, 'v' || i FROM range(5000000) t(i);
+
+# A missed reset doubles the rows, and the files of the 64 partitions show the insert was partitioned
+result_query II
+SELECT count(*), count(DISTINCT filename) FROM lake.ins
+----
+5000000	64

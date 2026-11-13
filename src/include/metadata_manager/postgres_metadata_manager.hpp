@@ -25,6 +25,9 @@ public:
 	bool SupportsAppender() const override {
 		return false;
 	}
+	bool ReadsInlinedDataInPages() const override {
+		return false;
+	}
 	bool DroppedTablesStayReadable() const override {
 		return false;
 	}

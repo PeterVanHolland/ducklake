@@ -1,0 +1,52 @@
+# name: test/sql/rest/rest_inlined_delete_after_alter.test
+# description: A delete of an inlined row that an update moved behind the rows of an older schema version is applied by the scan
+# group: [rest]
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.t(i INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (0), (1), (2)
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN j INTEGER
+
+# the update keeps row id 0 but writes the row to the inlined table of the new schema version
+statement ok
+UPDATE dl.t SET j = 10 WHERE i = 0
+
+query I
+SELECT rowid FROM dl.t WHERE i = 0
+----
+0
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM dl.t WHERE i = 0
+
+query II
+SELECT i, j FROM dl.t ORDER BY i
+----
+1	NULL
+2	NULL
+
+statement ok
+COMMIT
+
+query II
+SELECT i, j FROM dl.t ORDER BY i
+----
+1	NULL
+2	NULL
+
+statement ok
+DETACH dl
+
+include test/template/rest_teardown.test_template

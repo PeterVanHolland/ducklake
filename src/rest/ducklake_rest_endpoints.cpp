@@ -612,7 +612,7 @@ RESTSelectResponse DuckLakeRESTEndpoints::Select(DuckLakeRESTRequest &request, c
 	result.inlined_data = ReadInlinedRows(
 	    request, table, snapshot,
 	    [&](const Identifier &inlined_table_name, const vector<string> &columns) {
-		    return metadata_manager.ReadInlinedData(snapshot, inlined_table_name, columns);
+		    return metadata_manager.ReadInlinedData(snapshot, inlined_table_name, columns, DuckLakeInlinedDataPage());
 	    },
 	    parameters.columns);
 	return result;
@@ -677,9 +677,11 @@ RESTTableChangesResponse DuckLakeRESTEndpoints::TableChanges(DuckLakeRESTRequest
 	    request, table, snapshot,
 	    [&](const Identifier &inlined_table_name, const vector<string> &columns) {
 		    if (deletions) {
-			    return metadata_manager.ReadInlinedDataDeletions(start_snapshot, snapshot, inlined_table_name, columns);
+			    return metadata_manager.ReadInlinedDataDeletions(start_snapshot, snapshot, inlined_table_name, columns,
+			                                                     DuckLakeInlinedDataPage());
 		    }
-		    return metadata_manager.ReadInlinedDataInsertions(start_snapshot, snapshot, inlined_table_name, columns);
+		    return metadata_manager.ReadInlinedDataInsertions(start_snapshot, snapshot, inlined_table_name, columns,
+		                                                      DuckLakeInlinedDataPage());
 	    },
 	    parameters.columns);
 	return result;

@@ -43,6 +43,8 @@ struct DuckLakeMetadataProfile {
 	bool dropped_tables_stay_readable = true;
 	//! Rename the columns of inlined data tables by copying the tables instead of with ALTER TABLE
 	bool rename_inlined_columns_by_copy = false;
+	//! Whether a scan of the database applies the filters of a page of inlined rows before reading their values
+	bool reads_inlined_data_in_pages = true;
 	//! The first rule whose pattern is found in the message of a commit error applies
 	vector<DuckLakeCommitErrorRule> commit_errors;
 	//! Extension settings that DuckLake's connections to the metadata database keep at their defaults

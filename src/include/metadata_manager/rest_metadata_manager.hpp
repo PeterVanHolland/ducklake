@@ -39,6 +39,10 @@ public:
 		return true;
 	}
 	bool HasPendingChanges() const override;
+	//! The server returns the inlined rows of a scan at once, so there are no pages to read
+	bool ReadsInlinedDataInPages() const override {
+		return false;
+	}
 	void FlushChangesServerSide(DuckLakeTransaction &transaction, DuckLakeSnapshot transaction_snapshot,
 	                            const TransactionChangeInformation &transaction_changes,
 	                            const DuckLakeRetryConfig &retry_config) override;
@@ -73,12 +77,15 @@ public:
 	                         optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr) override;
 	unique_ptr<QueryResult> ReadInlinedDataInsertions(DuckLakeSnapshot start_snapshot, DuckLakeSnapshot end_snapshot,
 	                                                  const Identifier &inlined_table_name,
-	                                                  const vector<string> &columns_to_read) override;
+	                                                  const vector<string> &columns_to_read,
+	                                                  const DuckLakeInlinedDataPage &page) override;
 	unique_ptr<QueryResult> ReadInlinedDataDeletions(DuckLakeSnapshot start_snapshot, DuckLakeSnapshot end_snapshot,
 	                                                 const Identifier &inlined_table_name,
-	                                                 const vector<string> &columns_to_read) override;
+	                                                 const vector<string> &columns_to_read,
+	                                                 const DuckLakeInlinedDataPage &page) override;
 	unique_ptr<QueryResult> ReadInlinedData(DuckLakeSnapshot snapshot, const Identifier &inlined_table_name,
-	                                        const vector<string> &columns_to_read) override;
+	                                        const vector<string> &columns_to_read,
+	                                        const DuckLakeInlinedDataPage &page) override;
 	vector<DuckLakeSnapshotInfo> GetAllSnapshots(const DuckLakeSnapshotFilter &filter = {}) override;
 	void DeleteSnapshots(const vector<DuckLakeSnapshotInfo> &snapshots) override;
 	vector<DuckLakeSnapshotTagInfo> GetSnapshotTags(bool with_snapshot_time = true) override;

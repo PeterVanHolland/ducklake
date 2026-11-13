@@ -146,3 +146,5 @@ query I
 SELECT s FROM dl.t ORDER BY i LIMIT 1
 ----
 {'y': 1}
+
+include test/template/rest_teardown.test_template

@@ -63,15 +63,6 @@ optional_idx DuckLakeDeleteData::GetSnapshotForPosition(idx_t position) const {
 }
 
 idx_t DuckLakeDeleteFilter::Filter(row_t start_row_index, idx_t count, SelectionVector &result_sel) {
-	// apply max row count (if it is set)
-	if (max_row_count.IsValid()) {
-		auto max_count = max_row_count.GetIndex();
-		if (max_count <= NumericCast<idx_t>(start_row_index)) {
-			// no rows to read based on max row count - skip
-			return 0;
-		}
-		count = MinValue<idx_t>(max_count - start_row_index, count);
-	}
 	return delete_data->Filter(start_row_index, count, result_sel, snapshot_filter);
 }
 
@@ -320,9 +311,15 @@ void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDele
 				    "Invalid delete data - delete index read from file %s is out of range for data file %s",
 				    delete_scan.delete_file.path, delete_scan.file.path);
 			}
+			bool has_snapshot = i < current_deletes.snapshot_ids.size();
+			auto delete_snapshot = has_snapshot ? current_deletes.snapshot_ids[i] : delete_scan.snapshot_id.GetIndex();
+			if (delete_scan.insert_snapshot.IsValid() && delete_snapshot == delete_scan.insert_snapshot.GetIndex()) {
+				// a row deleted in the snapshot that inserted it was never visible
+				continue;
+			}
 			rows_to_scan[delete_idx] = true;
-			if (i < current_deletes.snapshot_ids.size()) {
-				position_to_snapshot[delete_idx] = current_deletes.snapshot_ids[i];
+			if (has_snapshot) {
+				position_to_snapshot[delete_idx] = delete_snapshot;
 			}
 		}
 	} else if (delete_scan.file_deleted) {
@@ -373,10 +370,6 @@ void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDele
 			deleted.push_back(i);
 		}
 	}
-}
-
-void DuckLakeDeleteFilter::SetMaxRowCount(idx_t max_row_count_p) {
-	max_row_count = max_row_count_p;
 }
 
 void DuckLakeDeleteFilter::SetSnapshotFilter(idx_t snapshot_filter_p) {

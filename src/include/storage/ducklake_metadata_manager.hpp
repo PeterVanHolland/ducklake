@@ -401,15 +401,17 @@ public:
 	//! Whether the result contains a column with the given name
 	static bool ResultHasColumn(QueryResult &result, const string &name);
 
-	//! Get the catalog information for a specific snapshot
-	virtual DuckLakeCatalogInfo GetCatalogForSnapshot(DuckLakeSnapshot snapshot);
+	//! Get the catalog information for a specific snapshot, or its schemas and the given tables only
+	virtual DuckLakeCatalogInfo GetCatalogForSnapshot(DuckLakeSnapshot snapshot,
+	                                                  const vector<TableIndex> &only_tables = {});
 	//! Transaction-free build of the catalog snapshot. Caller supplies a snapshot-aware query
 	//! executor (responsible for `{METADATA_CATALOG}` / `{SNAPSHOT_ID}` substitution) plus the
 	//! data path and separator used for resolving stored relative paths.
 	static DuckLakeCatalogInfo
 	BuildCatalogForSnapshot(DuckLakeSnapshot snapshot,
 	                        const std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> &query_executor,
-	                        const string &base_data_path, const string &separator, bool supports_v1_1_metadata = false);
+	                        const string &base_data_path, const string &separator, bool supports_v1_1_metadata = false,
+	                        const vector<TableIndex> &only_tables = {});
 	//! The global stats of every table of the snapshot, or of the given tables
 	virtual vector<DuckLakeGlobalStatsInfo> GetGlobalTableStats(DuckLakeSnapshot snapshot,
 	                                                            const vector<TableIndex> &table_ids = {});
@@ -442,6 +444,8 @@ public:
 	                                                                  DuckLakeFileSizeOptions options);
 	virtual idx_t GetBeginSnapshotForTable(TableIndex table_id);
 	virtual idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version);
+	//! The number of tables the schema version that began at the snapshot created or altered
+	virtual idx_t GetSchemaVersionTableCount(idx_t schema_version, idx_t begin_snapshot);
 	virtual DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! The net row count of the data files that were committed before the snapshot's next file id
 	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);

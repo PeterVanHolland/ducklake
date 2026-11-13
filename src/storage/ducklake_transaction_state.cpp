@@ -1291,19 +1291,17 @@ static idx_t SubtractDroppedFileStat(idx_t value, idx_t decrement) {
 
 //! Whether the deletes of the transaction leave deleted rows in data files that are not dropped
 static bool DeletesRemainingFiles(const LocalTableDataChanges &table_changes,
-                                  const unordered_map<string, DataFileIndex> &dropped_files) {
+                                  const map<DataFileIndex, string> &dropped_files) {
 	for (auto &delete_entry : table_changes.new_delete_files) {
-		if (dropped_files.find(delete_entry.first) == dropped_files.end()) {
-			return true;
+		for (auto &delete_file : delete_entry.second) {
+			if (dropped_files.find(delete_file.data_file_id) == dropped_files.end()) {
+				return true;
+			}
 		}
 	}
 	if (table_changes.new_inlined_file_deletes) {
-		set<DataFileIndex> dropped_ids;
-		for (auto &entry : dropped_files) {
-			dropped_ids.insert(entry.second);
-		}
 		for (auto &file_entry : table_changes.new_inlined_file_deletes->file_deletes) {
-			if (dropped_ids.find(DataFileIndex(file_entry.first)) == dropped_ids.end()) {
+			if (dropped_files.find(DataFileIndex(file_entry.first)) == dropped_files.end()) {
 				return true;
 			}
 		}
@@ -1450,7 +1448,7 @@ bool DuckLakeTransactionState::TryRecomputeGlobalStatsAfterDrop(TableIndex table
                                                                 DuckLakeTableStats &result) {
 	set<DataFileIndex> dropped_ids;
 	for (auto &entry : dropped_files) {
-		dropped_ids.insert(entry.second);
+		dropped_ids.insert(entry.first);
 	}
 	auto snapshot = context.get_snapshot();
 	// the rows already deleted from the dropped files are not part of the net row count of the table
@@ -2521,7 +2519,7 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 	if (!dropped_files.empty()) {
 		set<DataFileIndex> dropped_indexes;
 		for (auto &entry : dropped_files) {
-			dropped_indexes.insert(entry.second);
+			dropped_indexes.insert(entry.first);
 		}
 		batch_queries += DuckLakeMetadataManager::DropDataFiles(dropped_indexes);
 		bool recomputed_stats = false;
@@ -2729,8 +2727,8 @@ void DuckLakeTransactionState::CheckFileConflicts(const TransactionChangeInforma
 		compacted_files.insert(table_changes.compacted_files.begin(), table_changes.compacted_files.end());
 	}
 	for (auto &file : dropped_files) {
-		deleted_from_files.insert(file.second);
-		files_against_inlined_deletes.insert(file.second);
+		deleted_from_files.insert(file.first);
+		files_against_inlined_deletes.insert(file.first);
 	}
 	if (deleted_from_files.empty() && compacted_files.empty()) {
 		return;

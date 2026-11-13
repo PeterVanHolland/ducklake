@@ -78,7 +78,7 @@ static void DuckLakeRemoveDataFilesExecute(ClientContext &context, TableFunction
 		if (!removed) {
 			for (auto &file : committed_files) {
 				// a committed file dropped earlier in the transaction can be registered again as a local file
-				if (normalize(file.file.path) != path || transaction.FileIsDropped(file.file.path)) {
+				if (normalize(file.file.path) != path || transaction.FileIsDropped(file.file_id)) {
 					continue;
 				}
 				// the file keeps serving older snapshots, it is only ended at the commit snapshot

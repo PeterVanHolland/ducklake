@@ -421,7 +421,7 @@ private:
 	void FlushNameMapCacheInvalidations();
 	//! Puts back the config options this transaction replaced in the catalog, or drops its deferred changes
 	void UndoConfigOptions();
-	//! Whether option changes wait for the commit batch, as a catalog that commits each statement needs
+	//! Whether option changes wait for the commit batch
 	bool DefersConfigOptions() const;
 	void DeferConfigOption(const DuckLakeConfigOption &option, bool reset);
 	//! The SQL that the commit runs for the options this transaction changed

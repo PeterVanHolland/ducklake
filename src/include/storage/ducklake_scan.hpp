@@ -25,6 +25,7 @@ class Deserializer;
 class DuckLakeFunctions {
 public:
 	//! Table Functions
+	//! The scan of DuckLake tables, a copy of parquet_scan, or a function whose bind reports the missing extension
 	static TableFunction GetDuckLakeScanFunction(DatabaseInstance &instance);
 
 	static unique_ptr<FunctionData> BindDuckLakeScan(ClientContext &context, const TableFunction &function);

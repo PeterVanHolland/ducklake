@@ -1,0 +1,54 @@
+# name: test/sql/rest/rest_add_data_files_created_by.test
+# description: The insert_files request of the REST API carries created_by_ducklake, the files of ducklake_add_data_files send it as false
+# group: [rest]
+
+require json
+
+require parquet
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl
+
+statement ok
+CREATE TABLE dl.t(i INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1), (2)
+
+statement ok
+COPY (SELECT 3 AS i) TO '__TEST_DIR__/added.parquet'
+
+# the client sends the added file with created_by_ducklake false
+statement ok
+CALL ducklake_add_data_files('dl', 't', '__TEST_DIR__/added.parquet')
+
+query I
+SELECT i FROM dl.t ORDER BY i
+----
+1
+2
+3
+
+query I rest_db:rest_server_con
+SELECT count(*) FROM __ducklake_metadata_rest_lake.ducklake_data_file WHERE end_snapshot IS NULL AND table_id = 1
+----
+2
+
+# a raw request may send the member or leave it out, which means a file DuckLake wrote
+statement ok
+CREATE TABLE dl.t2(i INTEGER)
+
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"insert_files": {"table_id": 2, "files": [{"path": "written.parquet", "record_count": 1, "file_size_bytes": 10}, {"path": "added.parquet", "record_count": 1, "file_size_bytes": 10, "created_by_ducklake": false}]}}]}')
+----
+200
+
+query I rest_db:rest_server_con
+SELECT count(*) FROM __ducklake_metadata_rest_lake.ducklake_data_file WHERE end_snapshot IS NULL AND table_id = 2
+----
+2
+
+include test/template/rest_teardown.test_template

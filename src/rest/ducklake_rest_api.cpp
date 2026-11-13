@@ -509,6 +509,7 @@ JSONMutableValue DuckLakeRESTSerializer::Write(JSONWriter &writer, const DuckLak
 	           RESTWriteValue<RESTListCodec<RESTObjectCodec<DuckLakeFilePartition>>>(writer, value.partition_values));
 	result.Add("delete_files",
 	           RESTWriteValue<RESTListCodec<RESTObjectCodec<DuckLakeDeleteFile>>>(writer, value.delete_files));
+	result.Add("created_by_ducklake", RESTWriteValue<RESTBoolCodec>(writer, value.created_by_ducklake));
 	return result;
 }
 
@@ -533,6 +534,7 @@ DuckLakeDataFile DuckLakeRESTSerializer::Read(RESTJsonIn in) {
 	RESTReadOptional<RESTListCodec<RESTObjectCodec<DuckLakeFilePartition>>>(in, "partition_values",
 	                                                                        result.partition_values);
 	RESTReadOptional<RESTListCodec<RESTObjectCodec<DuckLakeDeleteFile>>>(in, "delete_files", result.delete_files);
+	RESTReadOptional<RESTBoolCodec>(in, "created_by_ducklake", result.created_by_ducklake, true);
 	return result;
 }
 

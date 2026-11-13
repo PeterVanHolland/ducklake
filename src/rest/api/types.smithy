@@ -771,6 +771,10 @@ structure DataFile {
 
     /// Delete files for the rows of the file.
     delete_files: DeleteFileList = []
+
+    /// Whether DuckLake wrote the file. A file registered with `ducklake_add_data_files` was not, and DuckLake never
+    /// deletes it.
+    created_by_ducklake: Boolean = true
 }
 
 /// The type of a compaction.

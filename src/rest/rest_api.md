@@ -881,6 +881,7 @@ read it.
 | `column_stats` | list of [`ColumnStats`](#columnstats) (default `[]`) | Each entry has an additional field `column_id`. The statistics of the columns of the file. |
 | `partition_values` | list of [`FilePartitionValue`](#filepartitionvalue) (default `[]`) | The values of the partition keys. |
 | `delete_files` | list of [`DeleteFile`](#deletefile) (default `[]`) | Delete files for the rows of the file. |
+| `created_by_ducklake` | `bool` (default `true`) | Whether DuckLake wrote the file. A file registered with `ducklake_add_data_files` was not, and DuckLake never deletes it. |
 
 ### `DeleteFile`
 

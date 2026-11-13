@@ -697,6 +697,12 @@
         "test/sql/secrets/ducklake_secret_null_options.test",
         "test/sql/transaction/transaction_conflict_inlining.test"
       ]
+    },
+    {
+      "reason": "Changes the type of a column whose stored values the REST server checks again when it replays the change: the files have to be in a data path that the server and the client both see, but the test attaches the client with a data path of its own",
+      "paths": [
+        "test/sql/alter/promote_stored_values.test"
+      ]
     }
   ]
 }

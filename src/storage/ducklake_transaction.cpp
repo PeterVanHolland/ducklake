@@ -2497,10 +2497,18 @@ DuckLakeSnapshot DuckLakeTransaction::GetSnapshot(optional_ptr<BoundAtClause> at
 	}
 	// snapshots committed after the transaction started are not visible to it
 	auto newest_snapshot_id = GetNewestVisibleSnapshotId();
+	// a timestamp reads in the current time zone of the session, the metadata connection copied an older one
+	unique_ptr<BoundAtClause> timestamp_clause;
+	auto caller_context = context.lock();
+	if (caller_context && at_clause->Unit() == "timestamp" && version.type().id() != LogicalTypeId::TIMESTAMP_TZ) {
+		timestamp_clause =
+		    make_uniq<BoundAtClause>(at_clause->Unit(), version.CastAs(*caller_context, LogicalType::TIMESTAMP_TZ));
+		at_clause = timestamp_clause.get();
+	}
 	// construct a struct value from the AT clause and the bound in the form of {"unit": value, "bound": bound}
 	// this is used as a caching key for the snapshot, as a timestamp resolves to another snapshot per bound
 	child_list_t<Value> values;
-	values.push_back(make_pair(Identifier(at_clause->Unit()), version));
+	values.push_back(make_pair(Identifier(at_clause->Unit()), at_clause->GetValue()));
 	if (at_clause->Unit() != "version") {
 		// a version is the same snapshot for both bounds
 		values.push_back(make_pair(Identifier("bound"), Value::UTINYINT(static_cast<uint8_t>(bound))));

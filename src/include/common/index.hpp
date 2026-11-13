@@ -18,6 +18,9 @@ namespace duckdb {
 struct DuckLakeConstants {
 	static constexpr const idx_t TRANSACTION_LOCAL_ID_START = 9223372036854775808ULL;
 	static constexpr const idx_t TRANSACTION_LOCAL_ROW_ID_START = 1000000000000000000ULL;
+	//! The names of the row id and snapshot id columns that files and delete files store
+	static constexpr const char *ROW_ID_COLUMN_NAME = "_ducklake_internal_row_id";
+	static constexpr const char *SNAPSHOT_ID_COLUMN_NAME = "_ducklake_internal_snapshot_id";
 
 	static bool IsTransactionLocalRowId(int64_t rid) {
 		return rid >= 0 && static_cast<idx_t>(rid) >= TRANSACTION_LOCAL_ROW_ID_START;

@@ -31,10 +31,11 @@ SELECT i FROM dl.t ORDER BY i
 2
 3
 
+# the inserted rows are inlined, the added file is the only data file of the table
 query I rest_db:rest_server_con
-SELECT count(*) FROM __ducklake_metadata_rest_lake.ducklake_data_file WHERE end_snapshot IS NULL AND table_id = 1
+SELECT count(*) FROM __ducklake_metadata_rest_lake.ducklake_data_file WHERE end_snapshot IS NULL AND table_id = 1 AND path LIKE '%added.parquet'
 ----
-2
+1
 
 # a raw request may send the member or leave it out, which means a file DuckLake wrote
 statement ok

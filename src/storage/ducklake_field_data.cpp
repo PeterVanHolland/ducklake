@@ -92,13 +92,13 @@ static Value ExtractInitialValue(optional_ptr<const ParsedExpression> initial_ex
 		throw NonLiteralAddColumnDefault();
 	}
 	// the rows that exist get the value the session reads, as the rows inserted later do
-	auto initial_default = context ? literal_value.CastAs(*context, type) : literal_value.DefaultCastAs(type);
-	if (type.id() == LogicalTypeId::VARIANT && !add_column && !initial_default.IsNull() &&
-	    VariantValue::GetValue(initial_default).type().id() != LogicalTypeId::VARCHAR) {
+	auto value = context ? literal_value.CastAs(*context, type) : literal_value.DefaultCastAs(type);
+	if (type.id() == LogicalTypeId::VARIANT && !add_column && !value.IsNull() &&
+	    VariantValue::GetValue(value).type().id() != LogicalTypeId::VARCHAR) {
 		// the catalog stores the initial default as text, which only a VARIANT string reads back as
 		return Value(type);
 	}
-	return initial_default;
+	return value;
 }
 
 unique_ptr<DuckLakeFieldId> DuckLakeFieldId::FieldIdFromType(const Identifier &name, const LogicalType &type,

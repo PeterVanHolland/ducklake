@@ -324,6 +324,9 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 			}
 			if (catalog_version >= target_version) {
 				migrating = false;
+				if (catalog_version == DuckLakeVersion::V1_1 && options.access_mode != AccessMode::READ_ONLY) {
+					metadata_manager.RepairV10Bounds();
+				}
 				resolved_version = catalog_version;
 				continue;
 			}
@@ -332,6 +335,8 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				catalog_version = DuckLakeVersion::V1_1;
 			}
 			if (catalog_version == DuckLakeVersion::V1_1 && catalog_version < target_version) {
+				// the repair looks at 1.1 catalogs only, so it runs before the version moves on
+				metadata_manager.RepairV10Bounds();
 				metadata_manager.MigrateV11();
 				catalog_version = DuckLakeVersion::V2_0_DEV1;
 			}

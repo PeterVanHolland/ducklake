@@ -9,6 +9,7 @@
 #include "duckdb/parser/constraints/not_null_constraint.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/parser/parsed_data/alter_info.hpp"
+#include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
@@ -1104,6 +1105,14 @@ void DuckLakeRESTCommit::Alter(RESTAlterRequest &parameters) {
 	transaction.SetInitialDefault(GetAddedInitialDefault(context, *parameters.alter));
 	catalog.Alter(context, *info);
 	transaction.SetInitialDefault(Value());
+	if (parameters.alter->type == RESTAlterationType::ADD_COLUMN) {
+		auto &column = parameters.alter->Cast<RESTAddColumn>().column;
+		if (column.not_null) {
+			// the parser adds the constraint of a new column with a second alteration, which checks the rows
+			SetNotNullInfo not_null(entry, vector<Identifier> {Identifier(column.column_name)});
+			catalog.Alter(context, not_null);
+		}
+	}
 	if (parameters.alter->type == RESTAlterationType::RENAME_TABLE) {
 		name.name = parameters.alter->Cast<RESTRenameTable>().new_name;
 	} else if (parameters.alter->type == RESTAlterationType::RENAME_VIEW) {

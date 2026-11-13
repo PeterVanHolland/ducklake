@@ -580,6 +580,8 @@ public:
 	static string InlinedTableRegistrationTuple(idx_t table_id, const Identifier &table_name, idx_t schema_version);
 	static string LatestInlinedTableQuery(idx_t table_id);
 	static string DropDataFiles(const set<DataFileIndex> &dropped_files);
+	//! Ends the delete files of the dropped data files
+	static string DropDeleteFilesOfDataFiles(const set<DataFileIndex> &dropped_files);
 	//! The deletes recorded against the given data files of the table at the snapshot
 	static string GetDeleteCountForDataFilesSql(TableIndex table_id, const set<DataFileIndex> &file_ids,
 	                                            const Identifier &inlined_deletion_table);

@@ -1,0 +1,393 @@
+# name: test/sql/remove_files/dropped_data_files_end_delete_files.test
+# description: Dropping a whole data file ends its delete file in the same snapshot
+# group: [remove_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/dropped_data_files_end_delete_files', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE ducklake.t (i INTEGER)
+
+statement ok
+INSERT INTO ducklake.t FROM range(10)
+
+query I
+DELETE FROM ducklake.t WHERE i = 3
+----
+1
+
+statement ok
+SET VARIABLE t_id = (SELECT table_id FROM __ducklake_metadata_ducklake.ducklake_table WHERE table_name = 't')
+
+query IIII
+SELECT file_count, file_size_bytes > 0, delete_file_count, delete_file_size_bytes > 0 FROM ducklake_table_info('ducklake') WHERE table_name = 't'
+----
+1	true	1	true
+
+statement ok
+SET VARIABLE t_file = (SELECT data_file FROM ducklake_list_files('ducklake', 't'))
+
+# removing the data file ends its delete file in the same snapshot
+statement ok
+CALL ducklake_remove_data_files('ducklake', 't', getvariable('t_file'))
+
+query II
+SELECT begin_snapshot, end_snapshot FROM __ducklake_metadata_ducklake.ducklake_data_file WHERE table_id = getvariable('t_id')
+----
+2	4
+
+query II
+SELECT begin_snapshot, end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file WHERE table_id = getvariable('t_id')
+----
+3	4
+
+query IIII
+SELECT file_count, file_size_bytes, delete_file_count, delete_file_size_bytes FROM ducklake_table_info('ducklake') WHERE table_name = 't'
+----
+0	0	0	0
+
+query I
+SELECT COUNT(*) FROM ducklake.t
+----
+0
+
+# the delete file still applies to the snapshots before the removal
+query II
+SELECT (SELECT COUNT(*) FROM ducklake.t AT (VERSION => 2)), (SELECT COUNT(*) FROM ducklake.t AT (VERSION => 3))
+----
+10	9
+
+# a DELETE that empties the data file drops it the same way
+statement ok
+CREATE TABLE ducklake.u (i INTEGER)
+
+statement ok
+INSERT INTO ducklake.u FROM range(10)
+
+query I
+DELETE FROM ducklake.u WHERE i = 3
+----
+1
+
+query I
+DELETE FROM ducklake.u WHERE i <> 3
+----
+9
+
+statement ok
+SET VARIABLE u_id = (SELECT table_id FROM __ducklake_metadata_ducklake.ducklake_table WHERE table_name = 'u')
+
+query II
+SELECT begin_snapshot, end_snapshot FROM __ducklake_metadata_ducklake.ducklake_data_file WHERE table_id = getvariable('u_id')
+----
+6	8
+
+query II
+SELECT begin_snapshot, end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file WHERE table_id = getvariable('u_id')
+----
+7	8
+
+query IIII
+SELECT file_count, file_size_bytes, delete_file_count, delete_file_size_bytes FROM ducklake_table_info('ducklake') WHERE table_name = 'u'
+----
+0	0	0	0
+
+query II
+SELECT (SELECT COUNT(*) FROM ducklake.u AT (VERSION => 7)), (SELECT COUNT(*) FROM ducklake.u)
+----
+9	0
+
+# only the delete file of the dropped data file ends
+statement ok
+CREATE TABLE ducklake.v (i INTEGER)
+
+statement ok
+INSERT INTO ducklake.v FROM range(10)
+
+statement ok
+INSERT INTO ducklake.v FROM range(10, 20)
+
+query I
+DELETE FROM ducklake.v WHERE i IN (3, 13)
+----
+2
+
+query I
+DELETE FROM ducklake.v WHERE i < 10
+----
+9
+
+statement ok
+SET VARIABLE v_id = (SELECT table_id FROM __ducklake_metadata_ducklake.ducklake_table WHERE table_name = 'v')
+
+query II
+SELECT begin_snapshot, end_snapshot FROM __ducklake_metadata_ducklake.ducklake_data_file WHERE table_id = getvariable('v_id') ORDER BY begin_snapshot
+----
+10	13
+11	NULL
+
+query II
+SELECT begin_snapshot, end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file WHERE table_id = getvariable('v_id') ORDER BY end_snapshot NULLS LAST
+----
+12	13
+12	NULL
+
+query IIII
+SELECT file_count, file_size_bytes > 0, delete_file_count, delete_file_size_bytes > 0 FROM ducklake_table_info('ducklake') WHERE table_name = 'v'
+----
+1	true	1	true
+
+query II
+SELECT COUNT(*), SUM(i) FROM ducklake.v
+----
+9	132
+
+# the ended delete files are removed with their data files
+statement ok
+CALL ducklake_expire_snapshots('ducklake', older_than => now())
+
+query I
+SELECT COUNT(*) FROM ducklake_cleanup_old_files('ducklake', cleanup_all => true)
+----
+6
+
+query I
+SELECT COUNT(*) FROM __ducklake_metadata_ducklake.ducklake_delete_file
+----
+1
+
+query IIII
+SELECT file_count, file_size_bytes > 0, delete_file_count, delete_file_size_bytes > 0 FROM ducklake_table_info('ducklake') WHERE table_name = 'v'
+----
+1	true	1	true
+
+# a delete file written earlier in the transaction that drops the data file is discarded
+statement ok
+CREATE TABLE ducklake.w (i INTEGER)
+
+statement ok
+INSERT INTO ducklake.w FROM range(10)
+
+statement ok
+BEGIN
+
+query I
+DELETE FROM ducklake.w WHERE i = 3
+----
+1
+
+query I
+DELETE FROM ducklake.w WHERE i <> 3
+----
+9
+
+statement ok
+COMMIT
+
+statement ok
+SET VARIABLE w_id = (SELECT table_id FROM __ducklake_metadata_ducklake.ducklake_table WHERE table_name = 'w')
+
+query I
+SELECT COUNT(*) FROM __ducklake_metadata_ducklake.ducklake_delete_file WHERE table_id = getvariable('w_id')
+----
+0
+
+query IIII
+SELECT file_count, file_size_bytes, delete_file_count, delete_file_size_bytes FROM ducklake_table_info('ducklake') WHERE table_name = 'w'
+----
+0	0	0	0
+
+# only the data file is left on disk
+query I
+SELECT COUNT(*) FROM glob('{DATA_PATH}/dropped_data_files_end_delete_files/main/w/*')
+----
+1
+
+query I
+SELECT COUNT(*) FROM ducklake.w
+----
+0
+
+# the change feed reports all rows as deleted by the transaction
+statement ok
+SET VARIABLE w_s = (SELECT max(snapshot_id) FROM ducklake.snapshots())
+
+query I
+SELECT COUNT(*) FROM ducklake_table_deletions('ducklake', 'main', 'w', getvariable('w_s'), getvariable('w_s'))
+----
+10
+
+# the same for a partial delete followed by ducklake_remove_data_files in one transaction
+statement ok
+CREATE TABLE ducklake.x (i INTEGER)
+
+statement ok
+INSERT INTO ducklake.x FROM range(10)
+
+statement ok
+SET VARIABLE x_file = (SELECT data_file FROM ducklake_list_files('ducklake', 'x'))
+
+statement ok
+BEGIN
+
+query I
+DELETE FROM ducklake.x WHERE i = 3
+----
+1
+
+statement ok
+CALL ducklake_remove_data_files('ducklake', 'x', getvariable('x_file'))
+
+statement ok
+COMMIT
+
+statement ok
+SET VARIABLE x_id = (SELECT table_id FROM __ducklake_metadata_ducklake.ducklake_table WHERE table_name = 'x')
+
+query I
+SELECT COUNT(*) FROM __ducklake_metadata_ducklake.ducklake_delete_file WHERE table_id = getvariable('x_id')
+----
+0
+
+query IIII
+SELECT file_count, file_size_bytes, delete_file_count, delete_file_size_bytes FROM ducklake_table_info('ducklake') WHERE table_name = 'x'
+----
+0	0	0	0
+
+query I
+SELECT COUNT(*) FROM glob('{DATA_PATH}/dropped_data_files_end_delete_files/main/x/*')
+----
+1
+
+statement ok
+SET VARIABLE x_s = (SELECT max(snapshot_id) FROM ducklake.snapshots())
+
+query I
+SELECT COUNT(*) FROM ducklake_table_deletions('ducklake', 'main', 'x', getvariable('x_s'), getvariable('x_s'))
+----
+10
+
+# the delete file that replaces a committed one keeps its history and ends when the transaction empties the file
+statement ok
+CREATE TABLE ducklake.y (i INTEGER)
+
+statement ok
+INSERT INTO ducklake.y FROM range(10)
+
+query I
+DELETE FROM ducklake.y WHERE i = 3
+----
+1
+
+statement ok
+SET VARIABLE y_d = (SELECT max(snapshot_id) FROM ducklake.snapshots())
+
+statement ok
+BEGIN
+
+query I
+DELETE FROM ducklake.y WHERE i = 4
+----
+1
+
+query I
+DELETE FROM ducklake.y WHERE i NOT IN (3, 4)
+----
+8
+
+statement ok
+COMMIT
+
+statement ok
+SET VARIABLE y_id = (SELECT table_id FROM __ducklake_metadata_ducklake.ducklake_table WHERE table_name = 'y')
+
+statement ok
+SET VARIABLE y_s = (SELECT max(snapshot_id) FROM ducklake.snapshots())
+
+query II
+SELECT begin_snapshot = getvariable('y_d'), end_snapshot = getvariable('y_s') FROM __ducklake_metadata_ducklake.ducklake_delete_file WHERE table_id = getvariable('y_id')
+----
+true	true
+
+query IIII
+SELECT file_count, file_size_bytes, delete_file_count, delete_file_size_bytes FROM ducklake_table_info('ducklake') WHERE table_name = 'y'
+----
+0	0	0	0
+
+# the data file, the replaced delete file and its replacement
+query I
+SELECT COUNT(*) FROM glob('{DATA_PATH}/dropped_data_files_end_delete_files/main/y/*')
+----
+3
+
+query III
+SELECT (SELECT COUNT(*) FROM ducklake.y AT (VERSION => getvariable('y_d'))),
+	(SELECT COUNT(*) FROM ducklake_table_deletions('ducklake', 'main', 'y', getvariable('y_d'), getvariable('y_d'))),
+	(SELECT COUNT(*) FROM ducklake_table_deletions('ducklake', 'main', 'y', getvariable('y_s'), getvariable('y_s')))
+----
+9	1	9
+
+# a delete file that takes over the inlined deletes of earlier snapshots keeps them and ends with the file
+statement ok
+CREATE TABLE ducklake.z AS SELECT i FROM range(5) t(i)
+
+statement ok
+CALL ducklake.set_option('data_inlining_row_limit', 1, table_name => 'z')
+
+query I
+DELETE FROM ducklake.z WHERE i = 0
+----
+1
+
+statement ok
+SET VARIABLE z_d = (SELECT max(snapshot_id) FROM ducklake.snapshots())
+
+statement ok
+BEGIN
+
+query I
+DELETE FROM ducklake.z WHERE i IN (1, 2)
+----
+2
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake')
+
+query I
+DELETE FROM ducklake.z WHERE i >= 3
+----
+2
+
+statement ok
+COMMIT
+
+statement ok
+SET VARIABLE z_id = (SELECT table_id FROM __ducklake_metadata_ducklake.ducklake_table WHERE table_name = 'z')
+
+statement ok
+SET VARIABLE z_s = (SELECT max(snapshot_id) FROM ducklake.snapshots())
+
+query II
+SELECT COUNT(*), COUNT(end_snapshot) FROM __ducklake_metadata_ducklake.ducklake_delete_file WHERE table_id = getvariable('z_id')
+----
+1	1
+
+query IIII
+SELECT file_count, file_size_bytes, delete_file_count, delete_file_size_bytes FROM ducklake_table_info('ducklake') WHERE table_name = 'z'
+----
+0	0	0	0
+
+query III
+SELECT (SELECT COUNT(*) FROM ducklake.z AT (VERSION => getvariable('z_d'))),
+	(SELECT COUNT(*) FROM ducklake_table_deletions('ducklake', 'main', 'z', getvariable('z_d'), getvariable('z_d'))),
+	(SELECT COUNT(*) FROM ducklake_table_deletions('ducklake', 'main', 'z', getvariable('z_s'), getvariable('z_s')))
+----
+4	1	4

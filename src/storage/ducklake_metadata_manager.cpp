@@ -5091,6 +5091,10 @@ string DuckLakeMetadataManager::DropDataFiles(const set<DataFileIndex> &dropped_
 	return FlushDrop("ducklake_data_file", "data_file_id", dropped_files);
 }
 
+string DuckLakeMetadataManager::DropDeleteFilesOfDataFiles(const set<DataFileIndex> &dropped_files) {
+	return FlushDrop("ducklake_delete_file", "data_file_id", dropped_files);
+}
+
 string DuckLakeMetadataManager::GetDeleteCountForDataFilesSql(TableIndex table_id, const set<DataFileIndex> &file_ids,
                                                               const Identifier &inlined_deletion_table) {
 	auto id_list = GenerateIDList(file_ids);

@@ -44,6 +44,10 @@ public:
 	string GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot snapshot, bool include_exactness) const override;
 	bool InlinedDeletionTableExists(const Identifier &table_name) override;
 	void MigrateInlinedDataTypes() override;
+	string AfterCreateTableSql(const Identifier &table_name) const override;
+	void CompleteMetadataTables() override;
+	void ExecuteMigration(string migrate_query, bool allow_failures, const string &from_version,
+	                      const string &to_version) override;
 	bool IsRetryableCommitError(const string &message) const override;
 	string CommitErrorWithoutQuery(const string &message) const override;
 	string ConfigOptionLockSql() const override;
@@ -68,6 +72,8 @@ protected:
 	                             vector<idx_t> &runtime_filter_stats_columns, FileListType file_list_type,
 	                             const string &metadata_table_prefix) override;
 	bool MaterializeStatsCTEs() const override;
+	//! Runs the statements on the Postgres server, as written
+	unique_ptr<QueryResult> ExecuteOnServer(const string &query);
 	string CastValueToTarget(const Value &value, const LogicalType &type) override;
 	string CastStatsToTarget(const string &stats, const LogicalType &type, StatsCastType cast_type) override;
 

@@ -358,6 +358,13 @@ public:
 	//! Get the version string written to ducklake_metadata
 	virtual string GetVersionString();
 	virtual DuckLakeMetadata LoadDuckLake();
+	//! Statements that follow the creation of one metadata table on this backend
+	virtual string AfterCreateTableSql(const Identifier &table_name) const {
+		return string();
+	}
+	//! Completes the metadata tables of a catalog this client may write, a locked table waits for the next attach
+	virtual void CompleteMetadataTables() {
+	}
 
 	virtual unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query);
 	virtual unique_ptr<QueryResult> Execute(string &query);
@@ -551,10 +558,10 @@ public:
 	                                      const vector<string> &cells_per_row);
 	//! Static deterministic name of the per-table inlined deletion table.
 	static Identifier InlinedFileDeletionTableName(TableIndex table_id);
-	//! Pure SQL builder for inlined file deletions (CREATE TABLE IF NOT EXISTS + INSERT). Sets
-	//! created_new_table when a new ducklake_inlined_delete_<id> table was emitted.
+	//! Sets created_new_table when a CREATE TABLE is emitted
 	static string WriteNewInlinedFileDeletesSql(const vector<DuckLakeInlinedFileDeletionInfo> &new_deletes,
-	                                            bool &created_new_table);
+	                                            bool &created_new_table,
+	                                            optional_ptr<const DuckLakeMetadataManager> manager = nullptr);
 	//! SQL branch of WriteNewInlinedFileDeletes — returns the CREATE/INSERT statements and marks the
 	//! metadata-manager cache for clearing when a new per-table deletion table is created.
 	string WriteNewInlinedFileDeletesSqlBatch(const vector<DuckLakeInlinedFileDeletionInfo> &new_deletes);

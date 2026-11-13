@@ -39,13 +39,7 @@ static unique_ptr<FunctionData> DuckLakeExpireSnapshotsBind(ClientContext &conte
 
 	const auto older_than_default = ducklake_catalog.GetConfigOption<string>("expire_older_than", {}, {}, "");
 
-	Value dry_run;
-	if (DuckLakeTableFunctionUtil::TryGetNonNullOption(input, "dry_run", "boolean", dry_run)) {
-		result->dry_run = BooleanValue::Get(dry_run);
-	}
-	if (!result->dry_run) {
-		ducklake_catalog.VerifyWritable();
-	}
+	result->dry_run = DuckLakeTableFunctionUtil::GetDryRunOption(input, ducklake_catalog);
 	auto &filter = result->filter;
 	auto versions_entry = input.named_parameters.find("versions");
 	bool has_versions = versions_entry != input.named_parameters.end();
@@ -78,14 +72,12 @@ static unique_ptr<FunctionData> DuckLakeExpireSnapshotsBind(ClientContext &conte
 
 	// we can never delete the most recent snapshot
 	filter.exclude_latest = true;
-	if (has_timestamp) {
-		auto from_timestamp = older_than.GetValue<timestamp_tz_t>();
-		filter.older_than = DuckLakeTableFunctionUtil::FormatTimestampISO8601(timestamp_t(from_timestamp.value));
-	} else if (!has_versions) {
-		filter.older_than =
-		    DuckLakeTableFunctionUtil::FormatTimestampOlderThan("expire_older_than", older_than_default);
-	} else {
+	if (has_versions) {
 		filter.has_snapshot_ids = true;
+	} else {
+		filter.older_than = has_timestamp ? DuckLakeTableFunctionUtil::FormatTimestampISO8601(older_than)
+		                                  : DuckLakeTableFunctionUtil::FormatTimestampOlderThan("expire_older_than",
+		                                                                                        older_than_default);
 	}
 	if (result->dry_run) {
 		auto &transaction = DuckLakeTransaction::Get(context, ducklake_catalog);

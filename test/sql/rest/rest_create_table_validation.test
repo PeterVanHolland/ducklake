@@ -90,6 +90,64 @@ SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_se
 ----
 400	create_view requires a view_name
 
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_view": {"placeholder_id": -1, "schema_id": 0, "view_name": "v2", "sql": "SELECT 1", "column_aliases": [""]}}]}')
+----
+400	create_view requires a name for every column alias
+
+# an empty struct field name in the target type of a type change
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 2, "alter": {"change_column_type": {"column_path": ["s"], "column_type": {"id": "struct", "children": [{"name": "x", "type": {"id": "int32"}}, {"name": "", "type": {"id": "int32"}}]}, "expression": "CAST(s AS STRUCT(x INTEGER))"}}}}]}')
+----
+400	A struct field requires a name
+
+# the type unknown, which SQL has no column type for, also makes the catalog unloadable
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_table": {"placeholder_id": -1, "schema_id": 0, "table_name": "unk", "columns": [{"column_name": "u", "column_type": {"id": "unknown"}}]}}]}')
+----
+400	A column cannot have the type unknown
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_table": {"placeholder_id": -1, "schema_id": 0, "table_name": "unk", "columns": [{"column_name": "u", "column_type": {"id": "list", "child": {"id": "unknown"}}}]}}]}')
+----
+400	A column cannot have the type unknown
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"add_column": {"column": {"column_name": "u", "column_type": {"id": "map", "key": {"id": "varchar"}, "value": {"id": "unknown"}}}}}}}]}')
+----
+400	A column cannot have the type unknown
+
+# a DECIMAL the parser refuses
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_table": {"placeholder_id": -1, "schema_id": 0, "table_name": "d", "columns": [{"column_name": "d", "column_type": {"id": "decimal", "width": 39, "scale": 0}}]}}]}')
+----
+400	Invalid DECIMAL type - width must be between 1 and 38 and scale must not exceed the width
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_table": {"placeholder_id": -1, "schema_id": 0, "table_name": "d", "columns": [{"column_name": "d", "column_type": {"id": "decimal", "width": 300, "scale": 0}}]}}]}')
+----
+400	Invalid DECIMAL type - width must be between 1 and 38 and scale must not exceed the width
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_table": {"placeholder_id": -1, "schema_id": 0, "table_name": "d", "columns": [{"column_name": "d", "column_type": {"id": "decimal", "width": 10, "scale": 11}}]}}]}')
+----
+400	Invalid DECIMAL type - width must be between 1 and 38 and scale must not exceed the width
+
+# a column defined twice
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"create_table": {"placeholder_id": -1, "schema_id": 0, "table_name": "dup", "columns": [{"column_name": "a", "column_type": {"id": "int32"}}, {"column_name": "A", "column_type": {"id": "int32"}}]}}]}')
+----
+400	create_table defines column "A" twice
+
 # the refused requests changed nothing
 query II rest_db:rest_server_con
 SELECT table_id, table_name FROM __ducklake_metadata_rest_lake.ducklake_table WHERE end_snapshot IS NULL ORDER BY table_id

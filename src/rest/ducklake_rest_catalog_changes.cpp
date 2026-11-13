@@ -33,23 +33,25 @@ static unique_ptr<ParsedExpression> ReadExpression(const string &expression) {
 	return Parser::GetBuiltinParser().ParseSingleExpression(expression);
 }
 
-//! The parser refuses an empty identifier, a request can send one as the name of a struct field
-static void CheckFieldNames(const LogicalType &type) {
+//! The checks of the parser on a column type: the type unknown has no columns, and a struct field needs a name
+static void CheckColumnType(const LogicalType &type) {
 	switch (type.id()) {
+	case LogicalTypeId::UNKNOWN:
+		throw InvalidInputException("A column cannot have the type unknown");
 	case LogicalTypeId::STRUCT:
 		for (auto &child : StructType::GetChildTypes(type)) {
 			if (child.first.GetIdentifierName().empty()) {
 				throw InvalidInputException("A struct field requires a name");
 			}
-			CheckFieldNames(child.second);
+			CheckColumnType(child.second);
 		}
 		break;
 	case LogicalTypeId::LIST:
-		CheckFieldNames(ListType::GetChildType(type));
+		CheckColumnType(ListType::GetChildType(type));
 		break;
 	case LogicalTypeId::MAP:
-		CheckFieldNames(MapType::KeyType(type));
-		CheckFieldNames(MapType::ValueType(type));
+		CheckColumnType(MapType::KeyType(type));
+		CheckColumnType(MapType::ValueType(type));
 		break;
 	default:
 		break;
@@ -107,7 +109,7 @@ ColumnDefinition DuckLakeRESTCatalogChanges::ReadColumn(ClientContext &context, 
 	if (column.column_name.empty()) {
 		throw InvalidInputException("A column requires a column_name");
 	}
-	CheckFieldNames(column.column_type);
+	CheckColumnType(column.column_type);
 	auto type = column.column_type;
 	ColumnDefinition result(Identifier(column.column_name), std::move(type));
 	if (!column.default_value.empty()) {
@@ -316,6 +318,7 @@ unique_ptr<AlterInfo> DuckLakeRESTCatalogChanges::ReadAlter(ClientContext &conte
 	}
 	case RESTAlterationType::CHANGE_COLUMN_TYPE: {
 		auto &change = alteration.Cast<RESTChangeColumnType>();
+		CheckColumnType(change.column_type);
 		auto target_type = change.column_type;
 		return make_uniq<ChangeColumnTypeInfo>(entry, ReadPath(change.column_path), std::move(target_type),
 		                                       ReadExpression(change.expression));

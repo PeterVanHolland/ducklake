@@ -1013,7 +1013,11 @@ void DuckLakeRESTCommit::CreateTable(RESTCreateTableRequest &parameters) {
 	for (auto &column : parameters.columns) {
 		auto logical_index = LogicalIndex(info->columns.LogicalColumnCount());
 		initial_defaults.push_back(DuckLakeRESTCatalogChanges::ReadInitialDefault(context, column));
-		info->columns.AddColumn(DuckLakeRESTCatalogChanges::ReadColumn(context, column));
+		auto column_definition = DuckLakeRESTCatalogChanges::ReadColumn(context, column);
+		if (info->columns.ColumnExists(column_definition.Name())) {
+			throw InvalidInputException("create_table defines column \"%s\" twice", column.column_name);
+		}
+		info->columns.AddColumn(std::move(column_definition));
 		if (column.not_null) {
 			info->constraints.push_back(make_uniq<NotNullConstraint>(logical_index));
 		}
@@ -1057,6 +1061,11 @@ void DuckLakeRESTCommit::CreateView(RESTCreateViewRequest &parameters) {
 	CheckPlaceholderId(parameters.placeholder_id);
 	if (parameters.view_name.empty()) {
 		throw InvalidInputException("create_view requires a view_name");
+	}
+	for (auto &alias : parameters.column_aliases) {
+		if (alias.empty()) {
+			throw InvalidInputException("create_view requires a name for every column alias");
+		}
 	}
 	auto schema_path = GetSchemaPath(parameters.schema_id);
 	auto &schema = GetSchema(schema_path);

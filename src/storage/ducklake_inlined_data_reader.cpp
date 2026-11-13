@@ -490,16 +490,13 @@ void DuckLakeInlinedDataReader::MapDeletedRows() {
 	auto &deleted_ordinals = filter.delete_data->deleted_rows;
 	auto row_id_column = expected_types.size() - 2;
 	auto ordinal = page.offset;
+	// the rows of a page need not follow the row id, e.g. a REST server appends the rows of each schema version
 	for (auto &chunk : data->data->Chunks()) {
 		auto row_id_data = FlatVector::GetData<int64_t>(chunk.data[row_id_column]);
 		for (idx_t r = 0; r < chunk.size(); r++, ordinal++) {
 			auto row_id = NumericCast<idx_t>(row_id_data[r]);
-			while (deleted_row_idx < deleted_row_ids.size() && deleted_row_ids[deleted_row_idx] < row_id) {
-				deleted_row_idx++;
-			}
-			if (deleted_row_idx < deleted_row_ids.size() && deleted_row_ids[deleted_row_idx] == row_id) {
+			if (std::binary_search(deleted_row_ids.begin(), deleted_row_ids.end(), row_id)) {
 				deleted_ordinals.push_back(ordinal);
-				deleted_row_idx++;
 			}
 		}
 	}

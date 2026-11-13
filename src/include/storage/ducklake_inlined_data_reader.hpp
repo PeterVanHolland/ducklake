@@ -96,9 +96,8 @@ private:
 	vector<pair<idx_t, idx_t>> keys;
 	idx_t key_position = 0;
 	bool read_all_keys = false;
-	//! The deleted row ids, ascending, and the first one not yet found in a page
+	//! The deleted row ids, ascending
 	vector<idx_t> deleted_row_ids;
-	idx_t deleted_row_idx = 0;
 };
 
 } // namespace duckdb

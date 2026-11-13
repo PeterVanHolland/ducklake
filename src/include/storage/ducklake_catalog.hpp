@@ -446,7 +446,9 @@ public:
 	static unique_ptr<DuckLakeStats> ConstructStatsMap(vector<DuckLakeGlobalStatsInfo> &global_stats,
 	                                                   DuckLakeCatalogSet &schema);
 	//! Return the schema for the given snapshot - loading it if it is not yet loaded
-	DuckLakeCatalogSet &GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
+	//! The schema of a snapshot; at_snapshot keys it by the snapshot too, when its schema version is not its own
+	DuckLakeCatalogSet &GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
+	                                         bool at_snapshot = false);
 
 	//! Callback type for instrumenting metadata queries
 	using QueryCallback = std::function<void(const string &query, std::chrono::steady_clock::duration elapsed)>;
@@ -502,12 +504,12 @@ private:
 	unique_ptr<DuckLakeCatalogSet> LoadSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
 	//! Look up (or load) the ObjectCache entry for a given snapshot.
 	shared_ptr<DuckLakeSchemaCacheEntry> GetSchemaCacheEntry(DuckLakeTransaction &transaction,
-	                                                         DuckLakeSnapshot snapshot);
+	                                                         DuckLakeSnapshot snapshot, bool at_snapshot = false);
 	void LoadNameMaps(DuckLakeTransaction &transaction);
 	string StatsCacheKey(idx_t next_file_id, TableIndex table_id) const;
 	string RecordCountCacheKey(idx_t snapshot_id) const;
 	string NetRowCountCacheKey(TableIndex table_id) const;
-	string SchemaCacheKey(idx_t schema_version) const;
+	string SchemaCacheKey(idx_t schema_version, optional_idx snapshot_id = optional_idx()) const;
 	ObjectCache &GetObjectCacheInstance();
 	//! A table stats entry this DuckLake put in the object cache, kept without its key as there is one per table
 	struct TrackedStatsEntry {
@@ -588,6 +590,8 @@ private:
 	//! version is created and is never updated, so entries are permanent (only committed rows are cached)
 	mutex schema_version_snapshot_lock;
 	map<pair<idx_t, idx_t>, idx_t> schema_version_begin_snapshots;
+	//! The keys of the schemas cached by snapshot, per schema version, for their invalidation
+	unordered_map<idx_t, unordered_set<string>> snapshot_schema_cache_keys;
 	mutex columns_with_values_lock;
 	optional_idx columns_with_values_snapshot;
 	set<pair<idx_t, idx_t>> columns_with_values;

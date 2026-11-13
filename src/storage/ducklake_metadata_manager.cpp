@@ -3019,7 +3019,7 @@ WITH snapshot_ranges AS (
 	SELECT
 		begin_snapshot,
 		COALESCE(
-			LEAD(begin_snapshot) OVER (ORDER BY begin_snapshot ASC),
+			LEAD(begin_snapshot) OVER (ORDER BY begin_snapshot ASC, schema_version ASC),
 			9223372036854775807
 		) AS end_snapshot,
 		schema_version
@@ -3134,7 +3134,7 @@ WITH %ssnapshot_ranges AS (
 	SELECT
 		begin_snapshot,
 		COALESCE(
-			LEAD(begin_snapshot) OVER (ORDER BY begin_snapshot ASC),
+			LEAD(begin_snapshot) OVER (ORDER BY begin_snapshot ASC, schema_version ASC),
 			9223372036854775807
 		) AS end_snapshot,
 		schema_version

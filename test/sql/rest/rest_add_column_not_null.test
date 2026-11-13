@@ -122,3 +122,5 @@ statement error
 INSERT INTO dl.t VALUES (2, 2, NULL)
 ----
 NOT NULL constraint failed: t.m
+
+include test/template/rest_teardown.test_template

@@ -1169,8 +1169,10 @@ void RESTMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tran
 	try {
 		response = GetClient().CommitTransaction(request);
 	} catch (std::exception &ex) {
-		// the server rejected the commit, but after a failed request or response it might have committed
-		if (ErrorData(ex).Type() != ExceptionType::IO) {
+		// keep the files when the client or the server cannot tell the outcome of the commit
+		ErrorData error(ex);
+		if (error.Type() != ExceptionType::IO &&
+		    !StringUtil::Contains(error.RawMessage(), DuckLakeMetadataManager::COMMIT_OUTCOME_UNKNOWN_HINT)) {
 			flush_transaction.CleanupFiles();
 		}
 		throw;

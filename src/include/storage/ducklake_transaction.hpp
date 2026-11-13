@@ -112,7 +112,8 @@ public:
 	void CleanupFiles(ClientContext &context, TableIndex table_id);
 	//! Forgets the changes of a table, the files stay
 	void Forget(TableIndex table_id);
-	void GetWrittenFiles(vector<string> &result) const;
+	//! The files the transaction wrote, with or without the existing files it added
+	void GetWrittenFiles(vector<string> &result, bool include_added_files = true) const;
 	bool HasTransactionLocalInserts(TableIndex table_id) const;
 	bool HasTransactionInlinedData(TableIndex table_id) const;
 	vector<DuckLakeDataFile> GetTransactionLocalFiles(TableIndex table_id) const;

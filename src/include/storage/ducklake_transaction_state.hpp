@@ -58,6 +58,10 @@ struct DuckLakeCommitContext {
 	std::function<string(const string &)> commit_error_without_query = [](const string &message) {
 		return message;
 	};
+	//! Whether the error of a failed COMMIT leaves open whether it took effect.
+	std::function<bool(const string &)> commit_outcome_unknown = [](const string &) {
+		return false;
+	};
 	//! Advice for a commit error that is not retried.
 	std::function<string(const string &)> commit_error_hint = [](const string &) {
 		return string();
@@ -299,6 +303,12 @@ public:
 	static DuckLakeMacroInfo GetMacroInfo(const MacroCatalogEntry &macro_entry);
 
 	void CleanupFiles();
+	//! What the catalog shows of a commit whose COMMIT failed with an unknown outcome
+	enum class CommitOutcome { TOOK_EFFECT, NOT_COMMITTED, UNKNOWN };
+	//! Commits the metadata connection, a failed COMMIT with an unknown outcome is checked against the catalog
+	void CommitConnection(const DuckLakeCommitContext &context, const DuckLakeCommitState &commit_state,
+	                      bool &outcome_unknown);
+	CommitOutcome VerifyCommit(const DuckLakeCommitContext &context, const DuckLakeCommitState &commit_state);
 
 	void EnsureCommitInfoProvided(const DuckLakeSnapshotCommit &commit_info) const;
 

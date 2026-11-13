@@ -1,0 +1,151 @@
+# name: test/sql/retry/postgres_commit_response_lost.test
+# description: A COMMIT that took effect but lost its response is not committed again by the retry
+# group: [retry]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require-env DUCKLAKE_CONNECTION
+
+require-env DUCKLAKE_CI
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH '{DUCKLAKE_CONNECTION}' AS pg
+
+statement ok
+CALL postgres_execute('pg', 'DROP SCHEMA IF EXISTS commit_response_lost CASCADE')
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/commit_response_lost', METADATA_SCHEMA 'commit_response_lost', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t (i INTEGER)
+
+statement ok
+SET ducklake_debug_lose_commit_response = true
+
+# the snapshot and the file of the commit are found in the catalog, so the commit is reported as it is
+statement ok
+INSERT INTO dl.t FROM range(10)
+
+statement ok
+RESET ducklake_debug_lose_commit_response
+
+query I
+SELECT count(*) FROM dl.t
+----
+10
+
+query I
+SELECT max(snapshot_id) FROM dl.snapshots()
+----
+2
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/commit_response_lost/**/*.parquet')
+----
+1
+
+# a snapshot without files cannot be told from a concurrent commit of the same changes, so no retry commits it again
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 100, table_name => 't')
+
+statement ok
+SET ducklake_debug_lose_commit_response = true
+
+statement error
+INSERT INTO dl.t VALUES (100)
+----
+The commit may have taken effect
+
+statement ok
+RESET ducklake_debug_lose_commit_response
+
+query I
+SELECT count(*) FROM dl.t
+----
+11
+
+# the option change wrote no snapshot
+query I
+SELECT max(snapshot_id) FROM dl.snapshots()
+----
+3
+
+# a connection the server ends during the COMMIT leaves the outcome unknown, the file is kept for the orphan cleanup
+statement ok
+CALL postgres_execute('pg', 'CREATE FUNCTION commit_response_lost.lose_connection() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_terminate_backend(pg_backend_pid()); RETURN NULL; END $$')
+
+statement ok
+CALL postgres_execute('pg', 'CREATE CONSTRAINT TRIGGER lose_connection AFTER INSERT ON commit_response_lost.ducklake_snapshot DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION commit_response_lost.lose_connection()')
+
+statement error
+INSERT INTO dl.t FROM range(200)
+----
+The commit may have taken effect
+
+statement ok
+CALL postgres_execute('pg', 'DROP TRIGGER lose_connection ON commit_response_lost.ducklake_snapshot')
+
+statement ok
+CALL postgres_execute('pg', 'DROP FUNCTION commit_response_lost.lose_connection()')
+
+query I
+SELECT count(*) FROM dl.t
+----
+11
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/commit_response_lost/**/*.parquet')
+----
+2
+
+statement ok
+CALL ducklake_delete_orphaned_files('dl', cleanup_all => true)
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/commit_response_lost/**/*.parquet')
+----
+1
+
+# a COMMIT the server rejects with a retryable error is retried as before and gives up after the retries
+statement ok
+CALL postgres_execute('pg', 'CREATE FUNCTION commit_response_lost.fail_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION ''commit conflict''; END $$')
+
+statement ok
+CALL postgres_execute('pg', 'CREATE CONSTRAINT TRIGGER fail_commit AFTER INSERT ON commit_response_lost.ducklake_snapshot DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION commit_response_lost.fail_commit()')
+
+statement ok
+SET ducklake_max_retry_count = 1
+
+statement error
+INSERT INTO dl.t FROM range(200)
+----
+Exceeded the maximum retry count
+
+statement ok
+CALL postgres_execute('pg', 'DROP TRIGGER fail_commit ON commit_response_lost.ducklake_snapshot')
+
+statement ok
+CALL postgres_execute('pg', 'DROP FUNCTION commit_response_lost.fail_commit()')
+
+query I
+SELECT count(*) FROM dl.t
+----
+11
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/commit_response_lost/**/*.parquet')
+----
+1
+
+statement ok
+DETACH dl
+
+statement ok
+CALL postgres_execute('pg', 'DROP SCHEMA commit_response_lost CASCADE')

@@ -454,7 +454,7 @@ unique_ptr<BaseStatistics> DuckLakeColumnStats::CreateStringStats() const {
 	return stats.ToUnique();
 }
 
-unique_ptr<BaseStatistics> DuckLakeColumnStats::ToStats() const {
+bool DuckLakeColumnStats::StatsFromBounds(const LogicalType &type) {
 	switch (type.id()) {
 	case LogicalTypeId::BOOLEAN:
 	case LogicalTypeId::TINYINT:
@@ -477,12 +477,22 @@ unique_ptr<BaseStatistics> DuckLakeColumnStats::ToStats() const {
 	case LogicalTypeId::TIMESTAMP_MS:
 	case LogicalTypeId::TIMESTAMP_NS:
 	case LogicalTypeId::UUID:
-		return CreateNumericStats();
+	case LogicalTypeId::FLOAT:
+	case LogicalTypeId::DOUBLE:
+	case LogicalTypeId::VARCHAR:
+		return true;
+	default:
+		return false;
+	}
+}
+
+unique_ptr<BaseStatistics> DuckLakeColumnStats::ToStats() const {
+	switch (type.id()) {
 	case LogicalTypeId::FLOAT:
 	case LogicalTypeId::DOUBLE: {
 		if (!has_contains_nan) {
 			// we only create stats if we know whether there are NaN values
-			auto stats = NumericStats::CreateEmpty(type);
+			auto stats = NumericStats::CreateUnknown(type);
 			SetValidity(stats);
 			return stats.ToUnique();
 		}
@@ -511,7 +521,7 @@ unique_ptr<BaseStatistics> DuckLakeColumnStats::ToStats() const {
 		return stats.ToUnique();
 	}
 	default:
-		return nullptr;
+		return StatsFromBounds(type) ? CreateNumericStats() : nullptr;
 	}
 }
 

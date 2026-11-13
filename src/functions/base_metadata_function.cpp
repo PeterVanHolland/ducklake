@@ -49,11 +49,15 @@ bool DuckLakeTableFunctionUtil::TryGetTimestampOption(const TableFunctionBindInp
 	if (!TryGetNonNullOption(input, name, "timestamp", result)) {
 		return false;
 	}
-	if (!IsFilterTimestamp(timestamp_t(result.GetValue<timestamp_tz_t>().value))) {
-		throw InvalidInputException("The %s option must be a finite timestamp in the year 1 or later, not '%s'", name,
-		                            result.ToString());
-	}
+	CheckTimestampOption(name, result);
 	return true;
+}
+
+void DuckLakeTableFunctionUtil::CheckTimestampOption(const string &name, const Value &value) {
+	if (!IsFilterTimestamp(timestamp_t(value.GetValue<timestamp_tz_t>().value))) {
+		throw InvalidInputException("The %s option must be a finite timestamp in the year 1 or later, not '%s'", name,
+		                            value.ToString());
+	}
 }
 
 string DuckLakeTableFunctionUtil::GetStringOption(const TableFunctionBindInput &input, const string &name) {
@@ -71,17 +75,34 @@ string DuckLakeTableFunctionUtil::GetTableName(const Value &input) {
 	return input.GetValue<string>();
 }
 
-BoundAtClause DuckLakeTableFunctionUtil::AtClauseFromValue(const Value &input) {
+void DuckLakeTableFunctionUtil::VerifySnapshotIdentifier(const Value &input) {
 	if (input.IsNull()) {
 		throw BinderException("Snapshot identifier cannot be NULL");
 	}
+}
+
+BoundAtClause DuckLakeTableFunctionUtil::AtClauseFromValue(const Value &input) {
+	if (input.type().id() == LogicalTypeId::TIMESTAMP_TZ && !input.IsNull()) {
+		return BoundAtClause("timestamp", input);
+	}
+	// rejects a NULL of any type
+	return VersionAtClauseFromValue(input);
+}
+
+BoundAtClause DuckLakeTableFunctionUtil::VersionAtClauseFromValue(const Value &input) {
+	VerifySnapshotIdentifier(input);
 	switch (input.type().id()) {
 	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::VARCHAR:
 		return BoundAtClause("version", input);
-	case LogicalTypeId::TIMESTAMP_TZ:
-		return BoundAtClause("timestamp", input);
-	default:
-		throw InternalException("Unsupported type for At Clause");
+	default: {
+		auto snapshot_id = input.DefaultTryCastAs(LogicalType::BIGINT);
+		if (!snapshot_id) {
+			throw BinderException("A snapshot is identified by a snapshot id, a tag name or a timestamp, not by a %s",
+			                      input.type().ToString());
+		}
+		return BoundAtClause("version", *snapshot_id);
+	}
 	}
 }
 

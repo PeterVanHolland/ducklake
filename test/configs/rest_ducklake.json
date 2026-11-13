@@ -416,6 +416,7 @@
         "test/sql/migration/inlined_column_rename.test",
         "test/sql/migration/inlined_column_rename_conflict.test",
         "test/sql/migration/inlined_column_rename_partial.test",
+        "test/sql/migration/inlined_schema_version_missing_row.test",
         "test/sql/migration/schema_parent_column.test",
         "test/sql/migration/v10_row_group_count.test",
         "test/sql/migration/v11_stats_exactness.test",

@@ -1,5 +1,6 @@
 #include "storage/ducklake_catalog.hpp"
 #include "duckdb/logging/logger.hpp"
+#include "rest/ducklake_rest_client.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/planner/logical_operator.hpp"
 #include "duckdb/main/database_manager.hpp"
@@ -18,6 +19,7 @@
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 #include "duckdb/storage/database_size.hpp"
 #include "storage/ducklake_initializer.hpp"
+#include "storage/ducklake_metadata_profile.hpp"
 #include "storage/ducklake_schema_entry.hpp"
 #include "storage/ducklake_table_entry.hpp"
 #include "storage/ducklake_transaction.hpp"
@@ -331,10 +333,48 @@ DuckLakeCatalog::DuckLakeCatalog(AttachedDatabase &db_p, DuckLakeOptions options
 	}
 }
 
+const DuckLakeMetadataProfile &DuckLakeCatalog::MetadataProfile() const {
+	return metadata_profile ? *metadata_profile : DuckLakeMetadataProfile::Default();
+}
+
+void DuckLakeCatalog::SetMetadataProfile(shared_ptr<const DuckLakeMetadataProfile> profile) {
+	metadata_profile = std::move(profile);
+}
+
 DuckLakeCatalog::~DuckLakeCatalog() {
 	// a transaction can still cache entries after DETACH, and a rolled back ATTACH never detaches
 	EvictCacheEntries();
 	UnregisterCatalog();
+}
+
+void DuckLakeCatalog::ConnectREST() {
+	auto url = MetadataPath();
+	if (StringUtil::StartsWith(url, "rest:")) {
+		url = url.substr(5);
+	}
+	string token;
+	auto entry = options.metadata_parameters.find("token");
+	if (entry != options.metadata_parameters.end()) {
+		token = entry->second.ToString();
+	}
+	string catalog_name;
+	entry = options.metadata_parameters.find("catalog");
+	if (entry != options.metadata_parameters.end()) {
+		catalog_name = entry->second.ToString();
+	}
+	auto client = make_uniq<DuckLakeRESTClient>(GetDatabase(), std::move(url), std::move(token));
+	// the server tells the client the prefix of the catalog, and which requests it supports
+	client->Discover(catalog_name);
+	rest_client = std::move(client);
+}
+
+DuckLakeRESTClient &DuckLakeCatalog::GetRESTClient() {
+	if (!rest_client) {
+		// LCOV_EXCL_START
+		throw InternalException("The REST catalog is not connected to its server");
+		// LCOV_EXCL_STOP
+	}
+	return *rest_client;
 }
 
 void DuckLakeCatalog::FinalizeLoad(optional_ptr<ClientContext> context) {
@@ -392,6 +432,11 @@ string DuckLakeCatalog::GeneratePathFromName(const string &uuid, const string &n
 }
 
 optional_ptr<CatalogEntry> DuckLakeCatalog::CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info) {
+	return CreateSchemaExtended(transaction, info, string(), string());
+}
+
+optional_ptr<CatalogEntry> DuckLakeCatalog::CreateSchemaExtended(CatalogTransaction transaction, CreateSchemaInfo &info,
+                                                                 string schema_uuid, string schema_data_path) {
 	auto &schema_name = info.SchemaName();
 	optional_ptr<DuckLakeSchemaEntry> parent;
 	if (info.IsNested()) {
@@ -414,13 +459,21 @@ optional_ptr<CatalogEntry> DuckLakeCatalog::CreateSchema(CatalogTransaction tran
 	auto &duck_transaction = transaction.transaction->Cast<DuckLakeTransaction>();
 	//! get a local table-id
 	auto schema_id = SchemaIndex(duck_transaction.GetLocalCatalogId());
-	auto schema_uuid = duck_transaction.GenerateUUID();
-	auto schema_data_path = DataPath() + (parent ? schema_uuid + separator
-	                                             : GeneratePathFromName(schema_uuid, schema_name.GetIdentifierName()));
+	if (schema_uuid.empty()) {
+		schema_uuid = duck_transaction.GenerateUUID();
+	}
+	if (schema_data_path.empty()) {
+		schema_data_path = DataPath() + (parent ? schema_uuid + separator
+		                                        : GeneratePathFromName(schema_uuid, schema_name.GetIdentifierName()));
+	} else if (schema_data_path.back() != '/' && schema_data_path.back() != '\\') {
+		// the paths of the tables are appended to the path of the schema
+		schema_data_path += separator;
+	}
 	auto schema_entry = make_uniq<DuckLakeSchemaEntry>(*this, info, schema_id, std::move(schema_uuid),
 	                                                   std::move(schema_data_path), parent);
 	auto result = schema_entry.get();
 	duck_transaction.CreateEntry(std::move(schema_entry));
+	duck_transaction.GetMetadataManager().OnCreateSchema(*result);
 	return result;
 }
 
@@ -488,6 +541,12 @@ optional_ptr<CatalogEntry> DuckLakeCatalog::GetEntryById(DuckLakeTransaction &tr
 	return schema.GetEntryById(table_id);
 }
 
+optional_ptr<CatalogEntry> DuckLakeCatalog::GetEntryById(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
+                                                         MacroIndex macro_id) {
+	auto &schema = GetSchemaForSnapshot(transaction, snapshot);
+	return schema.GetEntryById(macro_id);
+}
+
 idx_t DuckLakeCatalog::GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version,
                                                         DuckLakeTransaction &transaction) {
 	auto &metadata_manager = transaction.GetMetadataManager();
@@ -529,11 +588,17 @@ DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &t
 	return catalog_set;
 }
 
-static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo &col) {
+//! `parent_path` is the quoted path of the enclosing column (e.g. "s"), empty for a top-level column
+static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo &col, const string &parent_path = "") {
 	DuckLakeColumnData col_data;
 	col_data.id = col.id;
+	const auto quoted_name = "\"" + col.name.GetIdentifierName() + "\"";
+	const auto path = parent_path.empty() ? quoted_name : parent_path + "." + quoted_name;
 	if (col.children.empty()) {
 		auto col_type = DuckLakeTypes::FromString(col.type);
+		if (DuckLakeTypes::IsNested(col_type)) {
+			throw InvalidInputException("Column %s has the nested type \"%s\" but no child columns", path, col.type);
+		}
 		col_data.initial_default = col.initial_default.DefaultCastAs(col_type);
 		if (!col.default_value.IsNull()) {
 			if (col.default_value_type == "literal") {
@@ -550,7 +615,7 @@ static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo 
 	auto type = DuckLakeTypes::FromColumnInfo(col);
 	vector<unique_ptr<DuckLakeFieldId>> child_fields;
 	for (auto &child_col : col.children) {
-		child_fields.push_back(TransformColumnType(child_col));
+		child_fields.push_back(TransformColumnType(child_col, path));
 	}
 	return make_uniq<DuckLakeFieldId>(std::move(col_data), col.name, std::move(type), std::move(child_fields));
 }
@@ -656,7 +721,8 @@ unique_ptr<CreateMacroInfo> CreateMacroInfoFromDucklake(ClientContext &context, 
 				continue;
 			}
 			auto expr_type = DuckLakeTypes::FromString(param.default_value_type);
-			bool null_default = StringValue::Get(param.default_value) == "NULL";
+			// a parameter without a default has no default value over REST
+			bool null_default = param.default_value.IsNull() || StringValue::Get(param.default_value) == "NULL";
 			if (DuckLakeTypes::IsNested(expr_type) && !null_default) {
 				macro_function->default_parameters.insert(param.parameter_name,
 				                                          LegacyNestedDefault(context, macro.macro_name, param));
@@ -680,14 +746,19 @@ unique_ptr<CreateMacroInfo> CreateMacroInfoFromDucklake(ClientContext &context, 
 	return macro_info;
 }
 
-static void ApplyTags(const vector<DuckLakeTag> &tags, CreateInfo &info) {
+static void SplitTags(const vector<DuckLakeTag> &tags, Value &comment,
+                      InsertionOrderPreservingMap<string> &other_tags) {
 	for (auto &tag : tags) {
 		if (tag.key == "comment") {
-			info.comment = tag.value;
+			comment = tag.value;
 		} else {
-			info.tags[tag.key] = tag.value;
+			other_tags[tag.key] = tag.value;
 		}
 	}
+}
+
+static void ApplyTags(const vector<DuckLakeTag> &tags, CreateInfo &info) {
+	SplitTags(tags, info.comment, info.tags);
 }
 
 static set<SchemaIndex> FindUnreachableSchemas(const vector<DuckLakeSchemaInfo> &schemas) {
@@ -823,13 +894,11 @@ unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTr
 				not_null_columns.insert(col_info.name);
 			}
 			ColumnDefinition column(std::move(col_info.name), field_id->Type());
-			for (auto &tag : col_info.tags) {
-				if (tag.key == "comment") {
-					column.SetComment(tag.value);
-				} else {
-					throw NotImplementedException("Only comment tags are supported for columns currently");
-				}
-			}
+			Value comment;
+			InsertionOrderPreservingMap<string> column_tags;
+			SplitTags(col_info.tags, comment, column_tags);
+			column.SetComment(comment);
+			column.SetTags(std::move(column_tags));
 			auto default_val = field_id->GetDefault();
 			if (default_val) {
 				column.SetDefaultValue(std::move(default_val));
@@ -845,7 +914,7 @@ unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTr
 		// create the table and add it to the schema set
 		auto table_entry = make_uniq<DuckLakeTableEntry>(
 		    *this, schema_entry, *create_table_info, table.id, std::move(table.uuid), std::move(table.path),
-		    std::move(field_data), optional_idx(), std::move(table.inlined_data_tables), LocalChangeType::NONE);
+		    std::move(field_data), table.next_column_id, std::move(table.inlined_data_tables), LocalChangeType::NONE);
 		AssignStableOid(*table_entry, table.id.index);
 		schema_set->AddEntry(schema_entry, table.id, std::move(table_entry));
 	}
@@ -960,6 +1029,24 @@ unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTr
 	}
 
 	return schema_set;
+}
+
+set<idx_t> DuckLakeCatalog::GetLoadedNameMapIds() {
+	lock_guard<mutex> guard(name_maps_lock);
+	set<idx_t> result;
+	for (auto &entry : name_maps.name_maps) {
+		result.insert(entry.first.index);
+	}
+	return result;
+}
+
+void DuckLakeCatalog::AddNameMaps(vector<DuckLakeColumnMappingInfo> column_mappings) {
+	lock_guard<mutex> guard(name_maps_lock);
+	for (auto &column_mapping : column_mappings) {
+		if (name_maps.name_maps.find(column_mapping.mapping_id) == name_maps.name_maps.end()) {
+			name_maps.Add(DuckLakeNameMap::FromColumnMapping(std::move(column_mapping)));
+		}
+	}
 }
 
 void DuckLakeCatalog::LoadNameMaps(DuckLakeTransaction &transaction) {
@@ -1094,6 +1181,22 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 	return shared_ptr<DuckLakeTableStats>(std::move(requested_entry), &raw->stats);
 }
 
+optional_idx DuckLakeCatalog::GetTableNetRowCount(DuckLakeTransaction &transaction, DuckLakeTableEntry &table) {
+	auto snapshot = transaction.GetSnapshot();
+	auto key = NetRowCountCacheKey(table.GetTableId());
+	auto cached = GetObjectCacheInstance().Get<DuckLakeTableNetRowCountCacheEntry>(key);
+	if (cached && cached->snapshot_id == snapshot.snapshot_id) {
+		return cached->row_count;
+	}
+	auto row_count = transaction.GetMetadataManager().GetNetRowCount(table, snapshot);
+	if (!row_count.IsValid()) {
+		return optional_idx();
+	}
+	PutCacheEntry(std::move(key),
+	              make_shared_ptr<DuckLakeTableNetRowCountCacheEntry>(snapshot.snapshot_id, row_count.GetIndex()));
+	return row_count;
+}
+
 idx_t DuckLakeCatalog::GetTableRecordCount(DuckLakeTransaction &transaction, TableIndex table_id) {
 	auto snapshot = transaction.GetSnapshot();
 	auto &cache = GetObjectCacheInstance();
@@ -1193,7 +1296,7 @@ optional_ptr<BoundAtClause> DuckLakeCatalog::CatalogSnapshot() const {
 void DuckLakeCatalog::OnDetach(ClientContext &context) {
 	EvictCacheEntries();
 	// the metadata database stays attached while another DuckLake uses it
-	if (!UnregisterCatalog()) {
+	if (!UnregisterCatalog() || !OwnsMetadataDatabase()) {
 		return;
 	}
 	auto &db_manager = DatabaseManager::Get(context);
@@ -1562,6 +1665,10 @@ string DuckLakeCatalog::RecordCountCacheKey(idx_t snapshot_id) const {
 	return StringUtil::Format("ducklake:%s:record_counts:%llu", instance_id, snapshot_id);
 }
 
+string DuckLakeCatalog::NetRowCountCacheKey(TableIndex table_id) const {
+	return StringUtil::Format("ducklake:%s:net_row_count:table:%llu", instance_id, table_id.index);
+}
+
 string DuckLakeCatalog::SchemaCacheKey(idx_t schema_version) const {
 	// a loaded schema holds the name of the DuckLake, its macros for one, so a new name loads it again
 	return StringUtil::Format("ducklake:%s:%s:schema:%llu", instance_id, GetName(), schema_version);
@@ -1569,6 +1676,23 @@ string DuckLakeCatalog::SchemaCacheKey(idx_t schema_version) const {
 
 void DuckLakeCatalog::InvalidateTableStatsCache(idx_t next_file_id, TableIndex table_id) {
 	GetObjectCacheInstance().Delete(StatsCacheKey(next_file_id, table_id));
+}
+
+void DuckLakeCatalog::InvalidateTableStatsCaches(const unordered_set<idx_t> &next_file_ids) {
+	auto &cache = GetObjectCacheInstance();
+	lock_guard<mutex> guard(cache_entries_lock);
+	// only the entries this DuckLake put in the object cache can be there
+	auto evict = [&](const TrackedStatsEntry &entry) {
+		if (next_file_ids.find(entry.next_file_id) == next_file_ids.end()) {
+			return false;
+		}
+		if (!entry.entry.expired()) {
+			cache.Delete(StatsCacheKey(entry.next_file_id, entry.table_id));
+		}
+		return true;
+	};
+	stats_cache_entries.erase(std::remove_if(stats_cache_entries.begin(), stats_cache_entries.end(), evict),
+	                          stats_cache_entries.end());
 }
 
 void DuckLakeCatalog::InvalidateSchemaCache(idx_t schema_version) {
@@ -1664,7 +1788,8 @@ void DuckLakeCatalog::RegisterCatalog() {
 			continue;
 		}
 		// only DuckLakes with the same metadata database share their metadata catalog
-		if (other.MetadataDatabaseName() == MetadataDatabaseName() &&
+		if (OwnsMetadataDatabase() && other.OwnsMetadataDatabase() &&
+		    other.MetadataDatabaseName() == MetadataDatabaseName() &&
 		    (other.MetadataType() != MetadataType() || other.MetadataPath() != MetadataPath())) {
 			throw BinderException("Failed to attach database: metadata catalog %s is already used by database %s",
 			                      MetadataDatabaseName(), other_name);
@@ -1684,7 +1809,7 @@ bool DuckLakeCatalog::UnregisterCatalog() {
 		auto &other = catalogs[i - 1].get();
 		if (&other == this) {
 			catalogs.erase_at(i - 1);
-		} else if (other.MetadataDatabaseName() == MetadataDatabaseName()) {
+		} else if (other.OwnsMetadataDatabase() && other.MetadataDatabaseName() == MetadataDatabaseName()) {
 			metadata_catalog_unused = false;
 		}
 	}

@@ -13,20 +13,6 @@ struct CleanupBindData : public MetadataBindData {
 	explicit CleanupBindData(DuckLakeCatalog &catalog, CleanupType type) : catalog(catalog), type(type) {
 	}
 
-	string GetFilter() const {
-		if (timestamp_filter.empty()) {
-			return "";
-		}
-		switch (type) {
-		case CleanupType::OLD_FILES:
-			return StringUtil::Format("WHERE schedule_start::TIMESTAMPTZ < '%s'", timestamp_filter);
-		case CleanupType::ORPHANED_FILES:
-			return StringUtil::Format(" AND last_modified::TIMESTAMPTZ < '%s'", timestamp_filter);
-		default:
-			throw InternalException("Unknown Cleanup type for GetFilter()");
-		}
-	}
-
 	string GetFunctionName() const {
 		switch (type) {
 		case CleanupType::OLD_FILES:
@@ -82,8 +68,14 @@ static unique_ptr<FunctionData> CleanupBind(ClientContext &context, TableFunctio
 	bool skip_cleanup = type == CleanupType::ORPHANED_FILES && !ducklake_catalog.AutoCompactEnabled();
 	if (!skip_cleanup) {
 		auto &transaction = DuckLakeTransaction::Get(context, ducklake_catalog);
+		if (type == CleanupType::OLD_FILES && !result->dry_run && transaction.ExpiredSnapshotsInMetadataTransaction()) {
+			throw InvalidInputException("%s cannot delete files in a transaction that expired snapshots, since a "
+			                            "rollback of the expiry would keep the snapshots without their files. Commit "
+			                            "the expiry first",
+			                            result->GetFunctionName());
+		}
 		auto &metadata_manager = transaction.GetMetadataManager();
-		result->files = metadata_manager.GetFilesForCleanup(result->GetFilter(), type);
+		result->files = metadata_manager.GetFilesForCleanup(result->timestamp_filter, type);
 		for (auto &file : result->files) {
 			result->rows.push_back({Value(file.path)});
 		}
@@ -123,9 +115,7 @@ void DuckLakeCleanupExecute(ClientContext &context, TableFunctionInput &data_p, 
 		fs.RemoveFiles(paths);
 		if (data.type == CleanupType::OLD_FILES) {
 			// If we are removing old files, we need to remove them from the catalog
-			auto &transaction = DuckLakeTransaction::Get(context, data.catalog);
-			auto &metadata_manager = transaction.GetMetadataManager();
-			metadata_manager.RemoveFilesScheduledForCleanup(data.files);
+			DuckLakeTransaction::Get(context, data.catalog).RemoveFilesScheduledForCleanup(data.files);
 		}
 		state.executed = true;
 	}

@@ -140,6 +140,11 @@ public:
 	DuckLakeSetCommitMessage();
 };
 
+class DuckLakeRegisterMetadataProfileFunction : public TableFunction {
+public:
+	DuckLakeRegisterMetadataProfileFunction();
+};
+
 class DuckLakeCreateTagFunction : public TableFunction {
 public:
 	DuckLakeCreateTagFunction();
@@ -170,6 +175,11 @@ public:
 	DuckLakeOptionsFunction();
 };
 
+class DuckLakeMetadataTableFunction : public TableFunction {
+public:
+	DuckLakeMetadataTableFunction();
+};
+
 class DuckLakeLastCommittedSnapshotFunction : public DuckLakeBaseMetadataFunction {
 public:
 	DuckLakeLastCommittedSnapshotFunction();
@@ -186,6 +196,11 @@ public:
 };
 
 class DuckLakeAddDataFilesFunction : public TableFunction {
+public:
+	static TableFunctionSet GetFunctions();
+};
+
+class DuckLakeRemoveDataFilesFunction : public TableFunction {
 public:
 	static TableFunctionSet GetFunctions();
 };

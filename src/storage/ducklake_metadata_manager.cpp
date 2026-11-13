@@ -4195,7 +4195,7 @@ FROM {METADATA_CATALOG}.ducklake_delete_file del
 WHERE del.table_id=%d AND del.data_file_id IN (%s) AND {SNAPSHOT_ID} >= del.begin_snapshot
   AND ({SNAPSHOT_ID} < del.end_snapshot OR del.end_snapshot IS NULL))",
 	                       GetDeleteFileSelectList("del"), table.GetTableId().index, StringUtil::Join(ids, ", "));
-	auto query_result = Query(snapshot, query);
+	auto query_result = QuerySnapshotData(snapshot, query);
 	query_result->ThrowIfError("Failed to get the delete files of the data files from DuckLake: ");
 	for (auto &row : *query_result) {
 		idx_t col_idx = 2;
@@ -4225,7 +4225,7 @@ WHERE data.table_id=%d AND {SNAPSHOT_ID} >= data.begin_snapshot
   AND ({SNAPSHOT_ID} < data.end_snapshot OR data.end_snapshot IS NULL)
 ORDER BY data.data_file_id, value.partition_key_index)",
 	                                table_id.index);
-	auto result = Query(snapshot, query);
+	auto result = QuerySnapshotData(snapshot, query);
 	result->ThrowIfError("Failed to read the partition values of the files from DuckLake: ");
 	for (auto &row : *result) {
 		auto position = file_positions.find(row.GetValue<idx_t>(0));

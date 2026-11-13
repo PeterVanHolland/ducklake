@@ -104,6 +104,7 @@
     {
       "reason": "Compacts or flushes files, which the REST server does itself: the files have to be in a data path that the server and the client both see, but the test attaches the client with a data path of its own",
       "paths": [
+        "test/sql/sorted_table/merge_adjacent_sort_key_order.test",
         "test/sql/add_files/add_files_overlapping_globs.test",
         "test/sql/add_files/add_removed_files.test",
         "test/sql/alter/struct_evolution_reorder.test",

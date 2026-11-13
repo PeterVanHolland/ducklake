@@ -1,4 +1,5 @@
 #include "storage/ducklake_catalog.hpp"
+#include "duckdb/execution/operator/persistent/copy_output_lifecycle.hpp"
 #include "storage/ducklake_puffin.hpp"
 #include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/map.hpp"
@@ -65,7 +66,10 @@ static DuckLakeDeleteFile WriteDeleteFileInternal(ClientContext &context, InputT
 		types_to_write.push_back(LogicalType::BIGINT);
 	}
 
-	DuckLakeUtil::EnsureDirectoryExists(input.fs, input.data_path);
+	DuckLakeUtil::EnsureDirectoryExists(input.context, input.data_path);
+	// the file is removed when its write or its sync fails, and synced with its directory entry when both succeed
+	CopyOutputLifecycle output(input.context, true);
+	output.RegisterFile(delete_file_path);
 
 	auto function_data = copy_fun.function.copy_to_bind(input.context, bind_input, names_to_write, types_to_write);
 	// the delete file columns never hold NULL, so they are written as required
@@ -133,6 +137,9 @@ static DuckLakeDeleteFile WriteDeleteFileInternal(ClientContext &context, InputT
 
 	copy_fun.function.copy_to_combine(execution_context, *function_data, *copy_global_state, *copy_local_state);
 	copy_fun.function.copy_to_finalize(context, *function_data, *copy_global_state);
+	output.SyncFile(delete_file_path);
+	output.SyncDirectories();
+	output.MarkSuccessful();
 
 	// add to the written files
 	DuckLakeDeleteFile delete_file;
@@ -169,8 +176,14 @@ static DuckLakeDeleteFile WritePuffinDeleteFile(InputType &input,
 	auto delete_file_uuid = "ducklake-" + input.transaction.GenerateUUID() + "-delete.puffin";
 	string delete_file_path = DuckLakeUtil::JoinPath(input.fs, input.data_path, delete_file_uuid);
 
-	DuckLakeUtil::EnsureDirectoryExists(input.fs, input.data_path);
+	DuckLakeUtil::EnsureDirectoryExists(input.context, input.data_path);
+	// the file is removed when its write or its sync fails, and synced with its directory entry when both succeed
+	CopyOutputLifecycle output(input.context, true);
+	output.RegisterFile(delete_file_path);
 	auto result = DuckLakePuffinWriter::Write(input.fs, delete_file_path, input.data_file_path, blobs);
+	output.SyncFile(delete_file_path);
+	output.SyncDirectories();
+	output.MarkSuccessful();
 
 	DuckLakeDeleteFile delete_file;
 	delete_file.data_file_path = input.data_file_path;

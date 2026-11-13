@@ -17,6 +17,12 @@
   ],
   "skip_tests": [
     {
+      "reason": "The test needs a Postgres catalog, it simulates the lost response of a COMMIT",
+      "paths": [
+        "test/sql/retry/postgres_commit_response_lost.test"
+      ]
+    },
+    {
       "reason": "Reads inlined timestamps of a column retyped to TIMESTAMPTZ in the time zone of the session, the REST server reads them in UTC",
       "paths": [
         "test/sql/stats/timestamptz_retype_committed_stats.test"

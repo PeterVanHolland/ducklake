@@ -51,6 +51,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    "ducklake_write_deletion_vectors",
 	    "[EXPERIMENTAL] Write Iceberg V3 deletion vectors (puffin) instead of positional delete files (parquet)",
 	    LogicalType::BOOLEAN, Value::BOOLEAN(false), nullptr, SetScope::GLOBAL);
+	config.AddExtensionOption("ducklake_debug_lose_commit_response",
+	                          "Debug option that reports a terminated connection after the COMMIT of a transaction "
+	                          "took effect, as a remote catalog can",
+	                          LogicalType::BOOLEAN, Value::BOOLEAN(false));
 
 	DuckLakeRESTServeFunction rest_serve;
 	loader.RegisterFunction(rest_serve);

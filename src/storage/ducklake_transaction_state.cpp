@@ -483,6 +483,7 @@ string DuckLakeTransactionState::WriteSnapshotChanges(DuckLakeCommitState &commi
 	}
 	SnapshotChangeInfo change_info;
 	change_info.changes_made = StringUtil::Join(changes_made, ",");
+	commit_state.changes_made = change_info.changes_made;
 	return DuckLakeMetadataManager::WriteSnapshotChangesSql(change_info, commit_info);
 }
 
@@ -2905,6 +2906,86 @@ bool DuckLakeTransactionState::FindConflictWithOtherCommits(DuckLakeSnapshot tra
 	return found_conflict;
 }
 
+DuckLakeTransactionState::CommitOutcome
+DuckLakeTransactionState::VerifyCommit(const DuckLakeCommitContext &context, const DuckLakeCommitState &commit_state) {
+	auto snapshot_id = commit_state.commit_snapshot.snapshot_id;
+	try {
+		auto changes = context.query_metadata(StringUtil::Format(
+		    "SELECT changes_made FROM {METADATA_CATALOG}.ducklake_snapshot_changes WHERE snapshot_id = %llu",
+		    snapshot_id));
+		changes->ThrowIfError("Failed to read the snapshot of a commit with an unknown outcome: ");
+		bool snapshot_found = false;
+		for (auto &row : *changes) {
+			snapshot_found = true;
+			// an empty description is stored as NULL
+			auto changes_made = row.IsNull(0) ? string() : row.GetValue<string>(0);
+			if (changes_made != commit_state.changes_made) {
+				// another commit took the snapshot id, so this one was rejected
+				return CommitOutcome::NOT_COMMITTED;
+			}
+		}
+		if (!snapshot_found) {
+			// the server can still be running the COMMIT
+			return CommitOutcome::UNKNOWN;
+		}
+		// a file DuckLake named is unique, an added file can share its name with the file of another transaction
+		vector<string> created_files;
+		local_changes.GetWrittenFiles(created_files, false);
+		string created_name;
+		for (auto &file : created_files) {
+			auto name = StringUtil::GetFileName(file);
+			if (StringUtil::StartsWith(name, "ducklake-")) {
+				created_name = name;
+				break;
+			}
+		}
+		if (created_name.empty()) {
+			// the snapshot cannot be told from a concurrent commit of the same changes
+			return CommitOutcome::UNKNOWN;
+		}
+		// the snapshot and the table the file is registered under can differ from the ones of the commit
+		auto file_name = SQLString::ToString("%" + created_name);
+		auto registered = context.query_metadata(StringUtil::Format(
+		    "SELECT COUNT(*) FROM (SELECT path FROM {METADATA_CATALOG}.ducklake_data_file WHERE path LIKE %s UNION ALL "
+		    "SELECT path FROM {METADATA_CATALOG}.ducklake_delete_file WHERE path LIKE %s UNION ALL "
+		    "SELECT path FROM {METADATA_CATALOG}.ducklake_files_scheduled_for_deletion WHERE path LIKE %s) files",
+		    file_name, file_name, file_name));
+		registered->ThrowIfError("Failed to read the files of a commit with an unknown outcome: ");
+		for (auto &row : *registered) {
+			if (row.GetValue<idx_t>(0) > 0) {
+				return CommitOutcome::TOOK_EFFECT;
+			}
+		}
+		// a missing file does not prove a rejection either
+		return CommitOutcome::UNKNOWN;
+	} catch (std::exception &) {
+		// the catalog cannot be read, the connection to it is likely gone
+		return CommitOutcome::UNKNOWN;
+	}
+}
+
+void DuckLakeTransactionState::CommitConnection(const DuckLakeCommitContext &context,
+                                                const DuckLakeCommitState &commit_state, bool &outcome_unknown) {
+	try {
+		context.commit_connection();
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		if (!context.commit_outcome_unknown(error.RawMessage())) {
+			throw;
+		}
+		// a retry of a COMMIT that took effect would commit the changes a second time
+		switch (VerifyCommit(context, commit_state)) {
+		case CommitOutcome::TOOK_EFFECT:
+			return;
+		case CommitOutcome::NOT_COMMITTED:
+			throw;
+		default:
+			outcome_unknown = true;
+			throw;
+		}
+	}
+}
+
 void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
                                       const TransactionChangeInformation &transaction_changes,
                                       const DuckLakeRetryConfig &retry_config, const DuckLakeCommitContext &context) {
@@ -2913,6 +2994,7 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 	optional_ptr<vector<DuckLakeGlobalStatsInfo>> stats;
 	bool flushed_inlined = false;
 	bool wrote_snapshot = true;
+	bool outcome_unknown = false;
 	for (idx_t i = 0;; i++) {
 		bool can_retry;
 		bool retryable_metadata_error = false;
@@ -2980,7 +3062,11 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			}
 			flushed_inlined = !flushed_inlined_tables.empty();
 			context.flush_cache_if_pending();
-			context.commit_connection();
+			if (wrote_snapshot) {
+				CommitConnection(context, commit_state, outcome_unknown);
+			} else {
+				context.commit_connection();
+			}
 			committed_tables = commit_state.committed_tables;
 			committed_entry_oids = std::move(commit_state.new_entry_oids);
 			break;
@@ -2993,7 +3079,7 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			// an internal error is a bug that a retry cannot fix
 			// a retryable metadata error in the conflict check is retried, a conflict that it finds is not
 			bool retry_on_error =
-			    error.Type() != ExceptionType::INTERNAL && !context.skip_retry() &&
+			    error.Type() != ExceptionType::INTERNAL && !context.skip_retry() && !outcome_unknown &&
 			    (retryable_metadata_error || (can_retry && DuckLakeTransaction::RetryOnError(error_without_query)));
 			if (retry_on_error) {
 				try {
@@ -3012,8 +3098,12 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			}
 			if (!retry_on_error || finished_retrying) {
 				// we abort after the max retry count
-				CleanupFiles();
 				string error_message = "Failed to commit DuckLake transaction.\n";
+				if (outcome_unknown) {
+					error_message += string(DuckLakeMetadataManager::COMMIT_OUTCOME_UNKNOWN_HINT) + "\n";
+				} else {
+					CleanupFiles();
+				}
 				// only an error that another retry could solve gets the advice to raise the retry count
 				if (retry_on_error) {
 					auto suggested_count =

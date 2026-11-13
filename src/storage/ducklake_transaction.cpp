@@ -135,10 +135,10 @@ optional_ptr<const LocalTableDataChanges> LocalTableChanges::Find(TableIndex tab
 	return entry->second;
 }
 
-void LocalTableChanges::GetWrittenFiles(vector<string> &result) const {
+void LocalTableChanges::GetWrittenFiles(vector<string> &result, bool include_added_files) const {
 	lock_guard<mutex> guard(lock);
 	for (auto &entry : changes) {
-		entry.second.AddWrittenFiles(result, result, true);
+		entry.second.AddWrittenFiles(result, result, include_added_files);
 	}
 }
 
@@ -1729,6 +1729,9 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	context.commit_error_without_query = [&](const string &message) {
 		return metadata_manager->CommitErrorWithoutQuery(message);
 	};
+	context.commit_outcome_unknown = [&](const string &message) {
+		return metadata_manager->CommitOutcomeUnknown(message);
+	};
 	context.commit_error_hint = [&](const string &message) {
 		if (context.skip_retry()) {
 			return string("Another transaction changed options at the same time, and a retry would undo what the "
@@ -1744,6 +1747,18 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	};
 	context.commit_connection = [&]() {
 		connection->Commit();
+		Value lose_response;
+		auto client_context = this->context.lock();
+		if (client_context &&
+		    client_context->TryGetCurrentSetting("ducklake_debug_lose_commit_response", lose_response) &&
+		    !lose_response.IsNull() && BooleanValue::Get(lose_response)) {
+			// the COMMIT took effect, the error is the one a connection ended by the server leaves
+			string lost_response = "Failed to execute query \"COMMIT\": FATAL:  terminating connection due to "
+			                       "conflict with recovery";
+			if (metadata_manager->CommitOutcomeUnknown(lost_response)) {
+				throw IOException(lost_response);
+			}
+		}
 	};
 	context.try_rollback = [&]() {
 		if (connection->context->transaction.HasActiveTransaction()) {

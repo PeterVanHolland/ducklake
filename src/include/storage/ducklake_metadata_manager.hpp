@@ -452,7 +452,7 @@ public:
 	virtual DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! The net row count of the data files that were committed before the snapshot's next file id
 	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);
-	//! The distinct known bounds of columns in the live data files of a table, without the excluded files
+	//! The known bounds of columns in the live data files of a table, without the excluded files
 	virtual vector<DuckLakeFileColumnBounds> GetLiveFileBounds(DuckLakeTableEntry &table,
 	                                                           const set<FieldIndex> &column_ids,
 	                                                           const set<DataFileIndex> &excluded_files,

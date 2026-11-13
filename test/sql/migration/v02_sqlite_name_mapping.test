@@ -1,0 +1,46 @@
+# name: test/sql/migration/v02_sqlite_name_mapping.test
+# description: The name mappings of a SQLite catalog of DuckLake 0.2 read after the migration
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+require sqlite_scanner
+
+# written by DuckDB 1.3.2 (ducklake 9cc2d90, sqlite_scanner ed38d77), t has a file added with ducklake_add_data_files
+unzip data/old_ducklake/v02_name_mapping.sqlite.gz {TEST_DIR}/v02_name_mapping.sqlite
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/v02_name_mapping.sqlite' AS dl (DATA_PATH 'data/old_ducklake/v02_name_mapping/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT column_id, is_partition::BOOLEAN FROM __ducklake_metadata_dl.ducklake_name_mapping ORDER BY ALL
+----
+0	false
+1	false
+
+query II
+SELECT * FROM dl.t
+----
+1	a
+
+query I
+SELECT * FROM dl.u
+----
+7
+
+# a catalog that an earlier migration left without is_partition values reads too
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_name_mapping SET is_partition = NULL
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/v02_name_mapping.sqlite' AS dl (DATA_PATH 'data/old_ducklake/v02_name_mapping/', OVERRIDE_DATA_PATH TRUE)
+
+query II
+SELECT * FROM dl.t
+----
+1	a

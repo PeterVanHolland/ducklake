@@ -443,8 +443,9 @@ public:
 	virtual idx_t GetBeginSnapshotForTable(TableIndex table_id);
 	virtual idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version);
 	virtual DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
-	//! The net row count of the data files that were committed before the snapshot's next file id
-	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);
+	//! The net row count of the data files that were committed before the snapshot's next file id, unknown when a
+	//! file has no record count
+	virtual optional_idx GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);
 	virtual optional_idx GetNetDataFileRowCountForStats(TableIndex table_id, DuckLakeSnapshot snapshot);
 	virtual idx_t GetNetInlinedRowCount(const Identifier &inlined_table_name, DuckLakeSnapshot snapshot);
 	//! The number of rows of a table, in data files and inlined, or invalid if it cannot be computed exactly

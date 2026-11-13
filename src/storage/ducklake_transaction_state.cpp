@@ -1089,9 +1089,9 @@ static set<FieldIndex> ReadSkippedStatsFields(TableIndex table_id, const DuckLak
 bool DuckLakeTransactionState::TryRecomputeGlobalStats(TableIndex table_id, DuckLakeSnapshot snapshot,
                                                        const CompactionInformation &rewrite_changes,
                                                        const set<DataFileIndex> &removed_source_ids,
-                                                       const DuckLakeCommitContext &context, bool &deleted_rows_remain,
+                                                       const DuckLakeCommitContext &context, bool &refresh_record_count,
                                                        idx_t dropped_row_count, DuckLakeTableStats &new_stats) {
-	deleted_rows_remain = false;
+	refresh_record_count = false;
 	if (tables_changed_by_others.find(table_id) != tables_changed_by_others.end()) {
 		return false; // the stats below are read at the transaction snapshot, which misses the other commits
 	}
@@ -1138,9 +1138,19 @@ bool DuckLakeTransactionState::TryRecomputeGlobalStats(TableIndex table_id, Duck
 		if (file_count == 0 || data_file_id != last_file_id) {
 			last_file_id = data_file_id;
 			file_count++;
+			if (row.IsNull(1)) {
+				// a file without a record count leaves the row count of the table unknown
+				refresh_record_count = true;
+				return false;
+			}
 			new_stats.record_count += static_cast<idx_t>(row.GetValue<int64_t>(1));
-			new_stats.table_size_bytes += static_cast<idx_t>(row.GetValue<int64_t>(2));
 			parquet_gross_rows += static_cast<idx_t>(row.GetValue<int64_t>(1));
+			if (row.IsNull(2)) {
+				// a file without a size leaves the size of the table unknown
+				new_stats.table_size_unknown = true;
+			} else {
+				new_stats.table_size_bytes += static_cast<idx_t>(row.GetValue<int64_t>(2));
+			}
 		}
 		if (row.IsNull(3)) {
 			continue; // file without column stats
@@ -1201,8 +1211,9 @@ bool DuckLakeTransactionState::TryRecomputeGlobalStats(TableIndex table_id, Duck
 	//    That holds iff the gross row count of the post-rewrite files equals the net (delete-adjusted) data-file count.
 	//    (Covers partial rewrites with delete_threshold > 0, leftover delete files, and inlined file deletions.)
 	//    The net count still includes the rows of the files dropped by this commit.
-	if (parquet_gross_rows + dropped_row_count != context.get_net_data_file_row_count(table_id)) {
-		deleted_rows_remain = true;
+	auto net_row_count = context.get_net_data_file_row_count(table_id);
+	if (!net_row_count.IsValid() || parquet_gross_rows + dropped_row_count != net_row_count.GetIndex()) {
+		refresh_record_count = true;
 		return false;
 	}
 	// deleted inlined rows stay stored, and flushing them later does not count them again
@@ -1211,7 +1222,7 @@ bool DuckLakeTransactionState::TryRecomputeGlobalStats(TableIndex table_id, Duck
 	idx_t net_inlined;
 	CountInlinedRows(inlined_table_names, snapshot, context, stored_inlined, net_inlined);
 	if (stored_inlined != net_inlined) {
-		deleted_rows_remain = true;
+		refresh_record_count = true;
 		return false;
 	}
 
@@ -1272,9 +1283,9 @@ static string RecomputedGlobalStatsSql(TableIndex table_id, DuckLakeTableStats s
 
 bool DuckLakeTransactionState::RecomputeGlobalStatsAfterRewrite(
     string &batch_query, TableIndex table_id, DuckLakeSnapshot snapshot, const CompactionInformation &rewrite_changes,
-    const set<DataFileIndex> &removed_source_ids, const DuckLakeCommitContext &context, bool &deleted_rows_remain) {
+    const set<DataFileIndex> &removed_source_ids, const DuckLakeCommitContext &context, bool &refresh_record_count) {
 	DuckLakeTableStats new_stats;
-	if (!TryRecomputeGlobalStats(table_id, snapshot, rewrite_changes, removed_source_ids, context, deleted_rows_remain,
+	if (!TryRecomputeGlobalStats(table_id, snapshot, rewrite_changes, removed_source_ids, context, refresh_record_count,
 	                             0, new_stats)) {
 		return false;
 	}
@@ -1357,19 +1368,25 @@ bool DuckLakeTransactionState::ApplyDroppedFileStats(
 	}
 	auto &stats = new_stats.stats;
 	auto dropped_stats = entry->second;
+	if (dropped_stats.row_count_unknown) {
+		// a dropped file without a record count leaves the count of the table unknown
+		stats.record_count_unknown = true;
+	}
 	if (!stats.record_count_unknown) {
 		stats.record_count = SubtractDroppedFileStat(stats.record_count, dropped_stats.row_count);
 	}
 	bool live_rows_remain = stats.record_count_unknown || stats.record_count > 0;
 	if (live_rows_remain) {
-		if (dropped_stats.file_size_bytes > stats.table_size_bytes) {
-			// a stale stored size is read back from the live data files
+		if (stats.table_size_unknown || dropped_stats.file_size_unknown ||
+		    dropped_stats.file_size_bytes > stats.table_size_bytes) {
+			// a stale or unknown stored size is read back from the live data files
 			refreshed_table_sizes.insert(table_id);
 		} else {
 			stats.table_size_bytes -= dropped_stats.file_size_bytes;
 		}
 	} else {
 		stats.table_size_bytes = 0;
+		stats.table_size_unknown = false;
 		for (auto &column_stats : stats.column_stats) {
 			auto reset = DuckLakeColumnStats(column_stats.second.type);
 			// Let same-commit inserts seed min/max after the table was emptied.
@@ -1476,8 +1493,8 @@ bool DuckLakeTransactionState::TryRecomputeGlobalStatsAfterDrop(TableIndex table
 		// LCOV_EXCL_STOP
 	}
 	CompactionInformation no_rewrite;
-	bool deleted_rows_remain;
-	return TryRecomputeGlobalStats(table_id, snapshot, no_rewrite, dropped_ids, context, deleted_rows_remain,
+	bool refresh_record_count;
+	return TryRecomputeGlobalStats(table_id, snapshot, no_rewrite, dropped_ids, context, refresh_record_count,
 	                               dropped_row_count - dropped_delete_count, result);
 }
 
@@ -2573,14 +2590,14 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 			}
 			auto recompute_snapshot = context.get_snapshot();
 			for (auto &table_entry : removed_source_ids_by_table) {
-				bool deleted_rows_remain;
+				bool refresh_record_count;
 				if (RecomputeGlobalStatsAfterRewrite(batch_queries, table_entry.first, recompute_snapshot,
 				                                     compaction_rewrite_delete_changes, table_entry.second, context,
-				                                     deleted_rows_remain)) {
+				                                     refresh_record_count)) {
 					continue;
 				}
-				// keep the overcount while deleted rows remain, so the bounds stay inexact
-				if (deleted_rows_remain) {
+				// keep the overcount while deleted rows remain, so the bounds stay inexact, unknown stays unknown
+				if (refresh_record_count) {
 					refreshed_record_counts.insert(table_entry.first);
 				}
 			}

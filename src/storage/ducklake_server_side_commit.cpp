@@ -190,8 +190,19 @@ void DuckLakeServerSideCommit::ReadStagedDroppedFileEntries() {
 		    "read dropped file stats");
 		for (auto &row : *dropped_stats) {
 			auto &stats = staged_dropped_file_stats[TableIndex(AsIdx(row, 0))];
-			stats.row_count += AsIdx(row, 1);
-			stats.file_size_bytes += AsIdx(row, 2);
+			// another writer or an edit of the metadata can leave a file without a count or a size
+			auto row_count = OptIdx(row, 1);
+			auto file_size = OptIdx(row, 2);
+			if (row_count.IsValid()) {
+				stats.row_count += row_count.GetIndex();
+			} else {
+				stats.row_count_unknown = true;
+			}
+			if (file_size.IsValid()) {
+				stats.file_size_bytes += file_size.GetIndex();
+			} else {
+				stats.file_size_unknown = true;
+			}
 		}
 	}
 	staged_dropped_files_read = true;
@@ -716,7 +727,7 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
 	ctx.inlined_file_deletion_table_exists = [this](TableIndex table_id) {
 		return InlinedFileDeletionTableExists(table_id);
 	};
-	ctx.get_net_data_file_row_count = [this](TableIndex table_id) -> idx_t {
+	ctx.get_net_data_file_row_count = [this](TableIndex table_id) -> optional_idx {
 		Identifier inlined_deletion_table;
 		if (InlinedFileDeletionTableExists(table_id)) {
 			inlined_deletion_table = DuckLakeMetadataManager::InlinedFileDeletionTableName(table_id);
@@ -726,10 +737,10 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
 		    transaction_snapshot);
 		auto result = RunQuery(sql, "read net data file row count");
 		for (auto &row : *result) {
-			return row.GetValue<idx_t>(0);
+			return OptIdx(row, 0);
 		}
 		// LCOV_EXCL_START
-		return 0;
+		return optional_idx(0);
 		// LCOV_EXCL_STOP
 	};
 	ctx.set_catalog_version = [&committed_schema_version](idx_t v) {

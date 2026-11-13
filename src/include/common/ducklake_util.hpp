@@ -124,7 +124,10 @@ public:
 	static void ValidateConfigOptionScope(const string &option, bool has_schema, bool has_table);
 	static void ValidateConfigOptionName(const string &option);
 
-	//! Storage type of an inlined column, VARIANT becomes a Parquet Variant BLOB where VARIANT is not native
+	//! Whether the JSON leaves of a nested column are stored as plain strings in the text of the value
+	static bool InlinedNestedJSONAsText(DuckLakeMetadataManager &metadata_manager, const LogicalType &type);
+	//! Storage type of an inlined column, VARIANT becomes a Parquet Variant BLOB where VARIANT is not native and
+	//! JSON inside a nested type becomes VARCHAR where nested types are stored as text
 	static LogicalType GetInlinedStorageType(DuckLakeMetadataManager &metadata_manager, const LogicalType &type);
 	//! SQL expression encoding or decoding VARIANT leaves in an inlined column
 	static string InlinedVariantExpression(const string &expression, const LogicalType &type, bool encode,

@@ -18,6 +18,7 @@ namespace duckdb {
 
 ScalarFunction DuckLakeMurmur3Function();
 ScalarFunction DuckLakeUnreadableMacroDefaultFunction();
+ScalarFunction DuckLakeInlinedValueFunction();
 
 static void LoadInternal(ExtensionLoader &loader) {
 	loader.SetDescription("Adds support for DuckLake, SQL as a Lakehouse Format");
@@ -165,6 +166,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	auto unreadable_macro_default_func = DuckLakeUnreadableMacroDefaultFunction();
 	loader.RegisterFunction(unreadable_macro_default_func);
+
+	// reads nested values that the SQLite and Postgres catalogs store as text
+	auto inlined_value_func = DuckLakeInlinedValueFunction();
+	loader.RegisterFunction(inlined_value_func);
 }
 
 // LCOV_EXCL_START

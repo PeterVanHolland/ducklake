@@ -3498,7 +3498,15 @@ string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const L
 		// Postgres stores VARCHAR and JSON as BYTEA.
 		expression = "decode(" + expression + ")";
 	}
-	expression = "CAST(" + expression + " AS " + storage_type.ToString() + ")";
+	if (DuckLakeUtil::InlinedNestedJSONAsText(*this, type)) {
+		// the text keeps the JSON leaves as quoted strings, older versions wrote the JSON itself
+		auto parsed_type = TypeVisitor::VisitReplace(type, [&](const LogicalType &child) -> LogicalType {
+			return child.id() == LogicalTypeId::VARIANT && !TypeIsNativelySupported(child) ? LogicalType::BLOB : child;
+		});
+		expression = "ducklake_inlined_value(" + expression + ", NULL::" + parsed_type.ToString() + ")";
+	} else {
+		expression = "CAST(" + expression + " AS " + storage_type.ToString() + ")";
+	}
 	if (storage_type != type) {
 		expression = DuckLakeUtil::InlinedVariantExpression(expression, type, false);
 	}

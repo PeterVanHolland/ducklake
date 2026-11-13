@@ -1,0 +1,168 @@
+# name: test/sql/add_files/add_files_row_lineage_columns.test
+# description: a DuckLake file with row ids added with ducklake_add_data_files holds new rows of the table
+# group: [add_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/add_files_row_lineage_columns', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t (i INTEGER, j INTEGER)
+
+statement ok
+INSERT INTO lake.t VALUES (1, 1), (2, 2)
+
+statement ok
+INSERT INTO lake.t VALUES (3, 3), (4, 4)
+
+# the update writes a file that carries the row ids of its rows
+statement ok
+UPDATE lake.t SET j = j + 10 WHERE i >= 3
+
+query III
+SELECT i, j, rowid FROM lake.t ORDER BY i
+----
+1	1	0
+2	2	1
+3	13	2
+4	14	3
+
+statement ok
+SET VARIABLE f = (SELECT filename FROM lake.t WHERE i = 3)
+
+query I
+SELECT count(*) FROM parquet_schema(getvariable('f')) WHERE field_id = 2147483540
+----
+1
+
+statement ok
+CALL ducklake_remove_data_files('lake', 't', getvariable('f'))
+
+# the row id column is an extra column of the add, the rows of the file are new rows of the table
+statement ok
+CALL ducklake_add_data_files('lake', 't', getvariable('f'), ignore_extra_columns => true)
+
+query IIII
+SELECT i, j, rowid, snapshot_id FROM lake.t ORDER BY i
+----
+1	1	0	2
+2	2	1	2
+3	13	6	6
+4	14	7	6
+
+statement ok
+DELETE FROM lake.t WHERE i = 3
+
+statement ok
+UPDATE lake.t SET j = 0 WHERE i = 4
+
+query III
+SELECT i, j, rowid FROM lake.t ORDER BY i
+----
+1	1	0
+2	2	1
+4	0	7
+
+# a file of another table: its rows get row ids after those of the table
+statement ok
+CREATE TABLE lake.u (i INTEGER, j INTEGER)
+
+statement ok
+INSERT INTO lake.u VALUES (100, 100)
+
+statement ok
+UPDATE lake.u SET j = 101 WHERE i = 100
+
+statement ok
+SET VARIABLE g = (SELECT filename FROM lake.u WHERE i = 100)
+
+statement ok
+CREATE TABLE lake.v (i INTEGER, j INTEGER)
+
+statement ok
+INSERT INTO lake.v VALUES (5, 5)
+
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_add_data_files('lake', 'v', getvariable('g'), ignore_extra_columns => true)
+
+# the transaction that adds the file reads a transaction-local row id, the commit assigns the final one
+query III
+SELECT i, j, rowid FROM lake.v ORDER BY i
+----
+5	5	0
+100	101	1000000000000000000
+
+statement ok
+COMMIT
+
+query IIII
+SELECT i, j, rowid, snapshot_id FROM lake.v ORDER BY i
+----
+5	5	0	13
+100	101	1	14
+
+statement ok
+DELETE FROM lake.v WHERE i = 100
+
+query II
+SELECT i, rowid FROM lake.v
+----
+5	0
+
+# a merged file carries the row ids and the snapshot ids of its rows
+statement ok
+CREATE TABLE lake.w (i INTEGER)
+
+statement ok
+INSERT INTO lake.w VALUES (1)
+
+statement ok
+INSERT INTO lake.w VALUES (2)
+
+statement ok
+CALL ducklake_merge_adjacent_files('lake')
+
+query II
+SELECT i, snapshot_id FROM lake.w ORDER BY i
+----
+1	17
+2	18
+
+statement ok
+SET VARIABLE h = (SELECT filename FROM lake.w WHERE i = 1)
+
+query I
+SELECT count(*) FROM parquet_schema(getvariable('h')) WHERE field_id IN (2147483540, 2147483539)
+----
+2
+
+statement ok
+CALL ducklake_remove_data_files('lake', 'w', getvariable('h'))
+
+statement ok
+CALL ducklake_add_data_files('lake', 'w', getvariable('h'), ignore_extra_columns => true)
+
+query III
+SELECT i, rowid, snapshot_id FROM lake.w ORDER BY i
+----
+1	2	21
+2	3	21
+
+statement ok
+UPDATE lake.w SET i = i + 10
+
+query III
+SELECT i, rowid, snapshot_id FROM lake.w ORDER BY i
+----
+11	2	22
+12	3	22

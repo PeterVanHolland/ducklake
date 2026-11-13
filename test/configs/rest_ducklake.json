@@ -104,6 +104,8 @@
     {
       "reason": "Compacts or flushes files, which the REST server does itself: the files have to be in a data path that the server and the client both see, but the test attaches the client with a data path of its own",
       "paths": [
+        "test/sql/data_inlining/inlined_data_paged_reads.test",
+        "test/sql/data_inlining/inlined_data_paged_flush_row_groups.test_slow",
         "test/sql/add_files/add_files_overlapping_globs.test",
         "test/sql/add_files/add_removed_files.test",
         "test/sql/alter/struct_evolution_reorder.test",
@@ -696,6 +698,12 @@
         "test/sql/list_files/list_files_encrypted.test",
         "test/sql/secrets/ducklake_secret_null_options.test",
         "test/sql/transaction/transaction_conflict_inlining.test"
+      ]
+    },
+    {
+      "reason": "Inlined data is read in pages only from DuckDB catalogs, the REST server returns the inlined rows of a scan at once",
+      "paths": [
+        "test/sql/data_inlining/inlined_data_paged_reads_memory.test"
       ]
     }
   ]

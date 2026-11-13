@@ -133,3 +133,59 @@ SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_se
 '{"requests": [{"alter": {"entry_id": 1, "alter": {"set_options": {"options": {"nonsense_option": "1"}}}}}]}')
 ----
 501	Unsupported option nonsense_option
+
+# the client sends the stored forms of the values it parsed, which the server takes as they are
+statement ok
+CALL dl.set_option('parquet_version', 2)
+
+statement ok
+CALL dl.set_option('target_file_size', '128MB')
+
+statement ok
+CALL dl.set_option('parquet_row_group_size_bytes', '1MB')
+
+statement ok
+CALL dl.set_option('expire_older_than', '1 day')
+
+statement ok
+CALL dl.set_option('parquet_compression', 'ZSTD')
+
+query II rest_db:rest_server_con
+SELECT key, value FROM __ducklake_metadata_rest_lake.ducklake_metadata WHERE key IN ('parquet_version', 'target_file_size', 'parquet_row_group_size_bytes', 'expire_older_than', 'parquet_compression') ORDER BY key
+----
+expire_older_than	1 day
+parquet_compression	zstd
+parquet_row_group_size_bytes	1000000
+parquet_version	V2
+target_file_size	128000000
+
+# a raw request may send either form
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "target_file_size", "value": "256MB"}}}]}')
+----
+200
+
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "parquet_version", "value": "1"}}}]}')
+----
+200
+
+query II rest_db:rest_server_con
+SELECT key, value FROM __ducklake_metadata_rest_lake.ducklake_metadata WHERE key IN ('parquet_version', 'target_file_size') ORDER BY key
+----
+parquet_version	V1
+target_file_size	256000000
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "parquet_version", "value": "3"}}}]}')
+----
+501	Only Parquet version 1 and 2 are supported
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "parquet_row_group_size_bytes", "value": "0"}}}]}')
+----
+501	Row group size bytes cannot be 0

@@ -23,6 +23,7 @@
 #include "duckdb/function/scalar/struct_utils.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/type_visitor.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "storage/ducklake_catalog.hpp"
 #include "storage/ducklake_scan.hpp"
 #include "duckdb/catalog/catalog_entry/copy_function_catalog_entry.hpp"
@@ -801,6 +802,33 @@ string DuckLakeUtil::ParseConfigOptionValue(ClientContext &context, const string
 		throw BinderException("The %s option can't be null.", option.c_str());
 	}
 	return ConfigOptionParsers().at(option)(context, option, val);
+}
+
+string DuckLakeUtil::ParseSentConfigOptionValue(ClientContext &context, const string &option, const string &value) {
+	ValidateConfigOptionName(option);
+	// the client resolves the columns against its table, the value is stored as sent
+	if (option == "skip_stats_columns") {
+		return value;
+	}
+	// the stored forms that the parsers do not read back: a Parquet version and byte counts
+	if (option == "parquet_version" && (value == "V1" || value == "V2")) {
+		return value;
+	}
+	if (option == "target_file_size" || option == "parquet_row_group_size_bytes") {
+		idx_t bytes;
+		if (TryCast::Operation<string_t, idx_t>(string_t(value), bytes, true)) {
+			if (option == "parquet_row_group_size_bytes") {
+				if (bytes == 0) {
+					throw NotImplementedException("Row group size bytes cannot be 0");
+				}
+				if (bytes == NumericLimits<idx_t>::Maximum()) {
+					throw InvalidInputException("Row group size bytes must be a finite size, not \"%s\"", value);
+				}
+			}
+			return to_string(bytes);
+		}
+	}
+	return ParseConfigOptionValue(context, option, Value(value));
 }
 
 void DuckLakeUtil::ValidateConfigOptionScope(const string &option, bool has_schema, bool has_table) {

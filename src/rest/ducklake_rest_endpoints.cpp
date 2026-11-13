@@ -1261,12 +1261,9 @@ void DuckLakeRESTCommit::SetOption(RESTSetOptionRequest &parameters) {
 	DuckLakeUtil::ValidateConfigOptionName(option.option.key);
 	DuckLakeUtil::ValidateConfigOptionScope(option.option.key, option_in.schema_id.IsValid(),
 	                                        option_in.table_id.has_value);
-	if (parameters.reset || option.option.key == "skip_stats_columns") {
-		// the client resolved the columns against its table, the value is stored as sent
-		option.option.value = option_in.value;
-	} else {
-		option.option.value = DuckLakeUtil::ParseConfigOptionValue(context, option.option.key, Value(option_in.value));
-	}
+	option.option.value = parameters.reset
+	                          ? option_in.value
+	                          : DuckLakeUtil::ParseSentConfigOptionValue(context, option.option.key, option_in.value);
 	if (option_in.schema_id.IsValid()) {
 		option.schema_id = SchemaIndex(option_in.schema_id.GetIndex());
 	}

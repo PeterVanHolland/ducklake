@@ -4466,7 +4466,8 @@ DuckLakeMetadataManager::GetInlinedFileDeletionsForFlush(DuckLakeTableEntry &tab
 SELECT del.file_id, data.path, data.path_is_relative, del.row_id, del.begin_snapshot,
        existing_del.delete_file_id, existing_del.path as del_path, existing_del.path_is_relative as del_path_is_relative,
        existing_del.begin_snapshot as del_begin_snapshot, existing_del.encryption_key as del_encryption_key,
-       existing_del.format as del_format
+       existing_del.format as del_format, existing_del.file_size_bytes as del_file_size_bytes,
+       existing_del.footer_size as del_footer_size
 FROM {METADATA_CATALOG}.%s del
 JOIN {METADATA_CATALOG}.ducklake_data_file data ON del.file_id = data.data_file_id
 LEFT JOIN {METADATA_CATALOG}.ducklake_delete_file existing_del
@@ -4494,6 +4495,13 @@ WHERE del.begin_snapshot <= {SNAPSHOT_ID}
 			ReadEncryptionKey(row, 9, entry.delete_file.encryption_key);
 			if (!row.IsNull(10)) {
 				entry.delete_file.format = DeleteFileFormatFromString(row.GetValue<string>(10));
+			}
+			// readers of remote storage such as Azure take the size as given instead of looking it up
+			if (!row.IsNull(11)) {
+				entry.delete_file.file_size_bytes = row.GetValue<idx_t>(11);
+			}
+			if (!row.IsNull(12)) {
+				entry.delete_file.footer_size = row.GetValue<idx_t>(12);
 			}
 		}
 		deletions.push_back(std::move(entry));

@@ -329,10 +329,8 @@ struct FileDeleteInfo {
 	// Existing delete file info (if any)
 	bool has_existing_delete_file = false;
 	DataFileIndex existing_delete_file_id;
-	string existing_delete_path;
+	DuckLakeFileData existing_delete_file;
 	idx_t existing_delete_begin_snapshot = 0;
-	string existing_delete_encryption_key;
-	DeleteFileFormat existing_delete_format = DeleteFileFormat::PARQUET;
 };
 
 static void FlushInlinedFileDeletions(ClientContext &context, DuckLakeCatalog &catalog,
@@ -355,10 +353,8 @@ static void FlushInlinedFileDeletions(ClientContext &context, DuckLakeCatalog &c
 			if (deletion.delete_file_id.IsValid()) {
 				file_info.has_existing_delete_file = true;
 				file_info.existing_delete_file_id = deletion.delete_file_id;
-				file_info.existing_delete_path = deletion.delete_file.path;
+				file_info.existing_delete_file = deletion.delete_file;
 				file_info.existing_delete_begin_snapshot = deletion.delete_file_begin_snapshot;
-				file_info.existing_delete_encryption_key = deletion.delete_file.encryption_key;
-				file_info.existing_delete_format = deletion.delete_file.format;
 			}
 		} else {
 			file_info.max_snapshot = MaxValue(file_info.max_snapshot, begin_snapshot);
@@ -398,12 +394,7 @@ static void FlushInlinedFileDeletions(ClientContext &context, DuckLakeCatalog &c
 			merged_deletions = file_info.deletions;
 
 			// Read existing deletions from the delete file
-			DuckLakeFileData existing_delete_file_data;
-			existing_delete_file_data.path = file_info.existing_delete_path;
-			existing_delete_file_data.encryption_key = file_info.existing_delete_encryption_key;
-			existing_delete_file_data.format = file_info.existing_delete_format;
-
-			auto existing_deletions = DuckLakeDeleteFilter::ScanDeleteFile(context, existing_delete_file_data);
+			auto existing_deletions = DuckLakeDeleteFilter::ScanDeleteFile(context, file_info.existing_delete_file);
 
 			// Merge existing deletions with new inlined deletions
 			MergeDeletesWithSnapshots(existing_deletions, file_info.existing_delete_begin_snapshot, merged_deletions);
@@ -439,7 +430,7 @@ static void FlushInlinedFileDeletions(ClientContext &context, DuckLakeCatalog &c
 		if (overwrites_existing) {
 			delete_file.overwrites_existing_delete = true;
 			delete_file.overwritten_delete_file.delete_file_id = file_info.existing_delete_file_id;
-			delete_file.overwritten_delete_file.path = file_info.existing_delete_path;
+			delete_file.overwritten_delete_file.path = file_info.existing_delete_file.path;
 		}
 
 		delete_files.push_back(std::move(delete_file));

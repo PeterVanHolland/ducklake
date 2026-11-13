@@ -75,3 +75,8 @@ query II rest_db:rest_server_con
 SELECT count(*), sum(bal) FROM rest_lake.acc
 ----
 8	824
+
+statement ok
+DETACH dl
+
+include test/template/rest_teardown.test_template

@@ -91,6 +91,14 @@ struct DuckLakeCommitContext {
 	std::function<unique_ptr<QueryResult>(string)> query_metadata;
 	//! Runs cleanup statements that drop metadata tables atomically.
 	std::function<unique_ptr<QueryResult>(string)> execute_in_transaction;
+	//! Whether a failed drop gave way to open transactions on purpose, which is no error of the cleanup.
+	std::function<bool(const string &)> drop_deferred = [](const string &) {
+		return false;
+	};
+	//! Whether another connection dropped the inlined table the commit's snapshot lists, while it was empty.
+	std::function<bool(TableIndex, const Identifier &)> inlined_table_dropped = [](TableIndex, const Identifier &) {
+		return false;
+	};
 	//! Runs a snapshot-templated metadata-DB query (handles {SNAPSHOT_ID} substitution).
 	std::function<unique_ptr<QueryResult>(DuckLakeSnapshot, string)> query_metadata_with_snapshot;
 	//! Optional Appender fast-path.

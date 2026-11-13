@@ -945,7 +945,15 @@ ReadInlinedTableColumns(TableIndex table_id, const DuckLakeCommitContext &contex
 	map<Identifier, map<FieldIndex, DuckLakeColumnSchemaEntry>> result;
 	auto columns = context.query_metadata(DuckLakeMetadataManager::GetInlinedTableColumnsSql(table_id.index));
 	columns->ThrowIfError("Failed to read the columns of the inlined data tables from DuckLake: ");
+	set<Identifier> dropped_tables;
 	for (auto &row : *columns) {
+		auto inlined_table_name = row.GetValue<Identifier>(0);
+		// another connection can drop an empty superseded table the snapshot still lists
+		if (dropped_tables.count(inlined_table_name) || (result.find(inlined_table_name) == result.end() &&
+		                                                 context.inlined_table_dropped(table_id, inlined_table_name))) {
+			dropped_tables.insert(inlined_table_name);
+			continue;
+		}
 		FieldIndex field_index(static_cast<idx_t>(row.GetValue<int64_t>(3)));
 		DuckLakeColumnSchemaEntry column {field_index, row.GetValue<Identifier>(1),
 		                                  DuckLakeTypes::FromString(row.GetValue<string>(2)), true};
@@ -2824,11 +2832,11 @@ WHERE idt.schema_version < (
 		if (rows_result->begin() != rows_result->end()) {
 			continue;
 		}
-		// keep the registration if the drop fails
+		// keep the registration if the drop fails, a drop that gave way to open transactions is retried later
 		auto res = context.execute_in_transaction(DuckLakeMetadataManager::DropInlinedTableSql(
 		    candidate.table_id, candidate.schema_version, candidate.table_name));
 		if (res->HasError()) {
-			if (!failed_drop) {
+			if (!failed_drop && !context.drop_deferred(res->GetError())) {
 				failed_drop = std::move(res);
 			}
 			continue;

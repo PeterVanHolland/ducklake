@@ -533,9 +533,31 @@ idx_t DuckLakeTableEntry::GetNetInlinedRowCount(DuckLakeTransaction &transaction
 	auto &metadata_manager = transaction.GetMetadataManager();
 	idx_t total = 0;
 	for (auto &inlined_table : GetInlinedDataTables(transaction, snapshot)) {
+		if (metadata_manager.InlinedTableDropped(*this, inlined_table.table_name, snapshot)) {
+			continue;
+		}
 		total += metadata_manager.GetNetInlinedRowCount(inlined_table.table_name, snapshot);
 	}
 	return total;
+}
+
+bool DuckLakeTableEntry::InlinedTableMayBeDropped(DuckLakeTransaction &transaction,
+                                                  const Identifier &inlined_table_name,
+                                                  DuckLakeSnapshot snapshot) const {
+	if (transaction.GetCatalog().CatalogSnapshot() ||
+	    snapshot.schema_version < transaction.GetSnapshot().schema_version) {
+		// the newest inlined table of an older or pinned snapshot can be superseded by now
+		return true;
+	}
+	optional_idx schema_version;
+	idx_t newest_version = 0;
+	for (auto &inlined_table : inlined_data_tables) {
+		newest_version = MaxValue<idx_t>(newest_version, inlined_table.schema_version);
+		if (inlined_table.table_name == inlined_table_name) {
+			schema_version = inlined_table.schema_version;
+		}
+	}
+	return schema_version.IsValid() && schema_version.GetIndex() < newest_version;
 }
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &transaction, RenameTableInfo &info) {

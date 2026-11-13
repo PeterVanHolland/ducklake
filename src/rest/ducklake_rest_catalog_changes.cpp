@@ -33,6 +33,39 @@ static unique_ptr<ParsedExpression> ReadExpression(const string &expression) {
 	return Parser::GetBuiltinParser().ParseSingleExpression(expression);
 }
 
+//! The checks of the parser on a column type: the type unknown has no columns, and a struct field needs a name
+static void CheckColumnType(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::UNKNOWN:
+		throw InvalidInputException("A column cannot have the type unknown");
+	case LogicalTypeId::TUPLE:
+		// a struct whose fields all lack a name
+	case LogicalTypeId::STRUCT:
+		for (auto &child : StructType::GetChildTypes(type)) {
+			if (child.first.GetIdentifierName().empty()) {
+				throw InvalidInputException("A struct field requires a name");
+			}
+			CheckColumnType(child.second);
+		}
+		break;
+	case LogicalTypeId::LIST:
+		CheckColumnType(ListType::GetChildType(type));
+		break;
+	case LogicalTypeId::MAP:
+		CheckColumnType(MapType::KeyType(type));
+		CheckColumnType(MapType::ValueType(type));
+		break;
+	default:
+		break;
+	}
+}
+
+static void RequireNewName(const string &new_name, const char *alteration) {
+	if (new_name.empty()) {
+		throw InvalidInputException("%s requires a new_name", alteration);
+	}
+}
+
 RESTColumnDefinition DuckLakeRESTCatalogChanges::WriteColumn(const ColumnDefinition &column, bool not_null,
                                                              const Value &initial_default) {
 	RESTColumnDefinition result;
@@ -75,6 +108,10 @@ Value DuckLakeRESTCatalogChanges::ReadInitialDefault(ClientContext &context, con
 }
 
 ColumnDefinition DuckLakeRESTCatalogChanges::ReadColumn(ClientContext &context, const RESTColumnDefinition &column) {
+	if (column.column_name.empty()) {
+		throw InvalidInputException("A column requires a column_name");
+	}
+	CheckColumnType(column.column_type);
 	auto type = column.column_type;
 	ColumnDefinition result(Identifier(column.column_name), std::move(type));
 	if (!column.default_value.empty()) {
@@ -242,16 +279,24 @@ unique_ptr<AlterInfo> DuckLakeRESTCatalogChanges::ReadAlter(ClientContext &conte
                                                             const AlterEntryData &entry) {
 	auto parser = Parser::GetBuiltinParser();
 	switch (alteration.type) {
-	case RESTAlterationType::RENAME_TABLE:
-		return make_uniq<RenameTableInfo>(entry, Identifier(alteration.Cast<RESTRenameTable>().new_name));
-	case RESTAlterationType::RENAME_VIEW:
-		return make_uniq<RenameViewInfo>(entry, Identifier(alteration.Cast<RESTRenameView>().new_name));
+	case RESTAlterationType::RENAME_TABLE: {
+		auto &new_name = alteration.Cast<RESTRenameTable>().new_name;
+		RequireNewName(new_name, "rename_table");
+		return make_uniq<RenameTableInfo>(entry, Identifier(new_name));
+	}
+	case RESTAlterationType::RENAME_VIEW: {
+		auto &new_name = alteration.Cast<RESTRenameView>().new_name;
+		RequireNewName(new_name, "rename_view");
+		return make_uniq<RenameViewInfo>(entry, Identifier(new_name));
+	}
 	case RESTAlterationType::RENAME_COLUMN: {
 		auto &rename = alteration.Cast<RESTRenameColumn>();
+		RequireNewName(rename.new_name, "rename_column");
 		return make_uniq<RenameColumnInfo>(entry, Identifier(rename.old_name), Identifier(rename.new_name));
 	}
 	case RESTAlterationType::RENAME_FIELD: {
 		auto &rename = alteration.Cast<RESTRenameField>();
+		RequireNewName(rename.new_name, "rename_field");
 		return make_uniq<RenameFieldInfo>(entry, ReadPath(rename.column_path), Identifier(rename.new_name));
 	}
 	case RESTAlterationType::ADD_COLUMN: {
@@ -275,6 +320,7 @@ unique_ptr<AlterInfo> DuckLakeRESTCatalogChanges::ReadAlter(ClientContext &conte
 	}
 	case RESTAlterationType::CHANGE_COLUMN_TYPE: {
 		auto &change = alteration.Cast<RESTChangeColumnType>();
+		CheckColumnType(change.column_type);
 		auto target_type = change.column_type;
 		return make_uniq<ChangeColumnTypeInfo>(entry, ReadPath(change.column_path), std::move(target_type),
 		                                       ReadExpression(change.expression));

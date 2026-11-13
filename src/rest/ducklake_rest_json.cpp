@@ -2,6 +2,7 @@
 #include "common/ducklake_types.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/geometry_crs.hpp"
 
@@ -202,7 +203,14 @@ LogicalType RESTJson::TypeFromJson(RESTJsonIn json) {
 		return LogicalType::GEOMETRY(json.Str("crs", string()));
 	}
 	if (StringUtil::CIEquals(id, "decimal")) {
-		return LogicalType::DECIMAL(NumericCast<uint8_t>(json.UInt("width")), NumericCast<uint8_t>(json.UInt("scale")));
+		auto width = json.UInt("width");
+		auto scale = json.UInt("scale");
+		if (width < 1 || width > Decimal::MAX_WIDTH_DECIMAL || scale > width) {
+			throw InvalidInputException(
+			    "Invalid DECIMAL type - width must be between 1 and %d and scale must not exceed the width",
+			    Decimal::MAX_WIDTH_DECIMAL);
+		}
+		return LogicalType::DECIMAL(NumericCast<uint8_t>(width), NumericCast<uint8_t>(scale));
 	}
 	auto type = DuckLakeTypes::FromString(id);
 	switch (type.id()) {

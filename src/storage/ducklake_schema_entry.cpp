@@ -23,6 +23,9 @@
 #include "duckdb/parser/tableref/pivotref.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include "functions/ducklake_compaction_functions.hpp"
+#include "duckdb/common/identifier.hpp"
 
 namespace duckdb {
 
@@ -97,7 +100,7 @@ bool DuckLakeSchemaEntry::HandleCreateConflict(CatalogTransaction transaction, C
 		DropInfo info;
 		info.type = catalog_type;
 		info.SetName(entry_name);
-		DropEntry(transaction.GetContext(), info);
+		DropEntry(transaction.GetContext(), info, true);
 		break;
 	}
 	default:
@@ -110,7 +113,7 @@ optional_ptr<CatalogEntry>
 DuckLakeSchemaEntry::CreateTableExtended(CatalogTransaction transaction, BoundCreateTableInfo &info, string table_uuid,
                                          string table_data_path, unique_ptr<DuckLakePartition> prebuilt_partition_data,
                                          unique_ptr<DuckLakeSort> prebuilt_sort_data,
-                                         map<string, string> prebuilt_table_options) {
+                                         map<string, string> prebuilt_table_options, vector<Value> initial_defaults) {
 	auto &duck_transaction = transaction.transaction->Cast<DuckLakeTransaction>();
 	auto &base_info = info.Base();
 	// check if we have an existing entry with this name
@@ -121,7 +124,8 @@ DuckLakeSchemaEntry::CreateTableExtended(CatalogTransaction transaction, BoundCr
 	auto table_id = TableIndex(duck_transaction.GetLocalCatalogId());
 	// generate field ids based on the column ids
 	idx_t column_id = 1;
-	auto field_data = DuckLakeFieldData::FromColumns(base_info.columns, column_id);
+	auto field_data =
+	    DuckLakeFieldData::FromColumns(base_info.columns, column_id, transaction.GetContext(), initial_defaults);
 	vector<DuckLakeInlinedTableInfo> inlined_tables;
 	auto table_entry = make_uniq<DuckLakeTableEntry>(ParentCatalog(), *this, base_info, table_id, std::move(table_uuid),
 	                                                 std::move(table_data_path), std::move(field_data), column_id,
@@ -148,6 +152,7 @@ DuckLakeSchemaEntry::CreateTableExtended(CatalogTransaction transaction, BoundCr
 	}
 	DuckLakeUtil::ValidateNoInlinedSystemColumns(catalog.Cast<DuckLakeCatalog>(), transaction.GetContext(), schema_id,
 	                                             table_entry->GetColumns(), &table_entry->GetTableOptions());
+	duck_transaction.GetMetadataManager().OnCreateTable(*this, base_info, *table_entry);
 	auto result = table_entry.get();
 	duck_transaction.CreateEntry(std::move(table_entry));
 	return result;
@@ -217,6 +222,7 @@ optional_ptr<CatalogEntry> DuckLakeSchemaEntry::CreateFunction(CatalogTransactio
 	auto &duck_transaction = transaction.transaction->Cast<DuckLakeTransaction>();
 	auto result = macro_entry.get();
 	duck_transaction.CreateEntry(std::move(macro_entry));
+	duck_transaction.GetMetadataManager().OnCreateMacro(result->Cast<MacroCatalogEntry>());
 	return result;
 }
 
@@ -299,6 +305,11 @@ static bool IsIdenticalView(DuckLakeViewEntry &view, const CreateViewInfo &info,
 }
 
 optional_ptr<CatalogEntry> DuckLakeSchemaEntry::CreateView(CatalogTransaction transaction, CreateViewInfo &info) {
+	return CreateViewExtended(transaction, info, string());
+}
+
+optional_ptr<CatalogEntry> DuckLakeSchemaEntry::CreateViewExtended(CatalogTransaction transaction, CreateViewInfo &info,
+                                                                   string view_uuid) {
 	if (info.security_type == ViewSecurityType::SECURE_VIEW) {
 		throw NotImplementedException("DuckLake does not support secure views");
 	}
@@ -326,12 +337,15 @@ optional_ptr<CatalogEntry> DuckLakeSchemaEntry::CreateView(CatalogTransaction tr
 	auto &duck_transaction = transaction.transaction->Cast<DuckLakeTransaction>();
 	// get a local view-id
 	auto view_id = TableIndex(duck_transaction.GetLocalCatalogId());
-	auto view_uuid = UUID::ToString(UUID::GenerateRandomUUID());
+	if (view_uuid.empty()) {
+		view_uuid = UUID::ToString(UUID::GenerateRandomUUID());
+	}
 
 	auto view_entry = make_uniq<DuckLakeViewEntry>(ParentCatalog(), *this, info, view_id, std::move(view_uuid),
 	                                               query_sql, LocalChangeType::CREATED);
 	auto result = view_entry.get();
 	duck_transaction.CreateEntry(std::move(view_entry));
+	duck_transaction.GetMetadataManager().OnCreateView(*result);
 	return result;
 }
 
@@ -398,11 +412,54 @@ void ApplySetColumnCommentToView(DuckLakeTransaction &transaction, CatalogTransa
 	transaction.AlterEntry(view, std::move(new_view));
 }
 
+//! The table or view that an alter changes, null if there is none
+optional_ptr<CatalogEntry> GetAlterTarget(DuckLakeSchemaEntry &schema, CatalogTransaction catalog_transaction,
+                                          const AlterInfo &info) {
+	CatalogType type = CatalogType::INVALID;
+	switch (info.type) {
+	case AlterType::ALTER_TABLE:
+		type = CatalogType::TABLE_ENTRY;
+		break;
+	case AlterType::ALTER_VIEW:
+		type = CatalogType::VIEW_ENTRY;
+		break;
+	case AlterType::SET_COMMENT:
+		type = info.Cast<SetCommentInfo>().entry_catalog_type;
+		break;
+	case AlterType::SET_COLUMN_COMMENT:
+		type = info.Cast<SetColumnCommentInfo>().catalog_entry_type;
+		break;
+	default:
+		// LCOV_EXCL_START
+		// Alter refuses the other types
+		return nullptr;
+		// LCOV_EXCL_STOP
+	}
+	if (type == CatalogType::TABLE_ENTRY || type == CatalogType::INVALID) {
+		auto table = TryGetAlterEntry<DuckLakeTableEntry>(schema, catalog_transaction, info);
+		if (table) {
+			return table.get();
+		}
+		if (type == CatalogType::TABLE_ENTRY) {
+			return nullptr;
+		}
+	}
+	if (type == CatalogType::VIEW_ENTRY || type == CatalogType::INVALID) {
+		return TryGetAlterEntry<DuckLakeViewEntry>(schema, catalog_transaction, info).get();
+	}
+	return nullptr;
+}
+
 } // namespace
 
 void DuckLakeSchemaEntry::Alter(CatalogTransaction catalog_transaction, AlterInfo &info) {
 	auto &context = catalog_transaction.GetContext();
 	auto &transaction = DuckLakeTransaction::Get(context, catalog);
+	// recorded before the alter is applied, applying it can move expressions out of the info
+	auto alter_target = GetAlterTarget(*this, catalog_transaction, info);
+	if (alter_target) {
+		transaction.GetMetadataManager().OnAlterEntry(*alter_target, info);
+	}
 	switch (info.type) {
 	case AlterType::ALTER_TABLE: {
 		auto &alter = info.Cast<AlterTableInfo>();
@@ -524,7 +581,80 @@ void DuckLakeSchemaEntry::Scan(CatalogType type, const std::function<void(Catalo
 	}
 }
 
+//! The first of the names the expression calls, matched by name alone, as a default resolves through the table
+//! schema and the search path, and x.f() can be f(x)
+static Identifier CalledFunctionIn(const ParsedExpression &expr, const identifier_set_t &names) {
+	if (expr.GetExpressionClass() == ExpressionClass::FUNCTION) {
+		Identifier name = expr.Cast<FunctionExpression>().GetQualifiedName().Name();
+		if (names.count(name)) {
+			return name;
+		}
+	}
+	Identifier called;
+	ParsedExpressionIterator::EnumerateChildren(expr, [&](const ParsedExpression &child) {
+		if (called.empty()) {
+			called = CalledFunctionIn(child, names);
+		}
+	});
+	return called;
+}
+
+static Identifier SortKeyCallsFunctionIn(const DuckLakeSort &sort_data, const identifier_set_t &names) {
+	for (auto &order : DuckLakeCompactor::ParseSortOrders(sort_data)) {
+		auto called = CalledFunctionIn(*order.expression, names);
+		if (!called.empty()) {
+			return called;
+		}
+	}
+	return Identifier();
+}
+
+//! A table can no longer be written or flushed once a macro that its defaults or sort key call is dropped
+static void ThrowIfTableCallsMacro(ClientContext &context, Catalog &catalog, const identifier_set_t &macro_names,
+                                   const reference_set_t<SchemaCatalogEntry> &dropped_schemas = {}) {
+	catalog.ScanSchemas(context, [&](SchemaCatalogEntry &schema) {
+		if (dropped_schemas.find(schema) != dropped_schemas.end()) {
+			return;
+		}
+		schema.Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
+			if (entry.type != CatalogType::TABLE_ENTRY) {
+				return;
+			}
+			auto &table = entry.Cast<DuckLakeTableEntry>();
+			for (auto &column : table.GetColumns().Logical()) {
+				if (!column.HasDefaultValue()) {
+					continue;
+				}
+				auto called = CalledFunctionIn(column.DefaultValue(), macro_names);
+				if (!called.empty()) {
+					throw DependencyException(
+					    "Cannot drop macro %s because the default of column %s of table %s calls it", called,
+					    column.Name(), entry.name);
+				}
+			}
+			auto sort_data = table.GetSortData();
+			if (!sort_data) {
+				return;
+			}
+			auto called = SortKeyCallsFunctionIn(*sort_data, macro_names);
+			if (!called.empty()) {
+				throw DependencyException("Cannot drop macro %s because the sort key of table %s calls it", called,
+				                          entry.name);
+			}
+		});
+	});
+}
+
+void DuckLakeSchemaEntry::ThrowIfTablesCallMacros(ClientContext &context, Catalog &catalog,
+                                                  const identifier_set_t &macro_names) {
+	ThrowIfTableCallsMacro(context, catalog, macro_names);
+}
+
 void DuckLakeSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
+	DropEntry(context, info, false);
+}
+
+void DuckLakeSchemaEntry::DropEntry(ClientContext &context, DropInfo &info, bool replacing) {
 	if (info.cascade) {
 		throw NotImplementedException("Cascade Drop not supported in DuckLake");
 	}
@@ -540,6 +670,10 @@ void DuckLakeSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
 	if (catalog_entry->type != info.type) {
 		throw CatalogException("Existing object %s is of type %s, trying to drop type %s", catalog_entry->name,
 		                       CatalogTypeToString(catalog_entry->type), CatalogTypeToString(info.type));
+	}
+	// a replaced macro stays callable
+	if (info.type == CatalogType::MACRO_ENTRY && !replacing) {
+		ThrowIfTableCallsMacro(context, catalog, identifier_set_t {Identifier(catalog_entry->name)});
 	}
 	auto &transaction = DuckLakeTransaction::Get(context, catalog);
 	transaction.DropEntry(*catalog_entry);
@@ -608,6 +742,16 @@ void DuckLakeSchemaEntry::TryDropSchema(CatalogTransaction transaction, bool cas
 			schema.Scan(transaction.GetContext(), type, [&](CatalogEntry &entry) { entries.emplace_back(entry); });
 		}
 	});
+	reference_set_t<SchemaCatalogEntry> dropped_schemas;
+	identifier_set_t dropped_macros;
+	ScanSchemaTree(transaction, [&](SchemaCatalogEntry &schema) {
+		dropped_schemas.insert(schema);
+		schema.Scan(transaction.GetContext(), CatalogType::MACRO_ENTRY,
+		            [&](CatalogEntry &entry) { dropped_macros.insert(Identifier(entry.name)); });
+	});
+	if (!dropped_macros.empty()) {
+		ThrowIfTableCallsMacro(transaction.GetContext(), ParentCatalog(), dropped_macros, dropped_schemas);
+	}
 	auto &duck_transaction = transaction.transaction->Cast<DuckLakeTransaction>();
 	for (idx_t i = entries.size(); i > 0; i--) {
 		duck_transaction.DropEntry(entries[i - 1].get());

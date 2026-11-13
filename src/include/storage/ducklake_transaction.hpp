@@ -110,6 +110,8 @@ public:
 	LocalTableChangeIterationHelper Changes() const;
 	void CleanupFiles(DatabaseInstance &db);
 	void CleanupFiles(ClientContext &context, TableIndex table_id);
+	//! Forgets the changes of a table, the files stay
+	void Forget(TableIndex table_id);
 	void GetWrittenFiles(vector<string> &result) const;
 	bool HasTransactionLocalInserts(TableIndex table_id) const;
 	bool HasTransactionInlinedData(TableIndex table_id) const;
@@ -219,8 +221,16 @@ public:
 	void PinSchemaCacheEntry(shared_ptr<DuckLakeSchemaCacheEntry> entry);
 
 	DuckLakeSnapshot GetSnapshot();
+	//! Pins the snapshot that the transaction operates on
+	void SetSnapshot(DuckLakeSnapshot new_snapshot);
+	//! The snapshot written by the commit of this transaction, invalid if it did not write one
+	DuckLakeSnapshot GetCommittedSnapshot() const;
+	//! The ids that the commit gave the tables and views the transaction created, by their transaction-local id
+	const ducklake_entry_oids_t &GetCommittedEntryOids() const;
+	//! The options that the commit gave the tables the transaction created or altered
+	const vector<DuckLakeConfigOption> &GetCommittedTableOptions() const;
 	DuckLakeSnapshot GetSnapshot(optional_ptr<BoundAtClause> at_clause,
-	                             SnapshotBound bound = SnapshotBound::UPPER_BOUND);
+	                             SnapshotBound bound = SnapshotBound::TIME_TRAVEL);
 	//! The newest snapshot that the transaction sees, also when the catalog is opened at a fixed snapshot
 	idx_t GetNewestVisibleSnapshotId();
 
@@ -285,11 +295,15 @@ public:
 	void MarkDeleteAttempted(TableIndex table_id);
 
 	//! The snapshots the criterion selects that no tag protects, as the transaction sees them
-	vector<DuckLakeSnapshotInfo> ExpirableSnapshots(const string &filter);
+	vector<DuckLakeSnapshotInfo> ExpirableSnapshots(const DuckLakeSnapshotFilter &filter);
 	//! Expires the snapshots the criterion selects and returns them
-	vector<DuckLakeSnapshotInfo> ExpireSnapshots(const string &filter);
+	vector<DuckLakeSnapshotInfo> ExpireSnapshots(const DuckLakeSnapshotFilter &filter);
 	//! Whether the commit writes a snapshot for the expiry of the transaction
 	bool ExpiresSnapshotsOnCommit() const;
+	void RemoveFilesScheduledForCleanup(const vector<DuckLakeFileForCleanup> &files);
+	//! Whether the metadata transaction expired snapshots, which a rollback restores
+	bool ExpiredSnapshotsInMetadataTransaction();
+	void MarkMetadataWritten();
 	//! Marks the inlined data flushed up to the snapshot, the commit deletes its rows
 	void MarkInlinedDataForDeletion(DuckLakeInlinedTableInfo inlined_table, idx_t flush_snapshot_id, bool wrote_files);
 	bool InlinedTableFlushed(const Identifier &table_name);
@@ -298,6 +312,10 @@ public:
 	bool InlinedFileDeletionsFlushed(TableIndex table_id);
 
 	bool ChangesMade() const;
+	//! The files of the transaction were written by a client of a REST server, which cleans them up itself
+	void SetFilesOwnedByClient() {
+		files_owned_by_client = true;
+	}
 	bool SchemaChangesMade() const;
 	idx_t GetLocalCatalogId();
 	static bool IsTransactionLocal(idx_t id) {
@@ -307,14 +325,27 @@ public:
 	void ResetConfigOption(const DuckLakeConfigOption &option);
 
 	void SetCommitMessage(const DuckLakeSnapshotCommit &option);
+	//! The initial default of the column that the next ADD COLUMN or ADD FIELD adds, set by the REST server
+	void SetInitialDefault(Value value) {
+		initial_default = std::move(value);
+	}
+	Value TakeInitialDefault() {
+		Value result = std::move(initial_default);
+		initial_default = Value();
+		return result;
+	}
 
-	void CreateSnapshotTag(const string &name, idx_t snapshot_id);
+	void CreateSnapshotTag(const string &name, idx_t snapshot_id, const Value &expires_at);
 	void DropSnapshotTag(const string &name);
 	//! Moves a live tag to the snapshot, when it names the expected snapshot if one is given
 	void ReplaceSnapshotTag(const string &name, idx_t snapshot_id, optional_idx expected_snapshot_id);
+	//! Gives a live tag another expiry time, NULL when it does not expire
+	void SetSnapshotTagExpiry(const string &name, const Value &expires_at);
 	//! The live snapshot tags, with the changes of this transaction
 	vector<DuckLakeSnapshotTagInfo> GetSnapshotTags();
 
+	//! The catalog of the attached metadata database
+	Catalog &GetMetadataCatalog();
 	Identifier GetDefaultSchemaName();
 
 	bool HasLocalDeletes(TableIndex table_id) const;
@@ -359,7 +390,8 @@ protected:
 public:
 	void RunCommitLoop(DuckLakeSnapshot transaction_snapshot, const TransactionChangeInformation &transaction_changes,
 	                   const DuckLakeRetryConfig &retry_config);
-	void ApplyServerSideCommit(idx_t schema_version);
+	//! Applies a commit that the server made, the next file id of the committed snapshot is the key of its stats
+	void ApplyServerSideCommit(idx_t schema_version, optional_idx committed_next_file_id = optional_idx());
 	//! Removes the files that this transaction wrote
 	void CleanupFiles();
 	//! Post-commit cleanup of empty inlined-data tables superseded by later schema versions.
@@ -382,8 +414,17 @@ private:
 	void FlushNameMapCacheInvalidations();
 	//! Puts back the config options this transaction replaced in the catalog
 	void UndoConfigOptions();
+	//! The SQL that the commit runs for the options this transaction changed
+	string ConfigOptionLockSql() const;
+	//! The last change of the option before the change at the index
+	optional_idx EarlierConfigOptionChange(const DuckLakeConfigOption &option, idx_t change_index) const;
+	//! The rows an option is expected to have after a set, which an earlier change of the option decides
+	idx_t ConfigOptionRows(idx_t change_index, idx_t written_rows) const;
+	//! Whether other commits wrote rows of the options this transaction changed, which READ COMMITTED shows
+	bool ConfigOptionsWrittenByOthers();
 	//! Writes the options of the transaction again, after a failed commit attempt rolled them back
 	void RewriteConfigOptions();
+	void ClearMaintenanceChanges();
 	static DuckLakePartitionInfo GetNewPartitionKey(DuckLakeCommitState &commit_state, DuckLakeTableEntry &table);
 	static DuckLakeSortInfo GetNewSortKey(DuckLakeCommitState &commit_state, DuckLakeTableEntry &table);
 	static DuckLakeTableInfo GetNewTable(DuckLakeCommitState &commit_state, DuckLakeTableEntry &table);
@@ -402,11 +443,21 @@ private:
 	void CheckNotExpiredInTransaction(idx_t snapshot_id);
 	//! Expires what a tag change releases, when an expiry of this transaction ran in its statements
 	void ExpireReleasedSnapshots();
+	//! The live tag of the name with the changes of this transaction, which fails when there is none
+	DuckLakeSnapshotTagInfo LiveSnapshotTag(const string &name);
+	//! Makes the changed tag the one the transaction commits for the live tag
+	void ChangeSnapshotTag(const DuckLakeSnapshotTagInfo &tag, DuckLakeSnapshotTagInfo changed);
 	set<idx_t> TaggedSnapshotsInternal();
-	vector<DuckLakeSnapshotInfo> ExpirableSnapshotsInternal(const string &filter);
-	vector<DuckLakeSnapshotInfo> ExpireSnapshotsNow(const string &filter);
-	//! The snapshots the commit attempt expires, those the statements expired for the first attempt
-	vector<DuckLakeSnapshotInfo> ExpiredSnapshotsForCommit(idx_t attempt, idx_t latest_snapshot_id);
+	vector<DuckLakeSnapshotInfo> ExpirableSnapshotsInternal(const DuckLakeSnapshotFilter &filter);
+	vector<DuckLakeSnapshotInfo> ExpireSnapshotsNow(const DuckLakeSnapshotFilter &filter);
+	//! Whether the expiry time of the tag has passed at the start of the transaction
+	bool SnapshotTagExpired(const DuckLakeSnapshotTagInfo &tag) const;
+	//! Fails when the expiry time has passed at the start of the transaction
+	void CheckSnapshotTagExpiry(const string &name, const Value &expires_at) const;
+	//! The live tags whose expiry time has passed, which an expiry drops
+	vector<DuckLakeSnapshotTagInfo> ExpiredSnapshotTagsInternal();
+	//! What the commit attempt expires, what the statements expired for the first attempt
+	DuckLakeExpiry ExpiredSnapshotsForCommit(idx_t attempt, idx_t latest_snapshot_id);
 	bool ChangesMadeBesidesExpiry() const;
 
 	void AlterEntryInternal(DuckLakeTableEntry &old_entry, unique_ptr<CatalogEntry> new_entry);
@@ -431,15 +482,24 @@ private:
 	//! The tag functions of one statement execute in parallel
 	mutex snapshot_tag_lock;
 	//! The expiry criteria of this transaction, applied by its commit
-	vector<string> expiry_filters;
+	vector<DuckLakeSnapshotFilter> expiry_filters;
 	//! The snapshots the statements of this transaction expired, and the latest snapshot the first expiry saw
 	vector<DuckLakeSnapshotInfo> expired_in_transaction;
 	optional_idx expiry_snapshot_id;
+	//! Whether statements wrote to the metadata transaction, which a retried commit rolls back
+	bool metadata_written = false;
+	bool snapshots_expired = false;
+	//! Whether statements removed files after expiring snapshots, which a rollback restores without their files
+	bool removed_files_after_expiry = false;
+	//! The start of the transaction, which judges the expiry times of tags as now() does
+	timestamp_tz_t start_time;
 	DuckLakeSnapshot GetLatestSnapshot();
 	//! The latest snapshot in DuckLake when the transaction first looked, the snapshot of the transaction unless the
 	//! catalog is opened at a fixed snapshot
 	mutex snapshot_lock;
 	unique_ptr<DuckLakeSnapshot> snapshot;
+	//! The snapshot written by the commit of this transaction
+	DuckLakeSnapshot committed_snapshot;
 	idx_t local_catalog_id;
 	//! Set when this transaction inlines into a table that does not yet have an inlined-data table
 	atomic<bool> requires_new_inlined_table {false};
@@ -451,6 +511,8 @@ private:
 	unique_ptr<DuckLakeTransactionState> state;
 	//! Snapshot cache for the AT (...) conditions that are referenced in the transaction
 	value_map_t<DuckLakeSnapshot> snapshot_cache;
+	//! The snapshots the transaction expired, which its commit records in the snapshot changes
+	set<idx_t> expired_snapshot_ids;
 	//! New set of transaction-local name maps
 	DuckLakeNameMapSet new_name_maps;
 	//! Name maps deleted by direct metadata operations, applied to the catalog cache on commit
@@ -459,6 +521,13 @@ private:
 	vector<DuckLakeConfigOptionUndo> config_option_undo;
 	//! Whether a retried commit attempt wrote the options again
 	bool rewrote_config_options = false;
+	//! Expiries and cleanups of the transaction can run in parallel statements
+	mutex maintenance_lock;
+	//! Whether the metadata transaction expired snapshots
+	bool expired_in_metadata_transaction = false;
+	//! The files the metadata transaction removed from the deletion schedule
+	vector<DuckLakeFileForCleanup> cleaned_up_files;
+	Value initial_default;
 
 	atomic<idx_t> catalog_version;
 	mutex transaction_views_lock;
@@ -467,6 +536,9 @@ private:
 	unordered_map<const DuckLakeViewEntry *, unique_ptr<DuckLakeViewEntry>> transaction_views;
 	//! Copies of an earlier catalog version, kept alive for the references to them
 	vector<unique_ptr<DuckLakeViewEntry>> outdated_transaction_views;
+
+private:
+	bool files_owned_by_client = false;
 };
 
 } // namespace duckdb

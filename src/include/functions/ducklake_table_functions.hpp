@@ -32,6 +32,8 @@ public:
 	static bool TryGetNonNullOption(const TableFunctionBindInput &input, const string &name, const string &type_name,
 	                                Value &result);
 	static bool TryGetTimestampOption(const TableFunctionBindInput &input, const string &name, Value &result);
+	//! Fails unless the timestamp is finite and in the year 1 or later
+	static void CheckTimestampOption(const string &name, const Value &value);
 	static string GetStringOption(const TableFunctionBindInput &input, const string &name);
 	static string GetTableName(const Value &input);
 	static void VerifySnapshotIdentifier(const Value &input);
@@ -133,6 +135,11 @@ public:
 	DuckLakeSetCommitMessage();
 };
 
+class DuckLakeRegisterMetadataProfileFunction : public TableFunction {
+public:
+	DuckLakeRegisterMetadataProfileFunction();
+};
+
 class DuckLakeCreateTagFunction : public TableFunction {
 public:
 	DuckLakeCreateTagFunction();
@@ -148,6 +155,11 @@ public:
 	DuckLakeDropTagFunction();
 };
 
+class DuckLakeSetTagExpiryFunction : public TableFunction {
+public:
+	DuckLakeSetTagExpiryFunction();
+};
+
 class DuckLakeTagsFunction : public DuckLakeBaseMetadataFunction {
 public:
 	DuckLakeTagsFunction();
@@ -156,6 +168,11 @@ public:
 class DuckLakeOptionsFunction : public DuckLakeBaseMetadataFunction {
 public:
 	DuckLakeOptionsFunction();
+};
+
+class DuckLakeMetadataTableFunction : public TableFunction {
+public:
+	DuckLakeMetadataTableFunction();
 };
 
 class DuckLakeLastCommittedSnapshotFunction : public DuckLakeBaseMetadataFunction {
@@ -174,6 +191,11 @@ public:
 };
 
 class DuckLakeAddDataFilesFunction : public TableFunction {
+public:
+	static TableFunctionSet GetFunctions();
+};
+
+class DuckLakeRemoveDataFilesFunction : public TableFunction {
 public:
 	static TableFunctionSet GetFunctions();
 };

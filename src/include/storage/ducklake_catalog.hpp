@@ -17,6 +17,7 @@
 #include "common/ducklake_options.hpp"
 #include "common/ducklake_name_map.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/main/client_context_state.hpp"
 #include "duckdb/storage/object_cache.hpp"
 #include "storage/ducklake_catalog_set.hpp"
@@ -29,7 +30,11 @@
 #include <mutex>
 
 namespace duckdb {
+class DuckLakeRESTClient;
+struct CreateMacroInfo;
+struct DuckLakeMacroInfo;
 struct DuckLakeCopyInput;
+struct DuckLakeMetadataProfile;
 struct DuckLakeGlobalStatsInfo;
 class DuckLakeCatalog;
 class ColumnList;
@@ -66,6 +71,26 @@ struct DuckLakeTableStatsCacheEntry : public ObjectCacheEntry {
 		return ObjectType();
 	}
 	optional_idx GetEstimatedCacheMemory() const override;
+};
+
+//! Cached net row count of a table at a snapshot
+struct DuckLakeTableNetRowCountCacheEntry : public ObjectCacheEntry {
+	DuckLakeTableNetRowCountCacheEntry(idx_t snapshot_id_p, idx_t row_count_p)
+	    : snapshot_id(snapshot_id_p), row_count(row_count_p) {
+	}
+
+	idx_t snapshot_id;
+	idx_t row_count;
+
+	static string ObjectType() {
+		return "ducklake_table_net_row_count";
+	}
+	string GetObjectType() override {
+		return ObjectType();
+	}
+	optional_idx GetEstimatedCacheMemory() const override {
+		return sizeof(DuckLakeTableNetRowCountCacheEntry);
+	}
 };
 
 //! Cached record counts for a snapshot
@@ -135,6 +160,10 @@ private:
 
 enum class InlinedDeletionCacheResult { EXISTS, DOES_NOT_EXIST, UNKNOWN };
 
+//! The CREATE MACRO info of a macro stored in DuckLake
+unique_ptr<CreateMacroInfo> CreateMacroInfoFromDucklake(ClientContext &context, DuckLakeMacroInfo &macro,
+                                                        const Identifier &schema_name);
+
 class DuckLakeCatalog : public Catalog {
 public:
 	// default target file size: 512MB
@@ -168,6 +197,20 @@ public:
 	}
 	const string &MetadataType() const {
 		return metadata_type;
+	}
+	//! The catalog type of the attached metadata database, set when it is attached
+	const string &MetadataCatalogType() const {
+		return metadata_catalog_type;
+	}
+	void SetMetadataCatalogType(string catalog_type) {
+		metadata_catalog_type = std::move(catalog_type);
+	}
+	const DuckLakeMetadataProfile &MetadataProfile() const;
+	//! Set once the metadata database is attached, when its extension has had the chance to register the profile
+	void SetMetadataProfile(shared_ptr<const DuckLakeMetadataProfile> profile);
+	//! Whether the catalog attaches a metadata database, rather than reading its metadata from a REST server
+	bool OwnsMetadataDatabase() const {
+		return metadata_type != "rest";
 	}
 	bool IsInitialized() const {
 		return initialized;
@@ -221,6 +264,9 @@ public:
 	optional_ptr<BoundAtClause> CatalogSnapshot() const;
 
 	optional_ptr<CatalogEntry> CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info) override;
+	//! Creates a schema with the given uuid and data path, new ones if they are empty
+	optional_ptr<CatalogEntry> CreateSchemaExtended(CatalogTransaction transaction, CreateSchemaInfo &info,
+	                                                string schema_uuid, string schema_data_path);
 
 	ErrorData SupportsCreateTable(BoundCreateTableInfo &info) override;
 
@@ -255,6 +301,8 @@ public:
 	shared_ptr<DuckLakeTableStats> GetTableStats(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
 	                                             TableIndex table_id,
 	                                             optional_ptr<const vector<TableIndex>> load_tables = nullptr);
+	//! Returns an invalid index when a file is only partially visible to the snapshot
+	optional_idx GetTableNetRowCount(DuckLakeTransaction &transaction, DuckLakeTableEntry &table);
 	//! Returns zero when the table has no stats
 	idx_t GetTableRecordCount(DuckLakeTransaction &transaction, TableIndex table_id);
 
@@ -263,6 +311,9 @@ public:
 	//! The committed table at the snapshot, without the changes of the transaction
 	optional_ptr<CatalogEntry> GetEntryById(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
 	                                        TableIndex table_id);
+	//! The committed macro at the snapshot
+	optional_ptr<CatalogEntry> GetEntryById(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
+	                                        MacroIndex macro_id);
 	string GeneratePathFromName(const string &uuid, const string &name);
 
 	bool InMemory() override;
@@ -326,6 +377,10 @@ public:
 	bool SupportsSnapshotTags() const {
 		return ducklake_version >= DuckLakeVersion::V2_0_DEV1;
 	}
+	//! Whether an expiry commits a snapshot whose changes list the expired snapshots
+	bool RecordsExpiredSnapshots() const {
+		return SupportsSnapshotTags();
+	}
 
 	void OnDetach(ClientContext &context) override;
 
@@ -349,6 +404,13 @@ public:
 	void SetRetrialsServerSide(bool value) {
 		retrials_server_side = value;
 	}
+	//! Whether the metadata backend clears the cache of the metadata catalog alone
+	bool ScopedCacheClear() const {
+		return scoped_cache_clear;
+	}
+	void SetScopedCacheClear(bool value) {
+		scoped_cache_clear = value;
+	}
 
 	Value GetLastCommittedSnapshotId() const {
 		lock_guard<mutex> guard(commit_lock);
@@ -361,6 +423,19 @@ public:
 	std::recursive_mutex &GetMetadataQueryLock() {
 		return metadata_query_lock;
 	}
+
+	//! Connects to the REST server that serves the metadata, for REST catalogs
+	void ConnectREST();
+	//! Whether the metadata is served by a REST server
+	bool IsREST() const {
+		return rest_client != nullptr;
+	}
+	//! The ids of the name maps that are loaded
+	set<idx_t> GetLoadedNameMapIds();
+	//! Adds name maps that are not loaded yet, e.g. the ones that a REST server returns with a scan
+	void AddNameMaps(vector<DuckLakeColumnMappingInfo> column_mappings);
+	//! The client of the REST server that serves the metadata, for REST catalogs
+	DuckLakeRESTClient &GetRESTClient();
 
 	shared_ptr<const DuckLakeNameMap> TryGetMappingById(DuckLakeTransaction &transaction, MappingIndex mapping_id);
 	MappingIndex TryGetCompatibleNameMap(DuckLakeTransaction &transaction, const DuckLakeNameMap &name_map);
@@ -415,6 +490,8 @@ public:
 
 	//! Invalidate the cached table stats entry for a given stats cache key.
 	void InvalidateTableStatsCache(idx_t next_file_id, TableIndex table_id);
+	//! Invalidate the cached table stats entries of this DuckLake for the given next file ids.
+	void InvalidateTableStatsCaches(const unordered_set<idx_t> &next_file_ids);
 	//! Invalidate the cached schema entry for a given schema_version.
 	void InvalidateSchemaCache(idx_t schema_version);
 	//! Invalidate a cached name map for a deleted mapping ID.
@@ -429,6 +506,7 @@ private:
 	void LoadNameMaps(DuckLakeTransaction &transaction);
 	string StatsCacheKey(idx_t next_file_id, TableIndex table_id) const;
 	string RecordCountCacheKey(idx_t snapshot_id) const;
+	string NetRowCountCacheKey(TableIndex table_id) const;
 	string SchemaCacheKey(idx_t schema_version) const;
 	ObjectCache &GetObjectCacheInstance();
 	//! A table stats entry this DuckLake put in the object cache, kept without its key as there is one per table
@@ -470,6 +548,11 @@ private:
 	atomic<idx_t> last_uncommitted_catalog_version;
 	//! The metadata server type
 	string metadata_type;
+	string metadata_catalog_type;
+	//! The profile of the metadata database, nullptr if it has none
+	shared_ptr<const DuckLakeMetadataProfile> metadata_profile;
+	//! The client of the REST server that serves the metadata, for REST catalogs
+	unique_ptr<DuckLakeRESTClient> rest_client;
 	//! The resolved DuckLake spec version of the attached catalog
 	DuckLakeVersion ducklake_version = DuckLakeVersion::V1_0;
 	//! A per-instance identifier used to scope ObjectCache keys.
@@ -485,6 +568,7 @@ private:
 	bool initialized = false;
 	//! Whether or not the metadata server can execute the commit retry loop server-side.
 	bool retrials_server_side = false;
+	atomic<bool> scoped_cache_clear {true};
 	//! Cache for inlined deletion table existence checks
 	mutex inlined_deletion_cache_lock;
 	//! Table IDs where the inlined deletion table is known to exist (permanent - never invalidated)

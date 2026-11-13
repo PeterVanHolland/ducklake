@@ -114,11 +114,16 @@ has no file_size_bytes in the DuckLake metadata
 statement ok
 CALL ducklake_rewrite_data_files('lake', delete_threshold => 0.4)
 
-query III
-SELECT stats.record_count, stats.file_size_bytes, (SELECT count(*) FROM lake.s)
+query II
+SELECT stats.record_count, stats.file_size_bytes
 FROM meta.ducklake_table_stats stats JOIN meta.ducklake_table t USING (table_id) WHERE t.table_name = 's'
 ----
-2	NULL	2
+2	NULL
+
+query I
+SELECT count(*) FROM lake.s
+----
+2
 
 # the size stays unknown through a reattach and an insert
 statement ok
@@ -159,8 +164,13 @@ ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/data_fil
 statement ok
 DELETE FROM lake.u WHERE i >= 3
 
-query III
-SELECT stats.record_count, stats.file_size_bytes, (SELECT count(*) FROM lake.u)
+query II
+SELECT stats.record_count, stats.file_size_bytes
 FROM meta.ducklake_table_stats stats JOIN meta.ducklake_table t USING (table_id) WHERE t.table_name = 'u'
 ----
-2	NULL	2
+2	NULL
+
+query I
+SELECT count(*) FROM lake.u
+----
+2

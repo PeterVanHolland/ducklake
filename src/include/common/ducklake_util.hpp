@@ -121,6 +121,8 @@ public:
 	static void SetExtensionSetting(ClientContext &context, const string &name, const Value &value);
 
 	static string ParseConfigOptionValue(ClientContext &context, const string &option, const Value &val);
+	//! The value of an option as a client sends it: the stored form of a value it parsed, or a value to parse
+	static string ParseSentConfigOptionValue(ClientContext &context, const string &option, const string &value);
 	static void ValidateConfigOptionScope(const string &option, bool has_schema, bool has_table);
 	static void ValidateConfigOptionName(const string &option);
 

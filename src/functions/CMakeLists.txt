@@ -22,6 +22,7 @@ add_library(
   ducklake_table_changes.cpp
   ducklake_table_info.cpp
   ducklake_table_insertions.cpp
+  ducklake_inlined_variant.cpp
   ducklake_murmur3.cpp
   ducklake_unreadable_macro_default.cpp)
 set(ALL_OBJECT_FILES

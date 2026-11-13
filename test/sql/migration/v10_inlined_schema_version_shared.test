@@ -1,0 +1,205 @@
+# name: test/sql/migration/v10_inlined_schema_version_shared.test
+# description: tables whose inlined tables share a schema version without a row read at the commit of that version
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.6 with DuckLake 1.0 on the catalog of v10_inlined_schema_versions.test: m was flushed and its
+# inlined table of version 7 reused after the column b of r was replaced by one with the default 42, then every
+# snapshot but the last was expired
+unzip data/old_ducklake/inlined_schema_versions_reused.db.gz {TEST_DIR}/v10_inlined_schema_version_shared.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_schema_version_shared.db' AS lake (DATA_PATH 'data/old_ducklake/inlined_schema_versions_reused/', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+# no snapshot of version 7 survives, so the migration adds no row for it and a read takes the columns each inlined
+# table holds; the 1.0 release flushed the first row of m with the columns from before its ALTER, so its b is gone
+query I
+SELECT count(*) FROM meta.ducklake_schema_versions WHERE schema_version = 7
+----
+0
+
+statement ok
+ALTER TABLE lake.m ADD COLUMN x INTEGER
+
+query III
+SELECT * FROM lake.m ORDER BY a
+----
+100	NULL	NULL
+101	5	NULL
+
+query I
+SELECT b FROM lake.r
+----
+42
+
+statement ok
+DETACH lake
+
+# the other way round across a fresh attach
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_schema_version_shared.db' AS lake (DATA_PATH 'data/old_ducklake/inlined_schema_versions_reused/', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta')
+
+query I
+SELECT b FROM lake.r
+----
+42
+
+query III
+SELECT * FROM lake.m ORDER BY a
+----
+100	NULL	NULL
+101	5	NULL
+
+statement ok
+DETACH lake
+
+# an inlined table emptied before the expiry still shows which columns it holds, also when every inlined table of its
+# version is empty and the table has newer rows elsewhere
+unzip data/old_ducklake/inlined_schema_versions.db.gz {TEST_DIR}/v10_inlined_schema_version_emptied.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_schema_version_emptied.db' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_schema_version_emptied', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta')
+
+statement ok
+DELETE FROM lake.r
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'm')
+
+statement ok
+INSERT INTO lake.r VALUES (123)
+
+statement ok
+CREATE TABLE lake.z (i INTEGER)
+
+statement ok
+CALL ducklake_expire_snapshots('lake', older_than => now())
+
+query I
+SELECT count(*) FROM meta.ducklake_inlined_data_3_7
+----
+0
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_schema_version_emptied.db' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_schema_version_emptied', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+query III
+SELECT begin_snapshot, schema_version, table_id FROM meta.ducklake_schema_versions WHERE table_id = 3 ORDER BY ALL
+----
+4	4	3
+7	8	3
+
+query I
+SELECT b FROM lake.r
+----
+123
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'r')
+
+query I
+SELECT b FROM lake.r
+----
+123
+
+query II
+SELECT a, b FROM lake.m
+----
+100	5
+
+statement ok
+DETACH lake
+
+# written by DuckDB 1.5.6 with DuckLake 1.0: m and r got inlined tables of one version in a commit that added b to
+# both, both were flushed, b of r was renamed to c, the inlined table of m reused, and every snapshot but the last
+# expired; the empty inlined table of r still holds a and b
+unzip data/old_ducklake/inlined_schema_versions_transient.db.gz {TEST_DIR}/v10_inlined_schema_version_transient.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_schema_version_transient.db' AS lake (DATA_PATH 'data/old_ducklake/inlined_schema_versions_transient/', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT count(*) FROM meta.ducklake_schema_versions WHERE schema_version = 4
+----
+0
+
+query II
+SELECT a, c FROM lake.r
+----
+1	NULL
+
+query II
+SELECT * FROM lake.m ORDER BY a
+----
+100	NULL
+101	5
+
+query I
+SELECT a FROM lake.n
+----
+1
+
+statement ok
+DETACH lake
+
+# written by DuckDB 1.5.6 with DuckLake 1.0, every snapshot but the last expired: the inlined tables of replaced and
+# promoted were written before a commit that replaced b by a column of the same name with the default 42 and that
+# promoted a to DOUBLE, those of nested and dropped in the commit that renamed a.x to y and dropped b
+unzip data/old_ducklake/inlined_schema_versions_layouts.db.gz {TEST_DIR}/v10_inlined_schema_version_layouts.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_schema_version_layouts.db' AS lake (DATA_PATH '{TEST_DIR}/v10_inlined_schema_version_layouts', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT a, b FROM lake.replaced
+----
+10	42
+
+query I
+SELECT a FROM lake.promoted
+----
+0.5
+
+query II
+SELECT a.y, a.z FROM lake.nested
+----
+42	99
+
+query II
+SELECT a, c FROM lake.dropped
+----
+10	30
+
+query I
+SELECT count(*) FROM lake.n
+----
+2
+
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+query II
+SELECT a, b FROM lake.replaced
+----
+10	42
+
+query I
+SELECT a FROM lake.promoted
+----
+0.5
+
+query II
+SELECT a.y, a.z FROM lake.nested
+----
+42	99
+
+query II
+SELECT a, c FROM lake.dropped
+----
+10	30

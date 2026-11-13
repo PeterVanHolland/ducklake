@@ -440,8 +440,21 @@ public:
 	                                                                  double deletion_threshold,
 	                                                                  DuckLakeSnapshot snapshot,
 	                                                                  DuckLakeFileSizeOptions options);
-	virtual idx_t GetBeginSnapshotForTable(TableIndex table_id);
-	virtual idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version);
+	//! Runs a metadata query, with {METADATA_CATALOG} substituted
+	using MetadataQuery = std::function<unique_ptr<QueryResult>(string)>;
+	//! The snapshot at which a schema version of a table begins, stood in for when the version has no row
+	virtual DuckLakeSchemaVersionSnapshot GetSchemaVersionSnapshot(TableIndex table_id, idx_t schema_version);
+	//! The stand-in of a schema version that no row of the table records: the row of another table, else a surviving
+	//! snapshot of the version, else the snapshot whose columns the inlined tables of the version hold, else the
+	//! version recorded before it, else the creation of the table
+	static DuckLakeSchemaVersionSnapshot StandInSchemaVersionSnapshot(const MetadataQuery &query,
+	                                                                  const DuckLakeInlinedColNames &col_names,
+	                                                                  TableIndex table_id, idx_t schema_version);
+	//! The snapshot whose top-level column names an inlined table holds, read off the table, between the begin
+	//! snapshots of the versions recorded before and after its schema version
+	static optional_idx InlinedTableLayoutSnapshot(const MetadataQuery &query, const DuckLakeInlinedColNames &col_names,
+	                                               TableIndex table_id, idx_t schema_version,
+	                                               const Identifier &inlined_table_name);
 	virtual DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! The net row count of the data files that were committed before the snapshot's next file id
 	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);
@@ -462,8 +475,10 @@ public:
 	static string GetTableColumnSchemaSql(TableIndex table_id);
 	static string GetInlinedTableNamesSql(TableIndex table_id);
 	static string GetInlinedTablesBeforeSchemaChangeSql(TableIndex table_id);
-	//! The top-level columns of each inlined data table at the schema version of that table
-	static string GetInlinedTableColumnsSql(optional_idx table_id = optional_idx());
+	//! The top-level columns of the inlined tables (of one table) at the snapshots of their schema versions
+	static unique_ptr<QueryResult> InlinedTableColumns(const MetadataQuery &query,
+	                                                   const DuckLakeInlinedColNames &col_names, optional_idx table_id);
+	unique_ptr<QueryResult> GetInlinedTableColumns(optional_idx table_id = optional_idx());
 	//! The inserts of the given rows, in batches
 	static string InsertValuesSql(const string &table_name, const vector<string> &values);
 	//! The inserts of the given rows into the given table, in batches
@@ -734,7 +749,8 @@ public:
 	//! Clears the bounds that older versions may have stored in the type of a file or of an earlier column type
 	void MigrateRetypedBounds();
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
-	virtual void MigrateInlinedDataTypes() {
+	//! Converts the types of the inlined data tables, whose metadata columns carry the given naming by then
+	virtual void MigrateInlinedDataTypes(bool prefixed_inlined_columns) {
 	}
 	virtual void ExecuteMigration(string migrate_query, bool allow_failures, const string &from_version,
 	                              const string &to_version);

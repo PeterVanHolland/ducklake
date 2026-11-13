@@ -285,6 +285,10 @@ public:
 	//! Whether the client can skip the snapshot fetch and let the server read it.
 	virtual bool CanSkipSnapshotFetch(const TransactionChangeInformation &changes) const;
 	virtual bool IsRetryableCommitError(const string &message) const;
+	//! Whether a failed COMMIT can still have been carried out by the catalog, as when only its reply was lost
+	virtual bool IsCommitOutcomeUnknown(const string &message) const {
+		return false;
+	}
 	//! The error of a failed commit without the text of the failed query that it repeats
 	virtual string CommitErrorWithoutQuery(const string &message) const {
 		return message;
@@ -712,6 +716,8 @@ public:
 	virtual idx_t SetConfigOption(const DuckLakeConfigOption &option);
 	virtual bool ResetConfigOption(const DuckLakeConfigOption &option);
 	idx_t ConfigOptionRowCount(const DuckLakeConfigOption &option, optional_ptr<const string> value = nullptr);
+	//! Reads the value the catalog holds for the option into it, false when the option is not set
+	bool TryGetConfigOption(DuckLakeConfigOption &option);
 	virtual void MigrateV01();
 	virtual void MigrateV02(bool allow_failures = false);
 	virtual void MigrateV03(bool allow_failures = false);

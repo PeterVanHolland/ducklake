@@ -1,0 +1,94 @@
+# name: test/sql/settings/set_option_concurrent_cleanup_expiry.test
+# description: options committed after a statement that expired snapshots and removed files take the lock on Postgres
+# group: [settings]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require-env DUCKLAKE_CI
+
+require-env DUCKLAKE_CONNECTION
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+(DATA_PATH '{DATA_PATH}/set_option_concurrent_cleanup_expiry', DUCKLAKE_VERSION '1.1')
+
+statement ok
+CREATE TABLE dl.t (i INTEGER)
+
+# a committed expiry schedules the file of a dropped table
+statement ok
+CREATE TABLE dl.old_files AS SELECT range AS i FROM range(100)
+
+statement ok
+DROP TABLE dl.old_files
+
+statement ok
+CALL ducklake_expire_snapshots('dl', older_than => now())
+
+# the snapshots of a second dropped table are expired by the transaction below
+statement ok
+CREATE TABLE dl.expired_files AS SELECT range AS i FROM range(100)
+
+statement ok
+DROP TABLE dl.expired_files
+
+query II
+SELECT (SELECT count(*) FROM __ducklake_metadata_dl.ducklake_files_scheduled_for_deletion),
+       (SELECT list(snapshot_id ORDER BY snapshot_id) FROM dl.snapshots())
+----
+1	[3, 4, 5]
+
+# the cleanup is bound before the expiry on the build side runs, so it removes only the file of the earlier commit
+statement ok con1
+BEGIN
+
+statement ok con1
+SELECT count(*) FROM ducklake_cleanup_old_files('dl', cleanup_all => true)
+CROSS JOIN ducklake_expire_snapshots('dl', older_than => now())
+
+statement ok con1
+CALL dl.set_option('target_file_size', '1MB', table_name => 't')
+
+statement ok con2
+CALL dl.set_option('target_file_size', '2MB', table_name => 't')
+
+# the lock fails after the other commit, and a retry would roll back the expiry
+statement error con1
+COMMIT
+----
+Run the transaction again
+
+query II
+SELECT count(*), max(value) FROM dl.options() WHERE option_name = 'target_file_size' AND scope_entry = 'main.t'
+----
+1	2000000
+
+# the rollback restored the expired snapshots, whose file the cleanup did not touch
+query III
+SELECT (SELECT list(snapshot_id ORDER BY snapshot_id) FROM dl.snapshots()),
+       (SELECT count(*) FROM glob('{DATA_PATH}/set_option_concurrent_cleanup_expiry/**/*.parquet')),
+       (SELECT count(*) FROM glob('{DATA_PATH}/set_option_concurrent_cleanup_expiry/**/*.parquet')
+        WHERE file LIKE '%expired_files%')
+----
+[3, 4, 5]	1	1
+
+# the rollback also put the deleted file back on the schedule, which the next cleanup drops
+query I
+SELECT count(*) FROM __ducklake_metadata_dl.ducklake_files_scheduled_for_deletion
+----
+1
+
+statement ok
+CALL ducklake_cleanup_old_files('dl', cleanup_all => true)
+
+query II
+SELECT (SELECT count(*) FROM __ducklake_metadata_dl.ducklake_files_scheduled_for_deletion),
+       (SELECT count(*) FROM glob('{DATA_PATH}/set_option_concurrent_cleanup_expiry/**/*.parquet'))
+----
+0	1

@@ -170,10 +170,10 @@ struct DuckLakeBaseColumnStats {
 
 struct StatsNumericFallbackOperator {
 	static bool SmallerThan(const LogicalType &type, string_t left, string_t right) {
-		return Value(left).DefaultCastAs(type) < Value(right).DefaultCastAs(type);
+		return StatsBoundLessThan(Value(left).DefaultCastAs(type), Value(right).DefaultCastAs(type));
 	}
 	static bool GreaterThan(const LogicalType &type, string_t left, string_t right) {
-		return Value(left).DefaultCastAs(type) > Value(right).DefaultCastAs(type);
+		return StatsBoundLessThan(Value(right).DefaultCastAs(type), Value(left).DefaultCastAs(type));
 	}
 	static string GetFinalStats(string_t input) {
 		return input.GetString();
@@ -455,8 +455,8 @@ OperatorFinalResultType DuckLakeInlineData::OperatorFinalize(Pipeline &pipeline,
 
 		if (column_stats.stats.null_count > 0) {
 			auto column_name = table.GetColumn(LogicalIndex(c)).GetName();
-			if (not_null_fields.count(column_name.GetIdentifierName())) {
-				table.ThrowNotNullViolation(column_name.GetIdentifierName());
+			if (not_null_fields.count(column_name)) {
+				table.ThrowNotNullViolation(column_name);
 			}
 		}
 	}
@@ -492,9 +492,10 @@ OperatorFinalResultType DuckLakeInlineData::OperatorFinalize(Pipeline &pipeline,
 		VerifyParquetVariants(*result->data);
 	}
 	auto &catalog = table.ParentCatalog().Cast<DuckLakeCatalog>();
-	if (table.GetInlinedDataTables().empty() ||
-	    !table.HasCurrentInlinedDataTable(
-	        catalog.GetTableSchemaVersions(transaction, table.GetTableId()).last_change)) {
+	// the server of a REST catalog decides itself whether the rows need a new inlined table
+	if (!catalog.IsREST() && (table.GetInlinedDataTables().empty() ||
+	                          !table.HasCurrentInlinedDataTable(
+	                              catalog.GetTableSchemaVersions(transaction, table.GetTableId()).last_change))) {
 		transaction.SetRequiresNewInlinedTable(true);
 	}
 	transaction.AppendInlinedData(table.GetTableId(), std::move(result));

@@ -3251,17 +3251,31 @@ ORDER BY data.begin_snapshot ASC, data.row_id_start ASC, data.data_file_id ASC, 
 	return files;
 }
 
+//! Bounds the CASE or OR terms of one UPDATE
+static constexpr idx_t MAX_TERMS_PER_UPDATE = 512;
+
+//! Ends the rows that match any of the conditions with plain UPDATEs
+static string EndRowsSql(const string &metadata_table, const vector<string> &conditions) {
+	string result;
+	for (idx_t start = 0; start < conditions.size(); start += MAX_TERMS_PER_UPDATE) {
+		auto count = MinValue<idx_t>(MAX_TERMS_PER_UPDATE, conditions.size() - start);
+		auto chunk = StringUtil::Join(conditions.data() + start, count, " OR ",
+		                              [](const string &condition) { return condition; });
+		result += StringUtil::Format(
+		    R"(UPDATE {METADATA_CATALOG}.%s SET end_snapshot = {SNAPSHOT_ID} WHERE end_snapshot IS NULL AND (%s);)",
+		    metadata_table, chunk);
+	}
+	return result;
+}
+
 template <class T>
 string DuckLakeMetadataManager::FlushDrop(const string &metadata_table_name, const string &id_name,
                                           const set<T> &dropped_entries) {
 	if (dropped_entries.empty()) {
 		return {};
 	}
-	auto dropped_id_list = GenerateIDList(dropped_entries);
-
-	return StringUtil::Format(
-	    R"(UPDATE {METADATA_CATALOG}.%s SET end_snapshot = {SNAPSHOT_ID} WHERE end_snapshot IS NULL AND %s IN (%s);)",
-	    metadata_table_name, id_name, dropped_id_list);
+	return EndRowsSql(metadata_table_name,
+	                  {StringUtil::Format("%s IN (%s)", id_name, GenerateIDList(dropped_entries))});
 }
 
 string DuckLakeMetadataManager::DropSchemas(const set<SchemaIndex> &ids) {
@@ -3842,19 +3856,12 @@ static string ExpireDroppedColumns(const vector<DuckLakeDroppedColumn> &dropped_
 	if (dropped_columns.empty()) {
 		return {};
 	}
-	auto values = StringUtil::Join(dropped_columns, dropped_columns.size(), ", ", [](const DuckLakeDroppedColumn &col) {
-		return StringUtil::Format("(%d, %d)", col.table_id.index, col.field_id.index);
-	});
-	return StringUtil::Format(R"(
-WITH dropped_cols(tid, cid) AS (
-VALUES %s
-)
-UPDATE {METADATA_CATALOG}.%s
-SET end_snapshot = {SNAPSHOT_ID}
-FROM dropped_cols
-WHERE table_id=tid AND column_id=cid AND end_snapshot IS NULL
-;)",
-	                          values, metadata_table);
+	vector<string> conditions;
+	for (auto &col : dropped_columns) {
+		conditions.push_back(
+		    StringUtil::Format("(table_id=%d AND column_id=%d)", col.table_id.index, col.field_id.index));
+	}
+	return EndRowsSql(metadata_table, conditions);
 }
 
 string DuckLakeMetadataManager::WriteDroppedColumns(const vector<DuckLakeDroppedColumn> &dropped_columns) {
@@ -4096,20 +4103,15 @@ string DuckLakeMetadataManager::WriteNewInlinedDeletes(const vector<DuckLakeDele
 		vector<string> row_ids;
 		row_ids.reserve(entry.deleted_row_ids.size());
 		for (auto &deleted_id : entry.deleted_row_ids) {
-			row_ids.push_back(StringUtil::Format("(%d)", deleted_id));
+			row_ids.push_back(to_string(deleted_id));
 		}
-		// overwrite the snapshot for the old tags
 		batch_queries += ChunkValuesStatements(row_ids, [&](const string &row_id_list) {
 			return StringUtil::Format(R"(
-WITH deleted_row_list(deleted_row_id) AS (
-VALUES %s
-)
 UPDATE {METADATA_CATALOG}.%s
 SET %s = {SNAPSHOT_ID}
-FROM deleted_row_list
-WHERE %s=deleted_row_id AND %s IS NULL AND %s != {SNAPSHOT_ID};
+WHERE %s IN (%s) AND %s IS NULL AND %s != {SNAPSHOT_ID};
 )",
-			                          row_id_list, entry.table_name, col_names.end_snapshot, col_names.row_id,
+			                          entry.table_name, col_names.end_snapshot, col_names.row_id, row_id_list,
 			                          col_names.end_snapshot, col_names.begin_snapshot);
 		});
 	}
@@ -5673,35 +5675,28 @@ string DuckLakeMetadataManager::WriteNewTableOptions(const vector<DuckLakeConfig
 	return InsertValuesSql("ducklake_metadata", values);
 }
 
-template <class T, class OverwrittenValues, class NewValues>
-static string WriteNewColumnTagBatch(const vector<T> &new_tags, const string &cte_columns, const string &metadata_table,
-                                     const string &update_condition, OverwrittenValues overwritten_values,
-                                     NewValues new_values) {
+template <class T, class OverwrittenCondition, class NewValues>
+static string WriteNewColumnTagBatch(const vector<T> &new_tags, const string &metadata_table,
+                                     OverwrittenCondition overwritten_condition, NewValues new_values) {
 	if (new_tags.empty()) {
 		return {};
 	}
-	auto tags_list = StringUtil::Join(new_tags, new_tags.size(), ", ", overwritten_values);
-	string batch_query = StringUtil::Format(R"(
-WITH overwritten_tags(%s) AS (
-VALUES %s
-)
-UPDATE {METADATA_CATALOG}.%s
-SET end_snapshot = {SNAPSHOT_ID}
-FROM overwritten_tags
-WHERE %s AND end_snapshot IS NULL
-;)",
-	                                        cte_columns, tags_list, metadata_table, update_condition);
+	vector<string> conditions;
 	vector<string> new_tag_values;
 	for (auto &tag : new_tags) {
+		conditions.push_back(overwritten_condition(tag));
 		new_tag_values.push_back(new_values(tag));
 	}
+	string batch_query = EndRowsSql(metadata_table, conditions);
 	return batch_query + DuckLakeMetadataManager::InsertValuesSql(metadata_table, new_tag_values);
 }
 
 string DuckLakeMetadataManager::WriteNewTags(const vector<DuckLakeTagInfo> &new_tags) {
 	return WriteNewColumnTagBatch(
-	    new_tags, "tid, key", "ducklake_tag", "object_id=tid AND ducklake_tag.key=overwritten_tags.key",
-	    [](const DuckLakeTagInfo &tag) { return StringUtil::Format("(%d, %s)", tag.id, SQLString(tag.key)); },
+	    new_tags, "ducklake_tag",
+	    [](const DuckLakeTagInfo &tag) {
+		    return StringUtil::Format("(object_id=%d AND key=%s)", tag.id, SQLString(tag.key));
+	    },
 	    [](const DuckLakeTagInfo &tag) {
 		    return StringUtil::Format("(%d, {SNAPSHOT_ID}, NULL, %s, %s)", tag.id, SQLString(tag.key),
 		                              DuckLakeUtil::TextLiteralOrNull(tag.value));
@@ -5710,10 +5705,10 @@ string DuckLakeMetadataManager::WriteNewTags(const vector<DuckLakeTagInfo> &new_
 
 string DuckLakeMetadataManager::WriteNewColumnTags(const vector<DuckLakeColumnTagInfo> &new_tags) {
 	return WriteNewColumnTagBatch(
-	    new_tags, "tid, cid, key", "ducklake_column_tag",
-	    "table_id=tid AND column_id=cid AND ducklake_column_tag.key=overwritten_tags.key",
+	    new_tags, "ducklake_column_tag",
 	    [](const DuckLakeColumnTagInfo &tag) {
-		    return StringUtil::Format("(%d, %d, %s)", tag.table_id.index, tag.field_index.index, SQLString(tag.key));
+		    return StringUtil::Format("(table_id=%d AND column_id=%d AND key=%s)", tag.table_id.index,
+		                              tag.field_index.index, SQLString(tag.key));
 	    },
 	    [](const DuckLakeColumnTagInfo &tag) {
 		    return StringUtil::Format("(%d, %d, {SNAPSHOT_ID}, NULL, %s, %s)", tag.table_id.index,
@@ -5724,12 +5719,10 @@ string DuckLakeMetadataManager::WriteNewColumnTags(const vector<DuckLakeColumnTa
 
 string DuckLakeMetadataManager::WriteNewViewColumnTags(const vector<DuckLakeViewColumnTagInfo> &new_tags) {
 	return WriteNewColumnTagBatch(
-	    new_tags, "vid, col, k", "ducklake_view_column_tag",
-	    "view_id=vid AND ducklake_view_column_tag.column_name=overwritten_tags.col AND "
-	    "ducklake_view_column_tag.key=overwritten_tags.k",
+	    new_tags, "ducklake_view_column_tag",
 	    [](const DuckLakeViewColumnTagInfo &tag) {
-		    return StringUtil::Format("(%d, %s, %s)", tag.view_id.index, SQLString(tag.column_name.GetIdentifierName()),
-		                              SQLString(tag.key));
+		    return StringUtil::Format("(view_id=%d AND column_name=%s AND key=%s)", tag.view_id.index,
+		                              SQLString(tag.column_name.GetIdentifierName()), SQLString(tag.key));
 	    },
 	    [](const DuckLakeViewColumnTagInfo &tag) {
 		    return StringUtil::Format("(%d, %s, {SNAPSHOT_ID}, NULL, %s, %s)", tag.view_id.index,
@@ -5793,35 +5786,39 @@ string DuckLakeMetadataManager::UpdateGlobalTableStatsSql(const DuckLakeGlobalSt
 		    "UPDATE {METADATA_CATALOG}.ducklake_table_stats SET record_count=%s, file_size_bytes=%d, "
 		    "next_row_id=%d WHERE table_id=%d;",
 		    record_count, stats.table_size_bytes, stats.next_row_id, stats.table_id.index);
-		// One UPDATE for all columns, which only changes existing rows: a column without a stats row, such as a struct
-		// container, stays without one. ANSI CAST(... AS BOOLEAN) works on DuckDB, Postgres and SQLite, where `::` does
-		// not parse.
-		if (!stats.column_stats.empty()) {
-			vector<string> new_values;
-			for (auto &col_stats : stats.column_stats) {
+		// a plain UPDATE per chunk of columns only changes existing rows, a struct container has no stats row
+		for (idx_t chunk_start = 0; chunk_start < stats.column_stats.size(); chunk_start += MAX_TERMS_PER_UPDATE) {
+			auto chunk_end = MinValue<idx_t>(chunk_start + MAX_TERMS_PER_UPDATE, stats.column_stats.size());
+			vector<string> column_ids;
+			vector<string> contains_null, contains_nan, min_values, max_values, extra_stats, min_is_exact, max_is_exact;
+			for (idx_t col_idx = chunk_start; col_idx < chunk_end; col_idx++) {
+				auto &col_stats = stats.column_stats[col_idx];
 				auto sql = ColumnStatsSQL::FromColumnStats(col_stats);
-				auto value = StringUtil::Format("(%d, CAST(%s AS BOOLEAN), CAST(%s AS BOOLEAN), %s, %s, %s",
-				                                col_stats.column_id.index, sql.contains_null, sql.contains_nan,
-				                                sql.min_val, sql.max_val, sql.extra_stats);
-				if (write_stats_exactness) {
-					value += StringUtil::Format(", CAST(%s AS BOOLEAN), CAST(%s AS BOOLEAN)", sql.min_is_exact,
-					                            sql.max_is_exact);
-				}
-				new_values.push_back(value + ")");
+				auto column_id = to_string(col_stats.column_id.index);
+				column_ids.push_back(column_id);
+				auto when = "WHEN " + column_id + " THEN ";
+				contains_null.push_back(when + sql.contains_null);
+				contains_nan.push_back(when + sql.contains_nan);
+				min_values.push_back(when + sql.min_val);
+				max_values.push_back(when + sql.max_val);
+				extra_stats.push_back(when + sql.extra_stats);
+				min_is_exact.push_back(when + sql.min_is_exact);
+				max_is_exact.push_back(when + sql.max_is_exact);
 			}
-			string exactness_columns;
-			string exactness_set;
+			// the ELSE never applies and only gives a CASE of NULL values the type of the column
+			auto by_column = [](const string &column, const vector<string> &cases) {
+				return column + "=CASE column_id " + StringUtil::Join(cases, " ") + " ELSE " + column + " END";
+			};
+			vector<string> assignments {by_column("contains_null", contains_null),
+			                            by_column("contains_nan", contains_nan), by_column("min_value", min_values),
+			                            by_column("max_value", max_values), by_column("extra_stats", extra_stats)};
 			if (write_stats_exactness) {
-				exactness_columns = ", new_min_is_exact, new_max_is_exact";
-				exactness_set = ", min_is_exact=new_min_is_exact, max_is_exact=new_max_is_exact";
+				assignments.push_back(by_column("min_is_exact", min_is_exact));
+				assignments.push_back(by_column("max_is_exact", max_is_exact));
 			}
 			batch_query += StringUtil::Format(
-			    "WITH new_values(cid, new_contains_null, new_contains_nan, new_min, new_max, new_extra_stats%s) AS "
-			    "(VALUES %s) UPDATE {METADATA_CATALOG}.ducklake_table_column_stats SET "
-			    "contains_null=new_contains_null, "
-			    "contains_nan=new_contains_nan, min_value=new_min, max_value=new_max, extra_stats=new_extra_stats%s "
-			    "FROM new_values WHERE table_id=%d AND column_id=cid;",
-			    exactness_columns, StringUtil::Join(new_values, ", "), exactness_set, stats.table_id.index);
+			    "UPDATE {METADATA_CATALOG}.ducklake_table_column_stats SET %s WHERE table_id=%d AND column_id IN (%s);",
+			    StringUtil::Join(assignments, ", "), stats.table_id.index, StringUtil::Join(column_ids, ", "));
 		}
 	}
 	return batch_query;
@@ -6299,11 +6296,10 @@ idx_t DuckLakeMetadataManager::ResolveSnapshotVersion(const Value &version) {
 
 string DuckLakeMetadataManager::EndSnapshotTagSql(const DuckLakeSnapshotTagInfo &tag) {
 	// the collation of the catalog can fold names, so they compare byte for byte
-	return StringUtil::Format(
-	    "UPDATE {METADATA_CATALOG}.ducklake_snapshot_tag SET end_snapshot = {SNAPSHOT_ID} WHERE end_snapshot IS "
-	    "NULL AND %s = %s AND snapshot_id = %d AND begin_snapshot = %d;\n",
-	    DuckLakeUtil::WithBinaryCollation("tag_name"), SQLString(tag.name), tag.snapshot_id,
-	    tag.created_snapshot_id.GetIndex());
+	return EndRowsSql("ducklake_snapshot_tag",
+	                  {StringUtil::Format("%s = %s AND snapshot_id = %d AND begin_snapshot = %d",
+	                                      DuckLakeUtil::WithBinaryCollation("tag_name"), SQLString(tag.name),
+	                                      tag.snapshot_id, tag.created_snapshot_id.GetIndex())});
 }
 
 string

@@ -1,0 +1,208 @@
+# name: test/sql/delete/full_file_delete_keeps_column_stats.test
+# description: a delete that drops a whole data file while rows remain keeps the table's column stats
+# group: [delete]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/full_file_delete_keeps_column_stats', DATA_INLINING_ROW_LIMIT 0)
+
+# two files, the second one holds a single row
+statement ok
+CREATE TABLE lake.t (id BIGINT, v VARCHAR)
+
+statement ok
+INSERT INTO lake.t SELECT i, 'a' || i FROM range(100) r(i)
+
+statement ok
+INSERT INTO lake.t VALUES (1000, 'b')
+
+statement ok
+SET VARIABLE t_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 't' AND end_snapshot IS NULL)
+
+query I
+SELECT count(*) FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id = getvariable('t_id')
+----
+2
+
+# the delete drops the second file, the column stats stay and are recomputed from the remaining file
+query I
+DELETE FROM lake.t WHERE id >= 1000
+----
+1
+
+query I
+SELECT count(*) FROM __ducklake_metadata_lake.ducklake_data_file WHERE table_id = getvariable('t_id') AND end_snapshot IS NULL
+----
+1
+
+query III
+SELECT column_id, min_value, max_value FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id = getvariable('t_id') ORDER BY column_id
+----
+1	0	99
+2	a0	a99
+
+query III
+SELECT record_count, next_row_id, file_size_bytes > 0 FROM __ducklake_metadata_lake.ducklake_table_stats WHERE table_id = getvariable('t_id')
+----
+100	101	true
+
+query III
+SELECT count(*), min(id), max(id) FROM lake.t
+----
+100	0	99
+
+# later inserts widen the kept bounds
+statement ok
+INSERT INTO lake.t SELECT i, 'c' || i FROM range(2000, 2010) r(i)
+
+query III
+SELECT column_id, min_value, max_value FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id = getvariable('t_id') ORDER BY column_id
+----
+1	0	2009
+2	a0	c2009
+
+query III
+SELECT count(*), min(id), max(id) FROM lake.t
+----
+110	0	2009
+
+# deleted rows remain in the other file, so the bounds cannot be recomputed and become unknown while the rows stay
+statement ok
+CREATE TABLE lake.u (id BIGINT, v VARCHAR)
+
+statement ok
+INSERT INTO lake.u SELECT i, 'a' || i FROM range(100) r(i)
+
+statement ok
+INSERT INTO lake.u VALUES (1000, 'b')
+
+statement ok
+SET VARIABLE u_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'u' AND end_snapshot IS NULL)
+
+query I
+DELETE FROM lake.u WHERE id < 50
+----
+50
+
+query I
+DELETE FROM lake.u WHERE id >= 1000
+----
+1
+
+query III
+SELECT column_id, min_value IS NULL, max_value IS NULL FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id = getvariable('u_id') ORDER BY column_id
+----
+1	true	true
+2	true	true
+
+query III
+SELECT count(*), min(id), max(id) FROM lake.u
+----
+50	50	99
+
+statement ok
+INSERT INTO lake.u SELECT i, 'c' || i FROM range(2000, 2010) r(i)
+
+query III
+SELECT column_id, min_value IS NULL, max_value IS NULL FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id = getvariable('u_id') ORDER BY column_id
+----
+1	true	true
+2	true	true
+
+query III
+SELECT count(*), min(id), max(id) FROM lake.u
+----
+60	50	2009
+
+# the drop and an insert in one transaction, the recomputed bounds include the new file
+statement ok
+CREATE TABLE lake.w (id BIGINT, v VARCHAR)
+
+statement ok
+INSERT INTO lake.w SELECT i, 'a' || i FROM range(100) r(i)
+
+statement ok
+INSERT INTO lake.w VALUES (1000, 'b')
+
+statement ok
+SET VARIABLE w_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'w' AND end_snapshot IS NULL)
+
+statement ok
+BEGIN
+
+query I
+DELETE FROM lake.w WHERE id >= 1000
+----
+1
+
+statement ok
+INSERT INTO lake.w SELECT i, 'c' || i FROM range(2000, 2010) r(i)
+
+statement ok
+COMMIT
+
+query III
+SELECT column_id, min_value, max_value FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id = getvariable('w_id') ORDER BY column_id
+----
+1	0	2009
+2	a0	c2009
+
+query II
+SELECT record_count, next_row_id FROM __ducklake_metadata_lake.ducklake_table_stats WHERE table_id = getvariable('w_id')
+----
+110	111
+
+query III
+SELECT count(*), min(id), max(id) FROM lake.w
+----
+110	0	2009
+
+# the drop and a widened column type in one transaction, the bounds of the snapshot's files are not recomputed
+statement ok
+CREATE TABLE lake.f (id BIGINT, v FLOAT)
+
+statement ok
+INSERT INTO lake.f SELECT i, 0.1::FLOAT FROM range(100) r(i)
+
+statement ok
+INSERT INTO lake.f VALUES (1000, 2.5::FLOAT)
+
+statement ok
+SET VARIABLE f_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'f' AND end_snapshot IS NULL)
+
+statement ok
+BEGIN
+
+query I
+DELETE FROM lake.f WHERE id >= 1000
+----
+1
+
+statement ok
+ALTER TABLE lake.f ALTER COLUMN v TYPE DOUBLE
+
+statement ok
+COMMIT
+
+query III
+SELECT column_id, min_value IS NULL, max_value IS NULL FROM __ducklake_metadata_lake.ducklake_table_column_stats WHERE table_id = getvariable('f_id') ORDER BY column_id
+----
+1	true	true
+2	true	true
+
+query III
+SELECT count(*), min(v), max(v) FROM lake.f
+----
+100	0.10000000149011612	0.10000000149011612
+
+query I
+SELECT count(*) FROM lake.f WHERE v > 0.1
+----
+100

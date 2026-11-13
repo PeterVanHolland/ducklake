@@ -1133,7 +1133,7 @@ bool DuckLakeTransactionState::TryRecomputeGlobalStats(TableIndex table_id, Duck
 	for (auto &row : *result) {
 		auto data_file_id = static_cast<idx_t>(row.GetValue<int64_t>(0));
 		if (removed_source_ids.find(DataFileIndex(data_file_id)) != removed_source_ids.end()) {
-			continue; // this file is being rewritten away
+			continue; // this file is being rewritten away or dropped
 		}
 		if (file_count == 0 || data_file_id != last_file_id) {
 			last_file_id = data_file_id;
@@ -1289,9 +1289,12 @@ static idx_t SubtractDroppedFileStat(idx_t value, idx_t decrement) {
 	return value - decrement;
 }
 
-//! Whether the deletes of the transaction leave deleted rows in data files that are not dropped
-static bool DeletesRemainingFiles(const LocalTableDataChanges &table_changes,
-                                  const unordered_map<string, DataFileIndex> &dropped_files) {
+//! Whether the deletes of the transaction leave deleted rows in data files that are not dropped or in inlined data
+static bool DeletesRemainingRows(const LocalTableDataChanges &table_changes,
+                                 const unordered_map<string, DataFileIndex> &dropped_files) {
+	if (!table_changes.new_inlined_data_deletes.empty()) {
+		return true;
+	}
 	for (auto &delete_entry : table_changes.new_delete_files) {
 		if (dropped_files.find(delete_entry.first) == dropped_files.end()) {
 			return true;
@@ -1316,11 +1319,6 @@ static idx_t GetDroppedRowCount(TableIndex table_id, const map<TableIndex, Dropp
 	return entry == dropped_file_stats.end() ? 0 : entry->second.row_count;
 }
 
-static string DeleteTableColumnStatsSql(TableIndex table_id) {
-	return StringUtil::Format("DELETE FROM {METADATA_CATALOG}.ducklake_table_column_stats WHERE table_id=%d;",
-	                          table_id.index);
-}
-
 static optional_ptr<DuckLakeTableStats> GetCurrentTableStats(TableIndex table_id, optional_ptr<DuckLakeStats> dl_stats,
                                                              const DuckLakeCommitContext &context,
                                                              shared_ptr<DuckLakeTableStats> &stats_pin) {
@@ -1335,17 +1333,10 @@ static optional_ptr<DuckLakeTableStats> GetCurrentTableStats(TableIndex table_id
 	return entry->second.get();
 }
 
-static string WriteGlobalTableStatsSql(TableIndex table_id, DuckLakeNewGlobalStats &new_globals,
-                                       bool clear_column_stats, const DuckLakeCommitContext &context) {
-	if (clear_column_stats) {
-		new_globals.stats.column_stats.clear();
-	}
-	auto result = DuckLakeMetadataManager::UpdateGlobalTableStatsSql(
+static string WriteGlobalTableStatsSql(TableIndex table_id, const DuckLakeNewGlobalStats &new_globals,
+                                       const DuckLakeCommitContext &context) {
+	return DuckLakeMetadataManager::UpdateGlobalTableStatsSql(
 	    DuckLakeTransaction::ConvertNewGlobalStats(table_id, new_globals), context.supports_v1_1_metadata);
-	if (clear_column_stats) {
-		result += DeleteTableColumnStatsSql(table_id);
-	}
-	return result;
 }
 
 bool DuckLakeTransactionState::ApplyDroppedFileStats(
@@ -1367,6 +1358,13 @@ bool DuckLakeTransactionState::ApplyDroppedFileStats(
 			refreshed_table_sizes.insert(table_id);
 		} else {
 			stats.table_size_bytes -= dropped_stats.file_size_bytes;
+		}
+		// the dropped rows may have held the bounds, which are unknown unless the caller recomputes them
+		// the stats rows stay, a table without them fails to load on DuckLake 1.0 readers
+		for (auto &column_stats : stats.column_stats) {
+			column_stats.second.ClearBounds();
+			column_stats.second.any_valid = false;
+			column_stats.second.bounds_unknown = true;
 		}
 	} else {
 		stats.table_size_bytes = 0;
@@ -1393,8 +1391,9 @@ void DuckLakeTransactionState::InitializeGlobalStats(TableIndex table_id, const 
 }
 
 string DuckLakeTransactionState::UpdateStatsForDroppedFiles(
-    optional_ptr<vector<DuckLakeGlobalStatsInfo>> stats, const DuckLakeCommitContext &context,
-    map<TableIndex, DroppedDataFileStats> &attempt_dropped_file_stats, bool &recomputed_stats) {
+    optional_ptr<vector<DuckLakeGlobalStatsInfo>> stats, const TransactionChangeInformation &transaction_changes,
+    const DuckLakeCommitContext &context, map<TableIndex, DroppedDataFileStats> &attempt_dropped_file_stats,
+    bool &recomputed_stats) {
 	if (attempt_dropped_file_stats.empty()) {
 		return string();
 	}
@@ -1425,29 +1424,35 @@ string DuckLakeTransactionState::UpdateStatsForDroppedFiles(
 		DuckLakeNewGlobalStats new_globals;
 		InitializeGlobalStats(table_id, *current_stats, new_globals);
 		auto dropped_row_count = GetDroppedRowCount(table_id, attempt_dropped_file_stats);
-		bool delete_column_stats = ApplyDroppedFileStats(table_id, new_globals, attempt_dropped_file_stats);
-		bool deletes_remaining_files = false;
+		bool rows_remain = ApplyDroppedFileStats(table_id, new_globals, attempt_dropped_file_stats);
+		bool deletes_remaining_rows = false;
 		for (auto &entry : local_changes.Changes()) {
 			if (entry.first == table_id) {
-				deletes_remaining_files = DeletesRemainingFiles(entry.second, dropped_files);
+				deletes_remaining_rows = DeletesRemainingRows(entry.second, dropped_files);
 			}
 		}
 		DuckLakeTableStats recomputed;
-		if (delete_column_stats && !current_stats->record_count_unknown && !deletes_remaining_files &&
-		    TryRecomputeGlobalStatsAfterDrop(table_id, dropped_row_count, context, recomputed)) {
+		if (rows_remain && !deletes_remaining_rows &&
+		    TryRecomputeGlobalStatsAfterDrop(table_id, transaction_changes, dropped_row_count, context, recomputed)) {
 			// the remaining files are delete-free, so their stats describe the live rows exactly
 			result += RecomputedGlobalStatsSql(table_id, std::move(recomputed), context);
 			recomputed_stats = true;
 			continue;
 		}
-		result += WriteGlobalTableStatsSql(table_id, new_globals, delete_column_stats, context);
+		result += WriteGlobalTableStatsSql(table_id, new_globals, context);
 	}
 	return result;
 }
 
-bool DuckLakeTransactionState::TryRecomputeGlobalStatsAfterDrop(TableIndex table_id, idx_t dropped_row_count,
+bool DuckLakeTransactionState::TryRecomputeGlobalStatsAfterDrop(TableIndex table_id,
+                                                                const TransactionChangeInformation &transaction_changes,
+                                                                idx_t dropped_row_count,
                                                                 const DuckLakeCommitContext &context,
                                                                 DuckLakeTableStats &result) {
+	if (transaction_changes.altered_tables.find(table_id) != transaction_changes.altered_tables.end()) {
+		// the per file stats of the snapshot do not describe a column this commit alters, such as a widened type
+		return false;
+	}
 	set<DataFileIndex> dropped_ids;
 	for (auto &entry : dropped_files) {
 		dropped_ids.insert(entry.second);
@@ -1673,8 +1678,9 @@ void DuckLakeTransactionState::ResolveNullOnlyBounds(TableIndex table_id, const 
 }
 
 NewDataInfo DuckLakeTransactionState::GetNewDataFiles(
-    string &batch_query, DuckLakeCommitState &commit_state, optional_ptr<vector<DuckLakeGlobalStatsInfo>> stats,
-    const DuckLakeCommitContext &context, map<TableIndex, DroppedDataFileStats> &attempt_dropped_file_stats) {
+    string &batch_query, DuckLakeCommitState &commit_state, const TransactionChangeInformation &transaction_changes,
+    optional_ptr<vector<DuckLakeGlobalStatsInfo>> stats, const DuckLakeCommitContext &context,
+    map<TableIndex, DroppedDataFileStats> &attempt_dropped_file_stats) {
 	NewDataInfo result;
 	unique_ptr<DuckLakeStats> dl_stats;
 	if (stats) {
@@ -1698,15 +1704,14 @@ NewDataInfo DuckLakeTransactionState::GetNewDataFiles(
 			InitializeGlobalStats(table_id, *current_stats, new_globals);
 		}
 		auto dropped_row_count = GetDroppedRowCount(table_id, attempt_dropped_file_stats);
-		bool clear_column_stats = ApplyDroppedFileStats(table_id, new_globals, attempt_dropped_file_stats);
+		bool rows_remain = ApplyDroppedFileStats(table_id, new_globals, attempt_dropped_file_stats);
 		bool adds_fields = added_field_stats.find(table_id) != added_field_stats.end();
-		if (clear_column_stats && current_stats && !current_stats->record_count_unknown && !adds_fields &&
-		    !DeletesRemainingFiles(table_changes, dropped_files)) {
+		if (rows_remain && current_stats && !adds_fields && !DeletesRemainingRows(table_changes, dropped_files)) {
 			// merge the new data on top of the recomputed stats of the remaining files
 			DuckLakeTableStats recomputed;
-			if (TryRecomputeGlobalStatsAfterDrop(table_id, dropped_row_count, context, recomputed)) {
+			if (TryRecomputeGlobalStatsAfterDrop(table_id, transaction_changes, dropped_row_count, context,
+			                                     recomputed)) {
 				new_globals.stats = std::move(recomputed);
-				clear_column_stats = false;
 			}
 		}
 		auto &new_stats = new_globals.stats;
@@ -1777,7 +1782,7 @@ NewDataInfo DuckLakeTransactionState::GetNewDataFiles(
 			}
 		}
 		// update the global stats for this table based on the newly written data
-		batch_query += WriteGlobalTableStatsSql(table_id, new_globals, clear_column_stats, context);
+		batch_query += WriteGlobalTableStatsSql(table_id, new_globals, context);
 	}
 	return result;
 }
@@ -2511,7 +2516,8 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 	// write new data / data files
 	bool has_table_data_changes = local_changes.HasChanges();
 	if (has_table_data_changes) {
-		auto result = GetNewDataFiles(batch_queries, commit_state, stats, context, attempt_dropped_file_stats);
+		auto result = GetNewDataFiles(batch_queries, commit_state, transaction_changes, stats, context,
+		                              attempt_dropped_file_stats);
 		batch_queries += write_data_files_sql(result.new_files);
 		batch_queries += context.write_inlined_data(commit_snapshot, result.new_inlined_data, new_tables_result,
 		                                            new_inlined_data_tables_result);
@@ -2525,7 +2531,8 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 		}
 		batch_queries += DuckLakeMetadataManager::DropDataFiles(dropped_indexes);
 		bool recomputed_stats = false;
-		batch_queries += UpdateStatsForDroppedFiles(stats, context, attempt_dropped_file_stats, recomputed_stats);
+		batch_queries += UpdateStatsForDroppedFiles(stats, transaction_changes, context, attempt_dropped_file_stats,
+		                                            recomputed_stats);
 		if (recomputed_stats && commit_snapshot.next_file_id == initial_next_file_id) {
 			// cached stats are keyed by the next file id, which a commit without new files keeps
 			commit_snapshot.next_file_id++;

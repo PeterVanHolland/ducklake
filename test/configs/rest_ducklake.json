@@ -352,6 +352,8 @@
         "test/sql/delete/deletion_vector_inlined_flush.test",
         "test/sql/delete/deletion_vector_multi_snapshot.test",
         "test/sql/delete/deletion_vector_v10_history.test",
+        "test/sql/delete/full_file_delete_keeps_column_stats.test",
+        "test/sql/delete/full_file_delete_keeps_column_stats_inlined.test",
         "test/sql/delete/full_file_delete_stats.test",
         "test/sql/delete/full_file_delete_stats_default_inlining.test",
         "test/sql/delete/full_file_delete_stats_reinsert.test",

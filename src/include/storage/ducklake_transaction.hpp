@@ -392,6 +392,8 @@ public:
 	                   const DuckLakeRetryConfig &retry_config);
 	//! Applies a commit that the server made, the next file id of the committed snapshot is the key of its stats
 	void ApplyServerSideCommit(idx_t schema_version, optional_idx committed_next_file_id = optional_idx());
+	//! The next file id of a committed snapshot, the key of its cached stats
+	idx_t CommittedNextFileId(idx_t committed_snapshot_id);
 	//! Removes the files that this transaction wrote
 	void CleanupFiles();
 	//! Post-commit cleanup of empty inlined-data tables superseded by later schema versions.

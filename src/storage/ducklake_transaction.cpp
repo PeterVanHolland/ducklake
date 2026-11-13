@@ -1604,6 +1604,19 @@ void DuckLakeTransaction::CleanupFiles() {
 	state->CleanupFiles();
 }
 
+idx_t DuckLakeTransaction::CommittedNextFileId(idx_t committed_snapshot_id) {
+	auto query = StringUtil::Format(
+	    "SELECT next_file_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id = %d;", committed_snapshot_id);
+	auto result = metadata_manager->Query(query);
+	result->ThrowIfError("Failed to read the committed snapshot from DuckLake: ");
+	for (auto &row : *result) {
+		return row.GetValue<idx_t>(0);
+	}
+	// LCOV_EXCL_START
+	throw InternalException("The committed DuckLake snapshot %d was not found", committed_snapshot_id);
+	// LCOV_EXCL_STOP
+}
+
 void DuckLakeTransaction::ApplyServerSideCommit(idx_t schema_version, optional_idx committed_next_file_id) {
 	if (snapshot) {
 		// as a local commit does, the stats of the committed snapshot are invalidated, older snapshots keep theirs

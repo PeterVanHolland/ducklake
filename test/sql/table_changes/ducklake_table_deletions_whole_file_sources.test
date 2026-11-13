@@ -1,0 +1,145 @@
+# name: test/sql/table_changes/ducklake_table_deletions_whole_file_sources.test
+# description: ducklake_table_deletions combines a delete file, inlined deletes and the delete of the rest of the file
+# group: [table_changes]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/ducklake_table_deletions_whole_file_sources', DATA_INLINING_ROW_LIMIT 10)
+
+# snapshot 1: one data file of 50 rows
+statement ok
+CREATE TABLE dl.t AS SELECT range::INTEGER AS i FROM range(50)
+
+# snapshot 2: more rows than the inlining limit go to a delete file
+statement ok
+DELETE FROM dl.t WHERE i < 20
+
+# snapshots 3 and 4: inlined deletes
+statement ok
+DELETE FROM dl.t WHERE i = 30
+
+statement ok
+DELETE FROM dl.t WHERE i = 31
+
+# snapshot 5: the rest of the file, which goes to a delete file since the file has deletes already
+statement ok
+DELETE FROM dl.t
+
+query II
+SELECT data_file IS NOT NULL, delete_file IS NOT NULL FROM ducklake_list_files('dl', 't', snapshot_version => 4)
+----
+true	true
+
+# the delete file alone
+query IIII
+SELECT snapshot_id, count(*), min(i), max(i) FROM ducklake_table_deletions('dl', 'main', 't', 2, 2) GROUP BY ALL ORDER BY ALL
+----
+2	20	0	19
+
+# the inlined deletes alone, each dated by its own snapshot
+query IIII
+SELECT snapshot_id, count(*), min(i), max(i) FROM ducklake_table_deletions('dl', 'main', 't', 3, 4) GROUP BY ALL ORDER BY ALL
+----
+3	1	30	30
+4	1	31	31
+
+# the delete of the rest leaves out the rows of the delete file and the earlier inlined deletes
+query IIII
+SELECT snapshot_id, count(*), min(i), max(i) FROM ducklake_table_deletions('dl', 'main', 't', 5, 5) GROUP BY ALL ORDER BY ALL
+----
+5	28	20	49
+
+query I
+SELECT list(i ORDER BY i) FROM ducklake_table_deletions('dl', 'main', 't', 5, 5) WHERE i BETWEEN 28 AND 33
+----
+[28, 29, 32, 33]
+
+# a range over every source dates each row by the snapshot that deleted it
+query IIII
+SELECT snapshot_id, count(*), min(i), max(i) FROM ducklake_table_deletions('dl', 'main', 't', 2, 5) GROUP BY ALL ORDER BY ALL
+----
+2	20	0	19
+3	1	30	30
+4	1	31	31
+5	28	20	49
+
+# an inlined delete before the range is left out, one inside the range keeps its snapshot
+query IIII
+SELECT snapshot_id, count(*), min(i), max(i) FROM ducklake_table_deletions('dl', 'main', 't', 4, 5) GROUP BY ALL ORDER BY ALL
+----
+4	1	31	31
+5	28	20	49
+
+query IIII
+SELECT snapshot_id, count(*), min(rowid), max(rowid) FROM ducklake_table_changes('dl', 'main', 't', 1, 5) GROUP BY ALL ORDER BY ALL
+----
+1	50	0	49
+2	20	0	19
+3	1	30	30
+4	1	31	31
+5	28	20	49
+
+query I
+SELECT count(*) FROM dl.t
+----
+0
+
+# a file without earlier deletes is ended as a whole, and the scan returns every row of it without a mask
+statement ok
+CREATE TABLE dl.w AS SELECT range::INTEGER AS i FROM range(3000)
+
+statement ok
+DELETE FROM dl.w
+
+query II
+SELECT (SELECT count(*) FROM ducklake_list_files('dl', 'w', snapshot_version => 6)), (SELECT count(*) FROM ducklake_list_files('dl', 'w', snapshot_version => 7))
+----
+1	0
+
+query III
+SELECT snapshot_id, count(*), sum(i) FROM ducklake_table_deletions('dl', 'main', 'w', 7, 7) GROUP BY ALL ORDER BY ALL
+----
+7	3000	4498500
+
+query I
+SELECT list(i ORDER BY i) FROM ducklake_table_deletions('dl', 'main', 'w', 6, 7) WHERE i < 2 OR i IN (63, 64) OR i > 2997
+----
+[0, 1, 63, 64, 2998, 2999]
+
+# inlined deletes at the ends of 64 row entries, then the rest of the file: a mask over 3000 rows with excluded rows
+statement ok
+CREATE TABLE dl.u AS SELECT range::INTEGER AS i FROM range(3000)
+
+statement ok
+DELETE FROM dl.u WHERE i IN (0, 63, 64, 2999)
+
+statement ok
+DELETE FROM dl.u
+
+query III
+SELECT snapshot_id, count(*), sum(i) FROM ducklake_table_deletions('dl', 'main', 'u', 9, 10) GROUP BY ALL ORDER BY ALL
+----
+9	4	3126
+10	2996	4495374
+
+query III
+SELECT snapshot_id, count(*), sum(i) FROM ducklake_table_deletions('dl', 'main', 'u', 10, 10) GROUP BY ALL ORDER BY ALL
+----
+10	2996	4495374
+
+query I
+SELECT list(i ORDER BY i) FROM ducklake_table_deletions('dl', 'main', 'u', 10, 10) WHERE i < 3 OR i BETWEEN 62 AND 66 OR i > 2996
+----
+[1, 2, 62, 65, 66, 2997, 2998]
+
+query I
+SELECT count(*) FROM ducklake_table_changes('dl', 'main', 'u', 8, 10)
+----
+6000

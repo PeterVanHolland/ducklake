@@ -1,0 +1,21 @@
+# name: benchmark/micro/time_travel/table_deletions_whole_file.benchmark
+# description: table_deletions over a 5M row file deleted whole, so every row of the file comes out of the deletion scan
+# group: [time_travel]
+
+name Table Deletions Whole File
+group micro
+subgroup time_travel
+
+require ducklake
+
+require parquet
+
+argument work table_deletions_whole_file_work
+
+include benchmark/micro/fixtures/whole_file_delete.benchmark.in
+
+run
+SELECT count(*) AS cnt, sum(id) AS sum_id FROM ducklake_table_deletions('lake', 'main', 'w', 2, 2);
+
+result II
+5000000	12499997500000

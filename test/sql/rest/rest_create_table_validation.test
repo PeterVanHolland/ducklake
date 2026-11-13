@@ -217,3 +217,5 @@ query I
 SELECT j FROM dl.t3
 ----
 7
+
+include test/template/rest_teardown.test_template

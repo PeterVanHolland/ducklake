@@ -117,6 +117,8 @@ public:
 	shared_ptr<DuckLakeInlinedData> GetTransactionLocalInlinedData(ClientContext &context, TableIndex table_id) const;
 	//! Returns false for a file whose rows keep their history
 	bool TryDropTransactionLocalFile(ClientContext &context, TableIndex table_id, const string &path);
+	//! Removes the delete files this transaction wrote for a data file it drops, unless they hold committed deletes
+	void DropDeleteFiles(ClientContext &context, TableIndex table_id, const string &data_file_path, idx_t snapshot_id);
 	void AppendFiles(TableIndex table_id, vector<DuckLakeDataFile> files);
 	void AppendDeleteFiles(TableIndex table_id, const string &data_file_path, vector<DuckLakeDeleteFile> files);
 	void AppendInlinedData(ClientContext &context, TableIndex table_id, unique_ptr<DuckLakeInlinedData> new_data);

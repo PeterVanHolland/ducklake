@@ -178,6 +178,12 @@ shared_ptr<DuckLakeInlinedData> LocalTableChanges::GetTransactionLocalInlinedDat
 	return result;
 }
 
+static void RemoveDeleteFiles(FileSystem &fs, const vector<DuckLakeDeleteFile> &delete_files) {
+	for (auto &file : delete_files) {
+		fs.RemoveFile(file.file_name);
+	}
+}
+
 bool LocalTableChanges::TryDropTransactionLocalFile(ClientContext &context, TableIndex table_id, const string &path) {
 	lock_guard<mutex> guard(lock);
 	auto entry = Find(table_id);
@@ -198,9 +204,7 @@ bool LocalTableChanges::TryDropTransactionLocalFile(ClientContext &context, Tabl
 				return false;
 			}
 			auto created_by_ducklake = file.created_by_ducklake;
-			for (auto &del_file : file.delete_files) {
-				fs.RemoveFile(del_file.file_name);
-			}
+			RemoveDeleteFiles(fs, file.delete_files);
 			file.delete_files.clear();
 			// found the file - delete it from the table list and from disk if DuckLake owns it
 			table_files.erase_at(i);
@@ -215,6 +219,30 @@ bool LocalTableChanges::TryDropTransactionLocalFile(ClientContext &context, Tabl
 		}
 	}
 	throw InternalException("Failed to find matching transaction-local file for TryDropTransactionLocalFile");
+}
+
+void LocalTableChanges::DropDeleteFiles(ClientContext &context, TableIndex table_id, const string &data_file_path,
+                                        idx_t snapshot_id) {
+	lock_guard<mutex> guard(lock);
+	auto entry = Find(table_id);
+	if (!entry) {
+		return;
+	}
+	auto delete_files = entry->new_delete_files.find(data_file_path);
+	if (delete_files == entry->new_delete_files.end()) {
+		return;
+	}
+	for (auto &file : delete_files->second) {
+		// new deletes are dated after the snapshot of the transaction, older ones are read before the drop
+		if (file.begin_snapshot.IsValid() && file.begin_snapshot.GetIndex() <= snapshot_id) {
+			return;
+		}
+	}
+	RemoveDeleteFiles(FileSystem::GetFileSystem(context), delete_files->second);
+	entry->new_delete_files.erase(delete_files);
+	if (entry->IsEmpty()) {
+		changes.erase(table_id);
+	}
 }
 
 void LocalTableChanges::AppendFiles(TableIndex table_id, vector<DuckLakeDataFile> files) {
@@ -2725,6 +2753,8 @@ void DuckLakeTransaction::DropFile(TableIndex table_id, DataFileIndex data_file_
 		return;
 		// LCOV_EXCL_STOP
 	}
+	auto context_ref = context.lock();
+	state->local_changes.DropDeleteFiles(*context_ref, table_id, inserted.first->first, GetSnapshot().snapshot_id);
 	auto &stats = state->dropped_file_stats[table_id];
 	stats.row_count += row_count;
 	stats.file_size_bytes += file_size_bytes;

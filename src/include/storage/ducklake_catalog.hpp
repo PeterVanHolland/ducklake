@@ -442,9 +442,9 @@ public:
 	idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version, DuckLakeTransaction &transaction);
 	optional_ptr<DuckLakeTableEntry> GetTableAtSchemaVersion(DuckLakeTransaction &transaction, TableIndex table_id,
 	                                                         idx_t schema_version);
-	//! Load the given tables of a schema version ahead of their lookups, together or as part of the whole version
-	void LoadTablesAtSchemaVersion(DuckLakeTransaction &transaction, idx_t schema_version,
-	                               const vector<TableIndex> &table_ids);
+	//! Load the given tables of schema versions ahead of their lookups, together or as part of the whole version
+	void LoadTablesAtSchemaVersions(DuckLakeTransaction &transaction,
+	                                const unordered_map<idx_t, vector<TableIndex>> &version_tables);
 
 	static unique_ptr<DuckLakeStats> ConstructStatsMap(vector<DuckLakeGlobalStatsInfo> &global_stats,
 	                                                   DuckLakeCatalogSet &schema);
@@ -520,6 +520,8 @@ private:
 	string NetRowCountCacheKey(TableIndex table_id) const;
 	string SchemaCacheKey(idx_t schema_version) const;
 	string TableCacheKey(idx_t schema_version, const vector<TableIndex> &table_ids) const;
+	//! Count the tables each schema version created or altered in one query, for the versions not counted yet
+	void LoadSchemaVersionTableCounts(DuckLakeTransaction &transaction, const vector<DuckLakeSnapshot> &snapshots);
 	//! The number of tables the schema version created or altered, cached per version
 	idx_t GetSchemaVersionTableCount(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
 	//! Whether the schema version loads whole for a lookup of this many of its tables, or those tables alone

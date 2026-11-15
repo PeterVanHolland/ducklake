@@ -480,9 +480,7 @@ static unique_ptr<LogicalOperator> FlushInlinedDataBind(ClientContext &context, 
 		}
 		flush_tables.emplace_back(table_entry, std::move(inlined_tables));
 	}
-	for (auto &version : version_tables) {
-		ducklake_catalog.LoadTablesAtSchemaVersion(transaction, version.first, version.second);
-	}
+	ducklake_catalog.LoadTablesAtSchemaVersions(transaction, version_tables);
 	vector<unique_ptr<LogicalOperator>> flushes;
 	for (auto &flush_table : flush_tables) {
 		auto &table_entry = flush_table.first.get();

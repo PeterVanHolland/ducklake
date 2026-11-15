@@ -1012,20 +1012,23 @@ WHERE table_id = {TABLE_ID} AND schema_version = {SCHEMA_VERSION})";
 	return GetBeginSnapshotForTable(table_id);
 }
 
-idx_t DuckLakeMetadataManager::GetSchemaVersionTableCount(idx_t schema_version, idx_t begin_snapshot) {
+map<idx_t, idx_t> DuckLakeMetadataManager::GetSchemaVersionTableCounts(const vector<idx_t> &begin_snapshots) {
 	// a created table has a row in both tables, so the tables are counted once
+	auto snapshot_list =
+	    StringUtil::Join(begin_snapshots, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); });
 	auto result = Query(StringUtil::Format(R"(
-SELECT COUNT(DISTINCT table_id) FROM (
-	SELECT table_id FROM {METADATA_CATALOG}.ducklake_table WHERE begin_snapshot = %llu
+SELECT begin_snapshot, COUNT(DISTINCT table_id) FROM (
+	SELECT begin_snapshot, table_id FROM {METADATA_CATALOG}.ducklake_table WHERE begin_snapshot IN (%s)
 	UNION ALL
-	SELECT table_id FROM {METADATA_CATALOG}.ducklake_schema_versions WHERE schema_version = %llu
-);)",
-	                                       begin_snapshot, schema_version));
-	result->ThrowIfError("Failed to count the tables of a schema version in DuckLake: ");
+	SELECT begin_snapshot, table_id FROM {METADATA_CATALOG}.ducklake_schema_versions WHERE begin_snapshot IN (%s)
+) changed_tables GROUP BY begin_snapshot;)",
+	                                       snapshot_list, snapshot_list));
+	result->ThrowIfError("Failed to count the tables of schema versions in DuckLake: ");
+	map<idx_t, idx_t> table_counts;
 	for (auto &row : *result) {
-		return row.GetValue<idx_t>(0);
+		table_counts[row.GetValue<idx_t>(0)] = row.GetValue<idx_t>(1);
 	}
-	return 0;
+	return table_counts;
 }
 
 string DuckLakeMetadataManager::GetNetDataFileRowCountSql(TableIndex table_id, const Identifier &inlined_deletion_table,

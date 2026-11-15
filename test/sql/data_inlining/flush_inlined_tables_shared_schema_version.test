@@ -114,6 +114,12 @@ WHERE query LIKE '%ducklake_table tbl%'
 ----
 3	2
 
+# every version is counted once, at the first call that loads it
+query I
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%COUNT(DISTINCT table_id)%'
+----
+3
+
 statement ok
 CALL disable_logging()
 

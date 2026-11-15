@@ -117,6 +117,12 @@ WHERE query LIKE '%ducklake_table tbl%'
 ----
 1	8	2
 
+# the table counts of the eight old schema versions come from one query
+query I
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%COUNT(DISTINCT table_id)%'
+----
+1
+
 statement ok
 CALL disable_logging()
 

@@ -640,6 +640,11 @@ void DuckLakeCatalog::LoadTablesAtSchemaVersion(DuckLakeTransaction &transaction
 	}
 	for (auto &group : missing_tables) {
 		DuckLakeSnapshot snapshot(group.first, schema_version, 0, 0);
+		if (LoadsVersionWhole(transaction, snapshot, group.second.size())) {
+			// the other tables of the version are then cached for the later lookups of the transaction
+			transaction.PinSchemaCacheEntry(GetSchemaCacheEntry(transaction, snapshot));
+			return;
+		}
 		transaction.PinSchemaCacheEntry(LoadTablesCacheEntry(transaction, snapshot, group.second));
 	}
 }
@@ -1758,20 +1763,26 @@ string DuckLakeCatalog::TableCacheKey(idx_t schema_version, const vector<TableIn
 	return StringUtil::Format("%s:tables:%llu-%llu-%llx", SchemaCacheKey(schema_version), ids[0], ids.size(), hash);
 }
 
-bool DuckLakeCatalog::LoadsVersionWhole(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
+idx_t DuckLakeCatalog::GetSchemaVersionTableCount(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
 	{
 		lock_guard<mutex> guard(cache_entries_lock);
-		auto entry = whole_version_loads.find(snapshot.schema_version);
-		if (entry != whole_version_loads.end()) {
+		auto entry = version_table_counts.find(snapshot.schema_version);
+		if (entry != version_table_counts.end()) {
 			return entry->second;
 		}
 	}
 	auto &metadata_manager = transaction.GetMetadataManager();
 	auto table_count = metadata_manager.GetSchemaVersionTableCount(snapshot.schema_version, snapshot.snapshot_id);
-	bool whole = table_count >= WHOLE_VERSION_TABLE_COUNT;
 	lock_guard<mutex> guard(cache_entries_lock);
-	whole_version_loads[snapshot.schema_version] = whole;
-	return whole;
+	version_table_counts[snapshot.schema_version] = table_count;
+	return table_count;
+}
+
+bool DuckLakeCatalog::LoadsVersionWhole(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
+                                        idx_t table_count) {
+	// a version of several tables loads whole, unless every table it created or altered is requested together
+	auto version_table_count = GetSchemaVersionTableCount(transaction, snapshot);
+	return version_table_count >= WHOLE_VERSION_TABLE_COUNT && table_count < version_table_count;
 }
 
 void DuckLakeCatalog::InvalidateTableStatsCache(idx_t next_file_id, TableIndex table_id) {
@@ -1800,7 +1811,7 @@ void DuckLakeCatalog::InvalidateSchemaCache(idx_t schema_version) {
 	cache.Delete(SchemaCacheKey(schema_version));
 	// the tables of the version loaded alone or in groups go with it
 	lock_guard<mutex> guard(cache_entries_lock);
-	whole_version_loads.erase(schema_version);
+	version_table_counts.erase(schema_version);
 	auto keys = table_cache_keys.find(schema_version);
 	if (keys == table_cache_keys.end()) {
 		return;
@@ -1885,7 +1896,7 @@ void DuckLakeCatalog::EvictCacheEntries() {
 	cache_entries.clear();
 	stats_cache_entries.clear();
 	table_cache_keys.clear();
-	whole_version_loads.clear();
+	version_table_counts.clear();
 }
 
 void DuckLakeCatalog::RegisterCatalog() {

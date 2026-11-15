@@ -442,7 +442,7 @@ public:
 	idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version, DuckLakeTransaction &transaction);
 	optional_ptr<DuckLakeTableEntry> GetTableAtSchemaVersion(DuckLakeTransaction &transaction, TableIndex table_id,
 	                                                         idx_t schema_version);
-	//! Load the given tables of a schema version together, so that their lookups do not load them one at a time
+	//! Load the given tables of a schema version together, or whole when the version has more tables than these
 	void LoadTablesAtSchemaVersion(DuckLakeTransaction &transaction, idx_t schema_version,
 	                               const vector<TableIndex> &table_ids);
 
@@ -520,8 +520,10 @@ private:
 	string NetRowCountCacheKey(TableIndex table_id) const;
 	string SchemaCacheKey(idx_t schema_version) const;
 	string TableCacheKey(idx_t schema_version, const vector<TableIndex> &table_ids) const;
-	//! Whether the schema version loads whole, as it created or altered several tables, or one table at a time
-	bool LoadsVersionWhole(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
+	//! The number of tables the schema version created or altered, counted once per version
+	idx_t GetSchemaVersionTableCount(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
+	//! Whether the schema version loads whole for a lookup of this many of its tables, or those tables alone
+	bool LoadsVersionWhole(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot, idx_t table_count = 1);
 	ObjectCache &GetObjectCacheInstance();
 	//! A table stats entry this DuckLake put in the object cache, kept without its key as there is one per table
 	struct TrackedStatsEntry {
@@ -576,8 +578,8 @@ private:
 	unordered_map<string, weak_ptr<ObjectCacheEntry>> cache_entries;
 	//! A schema version that created or altered this many tables loads whole instead of one table at a time
 	static constexpr idx_t WHOLE_VERSION_TABLE_COUNT = 4;
-	//! Whether a schema version loads whole, decided once per version
-	unordered_map<idx_t, bool> whole_version_loads;
+	//! The number of tables each schema version created or altered, counted once per version
+	unordered_map<idx_t, idx_t> version_table_counts;
 	//! The cache keys of the tables loaded alone or in a group per schema version
 	unordered_map<idx_t, unordered_set<string>> table_cache_keys;
 	vector<TrackedStatsEntry> stats_cache_entries;

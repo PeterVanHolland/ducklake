@@ -1012,17 +1012,22 @@ WHERE table_id = {TABLE_ID} AND schema_version = {SCHEMA_VERSION})";
 	return GetBeginSnapshotForTable(table_id);
 }
 
-map<idx_t, idx_t> DuckLakeMetadataManager::GetSchemaVersionTableCounts(const vector<idx_t> &begin_snapshots) {
+map<idx_t, idx_t> DuckLakeMetadataManager::GetSchemaVersionTableCounts(const vector<DuckLakeSnapshot> &snapshots) {
 	// a created table has a row in both tables, so the tables are counted once
-	auto snapshot_list =
-	    StringUtil::Join(begin_snapshots, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); });
+	auto version_snapshots = StringUtil::Join(snapshots, ", ", [](const DuckLakeSnapshot &snapshot) {
+		return StringUtil::Format("(%llu, %llu)", snapshot.snapshot_id, snapshot.schema_version);
+	});
+	auto schema_versions = StringUtil::Join(
+	    snapshots, ", ", [](const DuckLakeSnapshot &snapshot) { return to_string(snapshot.schema_version); });
 	auto result = Query(StringUtil::Format(R"(
-SELECT begin_snapshot, COUNT(DISTINCT table_id) FROM (
-	SELECT begin_snapshot, table_id FROM {METADATA_CATALOG}.ducklake_table WHERE begin_snapshot IN (%s)
+SELECT schema_version, COUNT(DISTINCT table_id) FROM (
+	SELECT versions.schema_version, tbl.table_id
+	FROM {METADATA_CATALOG}.ducklake_table tbl
+	JOIN (VALUES %s) versions(begin_snapshot, schema_version) USING (begin_snapshot)
 	UNION ALL
-	SELECT begin_snapshot, table_id FROM {METADATA_CATALOG}.ducklake_schema_versions WHERE begin_snapshot IN (%s)
-) changed_tables GROUP BY begin_snapshot;)",
-	                                       snapshot_list, snapshot_list));
+	SELECT schema_version, table_id FROM {METADATA_CATALOG}.ducklake_schema_versions WHERE schema_version IN (%s)
+) changed_tables GROUP BY schema_version;)",
+	                                       version_snapshots, schema_versions));
 	result->ThrowIfError("Failed to count the tables of schema versions in DuckLake: ");
 	map<idx_t, idx_t> table_counts;
 	for (auto &row : *result) {

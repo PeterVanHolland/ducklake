@@ -444,8 +444,8 @@ public:
 	                                                                  DuckLakeFileSizeOptions options);
 	virtual idx_t GetBeginSnapshotForTable(TableIndex table_id);
 	virtual idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version);
-	//! The number of tables created or altered at each of the given snapshots, at which a schema version began
-	virtual map<idx_t, idx_t> GetSchemaVersionTableCounts(const vector<idx_t> &begin_snapshots);
+	//! The number of tables each of the schema versions created or altered, given the snapshot at which each began
+	virtual map<idx_t, idx_t> GetSchemaVersionTableCounts(const vector<DuckLakeSnapshot> &snapshots);
 	virtual DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! The net row count of the data files that were committed before the snapshot's next file id
 	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);

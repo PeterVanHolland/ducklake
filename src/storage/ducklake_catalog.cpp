@@ -1789,15 +1789,11 @@ void DuckLakeCatalog::LoadSchemaVersionTableCounts(DuckLakeTransaction &transact
 	if (uncounted.empty()) {
 		return;
 	}
-	vector<idx_t> begin_snapshots;
-	for (auto &snapshot : uncounted) {
-		begin_snapshots.push_back(snapshot.snapshot_id);
-	}
-	auto table_counts = transaction.GetMetadataManager().GetSchemaVersionTableCounts(begin_snapshots);
+	auto table_counts = transaction.GetMetadataManager().GetSchemaVersionTableCounts(uncounted);
 	lock_guard<mutex> guard(cache_entries_lock);
 	for (auto &snapshot : uncounted) {
 		// a version absent from the result created or altered no table
-		auto entry = table_counts.find(snapshot.snapshot_id);
+		auto entry = table_counts.find(snapshot.schema_version);
 		version_table_counts[snapshot.schema_version] = entry == table_counts.end() ? 0 : entry->second;
 	}
 }

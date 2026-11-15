@@ -1021,8 +1021,8 @@ map<idx_t, idx_t> DuckLakeMetadataManager::GetSchemaVersionTableCounts(const vec
 	    snapshots, ", ", [](const DuckLakeSnapshot &snapshot) { return to_string(snapshot.schema_version); });
 	auto result = Query(StringUtil::Format(R"(
 SELECT schema_version, COUNT(DISTINCT table_id) FROM (
-	SELECT versions.schema_version, tbl.table_id
-	FROM {METADATA_CATALOG}.ducklake_table tbl
+	SELECT versions.schema_version, created.table_id
+	FROM {METADATA_CATALOG}.ducklake_table created
 	JOIN (VALUES %s) versions(begin_snapshot, schema_version) USING (begin_snapshot)
 	UNION ALL
 	SELECT schema_version, table_id FROM {METADATA_CATALOG}.ducklake_schema_versions WHERE schema_version IN (%s)

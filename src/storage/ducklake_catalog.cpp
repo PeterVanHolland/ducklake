@@ -563,8 +563,9 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
 	if (!entry) {
 		DuckLakeSnapshot snapshot(GetBeginSnapshotForSchemaVersion(table_id, schema_version, transaction),
 		                          schema_version, 0, 0);
-		entry = LoadsVersionWhole(transaction, snapshot) ? GetSchemaCacheEntry(transaction, snapshot)
-		                                                 : LoadTablesCacheEntry(transaction, snapshot, {table_id});
+		entry = LoadsVersionWhole(GetSchemaVersionTableCount(transaction, snapshot))
+		            ? GetSchemaCacheEntry(transaction, snapshot)
+		            : LoadTablesCacheEntry(transaction, snapshot, {table_id});
 	}
 	auto &catalog_set = entry->catalog_set;
 	transaction.PinSchemaCacheEntry(std::move(entry));
@@ -642,16 +643,15 @@ void DuckLakeCatalog::LoadTablesAtSchemaVersions(DuckLakeTransaction &transactio
 			missing_tables[version.first][begin_snapshot].push_back(table_id);
 		}
 	}
-	// one query counts the tables of every version that has to be loaded
 	vector<DuckLakeSnapshot> snapshots;
 	for (auto &version : missing_tables) {
 		snapshots.emplace_back(version.second.begin()->first, version.first, 0, 0);
 	}
-	LoadSchemaVersionTableCounts(transaction, snapshots);
+	auto table_counts = GetSchemaVersionTableCounts(transaction, snapshots);
 	for (auto &version : missing_tables) {
 		for (auto &group : version.second) {
 			DuckLakeSnapshot snapshot(group.first, version.first, 0, 0);
-			if (LoadsVersionWhole(transaction, snapshot, group.second.size())) {
+			if (LoadsVersionWhole(table_counts[version.first], group.second.size())) {
 				// the other tables of the version are then cached for the later lookups of the transaction
 				transaction.PinSchemaCacheEntry(GetSchemaCacheEntry(transaction, snapshot));
 				break;
@@ -1775,40 +1775,42 @@ string DuckLakeCatalog::TableCacheKey(idx_t schema_version, const vector<TableIn
 	return StringUtil::Format("%s:tables:%llu-%llu-%llx", SchemaCacheKey(schema_version), ids[0], ids.size(), hash);
 }
 
-void DuckLakeCatalog::LoadSchemaVersionTableCounts(DuckLakeTransaction &transaction,
-                                                   const vector<DuckLakeSnapshot> &snapshots) {
+map<idx_t, idx_t> DuckLakeCatalog::GetSchemaVersionTableCounts(DuckLakeTransaction &transaction,
+                                                               const vector<DuckLakeSnapshot> &snapshots) {
+	map<idx_t, idx_t> table_counts;
 	vector<DuckLakeSnapshot> uncounted;
 	{
 		lock_guard<mutex> guard(cache_entries_lock);
 		for (auto &snapshot : snapshots) {
-			if (!version_table_counts.count(snapshot.schema_version)) {
+			auto entry = version_table_counts.find(snapshot.schema_version);
+			if (entry == version_table_counts.end()) {
 				uncounted.push_back(snapshot);
+			} else {
+				table_counts[snapshot.schema_version] = entry->second;
 			}
 		}
 	}
 	if (uncounted.empty()) {
-		return;
+		return table_counts;
 	}
-	auto table_counts = transaction.GetMetadataManager().GetSchemaVersionTableCounts(uncounted);
+	auto counted = transaction.GetMetadataManager().GetSchemaVersionTableCounts(uncounted);
 	lock_guard<mutex> guard(cache_entries_lock);
 	for (auto &snapshot : uncounted) {
 		// a version absent from the result created or altered no table
-		auto entry = table_counts.find(snapshot.schema_version);
-		version_table_counts[snapshot.schema_version] = entry == table_counts.end() ? 0 : entry->second;
+		auto entry = counted.find(snapshot.schema_version);
+		idx_t table_count = entry == counted.end() ? 0 : entry->second;
+		version_table_counts[snapshot.schema_version] = table_count;
+		table_counts[snapshot.schema_version] = table_count;
 	}
+	return table_counts;
 }
 
 idx_t DuckLakeCatalog::GetSchemaVersionTableCount(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
-	LoadSchemaVersionTableCounts(transaction, {snapshot});
-	lock_guard<mutex> guard(cache_entries_lock);
-	auto entry = version_table_counts.find(snapshot.schema_version);
-	return entry == version_table_counts.end() ? 0 : entry->second;
+	return GetSchemaVersionTableCounts(transaction, {snapshot})[snapshot.schema_version];
 }
 
-bool DuckLakeCatalog::LoadsVersionWhole(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
-                                        idx_t table_count) {
+bool DuckLakeCatalog::LoadsVersionWhole(idx_t version_table_count, idx_t table_count) {
 	// a version of several tables loads whole, unless every table it created or altered is requested together
-	auto version_table_count = GetSchemaVersionTableCount(transaction, snapshot);
 	return version_table_count >= WHOLE_VERSION_TABLE_COUNT && table_count < version_table_count;
 }
 

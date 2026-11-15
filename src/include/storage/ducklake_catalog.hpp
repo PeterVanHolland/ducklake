@@ -520,12 +520,13 @@ private:
 	string NetRowCountCacheKey(TableIndex table_id) const;
 	string SchemaCacheKey(idx_t schema_version) const;
 	string TableCacheKey(idx_t schema_version, const vector<TableIndex> &table_ids) const;
-	//! Count the tables each schema version created or altered in one query, for the versions not counted yet
-	void LoadSchemaVersionTableCounts(DuckLakeTransaction &transaction, const vector<DuckLakeSnapshot> &snapshots);
-	//! The number of tables the schema version created or altered, cached per version
+	//! The number of tables each schema version created or altered, counted in one query and cached per version
+	map<idx_t, idx_t> GetSchemaVersionTableCounts(DuckLakeTransaction &transaction,
+	                                              const vector<DuckLakeSnapshot> &snapshots);
+	//! The number of tables the schema version created or altered
 	idx_t GetSchemaVersionTableCount(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
-	//! Whether the schema version loads whole for a lookup of this many of its tables, or those tables alone
-	bool LoadsVersionWhole(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot, idx_t table_count = 1);
+	//! Whether a version that created or altered this many tables loads whole for a lookup of this many of them
+	static bool LoadsVersionWhole(idx_t version_table_count, idx_t table_count = 1);
 	ObjectCache &GetObjectCacheInstance();
 	//! A table stats entry this DuckLake put in the object cache, kept without its key as there is one per table
 	struct TrackedStatsEntry {

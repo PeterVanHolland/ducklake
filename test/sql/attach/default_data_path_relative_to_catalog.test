@@ -70,6 +70,21 @@ SELECT sum(i) FROM lake.t
 statement ok
 DETACH lake
 
+# another spelling of the stored directory is accepted and the session uses the stored one, so files stay relative
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/relative_lake.ducklake' AS lake (DATA_PATH '{TEST_DIR}/./relative_lake.ducklake.files/', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+INSERT INTO lake.t VALUES (1000)
+
+query II
+SELECT count(*) > 1, count(*) FILTER (WHERE NOT path_is_relative) FROM __ducklake_metadata_lake.ducklake_data_file
+----
+true	0
+
+statement ok
+DETACH lake
+
 # another data path is still refused without OVERRIDE_DATA_PATH
 statement error
 ATTACH 'ducklake:{TEST_DIR}/relative_lake.ducklake' AS lake (DATA_PATH '{TEST_DIR}/elsewhere/')

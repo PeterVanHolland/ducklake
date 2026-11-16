@@ -458,12 +458,16 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				if (!options.override_data_path && !is_rest) {
 					auto given_path = metadata_manager.StorePath(options.data_path);
 					auto resolved_path = ResolvedDataPath(transaction, metadata_manager.LoadPath(tag.value));
-					if (given_path != tag.value && given_path != metadata_manager.StorePath(resolved_path) &&
-					    !SameLocalPath(FileSystem::GetFileSystem(context), options.data_path, resolved_path)) {
-						throw InvalidConfigurationException(
-						    "DATA_PATH parameter \"%s\" does not match existing data path in the catalog \"%s\".\nYou "
-						    "can override the DATA_PATH by setting OVERRIDE_DATA_PATH to True.",
-						    options.data_path, tag.value);
+					if (given_path != tag.value && given_path != metadata_manager.StorePath(resolved_path)) {
+						if (!SameLocalPath(FileSystem::GetFileSystem(context), options.data_path, resolved_path)) {
+							throw InvalidConfigurationException(
+							    "DATA_PATH parameter \"%s\" does not match existing data path in the catalog "
+							    "\"%s\".\nYou "
+							    "can override the DATA_PATH by setting OVERRIDE_DATA_PATH to True.",
+							    options.data_path, tag.value);
+						}
+						// another spelling of the stored directory, the session uses the stored one
+						options.data_path = std::move(resolved_path);
 					}
 				}
 			}

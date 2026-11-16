@@ -192,6 +192,10 @@ public:
 	const string &DataPath() const {
 		return options.data_path;
 	}
+	//! The data path as the catalog stores it: relative to the catalog file for a DuckDB file catalog
+	const string &StoredDataPath() const {
+		return options.stored_data_path.empty() ? options.data_path : options.stored_data_path;
+	}
 	const case_insensitive_map_t<Value> &MetadataParameters() const {
 		return options.metadata_parameters;
 	}

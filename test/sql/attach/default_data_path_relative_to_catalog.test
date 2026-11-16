@@ -1,0 +1,115 @@
+# name: test/sql/attach/default_data_path_relative_to_catalog.test
+# description: A DuckDB file catalog stores its default data path relative to the catalog file and resolves a relative data path against the catalog's directory
+# group: [attach]
+
+require ducklake
+
+require parquet
+
+# the default data path of a new lake is stored relative to the catalog file
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/relative_lake.ducklake' AS lake (DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t AS SELECT range AS i FROM range(10)
+
+query I
+SELECT value FROM __ducklake_metadata_lake.ducklake_metadata WHERE key = 'data_path'
+----
+relative_lake.ducklake.files/
+
+# the session works with the resolved path next to the catalog file
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/relative_lake.ducklake.files/main/t/*.parquet')
+----
+1
+
+query I
+SELECT sum(i) FROM lake.t
+----
+45
+
+statement ok
+DETACH lake
+
+# a plain attach resolves the stored relative path against the catalog's directory
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/relative_lake.ducklake' AS lake
+
+query I
+SELECT sum(i) FROM lake.t
+----
+45
+
+statement ok
+INSERT INTO lake.t VALUES (100)
+
+query I
+SELECT sum(i) FROM lake.t
+----
+145
+
+statement ok
+DETACH lake
+
+# the resolved path given as DATA_PATH matches the stored relative one
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/relative_lake.ducklake' AS lake (DATA_PATH '{TEST_DIR}/relative_lake.ducklake.files/')
+
+query I
+SELECT sum(i) FROM lake.t
+----
+145
+
+statement ok
+DETACH lake
+
+# another data path is still refused without OVERRIDE_DATA_PATH
+statement error
+ATTACH 'ducklake:{TEST_DIR}/relative_lake.ducklake' AS lake (DATA_PATH '{TEST_DIR}/elsewhere/')
+----
+does not match existing data path in the catalog "relative_lake.ducklake.files/"
+
+# an explicit relative DATA_PATH is stored as written and lies next to the catalog file, not in the working directory
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/relative_lake2.ducklake' AS lake2 (DATA_PATH 'lake2_files/', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake2.t AS SELECT range AS i FROM range(10)
+
+query I
+SELECT value FROM __ducklake_metadata_lake2.ducklake_metadata WHERE key = 'data_path'
+----
+lake2_files/
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/lake2_files/main/t/*.parquet')
+----
+1
+
+statement ok
+DETACH lake2
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/relative_lake2.ducklake' AS lake2
+
+query I
+SELECT sum(i) FROM lake2.t
+----
+45
+
+# a lake created before stored its relative data path against the working directory, where it is still found
+unzip data/old_ducklake/migrate_bounds.db.gz {TEST_DIR}/legacy_working_directory.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/legacy_working_directory.db' AS legacy (METADATA_CATALOG 'legacy_meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT value FROM legacy_meta.ducklake_metadata WHERE key = 'data_path'
+----
+data/old_ducklake/migrate_bounds/
+
+query I
+SELECT count(*) FROM legacy.dbl2 WHERE f = 0.1
+----
+1

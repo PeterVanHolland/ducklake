@@ -292,7 +292,7 @@ void DuckLakeMetadataManager::InitializeDuckLake(bool has_explicit_schema, DuckL
 
 	// insert initial data
 	auto &ducklake_catalog = transaction.GetCatalog();
-	auto &base_data_path = ducklake_catalog.DataPath();
+	auto &base_data_path = ducklake_catalog.StoredDataPath();
 	string data_path = StorePath(base_data_path);
 	string encryption_str = DuckLakeUtil::BoolLiteral(encryption == DuckLakeEncryption::ENCRYPTED);
 	string initial_schema_uuid = transaction.GenerateUUID();

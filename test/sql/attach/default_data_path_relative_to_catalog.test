@@ -120,6 +120,18 @@ SELECT count(*) FROM legacy.dbl2 WHERE f = 0.1
 ----
 1
 
+statement ok
+DETACH legacy
+
+# a DATA_PATH that names the stored directory in another spelling is accepted
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/legacy_working_directory.db' AS legacy (DATA_PATH './data/old_ducklake/migrate_bounds/', METADATA_CATALOG 'legacy_meta2', DUCKLAKE_VERSION '1.1')
+
+query I
+SELECT count(*) FROM legacy.dbl2 WHERE f = 0.1
+----
+1
+
 # a stored relative path that exists nowhere resolves next to the catalog file, not in the working directory
 unzip data/old_ducklake/dropped_in_transaction.db.gz {TEST_DIR}/legacy_missing_directory.db
 

@@ -254,6 +254,18 @@ static bool IsRelativeLocalPath(FileSystem &fs, const string &path) {
 	return !fs.IsPathAbsolute(path);
 }
 
+//! Whether two paths name the same directory, one of them possibly relative to the working directory
+static bool SameLocalPath(FileSystem &fs, const string &a, const string &b) {
+	if (HasPathScheme(a) || HasPathScheme(b)) {
+		return false;
+	}
+	try {
+		return fs.CanonicalizePath(a) == fs.CanonicalizePath(b);
+	} catch (std::exception &) {
+		return false;
+	}
+}
+
 string DuckLakeInitializer::CatalogDirectory(DuckLakeTransaction &transaction) {
 	if (catalog.MetadataType() == "rest") {
 		return string();
@@ -445,9 +457,9 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				// where it resolves to
 				if (!options.override_data_path && !is_rest) {
 					auto given_path = metadata_manager.StorePath(options.data_path);
-					if (given_path != tag.value &&
-					    given_path != metadata_manager.StorePath(
-					                      ResolvedDataPath(transaction, metadata_manager.LoadPath(tag.value)))) {
+					auto resolved_path = ResolvedDataPath(transaction, metadata_manager.LoadPath(tag.value));
+					if (given_path != tag.value && given_path != metadata_manager.StorePath(resolved_path) &&
+					    !SameLocalPath(FileSystem::GetFileSystem(context), options.data_path, resolved_path)) {
 						throw InvalidConfigurationException(
 						    "DATA_PATH parameter \"%s\" does not match existing data path in the catalog \"%s\".\nYou "
 						    "can override the DATA_PATH by setting OVERRIDE_DATA_PATH to True.",

@@ -24,6 +24,12 @@ SELECT count(*) FROM glob('{TEST_DIR}/relative_lake.ducklake.files/main/t/*.parq
 ----
 1
 
+# every path below the data path is relative as well, so the lake can be moved as a whole
+query III
+SELECT (SELECT path FROM __ducklake_metadata_lake.ducklake_schema), (SELECT path FROM __ducklake_metadata_lake.ducklake_table), (SELECT path_is_relative FROM __ducklake_metadata_lake.ducklake_data_file)
+----
+main/	t/	true
+
 query I
 SELECT sum(i) FROM lake.t
 ----

@@ -333,9 +333,10 @@ void DuckLakeInitializer::InitializeNewDuckLake(DuckLakeTransaction &transaction
 		auto directory = CatalogDirectory(transaction);
 		if (!directory.empty()) {
 			// stored relative to the catalog file, so that the lake can be moved as a whole
-			auto name = path.substr(directory.size());
-			// a leading "~" would be read as the home directory
-			options.stored_data_path = (StringUtil::StartsWith(name, "~") ? "./" : "") + name + ".files/";
+			auto name = path.substr(directory.size()) + ".files/";
+			// a "./" prefix for a name the file system would not read as a relative path, such as a leading "~"
+			options.stored_data_path =
+			    IsRelativeLocalPath(FileSystem::GetFileSystem(context), name) ? name : "./" + name;
 		}
 		InitializeDataPath();
 	}

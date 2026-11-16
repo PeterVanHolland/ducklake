@@ -236,9 +236,13 @@ void DuckLakeInitializer::InitializeDataPath() {
 	catalog.Separator() = separator;
 }
 
+static bool HasPathScheme(const string &path) {
+	return path.find("://") != string::npos || StringUtil::StartsWith(path, "file:");
+}
+
 //! Whether the file system would resolve the path against the working directory
 static bool IsRelativeLocalPath(FileSystem &fs, const string &path) {
-	if (path.empty() || path.find("://") != string::npos || StringUtil::StartsWith(path, "file:")) {
+	if (path.empty() || HasPathScheme(path) || StringUtil::StartsWith(path, "~")) {
 		return false;
 	}
 	return !fs.IsPathAbsolute(path);
@@ -257,6 +261,10 @@ string DuckLakeInitializer::CatalogDirectory(DuckLakeTransaction &transaction) {
 		return string();
 	}
 	auto path = storage.GetDBPath();
+	// a catalog file on remote storage keeps its paths as they are
+	if (HasPathScheme(path)) {
+		return string();
+	}
 	auto &fs = FileSystem::GetFileSystem(context);
 	return path.substr(0, path.size() - fs.ExtractName(path).size());
 }
@@ -272,7 +280,7 @@ string DuckLakeInitializer::ResolvedDataPath(DuckLakeTransaction &transaction, c
 	}
 	auto resolved = directory + data_path;
 	// a lake created before stored the path relative to the working directory, where it is kept when only that exists
-	if (!FileSystem::IsRemoteFile(directory) && !fs.DirectoryExists(resolved) && fs.DirectoryExists(data_path)) {
+	if (!fs.DirectoryExists(resolved) && fs.DirectoryExists(data_path)) {
 		return data_path;
 	}
 	return resolved;
@@ -287,8 +295,6 @@ void DuckLakeInitializer::ResolveRelativeDataPath(DuckLakeTransaction &transacti
 		options.stored_data_path = options.data_path;
 	}
 	options.data_path = std::move(resolved);
-	// the separator of the resolved path, which is remote when the catalog file is
-	InitializeDataPath();
 }
 
 void DuckLakeInitializer::InitializeNewDuckLake(DuckLakeTransaction &transaction, bool has_explicit_schema) {
@@ -319,6 +325,10 @@ void DuckLakeInitializer::InitializeNewDuckLake(DuckLakeTransaction &transaction
 			options.stored_data_path = path.substr(directory.size()) + ".files/";
 		}
 		InitializeDataPath();
+	}
+	if (!options.stored_data_path.empty()) {
+		// the directory next to the catalog file marks where the stored relative path resolves to from now on
+		DuckLakeUtil::EnsureDirectoryExists(FileSystem::GetFileSystem(context), options.data_path);
 	}
 	SetVersionedMetadataManager(transaction, version);
 	auto &metadata_manager = transaction.GetMetadataManager();
@@ -417,11 +427,12 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				if (is_rest && options.data_path != metadata_manager.LoadPath(tag.value)) {
 					catalog.GetRESTClient().SetPathMapping(options.data_path, metadata_manager.LoadPath(tag.value));
 				}
-				// verify that they match if override_data_path is not set to true, a stored relative path by where
-				// it resolves to
-				if (metadata_manager.StorePath(options.data_path) != tag.value &&
-				    ResolvedDataPath(transaction, metadata_manager.LoadPath(tag.value)) != options.data_path &&
-				    !options.override_data_path && !is_rest) {
+				// verify that they match if override_data_path is not set to true, a stored relative path also by
+				// where it resolves to
+				auto given_path = metadata_manager.StorePath(options.data_path);
+				auto resolved_path =
+				    metadata_manager.StorePath(ResolvedDataPath(transaction, metadata_manager.LoadPath(tag.value)));
+				if (given_path != tag.value && given_path != resolved_path && !options.override_data_path && !is_rest) {
 					throw InvalidConfigurationException(
 					    "DATA_PATH parameter \"%s\" does not match existing data path in the catalog \"%s\".\nYou can "
 					    "override the DATA_PATH by setting OVERRIDE_DATA_PATH to True.",

@@ -113,3 +113,19 @@ query I
 SELECT count(*) FROM legacy.dbl2 WHERE f = 0.1
 ----
 1
+
+# a stored relative path that exists nowhere resolves next to the catalog file, not in the working directory
+unzip data/old_ducklake/dropped_in_transaction.db.gz {TEST_DIR}/legacy_missing_directory.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/legacy_missing_directory.db' AS legacy2 (DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT value FROM __ducklake_metadata_legacy2.ducklake_metadata WHERE key = 'data_path'
+----
+lake_files/
+
+statement error
+SELECT * FROM legacy2.t
+----
+<REGEX>:.*Cannot open file.*[/\\]lake_files[/\\]main[/\\]t[/\\].*

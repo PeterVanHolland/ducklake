@@ -3,6 +3,7 @@
 #include "duckdb/common/thread.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/path.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
@@ -283,13 +284,8 @@ string DuckLakeInitializer::ResolvedDataPath(DuckLakeTransaction &transaction, c
 	if (directory.empty()) {
 		return data_path;
 	}
-	// the file system reports written files without the "." segments of their directory
-	auto relative_path = data_path;
-	while (StringUtil::StartsWith(relative_path, "./") || StringUtil::StartsWith(relative_path, ".\\")) {
-		relative_path = relative_path.substr(2);
-	}
-	relative_path = StringUtil::Replace(StringUtil::Replace(relative_path, "/./", "/"), "\\.\\", "\\");
-	auto resolved = directory + relative_path;
+	// the file system reports written files under the normalized form of their directory
+	auto resolved = Path::FromString(directory + data_path).ToString();
 	// a lake created before stored the path relative to the working directory, where it is kept when only that exists
 	try {
 		if (!fs.DirectoryExists(resolved) && fs.DirectoryExists(data_path)) {
@@ -337,13 +333,15 @@ void DuckLakeInitializer::InitializeNewDuckLake(DuckLakeTransaction &transaction
 		auto directory = CatalogDirectory(transaction);
 		if (!directory.empty()) {
 			// stored relative to the catalog file, so that the lake can be moved as a whole
-			options.stored_data_path = path.substr(directory.size()) + ".files/";
+			auto name = path.substr(directory.size());
+			// a leading "~" would be read as the home directory
+			options.stored_data_path = (StringUtil::StartsWith(name, "~") ? "./" : "") + name + ".files/";
 		}
 		InitializeDataPath();
 	}
 	if (!options.stored_data_path.empty()) {
 		// the directory next to the catalog file marks where the stored relative path resolves to from now on
-		DuckLakeUtil::EnsureDirectoryExists(FileSystem::GetFileSystem(context), options.data_path);
+		FileSystem::GetFileSystem(context).CreateDirectoriesRecursive(options.data_path);
 	}
 	SetVersionedMetadataManager(transaction, version);
 	auto &metadata_manager = transaction.GetMetadataManager();

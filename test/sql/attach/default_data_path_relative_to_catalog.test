@@ -173,9 +173,10 @@ SELECT sum(i) FROM lake3.s1.t
 ----
 45
 
-# a "." segment of a relative DATA_PATH does not end up in the resolved path, so the file paths stay relative
+# "." and ".." segments and doubled separators of a relative DATA_PATH are left out of the resolved path, so the
+# file paths stay relative
 statement ok
-ATTACH 'ducklake:{TEST_DIR}/relative_lake5.ducklake' AS lake5 (DATA_PATH './lake5_files/', DATA_INLINING_ROW_LIMIT 0)
+ATTACH 'ducklake:{TEST_DIR}/relative_lake5.ducklake' AS lake5 (DATA_PATH './sub/..//lake5_files/', DATA_INLINING_ROW_LIMIT 0)
 
 statement ok
 CREATE TABLE lake5.t AS SELECT range AS i FROM range(10)
@@ -183,7 +184,7 @@ CREATE TABLE lake5.t AS SELECT range AS i FROM range(10)
 query I
 SELECT value FROM __ducklake_metadata_lake5.ducklake_metadata WHERE key = 'data_path'
 ----
-./lake5_files/
+./sub/..//lake5_files/
 
 query I
 SELECT path_is_relative FROM __ducklake_metadata_lake5.ducklake_data_file
@@ -203,5 +204,29 @@ ATTACH 'ducklake:{TEST_DIR}/relative_lake5.ducklake' AS lake5
 
 query I
 SELECT sum(i) FROM lake5.t
+----
+45
+
+# the default data path of a catalog file whose name starts with "~" gets a "./" prefix, the file system would read
+# a leading "~" as the home directory
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/~tilde_lake.ducklake' AS tilde (DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE tilde.t AS SELECT range AS i FROM range(10)
+
+query I
+SELECT value FROM __ducklake_metadata_tilde.ducklake_metadata WHERE key = 'data_path'
+----
+./~tilde_lake.ducklake.files/
+
+statement ok
+DETACH tilde
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/~tilde_lake.ducklake' AS tilde
+
+query I
+SELECT sum(i) FROM tilde.t
 ----
 45

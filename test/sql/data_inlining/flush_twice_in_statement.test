@@ -32,12 +32,15 @@ SELECT * FROM ducklake_flush_inlined_data('lake')
 ----
 main	t	100
 
-query IIII
-SELECT (SELECT count(*) FROM meta.ducklake_data_file WHERE end_snapshot IS NULL), (SELECT count(*) FROM lake.t),
-       count(*), count(DISTINCT i)
-FROM lake.t
+query I
+SELECT count(*) FROM meta.ducklake_data_file WHERE end_snapshot IS NULL
 ----
-1	100	100	100
+1
+
+query III
+SELECT (SELECT count(*) FROM lake.t), count(*), count(DISTINCT i) FROM lake.t
+----
+100	100	100
 
 # the lost flush of a table with deleted inlined rows removes its data file and its delete file
 statement ok
@@ -53,15 +56,23 @@ SELECT * FROM ducklake_flush_inlined_data('lake', table_name => 'u')
 ----
 main	u	100
 
-query III
-SELECT (SELECT count(*) FROM meta.ducklake_data_file WHERE end_snapshot IS NULL),
-       (SELECT count(*) FROM meta.ducklake_delete_file WHERE end_snapshot IS NULL), count(*)
-FROM lake.u
+query I
+SELECT count(*) FROM meta.ducklake_data_file WHERE end_snapshot IS NULL
 ----
-2	1	99
+2
 
 query I
-SELECT count(*) = (SELECT count(*) FROM meta.ducklake_data_file) + (SELECT count(*) FROM meta.ducklake_delete_file)
-FROM glob('{DATA_PATH}/flush_twice_in_statement/**')
+SELECT count(*) FROM meta.ducklake_delete_file WHERE end_snapshot IS NULL
 ----
-true
+1
+
+query II
+SELECT count(*), count(DISTINCT i) FROM lake.u
+----
+99	99
+
+# the two data files and the delete file are the only files on disk
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/flush_twice_in_statement/**')
+----
+3

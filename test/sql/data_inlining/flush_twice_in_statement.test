@@ -66,10 +66,10 @@ SELECT count(*) FROM meta.ducklake_delete_file WHERE end_snapshot IS NULL
 ----
 1
 
-query II
-SELECT count(*), count(DISTINCT i) FROM lake.u
+query III
+SELECT (SELECT count(*) FROM lake.u), count(*), count(DISTINCT i) FROM lake.u
 ----
-99	99
+99	99	99
 
 # the two data files and the delete file are the only files on disk
 query I

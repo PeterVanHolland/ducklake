@@ -149,9 +149,9 @@ SinkFinalizeType DuckLakeFlushData::Finalize(Pipeline &pipeline, Event &event, C
 
 	DuckLakeInsert::RemoveEmptyFiles(context, global_state);
 	bool wrote_files = !global_state.written_files.empty();
-	// Two flushes of one statement bind before either runs, so both scan the same rows: the first to finish here
-	// registers its files, the other removes what it wrote.
-	if (!transaction.TryMarkInlinedDataForDeletion(inlined_table, snapshot.snapshot_id, wrote_files)) {
+	// Two flushes of one statement bind before either runs, so both scan the same rows: the first to get here claims
+	// the inlined table and registers its files, the other removes what it wrote.
+	if (!transaction.TryClaimInlinedTableFlush(inlined_table.table_name)) {
 		RemoveWrittenFiles(context, global_state.written_files);
 		global_state.written_files.clear();
 		return SinkFinalizeType::READY;
@@ -197,6 +197,8 @@ SinkFinalizeType DuckLakeFlushData::Finalize(Pipeline &pipeline, Event &event, C
 	}
 
 	transaction.AppendFiles(global_state.table.GetTableId(), std::move(global_state.written_files));
+	// the flushed mark follows the registration, so a scan of the transaction sees the inlined rows or the files
+	transaction.MarkInlinedDataForDeletion(inlined_table, snapshot.snapshot_id, wrote_files);
 	return SinkFinalizeType::READY;
 }
 

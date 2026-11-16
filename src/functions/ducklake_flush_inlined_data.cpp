@@ -133,6 +133,13 @@ static set<PositionWithSnapshot> GetWrittenFileDeletes(ClientContext &context, c
 	return result;
 }
 
+static void RemoveWrittenFiles(ClientContext &context, const vector<DuckLakeDataFile> &written_files) {
+	auto &fs = FileSystem::GetFileSystem(context);
+	for (auto &file : written_files) {
+		fs.RemoveFile(file.file_name);
+	}
+}
+
 SinkFinalizeType DuckLakeFlushData::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                              OperatorSinkFinalizeInput &input) const {
 	auto &global_state = input.global_state.Cast<DuckLakeInsertGlobalState>();
@@ -141,7 +148,15 @@ SinkFinalizeType DuckLakeFlushData::Finalize(Pipeline &pipeline, Event &event, C
 	auto snapshot = transaction.GetSnapshot();
 
 	DuckLakeInsert::RemoveEmptyFiles(context, global_state);
-	if (!global_state.written_files.empty()) {
+	bool wrote_files = !global_state.written_files.empty();
+	// Two flushes of one statement bind before either runs, so both scan the same rows: the first to finish here
+	// registers its files, the other removes what it wrote.
+	if (!transaction.TryMarkInlinedDataForDeletion(inlined_table, snapshot.snapshot_id, wrote_files)) {
+		RemoveWrittenFiles(context, global_state.written_files);
+		global_state.written_files.clear();
+		return SinkFinalizeType::READY;
+	}
+	if (wrote_files) {
 		DeletesPerFile deletes_per_file;
 		auto deleted_rows = metadata_manager.GetDeletedInlinedRowVersions(table, inlined_table.table_name, snapshot);
 		if (!deleted_rows.empty()) {
@@ -181,9 +196,7 @@ SinkFinalizeType DuckLakeFlushData::Finalize(Pipeline &pipeline, Event &event, C
 		global_state.rows_flushed += file.row_count;
 	}
 
-	bool wrote_files = !global_state.written_files.empty();
 	transaction.AppendFiles(global_state.table.GetTableId(), std::move(global_state.written_files));
-	transaction.MarkInlinedDataForDeletion(inlined_table, snapshot.snapshot_id, wrote_files);
 	return SinkFinalizeType::READY;
 }
 

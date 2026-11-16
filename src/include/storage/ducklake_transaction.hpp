@@ -304,8 +304,10 @@ public:
 	//! Whether the metadata transaction expired snapshots, which a rollback restores
 	bool ExpiredSnapshotsInMetadataTransaction();
 	void MarkMetadataWritten();
-	//! Marks the inlined data flushed up to the snapshot, the commit deletes its rows
-	void MarkInlinedDataForDeletion(DuckLakeInlinedTableInfo inlined_table, idx_t flush_snapshot_id, bool wrote_files);
+	//! Marks the inlined data flushed up to the snapshot, the commit deletes its rows; false when a flush of this
+	//! transaction marked the table already, so a second flush of the same rows registers nothing
+	bool TryMarkInlinedDataForDeletion(DuckLakeInlinedTableInfo inlined_table, idx_t flush_snapshot_id,
+	                                   bool wrote_files);
 	bool InlinedTableFlushed(const Identifier &table_name);
 	//! Marks the inlined file deletions of the table flushed up to the snapshot, the commit deletes them
 	void MarkInlinedFileDeletionsFlushed(TableIndex table_id, idx_t flush_snapshot_id);

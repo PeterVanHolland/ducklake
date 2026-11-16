@@ -26,12 +26,16 @@ SELECT count(*) FROM meta.ducklake_data_file
 0
 
 query III
-SELECT * FROM ducklake_flush_inlined_data('lake') UNION ALL SELECT * FROM ducklake_flush_inlined_data('lake')
+SELECT * FROM ducklake_flush_inlined_data('lake')
+UNION ALL
+SELECT * FROM ducklake_flush_inlined_data('lake')
 ----
 main	t	100
 
 query IIII
-SELECT (SELECT count(*) FROM meta.ducklake_data_file WHERE end_snapshot IS NULL), (SELECT count(*) FROM lake.t), count(*), count(DISTINCT i) FROM lake.t
+SELECT (SELECT count(*) FROM meta.ducklake_data_file WHERE end_snapshot IS NULL), (SELECT count(*) FROM lake.t),
+       count(*), count(DISTINCT i)
+FROM lake.t
 ----
 1	100	100	100
 
@@ -43,16 +47,21 @@ statement ok
 DELETE FROM lake.u WHERE i = 3
 
 query III
-SELECT * FROM ducklake_flush_inlined_data('lake', table_name => 'u') UNION ALL SELECT * FROM ducklake_flush_inlined_data('lake', table_name => 'u')
+SELECT * FROM ducklake_flush_inlined_data('lake', table_name => 'u')
+UNION ALL
+SELECT * FROM ducklake_flush_inlined_data('lake', table_name => 'u')
 ----
 main	u	100
 
 query III
-SELECT (SELECT count(*) FROM meta.ducklake_data_file WHERE end_snapshot IS NULL), (SELECT count(*) FROM meta.ducklake_delete_file WHERE end_snapshot IS NULL), count(*) FROM lake.u
+SELECT (SELECT count(*) FROM meta.ducklake_data_file WHERE end_snapshot IS NULL),
+       (SELECT count(*) FROM meta.ducklake_delete_file WHERE end_snapshot IS NULL), count(*)
+FROM lake.u
 ----
 2	1	99
 
 query I
-SELECT count(*) = (SELECT count(*) FROM meta.ducklake_data_file) + (SELECT count(*) FROM meta.ducklake_delete_file) FROM glob('{DATA_PATH}/flush_twice_in_statement/**')
+SELECT count(*) = (SELECT count(*) FROM meta.ducklake_data_file) + (SELECT count(*) FROM meta.ducklake_delete_file)
+FROM glob('{DATA_PATH}/flush_twice_in_statement/**')
 ----
 true

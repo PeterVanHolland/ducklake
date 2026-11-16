@@ -129,3 +129,46 @@ statement error
 SELECT * FROM legacy2.t
 ----
 <REGEX>:.*Cannot open file.*[/\\]lake_files[/\\]main[/\\]t[/\\].*
+
+# objects created in the transaction of the attach use the resolved data path as well
+statement ok
+BEGIN
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/relative_lake3.ducklake' AS lake3 (DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE SCHEMA lake3.s1
+
+statement ok
+CREATE TABLE lake3.s1.t AS SELECT range AS i FROM range(10)
+
+statement ok
+COMMIT
+
+query II
+SELECT path, path_is_relative FROM __ducklake_metadata_lake3.ducklake_schema ORDER BY schema_id
+----
+main/	true
+s1/	true
+
+query II
+SELECT path, path_is_relative FROM __ducklake_metadata_lake3.ducklake_table
+----
+t/	true
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/relative_lake3.ducklake.files/s1/t/*.parquet')
+----
+1
+
+statement ok
+DETACH lake3
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/relative_lake3.ducklake' AS lake3
+
+query I
+SELECT sum(i) FROM lake3.s1.t
+----
+45

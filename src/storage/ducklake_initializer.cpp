@@ -76,6 +76,7 @@ void DuckLakeInitializer::Initialize() {
 		catalog.ConnectREST();
 		// a remote metadata server has no metadata database to attach or migrate
 		LoadExistingDuckLake(transaction);
+		transaction.RefreshDataPath();
 		if (options.at_clause) {
 			transaction.GetSnapshot();
 		}
@@ -124,6 +125,8 @@ void DuckLakeInitializer::Initialize() {
 			LoadExistingDuckLakeWithRetries(transaction);
 		}
 	}
+	// the transaction of the attach copied the data path before it was loaded or resolved
+	transaction.RefreshDataPath();
 	auto &current_metadata_manager = transaction.GetMetadataManager();
 	// probe the metadata server for optional capabilities (e.g. server-side commit retries) once per attach
 	current_metadata_manager.ProbeServerCapabilities();
@@ -242,7 +245,8 @@ static bool HasPathScheme(const string &path) {
 
 //! Whether the file system would resolve the path against the working directory
 static bool IsRelativeLocalPath(FileSystem &fs, const string &path) {
-	if (path.empty() || HasPathScheme(path) || StringUtil::StartsWith(path, "~")) {
+	// a leading separator starts an absolute or a network path on every platform
+	if (path.empty() || path[0] == '/' || path[0] == '\\' || HasPathScheme(path) || StringUtil::StartsWith(path, "~")) {
 		return false;
 	}
 	return !fs.IsPathAbsolute(path);
@@ -429,14 +433,16 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				}
 				// verify that they match if override_data_path is not set to true, a stored relative path also by
 				// where it resolves to
-				auto given_path = metadata_manager.StorePath(options.data_path);
-				auto resolved_path =
-				    metadata_manager.StorePath(ResolvedDataPath(transaction, metadata_manager.LoadPath(tag.value)));
-				if (given_path != tag.value && given_path != resolved_path && !options.override_data_path && !is_rest) {
-					throw InvalidConfigurationException(
-					    "DATA_PATH parameter \"%s\" does not match existing data path in the catalog \"%s\".\nYou can "
-					    "override the DATA_PATH by setting OVERRIDE_DATA_PATH to True.",
-					    options.data_path, tag.value);
+				if (!options.override_data_path && !is_rest) {
+					auto given_path = metadata_manager.StorePath(options.data_path);
+					if (given_path != tag.value &&
+					    given_path != metadata_manager.StorePath(
+					                      ResolvedDataPath(transaction, metadata_manager.LoadPath(tag.value)))) {
+						throw InvalidConfigurationException(
+						    "DATA_PATH parameter \"%s\" does not match existing data path in the catalog \"%s\".\nYou "
+						    "can override the DATA_PATH by setting OVERRIDE_DATA_PATH to True.",
+						    options.data_path, tag.value);
+					}
 				}
 			}
 		}

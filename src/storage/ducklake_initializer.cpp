@@ -245,8 +245,9 @@ static bool HasPathScheme(const string &path) {
 
 //! Whether the file system would resolve the path against the working directory
 static bool IsRelativeLocalPath(FileSystem &fs, const string &path) {
-	// a leading separator starts an absolute or a network path on every platform
-	if (path.empty() || path[0] == '/' || path[0] == '\\' || HasPathScheme(path) || StringUtil::StartsWith(path, "~")) {
+	// a leading separator starts an absolute or a network path on every platform, a drive letter a Windows path
+	if (path.empty() || path[0] == '/' || path[0] == '\\' || (path.size() > 1 && path[1] == ':') ||
+	    HasPathScheme(path) || StringUtil::StartsWith(path, "~")) {
 		return false;
 	}
 	return !fs.IsPathAbsolute(path);
@@ -282,10 +283,20 @@ string DuckLakeInitializer::ResolvedDataPath(DuckLakeTransaction &transaction, c
 	if (directory.empty()) {
 		return data_path;
 	}
-	auto resolved = directory + data_path;
+	// the file system reports written files without the "." segments of their directory
+	auto relative_path = data_path;
+	while (StringUtil::StartsWith(relative_path, "./") || StringUtil::StartsWith(relative_path, ".\\")) {
+		relative_path = relative_path.substr(2);
+	}
+	relative_path = StringUtil::Replace(StringUtil::Replace(relative_path, "/./", "/"), "\\.\\", "\\");
+	auto resolved = directory + relative_path;
 	// a lake created before stored the path relative to the working directory, where it is kept when only that exists
-	if (!fs.DirectoryExists(resolved) && fs.DirectoryExists(data_path)) {
-		return data_path;
+	try {
+		if (!fs.DirectoryExists(resolved) && fs.DirectoryExists(data_path)) {
+			return data_path;
+		}
+	} catch (std::exception &) {
+		// a directory the session may not look at is not the one of a lake created before
 	}
 	return resolved;
 }

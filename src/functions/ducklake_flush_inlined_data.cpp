@@ -310,8 +310,9 @@ vector<string> DuckLakeDataFlusher::UnshreddedVariantColumns(const DuckLakeTable
 	if (names.empty()) {
 		return result;
 	}
-	auto query_result =
-	    metadata_manager.ReadInlinedData(transaction.GetSnapshot(), inlined_table.table_name, expressions);
+	// the same rows the flush writes, the deleted versions included
+	auto query_result = metadata_manager.ReadAllInlinedDataForFlush(transaction.GetSnapshot(), inlined_table.table_name,
+	                                                                table, string(), expressions);
 	auto data = metadata_manager.TransformInlinedData(*query_result, types, inlined_table.table_name);
 	vector<idx_t> depths(names.size(), 0);
 	for (auto &chunk : data->data->Chunks()) {

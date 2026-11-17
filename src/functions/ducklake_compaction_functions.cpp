@@ -635,6 +635,74 @@ unique_ptr<LogicalOperator> DuckLakeCompactor::PlanRewriteScan(
 	return root;
 }
 
+vector<string> DuckLakeCompactor::UnshreddedVariantColumns(const DuckLakeTableEntry &table,
+                                                           const vector<DuckLakeCompactionFileEntry> &files) {
+	vector<string> variant_columns;
+	for (auto &column : table.GetColumns().Logical()) {
+		if (column.Type().id() == LogicalTypeId::VARIANT) {
+			variant_columns.push_back(column.Name().GetIdentifierName());
+		}
+	}
+	vector<string> result;
+	if (variant_columns.empty() || files.empty()) {
+		return result;
+	}
+	vector<Value> paths;
+	for (auto &file : files) {
+		paths.emplace_back(file.file.data.path);
+	}
+	// the rows come per file in the order of the schema, the root first, every node before its children
+	auto query_result = transaction.ExecuteRaw("SELECT name, num_children FROM parquet_schema(" +
+	                                           Value::LIST(LogicalType::VARCHAR, std::move(paths)).ToSQLString() + ")");
+	query_result->ThrowIfError("Failed to read the schema of the files to rewrite: ");
+	case_insensitive_set_t unshredded;
+	vector<idx_t> remaining_children;
+	string current_column;
+	bool current_shredded = false;
+	auto finish_column = [&]() {
+		if (!current_column.empty() && !current_shredded) {
+			unshredded.insert(current_column);
+		}
+		current_column.clear();
+		current_shredded = false;
+	};
+	for (auto &row : *query_result) {
+		auto name = row.GetValue<string>(0);
+		auto children = row.IsNull(1) ? 0 : row.GetValue<idx_t>(1);
+		if (remaining_children.empty()) {
+			// the root of a file
+			finish_column();
+			remaining_children.push_back(children);
+			continue;
+		}
+		remaining_children.back()--;
+		auto depth = remaining_children.size();
+		if (depth == 1) {
+			finish_column();
+			for (auto &variant_column : variant_columns) {
+				if (StringUtil::CIEquals(variant_column, name)) {
+					current_column = variant_column;
+				}
+			}
+		} else if (depth == 2 && name == "typed_value") {
+			current_shredded = true;
+		}
+		if (children > 0) {
+			remaining_children.push_back(children);
+		}
+		while (!remaining_children.empty() && remaining_children.back() == 0) {
+			remaining_children.pop_back();
+		}
+	}
+	finish_column();
+	for (auto &variant_column : variant_columns) {
+		if (unshredded.count(variant_column)) {
+			result.push_back(variant_column);
+		}
+	}
+	return result;
+}
+
 unique_ptr<LogicalOperator>
 DuckLakeCompactor::GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry> source_files,
                                              bool bind_to_latest_schema) {
@@ -747,6 +815,7 @@ DuckLakeCompactor::GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry>
 	DuckLakeCopyInput copy_input(context, table, data_path);
 	// merge_adjacent_files does not use partitioning information - instead we always merge within partitions
 	copy_input.partition_data = nullptr;
+	copy_input.unshredded_variant_columns = UnshreddedVariantColumns(table, actionable_source_files);
 	unique_ptr<LogicalCopyToFile> copy;
 	auto root = PlanRewriteScan(
 	    context, binder, table, copy_input, write_snapshot_id,

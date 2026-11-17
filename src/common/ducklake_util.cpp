@@ -256,13 +256,15 @@ idx_t DuckLakeUtil::VariantNestingDepth(Vector &data, idx_t count) {
 		while (!pending.empty()) {
 			auto entry = pending.back();
 			pending.pop_back();
-			max_depth = MaxValue<idx_t>(max_depth, entry.second);
 			if (!VariantUtils::IsNestedType(variant, row, entry.first)) {
 				continue;
 			}
+			// the container counts as a level whether it has children or not
+			auto level = entry.second + 1;
+			max_depth = MaxValue<idx_t>(max_depth, level);
 			auto nested = VariantUtils::DecodeNestedData(variant, row, entry.first);
 			for (idx_t child = 0; child < nested.child_count; child++) {
-				pending.emplace_back(variant.GetValuesIndex(row, nested.children_idx + child), entry.second + 1);
+				pending.emplace_back(variant.GetValuesIndex(row, nested.children_idx + child), level);
 			}
 		}
 	}

@@ -1,5 +1,5 @@
 # name: test/sql/data_inlining/data_inlining_variant_depth.test
-# description: A flush writes a VARIANT column whose inlined values are nested deeper than 16 levels without shredding, so the data file stays readable
+# description: A flush writes a VARIANT column whose inlined values are nested deeper than 16 levels without shredding and a compaction keeps it so, so the data files stay readable
 # group: [data_inlining]
 
 require ducklake
@@ -97,3 +97,56 @@ SELECT i, v::VARCHAR FROM ducklake.shallow ORDER BY i
 1	{'k': [1, 2], 'o': {'x': y}}
 2	[[[[1]]]]
 3	NULL
+
+# a compaction keeps the column of a deep file unshredded and the column of a shallow file shredded
+statement ok
+INSERT INTO ducklake.deep SELECT 3, v FROM deep_value
+
+statement ok
+INSERT INTO ducklake.shallow VALUES (4, [1, 2, 3])
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake')
+
+query II
+SELECT (SELECT count(*) FROM ducklake_list_files('ducklake', 'deep')), (SELECT count(*) FROM ducklake_list_files('ducklake', 'shallow'))
+----
+2	2
+
+statement ok
+CALL ducklake_merge_adjacent_files('ducklake')
+
+statement ok
+CALL ducklake_expire_snapshots('ducklake', older_than => now())
+
+statement ok
+CALL ducklake_cleanup_old_files('ducklake', cleanup_all => true)
+
+query II
+SELECT (SELECT count(*) FROM ducklake_list_files('ducklake', 'deep')), (SELECT count(*) FROM ducklake_list_files('ducklake', 'shallow'))
+----
+1	1
+
+query I
+SELECT count(*) FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/deep/*.parquet') WHERE name = 'typed_value'
+----
+0
+
+query I
+SELECT count(*) > 0 FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/shallow/*.parquet') WHERE name = 'typed_value'
+----
+true
+
+query II
+SELECT i, v::VARCHAR = (SELECT v::VARCHAR FROM deep_value) FROM ducklake.deep WHERE i IN (1, 3) ORDER BY i
+----
+1	true
+3	true
+
+query II
+SELECT i, v::VARCHAR FROM ducklake.shallow ORDER BY i
+----
+1	{'k': [1, 2], 'o': {'x': y}}
+2	[[[[1]]]]
+3	NULL
+4	[1, 2, 3]

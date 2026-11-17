@@ -49,3 +49,36 @@ query I
 SELECT v::VARCHAR = (SELECT v::VARCHAR FROM deep) FROM lake.deep
 ----
 true
+
+# the catalogs that cannot hold DuckDB VARIANT values store the Parquet Variant encoding, which a flush applies anyway
+statement ok
+CREATE TABLE lake.t(id INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO lake.t VALUES
+    (1, CAST(CAST(42 AS UTINYINT) AS VARIANT)),
+    (2, CAST(CAST(42 AS HUGEINT) AS VARIANT)),
+    (3, CAST(CAST(1.23 AS DECIMAL(9, 2)) AS VARIANT)),
+    (4, CAST(CAST(1.23 AS DECIMAL(3, 2)) AS VARIANT)),
+    (5, CAST(DATE '2024-01-02' AS VARIANT)),
+    (6, CAST(CAST(42 AS SMALLINT) AS VARIANT))
+
+query I
+SELECT string_agg(v::VARCHAR, ' ' ORDER BY id) FROM lake.t
+----
+42 42 1.23 1.23 2024-01-02 42
+
+query I
+SELECT string_agg(variant_typeof(v), ' ' ORDER BY id) = CASE WHEN catalog_type = 'duckdb'
+       THEN 'UINT8 INT128 DECIMAL(9, 2) DECIMAL(3, 2) DATE INT16' ELSE 'INT16 INT64 DECIMAL(3, 2) DECIMAL(3, 2) DATE INT16' END
+FROM lake.t, ducklake_settings('lake')
+----
+true
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 't')
+
+query II
+SELECT string_agg(v::VARCHAR, ' ' ORDER BY id), string_agg(variant_typeof(v), ' ' ORDER BY id) FROM lake.t
+----
+42 42 1.23 1.23 2024-01-02 42	INT16 INT64 DECIMAL(3, 2) DECIMAL(3, 2) DATE INT16

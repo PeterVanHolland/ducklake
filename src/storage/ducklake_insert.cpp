@@ -576,6 +576,14 @@ DuckLakeCopyOptions DuckLakeInsert::GetCopyOptions(ClientContext &context, DuckL
 
 	// Always use native parquet geometry for writing
 	info->options["geoparquet_version"].emplace_back("NONE");
+	if (!copy_input.unshredded_variant_columns.empty()) {
+		// a shredding type of NULL leaves the column as its metadata and value blobs
+		child_list_t<Value> shredding;
+		for (auto &column : copy_input.unshredded_variant_columns) {
+			shredding.emplace_back(column, Value("NULL"));
+		}
+		info->options["shredding"].push_back(Value::STRUCT(std::move(shredding)));
+	}
 
 	// Get Parquet Copy function
 	auto &copy_fun = DuckLakeFunctions::GetCopyFunction(context, "parquet");

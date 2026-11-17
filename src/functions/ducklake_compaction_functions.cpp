@@ -649,6 +649,10 @@ vector<string> DuckLakeCompactor::UnshreddedVariantColumns(const DuckLakeTableEn
 	}
 	vector<Value> paths;
 	for (auto &file : files) {
+		if (!file.file.data.encryption_key.empty()) {
+			// parquet_schema cannot open an encrypted file, the rewrite shreds as before
+			return result;
+		}
 		paths.emplace_back(file.file.data.path);
 	}
 	// the rows come per file in the order of the schema, the root first, every node before its children

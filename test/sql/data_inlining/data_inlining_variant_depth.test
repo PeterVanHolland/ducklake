@@ -48,6 +48,38 @@ INSERT INTO ducklake.deep
 WITH RECURSIVE n(d, v) AS (SELECT 1, [1]::VARIANT UNION ALL SELECT d + 1, [v]::VARIANT FROM n WHERE d < 30)
 SELECT 2, v FROM n WHERE d = 30
 
+# 16 nested arrays are still shredded, 17 are not, an empty innermost array counts as a level too
+statement ok
+CREATE TABLE ducklake.arrays16 (i INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO ducklake.arrays16
+WITH RECURSIVE n(d, v) AS (SELECT 1, [1]::VARIANT UNION ALL SELECT d + 1, [v]::VARIANT FROM n WHERE d < 16)
+SELECT 1, v FROM n WHERE d = 16
+
+statement ok
+CREATE TABLE ducklake.arrays17 (i INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO ducklake.arrays17
+WITH RECURSIVE n(d, v) AS (SELECT 1, []::INTEGER[]::VARIANT UNION ALL SELECT d + 1, [v]::VARIANT FROM n WHERE d < 17)
+SELECT 1, v FROM n WHERE d = 17
+
+# a deep value that was deleted again is still written by the flush, so it counts as well
+statement ok
+CREATE TABLE ducklake.deleted (i INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO ducklake.deleted
+WITH RECURSIVE n(d, v) AS (SELECT 1, [1]::VARIANT UNION ALL SELECT d + 1, [v]::VARIANT FROM n WHERE d < 30)
+SELECT 1, v FROM n WHERE d = 30
+
+statement ok
+INSERT INTO ducklake.deleted VALUES (2, 42)
+
+statement ok
+DELETE FROM ducklake.deleted WHERE i = 1
+
 # a table of ordinary values stays shredded
 statement ok
 CREATE TABLE ducklake.shallow (i INTEGER, v VARIANT)
@@ -73,6 +105,26 @@ query I
 SELECT count(*) FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/deep/*.parquet') WHERE name = 'typed_value'
 ----
 0
+
+query I
+SELECT count(*) > 0 FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/arrays16/*.parquet') WHERE name = 'typed_value'
+----
+true
+
+query I
+SELECT count(*) FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/arrays17/*.parquet') WHERE name = 'typed_value'
+----
+0
+
+query I
+SELECT count(*) FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/deleted/*.parquet') WHERE name = 'typed_value'
+----
+0
+
+query II
+SELECT i, v::VARCHAR FROM ducklake.deleted
+----
+2	42
 
 query I
 SELECT count(*) > 0 FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/shallow/*.parquet') WHERE name = 'typed_value'

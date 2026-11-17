@@ -302,8 +302,8 @@ vector<string> DuckLakeDataFlusher::UnshreddedVariantColumns(const DuckLakeTable
 			continue;
 		}
 		names.push_back(column.Name().GetIdentifierName());
-		expressions.push_back(
-		    metadata_manager.CastColumnToTarget(SQLIdentifier::ToString(column.Name()), column.Type()));
+		// the flush source decodes the stored form of the column itself
+		expressions.push_back(SQLIdentifier::ToString(column.Name()));
 		types.push_back(column.Type());
 	}
 	vector<string> result;

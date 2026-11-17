@@ -301,7 +301,9 @@ string DuckLakeInitializer::ResolvedDataPath(DuckLakeTransaction &transaction, c
 	// a lake created before stored the path relative to the working directory, where it is kept when only that exists
 	try {
 		if (!fs.DirectoryExists(resolved) && fs.DirectoryExists(data_path)) {
-			return Path::FromString(data_path).ToString();
+			auto normalized = Path::FromString(data_path).ToString();
+			// a "./" prefix stays when the file system would not read the normalized path as a relative one
+			return IsRelativeLocalPath(fs, normalized) ? normalized : "./" + normalized;
 		}
 	} catch (std::exception &) {
 		// a directory the session may not look at is not the one of a lake created before

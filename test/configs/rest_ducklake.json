@@ -122,6 +122,7 @@
         "test/sql/compaction/merge_adjacent_older_than.test",
         "test/sql/data_inlining/data_inlining_epoch_partitions.test",
         "test/sql/data_inlining/data_inlining_flush.test",
+        "test/sql/data_inlining/data_inlining_variant_deep_nesting.test",
         "test/sql/data_inlining/data_inlining_flush_default_order.test",
         "test/sql/data_inlining/data_inlining_flush_partition_collation.test",
         "test/sql/data_inlining/data_inlining_flush_partitioned_deletes.test",

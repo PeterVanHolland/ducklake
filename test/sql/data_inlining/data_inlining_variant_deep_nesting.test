@@ -50,7 +50,7 @@ SELECT v::VARCHAR = (SELECT v::VARCHAR FROM deep) FROM lake.deep
 ----
 true
 
-# the catalogs that cannot hold DuckDB VARIANT values store the Parquet Variant encoding, which a flush applies anyway
+# every catalog but the DuckDB file stores the Parquet Variant encoding of inlined VARIANT values, as a flush does
 statement ok
 CREATE TABLE lake.t(id INTEGER, v VARIANT)
 

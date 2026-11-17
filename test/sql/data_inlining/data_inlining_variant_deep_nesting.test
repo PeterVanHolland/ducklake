@@ -69,9 +69,11 @@ SELECT string_agg(v::VARCHAR, ' ' ORDER BY id) FROM lake.t
 42 42 1.23 1.23 2024-01-02 42
 
 query I
-SELECT string_agg(variant_typeof(v), ' ' ORDER BY id) = CASE WHEN catalog_type = 'duckdb'
-       THEN 'UINT8 INT128 DECIMAL(9, 2) DECIMAL(3, 2) DATE INT16' ELSE 'INT16 INT64 DECIMAL(3, 2) DECIMAL(3, 2) DATE INT16' END
-FROM lake.t, ducklake_settings('lake')
+SELECT string_agg(variant_typeof(v), ' ' ORDER BY id) =
+       CASE WHEN (SELECT catalog_type FROM ducklake_settings('lake')) = 'duckdb'
+            THEN 'UINT8 INT128 DECIMAL(9, 2) DECIMAL(3, 2) DATE INT16'
+            ELSE 'INT16 INT64 DECIMAL(3, 2) DECIMAL(3, 2) DATE INT16' END
+FROM lake.t
 ----
 true
 

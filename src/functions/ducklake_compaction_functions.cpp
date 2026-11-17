@@ -659,19 +659,20 @@ vector<string> DuckLakeCompactor::UnshreddedVariantColumns(const DuckLakeTableEn
 	for (auto &entry : variant_columns) {
 		column_ids.push_back(to_string(entry.first));
 	}
-	// a shredded column has the stats of its typed values, one written as its two blobs has none
-	auto query =
-	    StringUtil::Format("SELECT column_id FROM {METADATA_CATALOG}.ducklake_file_column_stats WHERE "
-	                       "data_file_id IN (%s) AND column_id IN (%s) AND (extra_stats IS NULL OR extra_stats = '')",
-	                       StringUtil::Join(file_ids, ", "), StringUtil::Join(column_ids, ", "));
+	// a shredded column has the stats of its typed values in every file, one written as its two blobs or a file
+	// without stats has none
+	auto query = StringUtil::Format("SELECT data_file_id, column_id FROM {METADATA_CATALOG}.ducklake_file_column_stats "
+	                                "WHERE data_file_id IN (%s) AND column_id IN (%s) AND extra_stats IS NOT NULL AND "
+	                                "extra_stats <> ''",
+	                                StringUtil::Join(file_ids, ", "), StringUtil::Join(column_ids, ", "));
 	auto query_result = transaction.GetMetadataManager().Query(transaction.GetSnapshot(), std::move(query));
 	query_result->ThrowIfError("Failed to read the column stats of the files to rewrite: ");
-	set<idx_t> unshredded;
+	map<idx_t, idx_t> shredded_files;
 	for (auto &row : *query_result) {
-		unshredded.insert(row.GetValue<idx_t>(0));
+		shredded_files[row.GetValue<idx_t>(1)]++;
 	}
 	for (auto &entry : variant_columns) {
-		if (unshredded.count(entry.first)) {
+		if (shredded_files[entry.first] < files.size()) {
 			result.push_back(entry.second);
 		}
 	}

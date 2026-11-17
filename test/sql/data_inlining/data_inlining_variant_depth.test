@@ -168,24 +168,24 @@ SELECT (SELECT count(*) FROM ducklake_list_files('ducklake', 'deep')), (SELECT c
 statement ok
 CALL ducklake_merge_adjacent_files('ducklake')
 
-statement ok
-CALL ducklake_expire_snapshots('ducklake', older_than => now())
-
-statement ok
-CALL ducklake_cleanup_old_files('ducklake', cleanup_all => true)
-
 query II
 SELECT (SELECT count(*) FROM ducklake_list_files('ducklake', 'deep')), (SELECT count(*) FROM ducklake_list_files('ducklake', 'shallow'))
 ----
 1	1
 
+statement ok
+SET VARIABLE deep_file = (SELECT data_file FROM ducklake_list_files('ducklake', 'deep'))
+
+statement ok
+SET VARIABLE shallow_file = (SELECT data_file FROM ducklake_list_files('ducklake', 'shallow'))
+
 query I
-SELECT count(*) FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/deep/*.parquet') WHERE name = 'typed_value'
+SELECT count(*) FROM parquet_schema(getvariable('deep_file')) WHERE name = 'typed_value'
 ----
 0
 
 query I
-SELECT count(*) > 0 FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/shallow/*.parquet') WHERE name = 'typed_value'
+SELECT count(*) > 0 FROM parquet_schema(getvariable('shallow_file')) WHERE name = 'typed_value'
 ----
 true
 

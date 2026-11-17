@@ -637,71 +637,42 @@ unique_ptr<LogicalOperator> DuckLakeCompactor::PlanRewriteScan(
 
 vector<string> DuckLakeCompactor::UnshreddedVariantColumns(const DuckLakeTableEntry &table,
                                                            const vector<DuckLakeCompactionFileEntry> &files) {
-	vector<string> variant_columns;
-	for (auto &column : table.GetColumns().Logical()) {
-		if (column.Type().id() == LogicalTypeId::VARIANT) {
-			variant_columns.push_back(column.Name().GetIdentifierName());
+	// the top level VARIANT columns by field id
+	map<idx_t, string> variant_columns;
+	auto &field_data = table.GetFieldData();
+	for (auto &column : table.GetColumns().Physical()) {
+		if (column.Type().id() != LogicalTypeId::VARIANT) {
+			continue;
 		}
+		auto field_index = field_data.GetByRootIndex(column.Physical()).GetFieldIndex();
+		variant_columns.emplace(field_index.index, column.Name().GetIdentifierName());
 	}
 	vector<string> result;
 	if (variant_columns.empty() || files.empty()) {
 		return result;
 	}
-	vector<Value> paths;
+	vector<string> file_ids;
 	for (auto &file : files) {
-		if (!file.file.data.encryption_key.empty()) {
-			// parquet_schema cannot open an encrypted file, the rewrite shreds as before
-			return result;
-		}
-		paths.emplace_back(file.file.data.path);
+		file_ids.push_back(to_string(file.file.id.index));
 	}
-	// the rows come per file in the order of the schema, the root first, every node before its children
-	auto query_result = transaction.ExecuteRaw("SELECT name, num_children FROM parquet_schema(" +
-	                                           Value::LIST(LogicalType::VARCHAR, std::move(paths)).ToSQLString() + ")");
-	query_result->ThrowIfError("Failed to read the schema of the files to rewrite: ");
-	case_insensitive_set_t unshredded;
-	vector<idx_t> remaining_children;
-	string current_column;
-	bool current_shredded = false;
-	auto finish_column = [&]() {
-		if (!current_column.empty() && !current_shredded) {
-			unshredded.insert(current_column);
-		}
-		current_column.clear();
-		current_shredded = false;
-	};
+	vector<string> column_ids;
+	for (auto &entry : variant_columns) {
+		column_ids.push_back(to_string(entry.first));
+	}
+	// a shredded column has the stats of its typed values, one written as its two blobs has none
+	auto query =
+	    StringUtil::Format("SELECT column_id FROM {METADATA_CATALOG}.ducklake_file_column_stats WHERE "
+	                       "data_file_id IN (%s) AND column_id IN (%s) AND (extra_stats IS NULL OR extra_stats = '')",
+	                       StringUtil::Join(file_ids, ", "), StringUtil::Join(column_ids, ", "));
+	auto query_result = transaction.GetMetadataManager().Query(transaction.GetSnapshot(), std::move(query));
+	query_result->ThrowIfError("Failed to read the column stats of the files to rewrite: ");
+	set<idx_t> unshredded;
 	for (auto &row : *query_result) {
-		auto name = row.GetValue<string>(0);
-		auto children = row.IsNull(1) ? 0 : row.GetValue<idx_t>(1);
-		if (remaining_children.empty()) {
-			// the root of a file
-			finish_column();
-			remaining_children.push_back(children);
-			continue;
-		}
-		remaining_children.back()--;
-		auto depth = remaining_children.size();
-		if (depth == 1) {
-			finish_column();
-			for (auto &variant_column : variant_columns) {
-				if (StringUtil::CIEquals(variant_column, name)) {
-					current_column = variant_column;
-				}
-			}
-		} else if (depth == 2 && name == "typed_value") {
-			current_shredded = true;
-		}
-		if (children > 0) {
-			remaining_children.push_back(children);
-		}
-		while (!remaining_children.empty() && remaining_children.back() == 0) {
-			remaining_children.pop_back();
-		}
+		unshredded.insert(row.GetValue<idx_t>(0));
 	}
-	finish_column();
-	for (auto &variant_column : variant_columns) {
-		if (unshredded.count(variant_column)) {
-			result.push_back(variant_column);
+	for (auto &entry : variant_columns) {
+		if (unshredded.count(entry.first)) {
+			result.push_back(entry.second);
 		}
 	}
 	return result;

@@ -1,0 +1,52 @@
+# name: benchmark/micro/read/attach_many_tables.benchmark
+# description: Attach a lake of 2000 inlined tables read only and read one of them, three times
+# group: [read]
+
+name Attach Many Tables
+group micro
+subgroup read
+
+require ducklake
+
+require parquet
+
+argument tables 2000
+
+argument lake attach_many_tables_lake
+
+cache_file ${lake}_ready.marker
+
+# Each table holds one inlined row, so the metadata catalog has an inlined data table per table
+load
+EXPORT DATABASE '${BENCHMARK_DIR}/${lake}_ddl';
+COPY (SELECT 'CREATE TABLE lake.t_' || i || ' AS SELECT ' || i || ' AS id, ''v'' || ' || i || ' AS v;'
+FROM range(${tables}) t(i)) TO '${BENCHMARK_DIR}/${lake}_ddl/schema.sql' (HEADER false, QUOTE '');
+@create ${lake}
+@attach ${lake} AS lake (DATA_PATH '${BENCHMARK_DIR}/${lake}_files')
+BEGIN;
+IMPORT DATABASE '${BENCHMARK_DIR}/${lake}_ddl';
+COMMIT;
+DETACH lake;
+@seal ${lake}
+COPY (SELECT 1) TO '${BENCHMARK_DIR}/${lake}_ready.marker' (FORMAT CSV);
+@attach ${lake} AS lake (READ_ONLY)
+
+reload
+@attach ${lake} AS lake (READ_ONLY)
+
+# Three cold attaches, each followed by a read of one table
+run
+DETACH lake;
+@attach ${lake} AS lake (READ_ONLY)
+SELECT count(*) FROM lake.t_0;
+DETACH lake;
+@attach ${lake} AS lake (READ_ONLY)
+SELECT count(*) FROM lake.t_0;
+DETACH lake;
+@attach ${lake} AS lake (READ_ONLY)
+SELECT count(*) FROM lake.t_0;
+
+result_query I
+SELECT * FROM __answer
+----
+1

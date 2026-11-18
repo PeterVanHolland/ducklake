@@ -411,6 +411,13 @@ public:
 	void SetScopedCacheClear(bool value) {
 		scoped_cache_clear = value;
 	}
+	//! Whether the metadata catalog introspects its tables one by one as they are used
+	bool LazyMetadataLoad() const {
+		return lazy_metadata_load;
+	}
+	void SetLazyMetadataLoad(bool value) {
+		lazy_metadata_load = value;
+	}
 
 	Value GetLastCommittedSnapshotId() const {
 		lock_guard<mutex> guard(commit_lock);
@@ -569,6 +576,7 @@ private:
 	//! Whether or not the metadata server can execute the commit retry loop server-side.
 	bool retrials_server_side = false;
 	atomic<bool> scoped_cache_clear {true};
+	atomic<bool> lazy_metadata_load {true};
 	//! Cache for inlined deletion table existence checks
 	mutex inlined_deletion_cache_lock;
 	//! Table IDs where the inlined deletion table is known to exist (permanent - never invalidated)

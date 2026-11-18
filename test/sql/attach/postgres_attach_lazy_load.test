@@ -1,0 +1,75 @@
+# name: test/sql/attach/postgres_attach_lazy_load.test
+# description: A Postgres metadata catalog introspects the metadata tables a connection uses, not every table it holds
+# group: [attach]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require-env DUCKLAKE_CI
+
+require-env DUCKLAKE_CONNECTION
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH '{DUCKLAKE_CONNECTION}' AS pg
+
+statement ok
+CALL postgres_execute('pg', 'DROP SCHEMA IF EXISTS lazy_attach CASCADE')
+
+statement ok
+DETACH pg
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/lazy_attach', METADATA_SCHEMA 'lazy_attach')
+
+# every table gets an inlined data table in the metadata schema
+statement ok
+CREATE TABLE dl.t1 AS SELECT 1 AS i
+
+statement ok
+CREATE TABLE dl.t2 AS SELECT 2 AS i
+
+statement ok
+CREATE TABLE dl.t3 AS SELECT 3 AS i
+
+statement ok
+DETACH dl
+
+statement ok
+CALL enable_logging('PostgresQueryLog')
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+(DATA_PATH '{DATA_PATH}/lazy_attach', METADATA_SCHEMA 'lazy_attach', READ_ONLY)
+
+query I
+SELECT i FROM dl.t1
+----
+1
+
+# no query introspected every table of the metadata schema
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog')
+WHERE query LIKE '%relpages%' AND query NOT LIKE '%AND relname=%' AND query NOT LIKE '%lower(relname)=%'
+----
+0
+
+# the metadata tables were introspected one by one, and only the inlined data table of t1
+query I
+SELECT count(*) > 0 FROM duckdb_logs_parsed('PostgresQueryLog')
+WHERE query LIKE '%relname=''ducklake_table''%'
+----
+true
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog')
+WHERE regexp_matches(query, 'relname=''ducklake_inlined_data_\d+_\d+''')
+----
+1
+
+statement ok
+DETACH dl

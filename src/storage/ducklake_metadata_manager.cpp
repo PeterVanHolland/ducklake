@@ -2528,7 +2528,8 @@ WHERE data.table_id=%d AND {SNAPSHOT_ID} >= data.begin_snapshot AND ({SNAPSHOT_I
 vector<DuckLakeFileListEntry>
 DuckLakeMetadataManager::GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
                                           const FilterPushdownInfo *filter_info, bool include_local_changes,
-                                          optional_ptr<const vector<DuckLakeProjectedColumn>> projection) {
+                                          optional_ptr<const vector<DuckLakeProjectedColumn>> projection,
+                                          optional_ptr<identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>>>) {
 	auto table_id = table.GetTableId();
 
 	// Top-N dynamic filters order the files by their statistics and check them per file

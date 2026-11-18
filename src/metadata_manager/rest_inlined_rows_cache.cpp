@@ -120,17 +120,60 @@ bool RESTInlinedRowsCache::HasInlinedRows(idx_t snapshot_id, idx_t table_id, boo
 	return false;
 }
 
+bool RESTInlinedRowsCache::HasNewerFile(const RESTInlinedRowsKey &key, optional_idx max_file_id) const {
+	if (!max_file_id.IsValid()) {
+		return false;
+	}
+	lock_guard<mutex> guard(lock);
+	auto entry = responses.find(key);
+	if (entry == responses.end()) {
+		return true;
+	}
+	for (auto &response : entry->second) {
+		if (response->max_file_id.IsValid() && response->max_file_id.GetIndex() >= max_file_id.GetIndex()) {
+			return false;
+		}
+	}
+	return true;
+}
+
+shared_ptr<RESTInlinedRowsResponse> RESTInlinedRowsCache::FindResponse(const RESTInlinedRowsKey &key,
+                                                                       const RESTInlinedProjection &projection) const {
+	lock_guard<mutex> guard(lock);
+	auto entry = responses.find(key);
+	if (entry == responses.end()) {
+		return nullptr;
+	}
+	for (idx_t i = entry->second.size(); i > 0; i--) {
+		if (entry->second[i - 1]->projection.Covers(projection)) {
+			return entry->second[i - 1];
+		}
+	}
+	return nullptr;
+}
+
 shared_ptr<RESTInlinedRowsResponse> RESTInlinedRowsCache::Add(const RESTInlinedRowsKey &key,
                                                               const RESTInlinedProjection &projection,
-                                                              unique_ptr<RESTInlinedRows> inlined_data) {
+                                                              unique_ptr<RESTInlinedRows> inlined_data,
+                                                              optional_idx max_file_id) {
 	auto response = make_shared_ptr<RESTInlinedRowsResponse>();
 	response->projection = projection;
+	response->max_file_id = max_file_id;
 	if (inlined_data) {
 		response->rows = make_shared_ptr<RESTCachedInlinedRows>();
 		response->rows->rows = std::move(*inlined_data);
 	}
 	lock_guard<mutex> guard(lock);
 	auto &entries = responses[key];
+	if (max_file_id.IsValid()) {
+		// the rows of a response that has not seen a file of this list moved into it since
+		for (idx_t i = entries.size(); i > 0; i--) {
+			auto &existing = entries[i - 1]->max_file_id;
+			if (!existing.IsValid() || existing.GetIndex() < max_file_id.GetIndex()) {
+				entries.erase_at(i - 1);
+			}
+		}
+	}
 	for (auto &existing : entries) {
 		if (existing->projection.Covers(projection)) {
 			// a scan that ran at the same time has the columns already

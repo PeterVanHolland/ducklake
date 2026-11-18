@@ -55,13 +55,13 @@ string DuckLakeInitializer::GetAttachOptions() {
 	// every schema in the database on attach, which is very slow on large or multi-tenant catalogs.
 	// only done when the user explicitly set METADATA_SCHEMA - the default schema is not known until after attach.
 	// an explicit META_SCHEMA (or metadata_parameters 'schema') takes precedence over this.
-	bool is_postgres = metadata_type == "postgres" || metadata_type == "postgres_scanner";
+	bool is_postgres =
+	    StringUtil::CIEquals(metadata_type, "postgres") || StringUtil::CIEquals(metadata_type, "postgres_scanner");
 	bool user_set_schema = options.metadata_parameters.find("schema") != options.metadata_parameters.end();
 	if (is_postgres && !user_set_schema && !options.metadata_schema.empty()) {
 		attach_options.push_back("SCHEMA " + SQLString::ToString(options.metadata_schema.GetIdentifierName()));
 	}
-	// the scanner then introspects the metadata tables as they are used, instead of every table of the schema at the
-	// first lookup, whose cost grows with the number of tables of the lake
+	// the scanner then introspects the metadata tables as they are used, not every table of the schema at once
 	bool user_set_lazy_load = options.metadata_parameters.find("lazy_load") != options.metadata_parameters.end();
 	if (is_postgres && !user_set_lazy_load && catalog.LazyMetadataLoad()) {
 		attach_options.push_back("lazy_load true");

@@ -54,7 +54,7 @@ SELECT i FROM dl.t1
 # no query introspected every table of the metadata schema
 query I
 SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog')
-WHERE query LIKE '%relpages%' AND query NOT LIKE '%AND relname=%' AND query NOT LIKE '%lower(relname)=%'
+WHERE query LIKE '%relpages%' AND query NOT LIKE '%AND relname=%' AND query NOT LIKE '%translate(relname%'
 ----
 0
 

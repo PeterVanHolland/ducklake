@@ -424,11 +424,13 @@ public:
 	                 optional_ptr<identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>>> inlined_rows = nullptr);
 	virtual vector<DuckLakeFileListEntry>
 	GetTableInsertions(DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot, DuckLakeSnapshot snapshot,
-	                   optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr);
+	                   optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr,
+	                   optional_ptr<identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>>> inlined_rows = nullptr);
 	virtual vector<DuckLakeDeleteScanEntry>
 	GetTableDeletions(DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot, DuckLakeSnapshot snapshot,
 	                  bool include_local_changes = true,
-	                  optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr);
+	                  optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr,
+	                  optional_ptr<identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>>> inlined_rows = nullptr);
 	//! The snapshots of the range that rewrote data files of the table without changing its rows
 	set<idx_t> GetTableRewriteSnapshots(TableIndex table_id, DuckLakeSnapshot start_snapshot,
 	                                    DuckLakeSnapshot snapshot);

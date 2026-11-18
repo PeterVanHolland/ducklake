@@ -408,6 +408,31 @@ static optional_idx MaxFileId(const vector<T> &files) {
 	return result;
 }
 
+static optional_idx MaxFileId(const vector<DuckLakeFileListEntry> &insertions,
+                              const vector<DuckLakeDeleteScanEntry> &deletions) {
+	return insertions.empty() ? MaxFileId(deletions) : MaxFileId(insertions);
+}
+
+template <class REQUEST, class SEND>
+shared_ptr<RESTInlinedRowsResponse> RESTMetadataManager::RequestInlinedRows(REQUEST &request,
+                                                                            const RESTInlinedRowsKey &key,
+                                                                            InlinedRowsPlan plan, SEND &&send) {
+	while (true) {
+		SetProjection(request, plan);
+		request.known_column_mappings = transaction.GetCatalog().GetLoadedNameMapIds();
+		unique_ptr<RESTInlinedRows> inlined_data;
+		auto max_file_id = send(inlined_data);
+		if (plan.fetch) {
+			return inlined_rows_cache.Add(key, plan.projection, std::move(inlined_data), max_file_id);
+		}
+		if (!HasNewerFile(*plan.cached, max_file_id)) {
+			return plan.cached;
+		}
+		// a flush moved the cached rows into a file of this list, so the rows come with the files again
+		plan = InlinedRowsPlan {true, RESTInlinedProjection(), nullptr};
+	}
+}
+
 vector<DuckLakeFileListEntry> RESTMetadataManager::GetFilesForTable(
     DuckLakeTableEntry &table, DuckLakeSnapshot snapshot, const FilterPushdownInfo *filter_info,
     bool include_local_changes, optional_ptr<const vector<DuckLakeProjectedColumn>> projection,
@@ -423,36 +448,23 @@ vector<DuckLakeFileListEntry> RESTMetadataManager::GetFilesForTable(
 	}
 	// the inlined rows of an earlier scan at this snapshot can have the columns already
 	RESTInlinedRowsKey inlined_key {RESTInlinedRowsKind::SCAN, 0, snapshot.snapshot_id, table.GetTableId().index};
-	auto plan = PlanInlinedRows(inlined_key, projection);
 	RESTSelectResponse response;
-	shared_ptr<RESTInlinedRowsResponse> rows_response;
-	while (true) {
-		SetProjection(request, plan);
-		request.known_column_mappings = transaction.GetCatalog().GetLoadedNameMapIds();
-		response = GetClient().Select(request);
-		transaction.GetCatalog().AddNameMaps(std::move(response.column_mappings));
-		AddPages<RESTSelectResponse>(
-		    transaction.GetCatalog(), response.page_tokens,
-		    [&](const string &page_token) {
-			    RESTSelectRequest page_request;
-			    page_request.table_id = table.GetTableId().index;
-			    page_request.page_token = page_token;
-			    return GetClient().Select(page_request);
-		    },
-		    [&](RESTSelectResponse &page) { AppendEntries(response.files, page.files); });
-		auto max_file_id = MaxFileId(response.files);
-		if (plan.fetch) {
-			rows_response =
-			    inlined_rows_cache.Add(inlined_key, plan.projection, std::move(response.inlined_data), max_file_id);
-			break;
-		}
-		if (!HasNewerFile(*plan.cached, max_file_id)) {
-			rows_response = plan.cached;
-			break;
-		}
-		// a flush moved the cached rows into a file of this list, so the rows come with the files again
-		plan = InlinedRowsPlan {true, RESTInlinedProjection(), nullptr};
-	}
+	auto rows_response = RequestInlinedRows(
+	    request, inlined_key, PlanInlinedRows(inlined_key, projection), [&](unique_ptr<RESTInlinedRows> &inlined_data) {
+		    response = GetClient().Select(request);
+		    transaction.GetCatalog().AddNameMaps(std::move(response.column_mappings));
+		    AddPages<RESTSelectResponse>(
+		        transaction.GetCatalog(), response.page_tokens,
+		        [&](const string &page_token) {
+			        RESTSelectRequest page_request;
+			        page_request.table_id = table.GetTableId().index;
+			        page_request.page_token = page_token;
+			        return GetClient().Select(page_request);
+		        },
+		        [&](RESTSelectResponse &page) { AppendEntries(response.files, page.files); });
+		    inlined_data = std::move(response.inlined_data);
+		    return MaxFileId(response.files);
+	    });
 	if (inlined_rows) {
 		(*inlined_rows)[InlinedTableName(table.GetTableId(), snapshot.schema_version)] = CommittedRows(*rows_response);
 	}
@@ -472,32 +484,23 @@ RESTMetadataManager::GetExtendedFilesForTable(DuckLakeTableEntry &table, DuckLak
 		request.filters = make_uniq<RESTScanFilters>(DuckLakeRESTFilters::Write(*filter_info, table));
 	}
 	RESTInlinedRowsKey inlined_key {RESTInlinedRowsKind::SCAN, 0, snapshot.snapshot_id, table.GetTableId().index};
-	auto plan = PlanInlinedRows(inlined_key, projection);
 	RESTSelectResponse response;
-	while (true) {
-		SetProjection(request, plan);
-		request.known_column_mappings = transaction.GetCatalog().GetLoadedNameMapIds();
-		response = GetClient().Select(request);
-		transaction.GetCatalog().AddNameMaps(std::move(response.column_mappings));
-		AddPages<RESTSelectResponse>(
-		    transaction.GetCatalog(), response.page_tokens,
-		    [&](const string &page_token) {
-			    RESTSelectRequest page_request;
-			    page_request.table_id = table.GetTableId().index;
-			    page_request.page_token = page_token;
-			    return GetClient().Select(page_request);
-		    },
-		    [&](RESTSelectResponse &page) { AppendEntries(response.extended_files, page.extended_files); });
-		auto max_file_id = MaxFileId(response.extended_files);
-		if (plan.fetch) {
-			inlined_rows_cache.Add(inlined_key, plan.projection, std::move(response.inlined_data), max_file_id);
-			break;
-		}
-		if (!HasNewerFile(*plan.cached, max_file_id)) {
-			break;
-		}
-		plan = InlinedRowsPlan {true, RESTInlinedProjection(), nullptr};
-	}
+	RequestInlinedRows(
+	    request, inlined_key, PlanInlinedRows(inlined_key, projection), [&](unique_ptr<RESTInlinedRows> &inlined_data) {
+		    response = GetClient().Select(request);
+		    transaction.GetCatalog().AddNameMaps(std::move(response.column_mappings));
+		    AddPages<RESTSelectResponse>(
+		        transaction.GetCatalog(), response.page_tokens,
+		        [&](const string &page_token) {
+			        RESTSelectRequest page_request;
+			        page_request.table_id = table.GetTableId().index;
+			        page_request.page_token = page_token;
+			        return GetClient().Select(page_request);
+		        },
+		        [&](RESTSelectResponse &page) { AppendEntries(response.extended_files, page.extended_files); });
+		    inlined_data = std::move(response.inlined_data);
+		    return MaxFileId(response.extended_files);
+	    });
 	return std::move(response.extended_files);
 }
 
@@ -531,7 +534,9 @@ shared_ptr<RESTInlinedRowsResponse> RESTMetadataManager::FetchInlinedRows(const 
 		request.start_snapshot = start_snapshot;
 		request.snapshot = snapshot;
 		request.changes = key.kind == RESTInlinedRowsKind::INSERTIONS ? "insertions" : "deletions";
-		inlined_data = std::move(GetClient().TableChanges(request).inlined_data);
+		auto response = GetClient().TableChanges(request);
+		max_file_id = MaxFileId(response.insertions, response.deletions);
+		inlined_data = std::move(response.inlined_data);
 		// LCOV_EXCL_STOP
 	}
 	return inlined_rows_cache.Add(key, RESTInlinedProjection(), std::move(inlined_data), max_file_id);
@@ -854,10 +859,10 @@ vector<DuckLakeColumnMappingInfo> RESTMetadataManager::GetColumnMappings(optiona
 	return {};
 }
 
-RESTTableChangesResponse
-RESTMetadataManager::GetTableChanges(DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot,
-                                     DuckLakeSnapshot snapshot, const string &changes,
-                                     optional_ptr<const vector<DuckLakeProjectedColumn>> projection) {
+RESTTableChangesResponse RESTMetadataManager::GetTableChanges(
+    DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot, DuckLakeSnapshot snapshot, const string &changes,
+    optional_ptr<const vector<DuckLakeProjectedColumn>> projection,
+    optional_ptr<identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>>> inlined_rows) {
 	RESTTableChangesRequest request;
 	request.table_id = table.GetTableId().index;
 	request.start_snapshot = start_snapshot;
@@ -865,43 +870,47 @@ RESTMetadataManager::GetTableChanges(DuckLakeTableEntry &table, DuckLakeSnapshot
 	request.changes = changes;
 	auto kind = changes == "insertions" ? RESTInlinedRowsKind::INSERTIONS : RESTInlinedRowsKind::DELETIONS;
 	RESTInlinedRowsKey inlined_key {kind, start_snapshot.snapshot_id, snapshot.snapshot_id, table.GetTableId().index};
-	auto plan = PlanInlinedRows(inlined_key, projection);
-	SetProjection(request, plan);
-	request.known_column_mappings = transaction.GetCatalog().GetLoadedNameMapIds();
-	auto response = GetClient().TableChanges(request);
-	transaction.GetCatalog().AddNameMaps(std::move(response.column_mappings));
-	AddPages<RESTTableChangesResponse>(
-	    transaction.GetCatalog(), response.page_tokens,
-	    [&](const string &page_token) {
-		    RESTTableChangesRequest page_request;
-		    page_request.table_id = table.GetTableId().index;
-		    page_request.page_token = page_token;
-		    return GetClient().TableChanges(page_request);
-	    },
-	    [&](RESTTableChangesResponse &page) {
-		    AppendEntries(response.insertions, page.insertions);
-		    AppendEntries(response.deletions, page.deletions);
+	RESTTableChangesResponse response;
+	auto rows_response = RequestInlinedRows(
+	    request, inlined_key, PlanInlinedRows(inlined_key, projection), [&](unique_ptr<RESTInlinedRows> &inlined_data) {
+		    response = GetClient().TableChanges(request);
+		    transaction.GetCatalog().AddNameMaps(std::move(response.column_mappings));
+		    AddPages<RESTTableChangesResponse>(
+		        transaction.GetCatalog(), response.page_tokens,
+		        [&](const string &page_token) {
+			        RESTTableChangesRequest page_request;
+			        page_request.table_id = table.GetTableId().index;
+			        page_request.page_token = page_token;
+			        return GetClient().TableChanges(page_request);
+		        },
+		        [&](RESTTableChangesResponse &page) {
+			        AppendEntries(response.insertions, page.insertions);
+			        AppendEntries(response.deletions, page.deletions);
+		        });
+		    inlined_data = std::move(response.inlined_data);
+		    return MaxFileId(response.insertions, response.deletions);
 	    });
-	if (plan.fetch) {
-		inlined_rows_cache.Add(inlined_key, plan.projection, std::move(response.inlined_data), optional_idx());
+	if (inlined_rows) {
+		(*inlined_rows)[InlinedTableName(table.GetTableId(), snapshot.schema_version)] = CommittedRows(*rows_response);
 	}
 	return response;
 }
 
-vector<DuckLakeFileListEntry>
-RESTMetadataManager::GetTableInsertions(DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot,
-                                        DuckLakeSnapshot snapshot,
-                                        optional_ptr<const vector<DuckLakeProjectedColumn>> projection) {
+vector<DuckLakeFileListEntry> RESTMetadataManager::GetTableInsertions(
+    DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot, DuckLakeSnapshot snapshot,
+    optional_ptr<const vector<DuckLakeProjectedColumn>> projection,
+    optional_ptr<identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>>> inlined_rows) {
 	D_ASSERT(!IsTransactionLocal(table.GetTableId()));
-	return std::move(GetTableChanges(table, start_snapshot, snapshot, "insertions", projection).insertions);
+	return std::move(
+	    GetTableChanges(table, start_snapshot, snapshot, "insertions", projection, inlined_rows).insertions);
 }
 
-vector<DuckLakeDeleteScanEntry>
-RESTMetadataManager::GetTableDeletions(DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot,
-                                       DuckLakeSnapshot snapshot, bool include_local_changes,
-                                       optional_ptr<const vector<DuckLakeProjectedColumn>> projection) {
+vector<DuckLakeDeleteScanEntry> RESTMetadataManager::GetTableDeletions(
+    DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot, DuckLakeSnapshot snapshot, bool include_local_changes,
+    optional_ptr<const vector<DuckLakeProjectedColumn>> projection,
+    optional_ptr<identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>>> inlined_rows) {
 	D_ASSERT(!IsTransactionLocal(table.GetTableId()));
-	return std::move(GetTableChanges(table, start_snapshot, snapshot, "deletions", projection).deletions);
+	return std::move(GetTableChanges(table, start_snapshot, snapshot, "deletions", projection, inlined_rows).deletions);
 }
 
 // LCOV_EXCL_START

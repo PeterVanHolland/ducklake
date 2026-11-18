@@ -604,11 +604,15 @@ static void ApplyLocalFileChanges(DuckLakeTransaction &transaction, TableIndex t
 	}
 }
 
-void DuckLakeMultiFileList::AddInlinedDataTables(DuckLakeTransaction &transaction) const {
-	inlined_data_tables =
-	    read_info.table.GetInlinedDataTables(transaction, read_info.snapshot, read_info.include_local_changes);
+void DuckLakeMultiFileList::AddInlinedDataEntries(
+    const identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>> &inlined_rows) const {
 	for (auto &table : inlined_data_tables) {
-		files.push_back(InlinedDataEntry(table));
+		auto file_entry = InlinedDataEntry(table);
+		auto rows = inlined_rows.find(table.table_name);
+		if (rows != inlined_rows.end()) {
+			file_entry.inlined_rows = rows->second;
+		}
+		files.push_back(std::move(file_entry));
 	}
 }
 
@@ -767,14 +771,7 @@ void DuckLakeMultiFileList::GetFilesForTable() const {
 		transaction_row_start += file.row_count;
 		files.emplace_back(std::move(file_entry));
 	}
-	for (auto &table : inlined_data_tables) {
-		auto file_entry = InlinedDataEntry(table);
-		auto rows = inlined_rows.find(table.table_name);
-		if (rows != inlined_rows.end()) {
-			file_entry.inlined_rows = rows->second;
-		}
-		files.push_back(std::move(file_entry));
-	}
+	AddInlinedDataEntries(inlined_rows);
 	if (transaction_local_data) {
 		// we have transaction local inlined data - create the dummy file entry
 		DuckLakeFileListEntry file_entry;
@@ -792,10 +789,13 @@ void DuckLakeMultiFileList::GetTableInsertions() const {
 	auto transaction_ref = read_info.GetTransaction();
 	auto &transaction = *transaction_ref;
 	auto &metadata_manager = transaction.GetMetadataManager();
+	identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>> inlined_rows;
 	files = metadata_manager.GetTableInsertions(
 	    read_info.table, *read_info.start_snapshot, read_info.snapshot,
-	    has_projection ? optional_ptr<const vector<DuckLakeProjectedColumn>>(projection) : nullptr);
-	AddInlinedDataTables(transaction);
+	    has_projection ? optional_ptr<const vector<DuckLakeProjectedColumn>>(projection) : nullptr, &inlined_rows);
+	inlined_data_tables =
+	    read_info.table.GetInlinedDataTables(transaction, read_info.snapshot, read_info.include_local_changes);
+	AddInlinedDataEntries(inlined_rows);
 }
 
 void DuckLakeMultiFileList::GetTableDeletions() const {
@@ -805,9 +805,10 @@ void DuckLakeMultiFileList::GetTableDeletions() const {
 	auto transaction_ref = read_info.GetTransaction();
 	auto &transaction = *transaction_ref;
 	auto &metadata_manager = transaction.GetMetadataManager();
+	identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>> inlined_rows;
 	delete_scans = metadata_manager.GetTableDeletions(
 	    read_info.table, *read_info.start_snapshot, read_info.snapshot, read_info.include_local_changes,
-	    has_projection ? optional_ptr<const vector<DuckLakeProjectedColumn>>(projection) : nullptr);
+	    has_projection ? optional_ptr<const vector<DuckLakeProjectedColumn>>(projection) : nullptr, &inlined_rows);
 	for (auto &file : delete_scans) {
 		DuckLakeFileListEntry file_entry;
 		file_entry.file = file.file;
@@ -816,7 +817,9 @@ void DuckLakeMultiFileList::GetTableDeletions() const {
 		file_entry.mapping_id = file.mapping_id;
 		files.emplace_back(std::move(file_entry));
 	}
-	AddInlinedDataTables(transaction);
+	inlined_data_tables =
+	    read_info.table.GetInlinedDataTables(transaction, read_info.snapshot, read_info.include_local_changes);
+	AddInlinedDataEntries(inlined_rows);
 }
 
 bool DuckLakeMultiFileList::CanUseGlobalStats() const {

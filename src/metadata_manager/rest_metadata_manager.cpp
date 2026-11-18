@@ -365,6 +365,7 @@ static void SetProjection(REQUEST &request, const PLAN &plan) {
 	}
 	auto &projection = plan.projection;
 	if (projection.all) {
+		request.columns = RESTOptional<vector<RESTColumnIdentifier>>();
 		return;
 	}
 	vector<RESTColumnIdentifier> columns;
@@ -378,14 +379,21 @@ RESTMetadataManager::InlinedRowsPlan
 RESTMetadataManager::PlanInlinedRows(const RESTInlinedRowsKey &key,
                                      optional_ptr<const vector<DuckLakeProjectedColumn>> projection) {
 	auto wanted = RESTInlinedProjection::From(projection);
-	if (inlined_rows_cache.Covers(key, wanted)) {
-		return {false, wanted};
+	auto cached = inlined_rows_cache.FindResponse(key, wanted);
+	if (cached) {
+		return {false, wanted, std::move(cached)};
 	}
 	if (inlined_rows_cache.HasResponse(key)) {
 		// other scans of the table need other columns: get all of them, so that no scan has to ask again
 		wanted = RESTInlinedProjection();
 	}
-	return {true, wanted};
+	return {true, wanted, nullptr};
+}
+
+//! Whether a file list has a file that the response has not seen, which a flush of its rows wrote since
+static bool HasNewerFile(const RESTInlinedRowsResponse &response, optional_idx max_file_id) {
+	return max_file_id.IsValid() &&
+	       (!response.max_file_id.IsValid() || response.max_file_id.GetIndex() < max_file_id.GetIndex());
 }
 
 //! The largest data file id of a file list, a flush of the inlined rows writes a larger one
@@ -438,14 +446,12 @@ vector<DuckLakeFileListEntry> RESTMetadataManager::GetFilesForTable(
 			    inlined_rows_cache.Add(inlined_key, plan.projection, std::move(response.inlined_data), max_file_id);
 			break;
 		}
-		if (!inlined_rows_cache.HasNewerFile(inlined_key, max_file_id)) {
-			rows_response = inlined_rows_cache.FindResponse(inlined_key, plan.projection);
-			if (rows_response) {
-				break;
-			}
+		if (!HasNewerFile(*plan.cached, max_file_id)) {
+			rows_response = plan.cached;
+			break;
 		}
 		// a flush moved the cached rows into a file of this list, so the rows come with the files again
-		plan = InlinedRowsPlan {true, RESTInlinedProjection()};
+		plan = InlinedRowsPlan {true, RESTInlinedProjection(), nullptr};
 	}
 	if (inlined_rows) {
 		(*inlined_rows)[InlinedTableName(table.GetTableId(), snapshot.schema_version)] = CommittedRows(*rows_response);
@@ -487,10 +493,10 @@ RESTMetadataManager::GetExtendedFilesForTable(DuckLakeTableEntry &table, DuckLak
 			inlined_rows_cache.Add(inlined_key, plan.projection, std::move(response.inlined_data), max_file_id);
 			break;
 		}
-		if (!inlined_rows_cache.HasNewerFile(inlined_key, max_file_id)) {
+		if (!HasNewerFile(*plan.cached, max_file_id)) {
 			break;
 		}
-		plan = InlinedRowsPlan {true, RESTInlinedProjection()};
+		plan = InlinedRowsPlan {true, RESTInlinedProjection(), nullptr};
 	}
 	return std::move(response.extended_files);
 }

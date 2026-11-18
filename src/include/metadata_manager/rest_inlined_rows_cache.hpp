@@ -72,14 +72,10 @@ struct RESTInlinedRowsKey {
 //! file supersedes the older responses. A scan that holds a response can always finish reading it.
 class RESTInlinedRowsCache {
 public:
-	//! Whether a response has the columns
-	bool Covers(const RESTInlinedRowsKey &key, const RESTInlinedProjection &projection) const;
 	//! Whether any response is known
 	bool HasResponse(const RESTInlinedRowsKey &key) const;
 	//! Whether a table has inlined rows at a snapshot, if a response of any kind knows
 	bool HasInlinedRows(idx_t snapshot_id, idx_t table_id, bool &has_inlined_rows) const;
-	//! Whether a file list has a file that the responses have not seen, so a flush moved their rows into it
-	bool HasNewerFile(const RESTInlinedRowsKey &key, optional_idx max_file_id) const;
 	//! The newest response that has the columns
 	shared_ptr<RESTInlinedRowsResponse> FindResponse(const RESTInlinedRowsKey &key,
 	                                                 const RESTInlinedProjection &projection) const;

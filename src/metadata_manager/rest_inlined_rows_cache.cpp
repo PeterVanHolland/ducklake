@@ -88,20 +88,6 @@ static bool HasColumn(const RESTInlinedRows &rows, const string &column_to_read)
 	return false; // LCOV_EXCL_LINE: the cached rows have the columns of the file list of the scan
 }
 
-bool RESTInlinedRowsCache::Covers(const RESTInlinedRowsKey &key, const RESTInlinedProjection &projection) const {
-	lock_guard<mutex> guard(lock);
-	auto entry = responses.find(key);
-	if (entry == responses.end()) {
-		return false;
-	}
-	for (auto &response : entry->second) {
-		if (response->projection.Covers(projection)) {
-			return true;
-		}
-	}
-	return false;
-}
-
 bool RESTInlinedRowsCache::HasResponse(const RESTInlinedRowsKey &key) const {
 	lock_guard<mutex> guard(lock);
 	auto entry = responses.find(key);
@@ -118,23 +104,6 @@ bool RESTInlinedRowsCache::HasInlinedRows(idx_t snapshot_id, idx_t table_id, boo
 		return true;
 	}
 	return false;
-}
-
-bool RESTInlinedRowsCache::HasNewerFile(const RESTInlinedRowsKey &key, optional_idx max_file_id) const {
-	if (!max_file_id.IsValid()) {
-		return false;
-	}
-	lock_guard<mutex> guard(lock);
-	auto entry = responses.find(key);
-	if (entry == responses.end()) {
-		return true;
-	}
-	for (auto &response : entry->second) {
-		if (response->max_file_id.IsValid() && response->max_file_id.GetIndex() >= max_file_id.GetIndex()) {
-			return false;
-		}
-	}
-	return true;
 }
 
 shared_ptr<RESTInlinedRowsResponse> RESTInlinedRowsCache::FindResponse(const RESTInlinedRowsKey &key,

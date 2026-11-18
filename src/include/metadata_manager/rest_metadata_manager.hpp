@@ -128,6 +128,8 @@ private:
 	struct InlinedRowsPlan {
 		bool fetch;
 		RESTInlinedProjection projection;
+		//! The cached response a scan reads when it fetches no rows, pinned before it requests its file list
+		shared_ptr<RESTInlinedRowsResponse> cached;
 	};
 	InlinedRowsPlan PlanInlinedRows(const RESTInlinedRowsKey &key,
 	                                optional_ptr<const vector<DuckLakeProjectedColumn>> projection);

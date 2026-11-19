@@ -15,12 +15,26 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/types/blob.hpp"
+#include "duckdb/function/cast/default_casts.hpp"
 #include "storage/ducklake_geo_stats.hpp"
 #include <unordered_set>
 
 namespace duckdb {
 
 enum class HivePartitioningType { AUTOMATIC, YES, NO };
+
+//! The Parquet metadata renders a BLOB bound for display, DuckLake stores the hexadecimal form of written files
+static bool TryEncodeBlobBound(string &bound) {
+	string error;
+	CastParameters parameters(false, &error);
+	idx_t size;
+	if (!Blob::TryGetBlobSize(string_t(bound), size, parameters)) {
+		return false;
+	}
+	bound = DuckLakeColumnStats::EncodeBlobBound(Blob::ToBlob(string_t(bound), parameters));
+	return true;
+}
 
 struct DuckLakeAddDataFilesData : public TableFunctionData {
 	DuckLakeAddDataFilesData(DuckLakeCatalog &catalog, DuckLakeTableEntry &table) : catalog(catalog), table(table) {
@@ -438,6 +452,15 @@ FROM parquet_full_metadata(%s)
 				stats.max = stats_max.GetValue().GetString();
 				auto max_is_exact = stats_entry.GetChildValue<9>();
 				stats.max_is_exact = max_is_exact.IsValid() && max_is_exact.GetValue();
+			}
+			if (stats.type.id() == LogicalTypeId::BLOB) {
+				// a bound that cannot be read back is unknown
+				if (stats.has_min && !TryEncodeBlobBound(stats.min)) {
+					stats.has_min = false;
+				}
+				if (stats.has_max && !TryEncodeBlobBound(stats.max)) {
+					stats.has_max = false;
+				}
 			}
 			if (check_bounds) {
 				auto dropped_value = stats.CastBoundsFrom(column.bounds_type);

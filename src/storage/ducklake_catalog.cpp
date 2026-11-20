@@ -27,6 +27,9 @@
 #include "storage/ducklake_view_entry.hpp"
 #include "duckdb/main/database_path_and_type.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/common/sql_identifier.hpp"
+#include "duckdb/common/error_data.hpp"
+#include "storage/ducklake_metadata_manager.hpp"
 #include "duckdb/parser/expression/type_expression.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/logical_type_info.hpp"
@@ -153,6 +156,12 @@ idx_t EstimateFieldIdMemory(const DuckLakeFieldId &field_id) {
 	estimate += EstimateValueMemory(column_data.initial_default);
 	if (column_data.default_value) {
 		estimate += EstimateExpressionMemory(*column_data.default_value);
+	}
+	if (column_data.KeepsStoredDefault()) {
+		estimate += EstimateValueMemory(column_data.stored_default_value) +
+		            EstimateValueMemory(column_data.stored_default_type) +
+		            EstimateValueMemory(column_data.stored_default_dialect) +
+		            EstimateStringMemory(column_data.stored_default_reason);
 	}
 	for (const auto &child : field_id.Children()) {
 		estimate += EstimateFieldIdMemory(*child);
@@ -588,6 +597,46 @@ DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &t
 	return catalog_set;
 }
 
+//! A default DuckDB cannot evaluate fails the insert that needs it, and is written back as the catalog stores it
+static void KeepStoredDefault(DuckLakeColumnData &col_data, const DuckLakeColumnInfo &col, const string &reason) {
+	col_data.keeps_stored_default = true;
+	col_data.stored_default_value = col.default_value;
+	col_data.stored_default_type = col.stored_default_type;
+	col_data.stored_default_dialect = col.stored_default_dialect;
+	col_data.stored_default_reason = reason;
+	col_data.default_value = DuckLakeUtil::UnusableDefaultExpression(col.name, reason);
+}
+
+static void TransformColumnDefault(DuckLakeColumnData &col_data, const DuckLakeColumnInfo &col,
+                                   const LogicalType &col_type) {
+	if (!DuckLakeMetadataManager::IsDuckDBDialect(col.default_value_dialect)) {
+		KeepStoredDefault(col_data, col,
+		                  StringUtil::Format("it is written in the %s dialect (%s)", col.default_value_dialect,
+		                                     col.default_value.GetValue<string>()));
+		return;
+	}
+	if (col.default_value_type == "literal") {
+		col_data.default_value = DuckLakeUtil::LiteralDefaultExpression(col.default_value, col_type);
+		return;
+	}
+	if (col.default_value_type != "expression") {
+		KeepStoredDefault(col_data, col,
+		                  col.default_value_type.empty()
+		                      ? string("it has no default type")
+		                      : StringUtil::Format("its default type %s is unknown", col.default_value_type));
+		return;
+	}
+	auto expression = col.default_value.GetValue<string>();
+	try {
+		col_data.default_value = Parser::GetBuiltinParser().ParseSingleExpression(expression);
+	} catch (std::exception &ex) {
+		// the parser or the transformer rejects the text
+		KeepStoredDefault(
+		    col_data, col,
+		    StringUtil::Format("it cannot be parsed as DuckDB SQL (%s): %s", expression, ErrorData(ex).RawMessage()));
+	}
+}
+
 //! `parent_path` is the quoted path of the enclosing column (e.g. "s"), empty for a top-level column
 static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo &col, const string &parent_path = "") {
 	DuckLakeColumnData col_data;
@@ -601,14 +650,7 @@ static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo 
 		}
 		col_data.initial_default = col.initial_default.DefaultCastAs(col_type);
 		if (!col.default_value.IsNull()) {
-			if (col.default_value_type == "literal") {
-				col_data.default_value = DuckLakeUtil::LiteralDefaultExpression(col.default_value, col_type);
-			} else if (col.default_value_type == "expression") {
-				col_data.default_value =
-				    Parser::GetBuiltinParser().ParseSingleExpression(col.default_value.GetValue<string>());
-			} else {
-				throw NotImplementedException("Column type %s is not supported", col.default_value_type);
-			}
+			TransformColumnDefault(col_data, col, col_type);
 		}
 		return make_uniq<DuckLakeFieldId>(std::move(col_data), col.name, std::move(col_type));
 	}

@@ -1,0 +1,315 @@
+# name: test/sql/default/foreign_default_dialect.test
+# description: a column default in another SQL dialect, an unparsable one or one of an unknown type fails only the insert that needs it
+# group: [default]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/foreign_default_dialect', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t (id INTEGER, a INTEGER DEFAULT 5)
+
+statement ok
+CREATE TABLE lake.u (id INTEGER)
+
+statement ok
+INSERT INTO lake.t (id) VALUES (1)
+
+statement ok
+INSERT INTO lake.u VALUES (1)
+
+query I
+SELECT default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a' AND end_snapshot IS NULL
+----
+duckdb
+
+# another engine writes the default in its own dialect
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_column SET default_value = '7 DIV 2', default_value_type = 'expression', default_value_dialect = 'spark' WHERE column_name = 'a'
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/foreign_default_dialect', DATA_INLINING_ROW_LIMIT 0)
+
+# the catalog loads and reads work
+query I
+SELECT id FROM lake.u
+----
+1
+
+query II
+SELECT id, a FROM lake.t
+----
+1	5
+
+# only an insert that needs the default fails, naming the column and the dialect
+statement error
+INSERT INTO lake.t (id) VALUES (2)
+----
+DuckLake cannot use the default of column a: it is written in the spark dialect (7 DIV 2)
+
+statement ok
+INSERT INTO lake.t (id, a) VALUES (2, 7)
+
+# a schema change of the table keeps the default as the other engine wrote it
+statement ok
+ALTER TABLE lake.t ADD COLUMN b INTEGER
+
+query III
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a' AND end_snapshot IS NULL
+----
+7 DIV 2	expression	spark
+
+query III
+SELECT id, a, b FROM lake.t ORDER BY id
+----
+1	5	NULL
+2	7	NULL
+
+# a macro of the same name as the built-in error function does not stand in for it, and can be dropped
+statement ok
+CREATE MACRO error(x) AS 99
+
+statement ok
+CREATE MACRO lake.error(x) AS 99
+
+statement error
+INSERT INTO lake.t (id) VALUES (3)
+----
+it is written in the spark dialect (7 DIV 2)
+
+statement ok
+DROP MACRO error
+
+statement ok
+DROP MACRO lake.error
+
+# the error names the column by its current name, before the catalog is read again as well
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a TO renamed
+
+statement error
+INSERT INTO lake.t (id) VALUES (3)
+----
+DuckLake cannot use the default of column renamed: it is written in the spark dialect (7 DIV 2)
+
+statement ok
+ROLLBACK
+
+# renaming and promoting the column keeps the default as the other engine wrote it
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a TO a2
+
+statement ok
+ALTER TABLE lake.t ALTER COLUMN a2 TYPE BIGINT
+
+query III
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
+----
+7 DIV 2	expression	spark
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/foreign_default_dialect', DATA_INLINING_ROW_LIMIT 0)
+
+statement error
+INSERT INTO lake.t (id) VALUES (3)
+----
+DuckLake cannot use the default of column a2: it is written in the spark dialect (7 DIV 2)
+
+query III
+SELECT id, a2, b FROM lake.t ORDER BY id
+----
+1	5	NULL
+2	7	NULL
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a2 TO a
+
+# a default type with a quote, or none at all, is kept as well
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_column SET default_value = '3', default_value_type = 'spark''s literal', default_value_dialect = 'spark' WHERE column_name = 'a'
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/foreign_default_dialect', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a TO a2
+
+query III
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
+----
+3	spark's literal	spark
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a2 TO a
+
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_column SET default_value = '3', default_value_type = NULL, default_value_dialect = NULL WHERE column_name = 'a'
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/foreign_default_dialect', DATA_INLINING_ROW_LIMIT 0)
+
+statement error
+INSERT INTO lake.t (id) VALUES (3)
+----
+it has no default type
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a TO a2
+
+query III
+SELECT default_value, default_value_type IS NULL, default_value_dialect IS NULL FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
+----
+3	true	true
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a2 TO a
+
+# a literal of another dialect is treated the same
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_column SET default_value = '3', default_value_type = 'literal', default_value_dialect = 'spark' WHERE column_name = 'a'
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/foreign_default_dialect', DATA_INLINING_ROW_LIMIT 0)
+
+statement error
+INSERT INTO lake.t (id) VALUES (3)
+----
+it is written in the spark dialect (3)
+
+# an unknown default type fails only the insert that needs it
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_column SET default_value = '3', default_value_type = 'spark_literal', default_value_dialect = 'spark' WHERE column_name = 'a'
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/foreign_default_dialect', DATA_INLINING_ROW_LIMIT 0)
+
+query I
+SELECT id FROM lake.u
+----
+1
+
+statement error
+INSERT INTO lake.t (id) VALUES (3)
+----
+it is written in the spark dialect (3)
+
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_column SET default_value = '3', default_value_type = 'spark_literal', default_value_dialect = 'duckdb' WHERE column_name = 'a'
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/foreign_default_dialect', DATA_INLINING_ROW_LIMIT 0)
+
+statement error
+INSERT INTO lake.t (id) VALUES (3)
+----
+its default type spark_literal is unknown
+
+# a DuckDB expression that does not parse fails only the insert that needs it, and a schema change keeps it
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_column SET default_value = '7 DIV 2', default_value_type = 'expression', default_value_dialect = 'duckdb' WHERE column_name = 'a'
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/foreign_default_dialect', DATA_INLINING_ROW_LIMIT 0)
+
+query I
+SELECT count(*) FROM lake.t
+----
+2
+
+statement error
+INSERT INTO lake.t (id) VALUES (3)
+----
+it cannot be parsed as DuckDB SQL (7 DIV 2)
+
+statement ok
+ALTER TABLE lake.t DROP COLUMN b
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a TO a2
+
+query III
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
+----
+7 DIV 2	expression	duckdb
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a2 TO a
+
+# an expression the transformer rejects is kept the same way, with the spelling of its dialect
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_column SET default_value = 'ARRAY(SELECT 1, 2)', default_value_type = 'expression', default_value_dialect = 'DuckDB' WHERE column_name = 'a'
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/foreign_default_dialect', DATA_INLINING_ROW_LIMIT 0)
+
+statement error
+INSERT INTO lake.t (id) VALUES (3)
+----
+it cannot be parsed as DuckDB SQL (ARRAY(SELECT 1, 2))
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a TO a2
+
+query III
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
+----
+ARRAY(SELECT 1, 2)	expression	DuckDB
+
+statement ok
+ALTER TABLE lake.t RENAME COLUMN a2 TO a
+
+# a default set in DuckDB works again
+statement ok
+ALTER TABLE lake.t ALTER COLUMN a SET DEFAULT 9
+
+statement ok
+INSERT INTO lake.t (id) VALUES (3)
+
+query II
+SELECT id, a FROM lake.t ORDER BY id
+----
+1	5
+2	7
+3	9
+
+query III
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a' AND end_snapshot IS NULL
+----
+9	literal	duckdb

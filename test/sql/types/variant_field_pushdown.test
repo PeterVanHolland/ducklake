@@ -1,0 +1,324 @@
+# name: test/sql/types/variant_field_pushdown.test
+# description: Reading one field of a VARIANT column reads only that field, from files and inlined rows
+# group: [types]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/variant_field_pushdown', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t AS
+SELECT i AS id,
+	{'k': 'key-' || (i % 1000)::VARCHAR, 'pad': repeat(md5(i::VARCHAR), 4), 'n': i}::VARIANT AS v,
+	{'k': 'key-' || (i % 1000)::VARCHAR, 'pad': repeat(md5(i::VARCHAR), 4), 'n': i} AS s
+FROM range(100000) t(i)
+
+statement ok
+SET VARIABLE f = (SELECT data_file FROM ducklake_list_files('dl', 't'))
+
+statement ok
+SET enable_external_file_cache = false
+
+statement ok
+CREATE MACRO parquet_bytes_read() AS (
+	SELECT coalesce(sum(bytes), 0) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'READ' AND path LIKE '%.parquet')
+
+statement ok
+CALL enable_logging('FileSystem', storage = 'memory')
+
+# read_parquet reads the field only
+query I
+SELECT sum(v.n::BIGINT) FROM read_parquet(getvariable('f'))
+----
+4999950000
+
+statement ok
+SET VARIABLE field_bytes = parquet_bytes_read()
+
+statement ok
+CALL truncate_duckdb_logs()
+
+query I
+SELECT sum(v.n::BIGINT) FROM dl.t
+----
+4999950000
+
+query I
+SELECT parquet_bytes_read() <= 2 * getvariable('field_bytes')
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs()
+
+query I
+SELECT count(*) FROM read_parquet(getvariable('f')) WHERE v.k::VARCHAR = 'key-42'
+----
+100
+
+statement ok
+SET VARIABLE field_bytes = parquet_bytes_read()
+
+statement ok
+CALL truncate_duckdb_logs()
+
+query I
+SELECT count(*) FROM dl.t WHERE v.k::VARCHAR = 'key-42'
+----
+100
+
+query I
+SELECT parquet_bytes_read() <= 2 * getvariable('field_bytes')
+----
+true
+
+statement ok
+CALL disable_logging()
+
+query III
+SELECT sum(s.n), count(*) FILTER (WHERE s.k = 'key-42'), max(s.k) FROM dl.t
+----
+4999950000	100	key-999
+
+query I
+SELECT count(*) FROM dl.t WHERE s.n > 99990
+----
+9
+
+# a column that the first file lacks
+statement ok
+ALTER TABLE dl.t ADD COLUMN w VARIANT
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN s2 STRUCT(x INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES
+	(100000, {'n': 1}::VARIANT, {'k': 'new', 'pad': '', 'n': 1}, {'x': 5}::VARIANT, {'x': 5}),
+	(100001, {'n': 2}::VARIANT, {'k': 'new', 'pad': '', 'n': 2}, NULL, NULL)
+
+query III
+SELECT count(w.x), sum(w.x::INTEGER), sum(s2.x) FROM dl.t
+----
+1	5	5
+
+query I
+SELECT count(*) FROM dl.t WHERE s2.x IS NULL
+----
+100001
+
+# a field added with a default is NULL where its struct is NULL
+statement ok
+ALTER TABLE dl.t ADD COLUMN s2.y INTEGER DEFAULT 7
+
+query II
+SELECT id, s2.y FROM dl.t WHERE id >= 99999 ORDER BY id
+----
+99999	NULL
+100000	7
+100001	NULL
+
+query II
+SELECT id, s2 FROM dl.t WHERE id >= 99999 ORDER BY id
+----
+99999	NULL
+100000	{'x': 5, 'y': 7}
+100001	NULL
+
+# renamed and dropped fields
+statement ok
+ALTER TABLE dl.t RENAME COLUMN s.k TO key
+
+statement ok
+ALTER TABLE dl.t DROP COLUMN s.pad
+
+query II
+SELECT count(*) FILTER (WHERE s.key = 'key-42'), sum(s.n) FROM dl.t
+----
+100	4999950003
+
+# a filter on a cast of a field is not compared with the column's stats
+statement ok
+CREATE TABLE dl.c(v VARIANT)
+
+statement ok
+INSERT INTO dl.c SELECT {'n': i}::VARIANT FROM range(2, 13) t(i)
+
+query I
+SELECT count(*) FROM dl.c WHERE v.n::VARCHAR = '5'
+----
+1
+
+query I
+SELECT count(*) FROM dl.c WHERE v.x IS NULL
+----
+11
+
+query I
+SELECT count(*) FROM dl.c WHERE v.n::INTEGER > 11
+----
+1
+
+# inlined rows, committed and in the transaction
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10)
+
+statement ok
+CREATE TABLE dl.inl(v VARIANT, s STRUCT(k VARCHAR, n INTEGER))
+
+statement ok
+INSERT INTO dl.inl VALUES ({'k': 'a', 'n': 1}::VARIANT, {'k': 'a', 'n': 1}), ({'k': 'b', 'n': 2}::VARIANT, {'k': 'b', 'n': 2})
+
+query IIII
+SELECT v.k::VARCHAR, v.n::INTEGER, s.k, s.n FROM dl.inl ORDER BY s.n
+----
+a	1	a	1
+b	2	b	2
+
+query I
+SELECT v.n::INTEGER FROM dl.inl WHERE v.k::VARCHAR = 'b'
+----
+2
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO dl.inl VALUES ({'k': 'c', 'n': 3}::VARIANT, {'k': 'c', 'n': 3})
+
+query IIII
+SELECT v.k::VARCHAR, v.n::INTEGER, s.k, s.n FROM dl.inl ORDER BY s.n
+----
+a	1	a	1
+b	2	b	2
+c	3	c	3
+
+query II
+SELECT v.n::INTEGER, s.k FROM dl.inl WHERE s.n = 3
+----
+3	c
+
+statement ok
+COMMIT
+
+query IIII
+SELECT v.k::VARCHAR, v.n::INTEGER, s.k, s.n FROM dl.inl ORDER BY s.n
+----
+a	1	a	1
+b	2	b	2
+c	3	c	3
+
+# a cast in the extract does not see inlined rows deleted in the transaction
+statement ok
+CREATE TABLE dl.d(id INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO dl.d VALUES (0, {'x': 'oops'}::VARIANT), (1, {'x': '42'}::VARIANT)
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM dl.d WHERE id = 0
+
+query II
+SELECT rowid, v.x::INTEGER FROM dl.d
+----
+1	42
+
+statement ok
+INSERT INTO dl.d VALUES (2, {'x': 'bad'}::VARIANT), (3, {'x': '7'}::VARIANT)
+
+statement ok
+DELETE FROM dl.d WHERE id = 2
+
+query III
+SELECT id, rowid, v.x::INTEGER FROM dl.d ORDER BY id
+----
+1	1	42
+3	1000000000000000001	7
+
+statement ok
+COMMIT
+
+query II
+SELECT id, v.x::INTEGER FROM dl.d ORDER BY id
+----
+1	42
+3	7
+
+# nor the inlined rows that other filters remove
+statement ok
+INSERT INTO dl.d VALUES (4, {'x': 'bad'}::VARIANT)
+
+query II
+SELECT id, v.x::INTEGER FROM dl.d WHERE id < 4 ORDER BY id
+----
+1	42
+3	7
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO dl.d VALUES (5, {'x': 'worse'}::VARIANT), (6, {'x': '8'}::VARIANT)
+
+query II
+SELECT id, v.x::INTEGER FROM dl.d WHERE id NOT IN (4, 5) AND v.x::INTEGER > 7 ORDER BY id
+----
+1	42
+6	8
+
+statement ok
+ROLLBACK
+
+# nor the inlined rows that a filter on another field removes
+statement ok
+CREATE TABLE dl.e(v VARIANT)
+
+statement ok
+INSERT INTO dl.e VALUES ({'keep': false, 'n': 'bad'}::VARIANT), ({'keep': true, 'n': '42'}::VARIANT)
+
+query I
+SELECT v.n::INTEGER FROM dl.e WHERE v.keep::BOOLEAN
+----
+42
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO dl.e VALUES ({'keep': false, 'n': 'worse'}::VARIANT), ({'keep': true, 'n': '7'}::VARIANT)
+
+query I
+SELECT v.n::INTEGER FROM dl.e WHERE v.keep::BOOLEAN ORDER BY 1
+----
+7
+42
+
+statement ok
+ROLLBACK
+
+# inlined rows next to a data file
+statement ok
+INSERT INTO dl.t VALUES (100002, {'n': 3}::VARIANT, {'key': 'inl', 'n': 3}, {'x': 6}::VARIANT, {'x': 6, 'y': 8})
+
+query IIII
+SELECT sum(v.n::BIGINT), sum(s.n), sum(w.x::INTEGER), sum(s2.y) FROM dl.t
+----
+4999950006	4999950006	11	15
+
+statement ok
+SET VARIABLE last_snapshot = (SELECT max(snapshot_id) FROM dl.snapshots())
+
+query III
+SELECT change_type, v.n::INTEGER, s.key FROM dl.table_changes('t', getvariable('last_snapshot'), getvariable('last_snapshot'))
+----
+insert	3	inl

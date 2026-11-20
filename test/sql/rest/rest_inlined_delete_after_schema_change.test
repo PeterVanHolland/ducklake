@@ -1,0 +1,81 @@
+# name: test/sql/rest/rest_inlined_delete_after_schema_change.test
+# description: A REST transaction keeps hiding an inlined row it deleted when the table has two inlined data tables
+# group: [rest]
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.acc(id INTEGER, bal INTEGER, note VARCHAR)
+
+statement ok
+INSERT INTO dl.acc SELECT range + 1, 100, 'init' FROM range(8)
+
+# the schema change opens a new inlined data table, which holds the new versions of rows 1 and 6
+statement ok
+ALTER TABLE dl.acc ADD COLUMN x INTEGER DEFAULT 1
+
+statement ok
+UPDATE dl.acc SET bal = bal + 1 WHERE id IN (1, 6)
+
+query II
+SELECT count(*), sum(bal) FROM dl.acc
+----
+8	802
+
+statement ok
+BEGIN
+
+# row 6 is in the newer inlined data table, row 8 in the older one
+statement ok
+UPDATE dl.acc SET bal = bal - 12 WHERE id = 6
+
+statement ok
+DELETE FROM dl.acc WHERE id = 8
+
+query IIII
+SELECT id, bal, note, rowid FROM dl.acc WHERE id IN (6, 8) ORDER BY id
+----
+6	89	init	5
+
+# the deleted row is gone for the update too
+query I
+UPDATE dl.acc SET note = 'back' WHERE id = 8
+----
+0
+
+query IIII
+SELECT id, bal, note, rowid FROM dl.acc WHERE id IN (6, 8) ORDER BY id
+----
+6	89	init	5
+
+query II
+SELECT count(*), sum(bal) FROM dl.acc
+----
+7	690
+
+statement ok
+COMMIT
+
+query II
+SELECT count(*), sum(bal) FROM dl.acc
+----
+7	690
+
+query IIII
+SELECT id, bal, note, rowid FROM dl.acc WHERE id IN (6, 8) ORDER BY id
+----
+6	89	init	5
+
+# the server reads the same rows from its catalog
+query II rest_db:rest_server_con
+SELECT count(*), sum(bal) FROM rest_lake.acc
+----
+7	690
+
+statement ok
+DETACH dl
+
+include test/template/rest_teardown.test_template

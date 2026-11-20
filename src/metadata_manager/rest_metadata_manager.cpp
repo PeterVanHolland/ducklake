@@ -681,7 +681,7 @@ void RESTMetadataManager::DeleteSnapshots(const vector<DuckLakeSnapshotInfo> &sn
 }
 // LCOV_EXCL_STOP
 
-vector<DuckLakeSnapshotTagInfo> RESTMetadataManager::GetSnapshotTags(bool with_snapshot_time) {
+vector<DuckLakeSnapshotTagInfo> RESTMetadataManager::GetSnapshotTagsAt(idx_t snapshot_id, bool with_snapshot_time) {
 	throw NotImplementedException("DuckLake REST catalogs do not support snapshot tags");
 }
 

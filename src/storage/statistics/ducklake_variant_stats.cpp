@@ -1,3 +1,5 @@
+#include "common/ducklake_json.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "storage/ducklake_variant_stats.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/json_document.hpp"
@@ -21,8 +23,9 @@ DuckLakeVariantStats::DuckLakeVariantStats(LogicalType shredded_type_p, DuckLake
 }
 
 void DuckLakeColumnVariantStats::Merge(const DuckLakeColumnExtraStats &new_stats_p) {
+	// the merged statistics replace the invalid ones, with no shredded fields
+	invalid_reason.clear();
 	if (shredded_field_stats.empty()) {
-		// nothing to merge
 		return;
 	}
 	auto &new_stats = new_stats_p.Cast<DuckLakeColumnVariantStats>();
@@ -30,16 +33,13 @@ void DuckLakeColumnVariantStats::Merge(const DuckLakeColumnExtraStats &new_stats
 	for (auto &entry : shredded_field_stats) {
 		auto other_entry = new_stats.shredded_field_stats.find(entry.first);
 		if (other_entry == new_stats.shredded_field_stats.end()) {
-			// no stats - erase it
 			stats_to_erase.push_back(entry.first);
 			continue;
 		}
 		if (entry.second.shredded_type != other_entry->second.shredded_type) {
-			// incompatible shredded types - drop the field
 			stats_to_erase.push_back(entry.first);
 			continue;
 		}
-		// merge stats
 		entry.second.field_stats.MergeStats(other_entry->second.field_stats);
 	}
 	// erase any stats that do not occur in both
@@ -65,11 +65,29 @@ void DuckLakeColumnVariantStats::Serialize(DuckLakeColumnStatsInfo &column_stats
 }
 
 static bool TryGetCount(const JSONValue &obj, const string &key, idx_t &result) {
-	auto count_val = obj.GetMember(key);
-	if (!count_val.IsInteger()) {
+	auto member = obj.GetMember(key);
+	if (!member.IsValid()) {
 		return false;
 	}
-	result = count_val.GetUnsignedInteger();
+	result = DuckLakeJSON::GetCount(key, member);
+	return true;
+}
+
+static bool TryGetBoolean(const JSONValue &obj, const string &key, bool &result) {
+	auto member = obj.GetMember(key);
+	if (!member.IsValid()) {
+		return false;
+	}
+	result = DuckLakeJSON::GetBoolean(key, member);
+	return true;
+}
+
+static bool TryGetString(const JSONValue &obj, const string &key, string &result) {
+	auto member = obj.GetMember(key);
+	if (!member.IsValid()) {
+		return false;
+	}
+	result = DuckLakeJSON::GetString(key, member);
 	return true;
 }
 
@@ -80,59 +98,35 @@ static DuckLakeVariantStats DeserializeShreddedStats(const LogicalType &shredded
 	auto &stats = variant_stats.field_stats;
 	stats.has_null_count = TryGetCount(obj, "null_count", stats.null_count);
 	stats.has_num_values = TryGetCount(obj, "num_values", stats.num_values);
+	if (stats.has_null_count && stats.has_num_values && stats.null_count > stats.num_values) {
+		throw InvalidInputException("\"null_count\" exceeds \"num_values\"");
+	}
 	TryGetCount(obj, "column_size_bytes", stats.column_size_bytes);
 
-	auto min_val = obj.GetMember("min");
-	if (min_val.IsValid()) {
-		stats.has_min = true;
-		stats.min = min_val.GetString();
-	}
+	stats.has_min = TryGetString(obj, "min", stats.min);
+	stats.has_max = TryGetString(obj, "max", stats.max);
+	stats.has_contains_nan = TryGetBoolean(obj, "contains_nan", stats.contains_nan);
 
-	auto max_val = obj.GetMember("max");
-	if (max_val.IsValid()) {
-		stats.has_max = true;
-		stats.max = max_val.GetString();
+	bool any_valid;
+	if (TryGetBoolean(obj, "any_valid", any_valid)) {
+		if (!any_valid && stats.has_null_count && stats.has_num_values && stats.num_values > stats.null_count) {
+			throw InvalidInputException("\"any_valid\" is false but the counts show valid values");
+		}
+		stats.any_valid = any_valid;
 	}
-
-	auto contains_nan_val = obj.GetMember("contains_nan");
-	if (contains_nan_val.IsValid()) {
-		stats.has_contains_nan = true;
-		stats.contains_nan = contains_nan_val.GetBoolean();
+	if (!stats.AnyValid() && (stats.has_min || stats.has_max)) {
+		throw InvalidInputException("The field has bounds but no valid values");
 	}
+	stats.DropReversedBounds();
 
-	auto any_valid_val = obj.GetMember("any_valid");
-	if (any_valid_val.IsValid()) {
-		stats.any_valid = any_valid_val.GetBoolean();
-	}
-
-	auto extra_stats_val = obj.GetMember("extra_stats");
-	if (stats.extra_stats && extra_stats_val.IsValid()) {
+	string extra_stats;
+	if (stats.extra_stats && TryGetString(obj, "extra_stats", extra_stats)) {
 		// LCOV_EXCL_START
-		stats.extra_stats->Deserialize(extra_stats_val.GetString());
+		stats.extra_stats->Deserialize(extra_stats);
 		// LCOV_EXCL_STOP
 	}
 
 	return variant_stats;
-}
-
-void DuckLakeColumnVariantStats::Deserialize(const string &stats) {
-	JSONParseError error;
-	auto doc = JSONDocument::TryParse(stats.c_str(), stats.size(), error);
-	if (!doc) {
-		throw InvalidInputException("Failed to parse VARIANT stats JSON \"%s\"", stats);
-	}
-	doc->GetRoot().IterateArray([&](JSONValue obj) {
-		auto field_name_val = obj.GetMember("field_name");
-		if (!field_name_val.IsValid()) {
-			throw InvalidInputException("Missing field_name in VARIANT stats JSON \"%s\"", stats);
-		}
-		auto shredded_type_val = obj.GetMember("shredded_type");
-		if (!shredded_type_val.IsValid()) {
-			throw InvalidInputException("Missing shredded_type in VARIANT stats JSON \"%s\"", stats);
-		}
-		auto shredded_type = DuckLakeTypes::FromString(shredded_type_val.GetString());
-		shredded_field_stats.emplace(field_name_val.GetString(), DeserializeShreddedStats(shredded_type, obj));
-	});
 }
 
 static JSONMutableValue SerializeShreddedStats(JSONWriter &writer, const string &field_name,
@@ -201,25 +195,25 @@ struct NestedVariantStats {
 
 	LogicalType ToType(const unordered_map<string, DuckLakeVariantStats> &field_stats) {
 		if (!full_field_name.empty()) {
-			// field, find it in the stats
 			auto entry = field_stats.find(full_field_name);
 			if (entry == field_stats.end()) {
 				throw InternalException("NestedVariantStats failed to find field name");
+			}
+			if (!child_stats.empty()) {
+				throw InvalidInputException("Field \"%s\" has shredded statistics and child fields", full_field_name);
 			}
 			return entry->second.shredded_type;
 		}
 		if (child_names.empty()) {
 			// list
 			if (child_stats.size() != 1) {
-				throw InternalException("List should have a single child");
+				throw InvalidInputException("A list field needs exactly its element field in the VARIANT stats");
 			}
 			return LogicalType::LIST(child_stats[0].ToType(field_stats));
 		}
 		if (child_names.size() != child_stats.size()) {
-			throw InternalException("Unaligned struct stats");
+			throw InvalidInputException("The VARIANT stats mix a list element and struct fields in one field");
 		}
-		// not a leaf - this is a struct
-		// recurse into the children
 		child_list_t<LogicalType> children;
 		for (idx_t i = 0; i < child_names.size(); i++) {
 			children.emplace_back(child_names[i], child_stats[i].ToType(field_stats));
@@ -233,15 +227,13 @@ struct NestedVariantStats {
 		auto &untyped_value_index_stats = StructStats::GetChildStats(main_stats, VariantStats::UNTYPED_VALUE_INDEX);
 		untyped_value_index_stats.SetHasNull();
 		if (!full_field_name.empty()) {
-			// field, find it in the stats
 			auto entry = field_stats.find(full_field_name);
 			if (entry == field_stats.end()) {
 				throw InternalException("NestedVariantStats failed to find field name");
 			}
-			auto field_stats = entry->second.field_stats.ToStats();
-			if (field_stats) {
-				stats.Copy(*field_stats);
-			}
+			// unknown statistics when the bounds do not parse
+			StructStats::SetChildStats(main_stats, VariantStats::TYPED_VALUE_INDEX,
+			                           entry->second.field_stats.ToStats());
 			return;
 		}
 		if (child_names.empty()) {
@@ -249,7 +241,6 @@ struct NestedVariantStats {
 			child_stats[0].ConvertStats(field_stats, ListStats::GetChildStats(stats));
 			return;
 		}
-		// struct - recurse into children
 		for (idx_t struct_idx = 0; struct_idx < child_stats.size(); struct_idx++) {
 			auto &struct_child_stats = StructStats::GetChildStats(stats, struct_idx);
 			child_stats[struct_idx].ConvertStats(field_stats, struct_child_stats);
@@ -257,16 +248,22 @@ struct NestedVariantStats {
 	}
 };
 
+//! The tree of the stored paths is walked recursively, so their depth is bounded
+static constexpr idx_t MAX_SHREDDED_FIELD_DEPTH = 1000;
+
 void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats> stats) {
 	if (field_name == "root") {
-		// special case: top-level variant - no need to parse
 		stats.get().full_field_name = field_name;
 		return;
 	}
 	idx_t pos = 0;
+	idx_t depth = 0;
 	while (pos < field_name.size()) {
+		if (++depth > MAX_SHREDDED_FIELD_DEPTH) {
+			throw InvalidInputException("Field %s is nested too deeply", field_name);
+		}
 		if (field_name[pos] != '"') {
-			// find the dot
+			// an unquoted segment runs to the next dot
 			idx_t start_pos = pos;
 			for (; pos < field_name.size(); pos++) {
 				if (field_name[pos] == '.') {
@@ -277,51 +274,48 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 			if (subfield != "element") {
 				throw InvalidInputException("Invalid unquoted field %s, expected element or root", subfield);
 			}
+			if (!stats.get().child_names.empty()) {
+				throw InvalidInputException("Field %s mixes a list element with struct fields", field_name);
+			}
 			if (stats.get().child_stats.empty()) {
 				stats.get().child_stats.emplace_back();
 			}
 			stats = stats.get().child_stats.back();
 			if (pos >= field_name.size()) {
-				// leaf level list - push field name into child and finish
 				stats.get().full_field_name = field_name;
 				return;
 			} else {
-				// nested list - continue
 				pos++;
 			}
 			continue;
 		}
-		// quoted field - this is a field name
+		// a quoted segment is a struct field name
 		string current_field_name;
 		if (!StringUtil::TryParseQuotedString(field_name, pos, current_field_name)) {
 			break;
 		}
-		// we have the current field name
-		// check if the field name already exists
+		// the field may already have a node from an earlier path
 		auto &child_names = stats.get().child_names;
 		auto &child_stats = stats.get().child_stats;
+		if (child_names.size() != child_stats.size()) {
+			throw InvalidInputException("Field %s mixes a list element with struct fields", field_name);
+		}
 		idx_t struct_idx;
 		for (struct_idx = 0; struct_idx < child_names.size(); struct_idx++) {
 			if (child_names[struct_idx] == current_field_name) {
-				// found it!
 				break;
 			}
 		}
 		if (struct_idx >= child_names.size()) {
-			// did not find it - push the field name
 			child_names.push_back(current_field_name);
 			child_stats.emplace_back();
 		}
 		stats = child_stats[struct_idx];
-		// have we reached the end?
 		if (pos >= field_name.size()) {
-			// we have! add the full field name and return
 			stats.get().full_field_name = field_name;
 			return;
 		} else {
-			// we have not - this is nested - continue with the next field name
 			if (field_name[pos] != '.') {
-				// invalid format - expected a dot here
 				break;
 			}
 			pos++;
@@ -330,18 +324,77 @@ void ToNestedVariantStats(const string &field_name, reference<NestedVariantStats
 	throw InvalidInputException("Incorrectly formatted field name %s", field_name);
 }
 
+static LogicalType BuildShreddedType(const unordered_map<string, DuckLakeVariantStats> &field_stats,
+                                     NestedVariantStats &nested_stats) {
+	for (auto &entry : field_stats) {
+		ToNestedVariantStats(entry.first, nested_stats);
+	}
+	return nested_stats.ToType(field_stats);
+}
+
+static void ParseShreddedFieldStats(const string &stats, unordered_map<string, DuckLakeVariantStats> &result) {
+	JSONParseError error;
+	auto doc = JSONDocument::TryParse(stats.c_str(), stats.size(), error);
+	if (!doc || !doc->GetRoot().IsArray()) {
+		throw InvalidInputException("VARIANT stats JSON \"%s\" is not an array of fields", stats);
+	}
+	doc->GetRoot().IterateArray([&](JSONValue obj) {
+		auto field_name_val = obj.GetMember("field_name");
+		auto shredded_type_val = obj.GetMember("shredded_type");
+		if (!field_name_val.IsString() || !shredded_type_val.IsString()) {
+			throw InvalidInputException(
+			    "A field without a field_name and shredded_type string in VARIANT stats JSON \"%s\"", stats);
+		}
+		auto field_name = field_name_val.GetString();
+		auto type_string = shredded_type_val.GetString();
+		LogicalType shredded_type;
+		try {
+			shredded_type = DuckLakeTypes::FromString(type_string);
+		} catch (InvalidInputException &ex) {
+			throw InvalidInputException("Field \"%s\" has the shredded type \"%s\" in VARIANT stats JSON \"%s\", %s",
+			                            field_name, type_string, stats, ErrorData(ex).RawMessage());
+		}
+		// nested children are stored as fields of their own
+		if (!shredded_type.IsComplete()) {
+			throw InvalidInputException("Field \"%s\" has the incomplete shredded type \"%s\" in VARIANT stats JSON "
+			                            "\"%s\", a nested type has its children as fields of their own",
+			                            field_name, type_string, stats);
+		}
+		try {
+			if (!result.emplace(field_name, DeserializeShreddedStats(shredded_type, obj)).second) {
+				throw InvalidInputException("the field appears twice");
+			}
+		} catch (InvalidInputException &ex) {
+			throw InvalidInputException("Field \"%s\" in VARIANT stats JSON \"%s\", %s", field_name, stats,
+			                            ErrorData(ex).RawMessage());
+		}
+	});
+	if (!result.empty()) {
+		NestedVariantStats nested_stats;
+		BuildShreddedType(result, nested_stats);
+	}
+}
+
+void DuckLakeColumnVariantStats::Deserialize(const string &stats) {
+	// defer invalid statistics errors until the column is read
+	try {
+		ParseShreddedFieldStats(stats, shredded_field_stats);
+	} catch (InvalidInputException &ex) {
+		shredded_field_stats.clear();
+		invalid_reason = ErrorData(ex).RawMessage();
+	}
+}
+
 unique_ptr<BaseStatistics> DuckLakeColumnVariantStats::ToStats() const {
+	if (!invalid_reason.empty()) {
+		throw InvalidInputException(invalid_reason);
+	}
 	if (shredded_field_stats.empty()) {
 		return nullptr;
 	}
 	// create a nested structure that holds all the stats in the original nested order
 	NestedVariantStats nested_stats;
-	for (auto &entry : shredded_field_stats) {
-		auto &full_field_name = entry.first;
-		ToNestedVariantStats(full_field_name, nested_stats);
-	}
-	// get the type
-	auto shredded_type = nested_stats.ToType(shredded_field_stats);
+	auto shredded_type = BuildShreddedType(shredded_field_stats, nested_stats);
 	auto variant_stats = VariantStats::CreateShredded(VariantStats::GetShreddingType(shredded_type));
 
 	auto &shredded_stats = VariantStats::GetShreddedStats(variant_stats);

@@ -108,6 +108,10 @@ public:
 	static bool StatsFromBounds(const LogicalType &type);
 	unique_ptr<BaseStatistics> ToStats() const;
 	void MergeStats(const DuckLakeColumnStats &new_stats);
+	//! Whether the bounds are in order, bounds that do not parse count as ordered
+	bool BoundsOrdered() const;
+	void DropReversedBounds();
+	void SetBoundsUnknown();
 
 private:
 	void MergeBound(const DuckLakeColumnStats &new_stats, bool is_min);

@@ -27,6 +27,8 @@ struct DuckLakeOptions {
 	string metadata_path;
 	Identifier metadata_schema;
 	string data_path;
+	//! The stored spelling of a relative data path when the session uses the resolved one
+	string stored_data_path;
 	bool override_data_path = false;
 	AccessMode access_mode = AccessMode::AUTOMATIC;
 	OnCreateConflict on_conflict = OnCreateConflict::ERROR_ON_CONFLICT;

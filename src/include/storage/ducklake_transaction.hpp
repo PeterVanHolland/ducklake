@@ -304,6 +304,8 @@ public:
 	//! Whether the metadata transaction expired snapshots, which a rollback restores
 	bool ExpiredSnapshotsInMetadataTransaction();
 	void MarkMetadataWritten();
+	//! Copies the data path of the catalog again after the attach loaded or resolved it
+	void RefreshDataPath();
 	//! Marks the inlined data flushed up to the snapshot, the commit deletes its rows
 	void MarkInlinedDataForDeletion(DuckLakeInlinedTableInfo inlined_table, idx_t flush_snapshot_id, bool wrote_files);
 	bool InlinedTableFlushed(const Identifier &table_name);

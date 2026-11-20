@@ -32,6 +32,11 @@ private:
 	void RestartMetadataTransaction(DuckLakeTransaction &transaction);
 	bool DuckLakeIsInitialized(DuckLakeTransaction &transaction);
 	void InitializeDataPath();
+	//! The directory of the catalog file of a DuckDB file catalog, empty for other catalogs
+	string CatalogDirectory(DuckLakeTransaction &transaction);
+	//! A relative data path of a DuckDB file catalog resolved against the directory of the catalog file
+	string ResolvedDataPath(DuckLakeTransaction &transaction, const string &data_path);
+	void ResolveRelativeDataPath(DuckLakeTransaction &transaction);
 	string GetAttachOptions();
 	void SetVersionedMetadataManager(DuckLakeTransaction &transaction, DuckLakeVersion version);
 	DuckLakeVersion ResolveTargetVersion(DuckLakeVersion catalog_version, const string &catalog_version_str);

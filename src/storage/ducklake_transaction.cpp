@@ -866,6 +866,11 @@ DuckLakeTransaction::DuckLakeTransaction(DuckLakeCatalog &ducklake_catalog, Tran
 DuckLakeTransaction::~DuckLakeTransaction() {
 }
 
+void DuckLakeTransaction::RefreshDataPath() {
+	state->data_path = ducklake_catalog.DataPath();
+	state->separator = ducklake_catalog.Separator();
+}
+
 void DuckLakeTransaction::PinSchemaCacheEntry(shared_ptr<DuckLakeSchemaCacheEntry> entry) {
 	if (!entry) {
 		// LCOV_EXCL_START

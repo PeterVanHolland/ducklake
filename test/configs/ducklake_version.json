@@ -17,7 +17,8 @@
     {
       "reason": "Parquet is statically loaded in this config, test requires missing parquet",
       "paths": [
-        "test/sql/general/missing_parquet.test"
+        "test/sql/general/missing_parquet.test",
+        "test/sql/general/scan_without_parquet.test"
       ]
     },
     {

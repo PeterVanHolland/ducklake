@@ -1256,8 +1256,14 @@ void DuckLakeRESTCommit::RemapPartition(DuckLakeTableEntry &table, DuckLakeDataF
 void DuckLakeRESTCommit::SetOption(RESTSetOptionRequest &parameters) {
 	auto &option_in = parameters.option;
 	DuckLakeConfigOption option;
-	option.option.key = option_in.key;
-	option.option.value = option_in.value;
+	// the checks of the SQL set_option: a known option, a value of its type and a scope it allows
+	option.option.key = StringUtil::Lower(option_in.key);
+	DuckLakeUtil::ValidateConfigOptionName(option.option.key);
+	DuckLakeUtil::ValidateConfigOptionScope(option.option.key, option_in.schema_id.IsValid(),
+	                                        option_in.table_id.has_value);
+	option.option.value = parameters.reset
+	                          ? option_in.value
+	                          : DuckLakeUtil::ParseSentConfigOptionValue(context, option.option.key, option_in.value);
 	if (option_in.schema_id.IsValid()) {
 		option.schema_id = SchemaIndex(option_in.schema_id.GetIndex());
 	}

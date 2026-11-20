@@ -1,0 +1,215 @@
+# name: test/sql/rest/rest_set_option_validation.test
+# description: The REST server checks the name, the value and the scope of a set_option request like the SQL set_option
+# group: [rest]
+
+require json
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl
+
+statement ok
+CREATE TABLE dl.t(i INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1), (2), (3)
+
+# an option that does not exist
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "nonsense_option", "value": "1"}}}]}')
+----
+501	Unsupported option nonsense_option
+
+# the metadata that set_option never writes
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "version", "value": "9.9"}}}]}')
+----
+501	Unsupported option version
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "data_path", "value": "/nowhere/"}}}]}')
+----
+501	Unsupported option data_path
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "encrypted", "value": "true"}}}]}')
+----
+501	Unsupported option encrypted
+
+# a value the option cannot take
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "data_inlining_row_limit", "value": "abc", "table_id": 1}}}]}')
+----
+400	Failed to cast value: Could not convert string 'abc' to UINT64
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "rewrite_delete_threshold", "value": "7"}}}]}')
+----
+400	The rewrite_delete_threshold must be between 0 and 1
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "expire_older_than", "value": "soon"}}}]}')
+----
+400	expire_older_than is not a valid interval value.
+
+# a scope the option does not allow
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "expire_older_than", "value": "1 day", "table_id": 1}}}]}')
+----
+400	The 'expire_older_than' option can only be set globally, not for a specific schema or table
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "skip_stats_columns", "value": "i"}}}]}')
+----
+400	The 'skip_stats_columns' option can only be set for a specific table - pass table_name
+
+# a reset of an option that does not exist
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "nonsense_option"}, "reset": true}}]}')
+----
+501	Unsupported option nonsense_option
+
+# the refused requests left no metadata behind
+query II rest_db:rest_server_con
+SELECT key, value FROM __ducklake_metadata_rest_lake.ducklake_metadata WHERE key NOT IN ('created_by', 'data_path', 'encrypted', 'version') ORDER BY key
+----
+
+query I
+SELECT count(*) FROM dl.t
+----
+3
+
+# a valid request stores the option under its lowercase name, the way set_option does
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "DATA_INLINING_ROW_LIMIT", "value": "5", "table_id": 1}}}]}')
+----
+200
+
+query IIII rest_db:rest_server_con
+SELECT key, value, scope, scope_id FROM __ducklake_metadata_rest_lake.ducklake_metadata WHERE key = 'data_inlining_row_limit'
+----
+data_inlining_row_limit	5	table	1
+
+statement ok
+INSERT INTO dl.t VALUES (4)
+
+query I
+SELECT count(*) FROM dl.t
+----
+4
+
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "data_inlining_row_limit", "table_id": 1}, "reset": true}}]}')
+----
+200
+
+query I rest_db:rest_server_con
+SELECT count(*) FROM __ducklake_metadata_rest_lake.ducklake_metadata WHERE key = 'data_inlining_row_limit'
+----
+0
+
+# the options of an ALTER TABLE, SQL expressions, went through the same checks before
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"set_options": {"options": {"data_inlining_row_limit": "''abc''"}}}}}]}')
+----
+400	Failed to cast value: Could not convert string 'abc' to UINT64
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"set_options": {"options": {"nonsense_option": "1"}}}}}]}')
+----
+501	Unsupported option nonsense_option
+
+# the client sends the stored forms of the values it parsed, which the server takes as they are
+statement ok
+CALL dl.set_option('parquet_version', 2)
+
+statement ok
+CALL dl.set_option('target_file_size', '128MB')
+
+statement ok
+CALL dl.set_option('parquet_row_group_size_bytes', '1MB')
+
+statement ok
+CALL dl.set_option('expire_older_than', '1 day')
+
+statement ok
+CALL dl.set_option('parquet_compression', 'ZSTD')
+
+query II rest_db:rest_server_con
+SELECT key, value FROM __ducklake_metadata_rest_lake.ducklake_metadata WHERE key IN ('parquet_version', 'target_file_size', 'parquet_row_group_size_bytes', 'expire_older_than', 'parquet_compression') ORDER BY key
+----
+expire_older_than	1 day
+parquet_compression	zstd
+parquet_row_group_size_bytes	1000000
+parquet_version	V2
+target_file_size	128000000
+
+# a raw request may send either form
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "target_file_size", "value": "256MB"}}}]}')
+----
+200
+
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "parquet_version", "value": "1"}}}]}')
+----
+200
+
+query II rest_db:rest_server_con
+SELECT key, value FROM __ducklake_metadata_rest_lake.ducklake_metadata WHERE key IN ('parquet_version', 'target_file_size') ORDER BY key
+----
+parquet_version	V1
+target_file_size	256000000
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "parquet_version", "value": "3"}}}]}')
+----
+501	Only Parquet version 1 and 2 are supported
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "parquet_row_group_size_bytes", "value": "0"}}}]}')
+----
+501	Row group size bytes cannot be 0
+
+# only the plain decimal count is a stored form, other spellings of a number are parsed like the SQL function does
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "target_file_size", "value": "-0"}}}]}')
+----
+200
+
+query I rest_db:rest_server_con
+SELECT value FROM __ducklake_metadata_rest_lake.ducklake_metadata WHERE key = 'target_file_size'
+----
+18446744073709551615
+
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "target_file_size", "value": "0x10"}}}]}')
+----
+400
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "parquet_row_group_size_bytes", "value": "-0"}}}]}')
+----
+400	Row group size bytes must be a finite size, not "-0"

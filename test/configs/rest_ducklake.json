@@ -635,6 +635,7 @@
         "test/sql/concurrent/postgres_concurrent_attach_new_migrate.test",
         "test/sql/concurrent/postgres_concurrent_attach_other_catalogs.test",
         "test/sql/data_inlining/inlined_superseded_drop_failure_postgres.test",
+        "test/sql/attach/postgres_attach_lazy_load.test",
         "test/sql/data_inlining/postgres_column_limit.test",
         "test/sql/data_inlining/postgres_identifier_limit.test",
         "test/sql/data_inlining/postgres_new_inlined_table_keeps_cache.test",

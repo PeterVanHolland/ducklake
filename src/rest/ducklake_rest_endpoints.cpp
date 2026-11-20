@@ -999,14 +999,26 @@ void DuckLakeRESTCommit::CreateSchema(RESTCreateSchemaRequest &parameters) {
 
 void DuckLakeRESTCommit::CreateTable(RESTCreateTableRequest &parameters) {
 	CheckPlaceholderId(parameters.placeholder_id);
+	// the checks of the parser of CREATE TABLE: a name and at least one column
+	if (parameters.table_name.empty()) {
+		throw InvalidInputException("create_table requires a table_name");
+	}
+	if (parameters.columns.empty()) {
+		throw InvalidInputException("create_table requires at least one column");
+	}
 	auto schema_path = GetSchemaPath(parameters.schema_id);
 	auto &schema = GetSchema(schema_path);
 	auto info = make_uniq<CreateTableInfo>(schema, Identifier(parameters.table_name));
 	vector<Value> initial_defaults;
 	for (auto &column : parameters.columns) {
 		auto logical_index = LogicalIndex(info->columns.LogicalColumnCount());
+		// the column is checked before its initial default is cast to its type
+		auto column_definition = DuckLakeRESTCatalogChanges::ReadColumn(context, column);
+		if (info->columns.ColumnExists(column_definition.Name())) {
+			throw InvalidInputException("create_table defines column \"%s\" twice", column.column_name);
+		}
 		initial_defaults.push_back(DuckLakeRESTCatalogChanges::ReadInitialDefault(context, column));
-		info->columns.AddColumn(DuckLakeRESTCatalogChanges::ReadColumn(context, column));
+		info->columns.AddColumn(std::move(column_definition));
 		if (column.not_null) {
 			info->constraints.push_back(make_uniq<NotNullConstraint>(logical_index));
 		}
@@ -1048,6 +1060,14 @@ void DuckLakeRESTCommit::CreateTable(RESTCreateTableRequest &parameters) {
 
 void DuckLakeRESTCommit::CreateView(RESTCreateViewRequest &parameters) {
 	CheckPlaceholderId(parameters.placeholder_id);
+	if (parameters.view_name.empty()) {
+		throw InvalidInputException("create_view requires a view_name");
+	}
+	for (auto &alias : parameters.column_aliases) {
+		if (alias.empty()) {
+			throw InvalidInputException("create_view requires a name for every column alias");
+		}
+	}
 	auto schema_path = GetSchemaPath(parameters.schema_id);
 	auto &schema = GetSchema(schema_path);
 	if (parameters.dialect != "duckdb") {

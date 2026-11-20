@@ -599,6 +599,35 @@ unique_ptr<QueryResult> RESTMetadataManager::ReadInlinedDataDeletions(DuckLakeSn
 	                             inlined_table_name.GetIdentifierName(), columns_to_read);
 }
 
+vector<DuckLakeFileColumnBounds> RESTMetadataManager::GetLiveFileBounds(DuckLakeTableEntry &table,
+                                                                        const set<FieldIndex> &column_ids,
+                                                                        const set<DataFileIndex> &excluded_files,
+                                                                        DuckLakeSnapshot snapshot) {
+	// the bounds come with the file list of a scan that asks for the statistics of the columns
+	FilterPushdownInfo filter_info;
+	for (auto &column_id : column_ids) {
+		filter_info.runtime_filter_columns.push_back(column_id.index);
+	}
+	vector<DuckLakeFileColumnBounds> result;
+	for (auto &file : GetFilesForTable(table, snapshot, &filter_info, false)) {
+		if (file.data_type != DuckLakeDataType::DATA_FILE || excluded_files.count(file.file_id)) {
+			continue;
+		}
+		for (auto &entry : file.column_min_max) {
+			auto &stats = entry.second;
+			if (!stats.has_min && !stats.has_max) {
+				continue;
+			}
+			DuckLakeFileColumnBounds bounds;
+			bounds.column_id = FieldIndex(entry.first);
+			bounds.min_value = stats.has_min ? Value(stats.min) : Value();
+			bounds.max_value = stats.has_max ? Value(stats.max) : Value();
+			result.push_back(std::move(bounds));
+		}
+	}
+	return result;
+}
+
 optional_idx RESTMetadataManager::GetNetRowCount(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot) {
 	D_ASSERT(!IsTransactionLocal(table.GetTableId()));
 	// the server counts the rows from its statistics

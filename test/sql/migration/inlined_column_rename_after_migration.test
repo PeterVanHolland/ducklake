@@ -89,7 +89,7 @@ ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/inlined_re
 query I
 SELECT value FROM dl.options() WHERE option_name = 'version'
 ----
-2.0-dev1
+2.0-dev2
 
 statement ok
 INSERT INTO dl.e VALUES (2);
@@ -132,7 +132,7 @@ statement ok
 CREATE TABLE dl.c(_ducklake_row_id INTEGER);
 
 statement ok
-UPDATE dlmeta.ducklake_metadata SET value = '2.0-dev1' WHERE key = 'version'
+UPDATE dlmeta.ducklake_metadata SET value = '2.0-dev2' WHERE key = 'version'
 
 statement ok
 DETACH dl

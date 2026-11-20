@@ -52,7 +52,7 @@ statement ok
 INSERT INTO dl.t VALUES (3, 4);
 
 statement ok
-UPDATE dlmeta.ducklake_metadata SET value = '2.0-dev1' WHERE key = 'version'
+UPDATE dlmeta.ducklake_metadata SET value = '2.0-dev2' WHERE key = 'version'
 
 statement ok
 DETACH dl

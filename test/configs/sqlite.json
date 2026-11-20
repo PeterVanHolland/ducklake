@@ -20,6 +20,12 @@
   ],
   "skip_tests": [
     {
+      "reason": "The test needs a Postgres catalog, it simulates the lost response of a COMMIT",
+      "paths": [
+        "test/sql/retry/postgres_commit_response_lost.test"
+      ]
+    },
+    {
       "reason": "Only DuckDB catalogs drop the empty inlined data table that an ALTER supersedes",
       "paths": [
         "test/sql/alter/alter_drops_empty_inlined_tables.test"

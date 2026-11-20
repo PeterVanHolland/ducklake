@@ -285,6 +285,14 @@ public:
 	//! Whether the client can skip the snapshot fetch and let the server read it.
 	virtual bool CanSkipSnapshotFetch(const TransactionChangeInformation &changes) const;
 	virtual bool IsRetryableCommitError(const string &message) const;
+	//! Whether a COMMIT that failed with this error may have taken effect
+	virtual bool CommitOutcomeUnknown(const string &message) const {
+		return false;
+	}
+	//! The hint of a commit whose outcome stays unknown, a REST client reads it to keep the files too
+	static constexpr const char *COMMIT_OUTCOME_UNKNOWN_HINT =
+	    "The commit may have taken effect, so the files it wrote are kept. ducklake_delete_orphaned_files removes "
+	    "them if it did not.";
 	//! The error of a failed commit without the text of the failed query that it repeats
 	virtual string CommitErrorWithoutQuery(const string &message) const {
 		return message;

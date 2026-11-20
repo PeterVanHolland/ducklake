@@ -1,0 +1,49 @@
+# name: test/sql/settings/set_option_rollback_shared_reset.test
+# description: a rolled back set_option keeps a reset of the same option that another transaction committed
+# group: [settings]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/set_option_rollback_shared_reset', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CALL lake.set_option('parquet_compression', 'uncompressed')
+
+statement ok
+CREATE TABLE lake.r (i INTEGER)
+
+statement ok
+CALL lake.set_option('parquet_compression', 'snappy', table_name => 'r')
+
+statement ok a
+BEGIN
+
+statement ok a
+ALTER TABLE lake.r RESET (parquet_compression)
+
+statement ok b
+BEGIN
+
+statement ok b
+CALL lake.set_option('parquet_compression', 'zstd', table_name => 'r')
+
+statement ok a
+COMMIT
+
+statement ok b
+ROLLBACK
+
+statement ok
+INSERT INTO lake.r VALUES (1)
+
+query T
+SELECT DISTINCT compression FROM parquet_metadata('{DATA_PATH}/set_option_rollback_shared_reset/main/r/**')
+----
+UNCOMPRESSED

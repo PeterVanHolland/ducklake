@@ -1,0 +1,733 @@
+# name: test/sql/transaction/transaction_conflicts_delete_insert_filters.test
+# description: delete and insert conflicts narrowed to filters that can match and to transactions that read the table
+# group: [transaction]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lk (DATA_PATH '{DATA_PATH}/delete_insert_filters', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lk.t (hour TIMESTAMP, service VARCHAR, n BIGINT)
+
+statement ok
+ALTER TABLE lk.t SET PARTITIONED BY (hour)
+
+statement ok
+INSERT INTO lk.t VALUES ('2026-10-31 10:00', 'a', 10), ('2026-10-31 11:00', 'a', 7)
+
+# a delete of one partition commits after an insert into another partition
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.t WHERE hour = '2026-10-31 10:00'
+
+statement ok con2
+INSERT INTO lk.t VALUES ('2026-10-31 12:00', 'a', 1)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.t ORDER BY hour
+----
+2026-10-31 11:00:00	7
+2026-10-31 12:00:00	1
+
+# an insert that did not read the table commits after a delete of another partition
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO lk.t VALUES ('2026-10-31 13:00', 'a', 1)
+
+statement ok con2
+DELETE FROM lk.t WHERE hour = '2026-10-31 11:00'
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.t ORDER BY hour
+----
+2026-10-31 12:00:00	1
+2026-10-31 13:00:00	1
+
+# an insert into the partition the delete removes still conflicts
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.t WHERE hour = '2026-10-31 12:00'
+
+statement ok con2
+INSERT INTO lk.t VALUES ('2026-10-31 12:00', 'b', 2)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+query II
+SELECT hour, n FROM lk.t ORDER BY hour, n
+----
+2026-10-31 12:00:00	1
+2026-10-31 12:00:00	2
+2026-10-31 13:00:00	1
+
+# a range the inserted rows fall into conflicts
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.t WHERE hour >= '2026-10-31 12:30'
+
+statement ok con2
+INSERT INTO lk.t VALUES ('2026-10-31 14:00', 'a', 3)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+# a delete without filters conflicts with every insert
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.t
+
+statement ok con2
+INSERT INTO lk.t VALUES ('2026-10-31 15:00', 'a', 4)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+# a filter the file statistics cannot answer conflicts
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.t WHERE length(service) = 1
+
+statement ok con2
+INSERT INTO lk.t VALUES ('2026-10-31 16:00', 'a', 5)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+# a delete that matched no rows keeps the filter of its scan
+statement ok
+CREATE TABLE lk.other (i INTEGER)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.t WHERE hour = '2026-10-31 09:00'
+
+statement ok con1
+INSERT INTO lk.other VALUES (1)
+
+statement ok con2
+INSERT INTO lk.t VALUES ('2026-10-31 17:00', 'a', 6)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT count(*), (SELECT count(*) FROM lk.other) FROM lk.t
+----
+7	1
+
+# an insert after reading the table conflicts with a concurrent delete
+statement ok con1
+BEGIN
+
+query I con1
+SELECT count(*) FROM lk.t
+----
+7
+
+statement ok con1
+INSERT INTO lk.t VALUES ('2026-10-31 18:00', 'a', 8)
+
+statement ok con2
+DELETE FROM lk.t WHERE hour = '2026-10-31 13:00'
+
+statement error con1
+COMMIT
+----
+but another transaction has deleted from it
+
+# an insert that reads another table does not
+statement ok
+CREATE TABLE lk.src (hour TIMESTAMP, service VARCHAR, n BIGINT)
+
+statement ok
+INSERT INTO lk.src VALUES ('2026-10-31 19:00', 'a', 9)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO lk.t SELECT * FROM lk.src
+
+statement ok con2
+DELETE FROM lk.t WHERE hour = '2026-10-31 14:00'
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.t ORDER BY hour, n
+----
+2026-10-31 12:00:00	1
+2026-10-31 12:00:00	2
+2026-10-31 15:00:00	4
+2026-10-31 16:00:00	5
+2026-10-31 17:00:00	6
+2026-10-31 19:00:00	9
+
+# an update of one partition commits after an insert into another, and conflicts with an insert into its own
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE lk.t SET n = n + 100 WHERE hour = '2026-10-31 15:00'
+
+statement ok con2
+INSERT INTO lk.t VALUES ('2026-10-31 20:00', 'a', 11)
+
+statement ok con1
+COMMIT
+
+query I
+SELECT n FROM lk.t WHERE hour = '2026-10-31 15:00'
+----
+104
+
+statement ok con1
+BEGIN
+
+statement ok con1
+UPDATE lk.t SET n = n + 100 WHERE hour = '2026-10-31 16:00'
+
+statement ok con2
+INSERT INTO lk.t VALUES ('2026-10-31 16:00', 'b', 12)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+# rows inserted inlined have no file statistics, so the delete still conflicts
+statement ok
+CREATE TABLE lk.inl (hour TIMESTAMP, n BIGINT)
+
+statement ok
+CALL lk.set_option('data_inlining_row_limit', 10, table_name => 'inl')
+
+statement ok
+INSERT INTO lk.inl VALUES ('2026-10-31 10:00', 1)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.inl WHERE hour = '2026-10-31 10:00'
+
+statement ok con2
+INSERT INTO lk.inl VALUES ('2026-10-31 11:00', 2)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+# a file added to the table is a blind append
+statement ok
+CREATE TABLE lk.plain (hour TIMESTAMP, n BIGINT)
+
+statement ok
+INSERT INTO lk.plain VALUES ('2026-10-31 10:00', 1), ('2026-10-31 11:00', 2)
+
+statement ok
+COPY (SELECT TIMESTAMP '2026-10-31 12:00' AS hour, 3::BIGINT AS n) TO '{DATA_PATH}/delete_insert_filters_added.parquet'
+
+statement ok con1
+BEGIN
+
+statement ok con1
+CALL ducklake_add_data_files('lk', 'plain', '{DATA_PATH}/delete_insert_filters_added.parquet')
+
+statement ok con2
+DELETE FROM lk.plain WHERE hour = '2026-10-31 10:00'
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.plain ORDER BY hour
+----
+2026-10-31 11:00:00	2
+2026-10-31 12:00:00	3
+
+# an insert that read the table through a merge keeps the table level rule next to a filtered delete
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE hour = '2026-10-31 11:00'
+
+statement ok con1
+MERGE INTO lk.plain USING (SELECT TIMESTAMP '2026-10-31 14:00' AS hour, 5::BIGINT AS n) AS s ON lk.plain.hour = s.hour WHEN NOT MATCHED THEN INSERT VALUES (s.hour, s.n)
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 14:00', 50)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+query II
+SELECT hour, n FROM lk.plain ORDER BY hour
+----
+2026-10-31 11:00:00	2
+2026-10-31 12:00:00	3
+2026-10-31 14:00:00	50
+
+# a merge of files committed after the snapshot keeps the inserted rows visible to the check
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE hour = '2026-10-31 15:00'
+
+statement ok con1
+INSERT INTO lk.other VALUES (2)
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 15:00', 6)
+
+query I con2
+SELECT files_created FROM ducklake_merge_adjacent_files('lk', 'plain')
+----
+1
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+query II
+SELECT hour, n FROM lk.plain ORDER BY hour
+----
+2026-10-31 11:00:00	2
+2026-10-31 12:00:00	3
+2026-10-31 14:00:00	50
+2026-10-31 15:00:00	6
+
+# a statement that deletes twice from the table, once without filters, keeps the table rule
+statement ok con1
+BEGIN
+
+statement ok con1
+WITH d AS (DELETE FROM lk.plain) DELETE FROM lk.plain WHERE hour = '2026-10-31 14:00'
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 23:00', 9)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+# a merge next to a filtered delete in one statement keeps the table rule too
+statement ok con1
+BEGIN
+
+statement ok con1
+WITH d AS (DELETE FROM lk.plain WHERE hour = '2026-10-31 12:00') MERGE INTO lk.plain USING (SELECT TIMESTAMP '2026-10-31 02:00' AS hour, 1::BIGINT AS n) AS s ON lk.plain.hour = s.hour WHEN NOT MATCHED THEN INSERT VALUES (s.hour, s.n)
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 02:00', 10)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+# a delete with a correlated subquery on the table keeps the table rule as well
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE n >= (SELECT avg(n) FROM lk.plain AS p WHERE p.hour = lk.plain.hour)
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 22:00', 8)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+# a delete with another source keeps the table rule, the statistics of that source become filters of the scan
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain USING lk.src WHERE lk.plain.hour = lk.src.hour - INTERVAL 5 HOUR
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 21:00', 7)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+# a delete of several partitions commits after an insert into another, the optimizer folds the list
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE hour IN ('2026-10-31 21:00', '2026-10-31 22:00')
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 05:00', NULL)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.plain WHERE hour >= '2026-10-31 21:00' OR n IS NULL ORDER BY hour
+----
+2026-10-31 05:00:00	NULL
+2026-10-31 23:00:00	9
+
+# a disjunction with a NULL check becomes a filter tree, inserted values outside it commit
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE hour = '2026-10-31 02:00' OR n IS NULL
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 03:00', 11)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.plain WHERE hour < '2026-10-31 12:00' ORDER BY hour
+----
+2026-10-31 03:00:00	11
+2026-10-31 11:00:00	2
+
+# and an inserted NULL conflicts with it
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE hour = '2026-10-31 03:00' OR n IS NULL
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 06:00', NULL)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+# a NULL check on its own checks the null counts of the inserted files
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE n IS NULL
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 07:00', 12)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.plain WHERE hour < '2026-10-31 12:00' ORDER BY hour
+----
+2026-10-31 03:00:00	11
+2026-10-31 07:00:00	12
+2026-10-31 11:00:00	2
+
+# an insert that reads its table next to a filtered delete keeps the table rule for the delete
+statement ok
+CREATE TABLE lk.dep (i INTEGER)
+
+statement ok
+INSERT INTO lk.dep VALUES (0)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.dep WHERE i = 0
+
+statement ok con1
+INSERT INTO lk.dep SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM lk.dep WHERE i = 1)
+
+statement ok con2
+INSERT INTO lk.dep SELECT 1 WHERE EXISTS (SELECT 1 FROM lk.dep WHERE i = 0)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+query I
+SELECT i FROM lk.dep ORDER BY i
+----
+0
+1
+
+# a read in an earlier statement counts as well
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.dep WHERE i = 1
+
+statement ok con1
+SET VARIABLE absent = (SELECT count(*) = 0 FROM lk.dep WHERE i = 2)
+
+statement ok con1
+INSERT INTO lk.dep SELECT 2 WHERE getvariable('absent')
+
+statement ok con2
+INSERT INTO lk.dep SELECT 2 WHERE EXISTS (SELECT 1 FROM lk.dep WHERE i = 1)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+query I
+SELECT i FROM lk.dep ORDER BY i
+----
+0
+1
+2
+
+# a read that runs without the optimizer counts through the scan itself
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.dep WHERE i = 2
+
+statement ok con1
+SET enable_optimizer = false
+
+statement ok con1
+INSERT INTO lk.dep SELECT 3 WHERE NOT EXISTS (SELECT 1 FROM lk.dep WHERE i = 3)
+
+statement ok con1
+RESET enable_optimizer
+
+statement ok con2
+INSERT INTO lk.dep SELECT 3 WHERE EXISTS (SELECT 1 FROM lk.dep WHERE i = 2)
+
+statement error con1
+COMMIT
+----
+but another transaction has inserted into it
+
+query I
+SELECT i FROM lk.dep ORDER BY i
+----
+0
+1
+2
+3
+
+# a read while the extension optimizers are disabled still counts
+statement ok con1
+BEGIN
+
+statement ok con1
+SET disabled_optimizers = 'extension'
+
+query I con1
+SELECT count(*) FROM lk.dep
+----
+4
+
+statement ok con1
+RESET disabled_optimizers
+
+statement ok con1
+INSERT INTO lk.dep VALUES (4)
+
+statement ok con2
+DELETE FROM lk.dep WHERE i = 3
+
+statement error con1
+COMMIT
+----
+but another transaction has deleted from it
+
+query I
+SELECT i FROM lk.dep ORDER BY i
+----
+0
+1
+2
+
+# a bucket partition excludes an inserted file whose column bounds cover the deleted key
+statement ok
+CREATE TABLE lk.bucketed (id INTEGER, v INTEGER)
+
+statement ok
+ALTER TABLE lk.bucketed SET PARTITIONED BY (bucket(4, id))
+
+statement ok
+INSERT INTO lk.bucketed VALUES (4, 1)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.bucketed WHERE id = 4
+
+statement ok con2
+INSERT INTO lk.bucketed VALUES (3, 2), (5, 3)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT id, v FROM lk.bucketed ORDER BY id
+----
+3	2
+5	3
+
+# the bucket alone prunes when the column statistics cannot answer the filter
+statement ok
+CREATE TABLE lk.blobs (k BLOB, v INTEGER)
+
+statement ok
+ALTER TABLE lk.blobs SET PARTITIONED BY (bucket(4, k))
+
+statement ok
+INSERT INTO lk.blobs VALUES ('\x01'::BLOB, 1)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.blobs WHERE k = '\x01'::BLOB
+
+statement ok con2
+INSERT INTO lk.blobs VALUES ('\x03'::BLOB, 2)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT k, v FROM lk.blobs
+----
+\x03	2
+
+# a prepared delete keeps its filters
+statement ok con1
+BEGIN
+
+statement ok con1
+PREPARE del AS DELETE FROM lk.plain WHERE hour = $1
+
+statement ok con1
+EXECUTE del('2026-10-31 12:00'::TIMESTAMP)
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 08:00', 13)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.plain WHERE hour BETWEEN '2026-10-31 08:00' AND '2026-10-31 12:00' ORDER BY hour
+----
+2026-10-31 08:00:00	13
+2026-10-31 11:00:00	2
+
+# a plain explain and a prepared but not executed select read nothing
+statement ok con1
+BEGIN
+
+statement ok con1
+EXPLAIN SELECT count(*) FROM lk.plain
+
+statement ok con1
+PREPARE cnt AS SELECT count(*) FROM lk.plain WHERE hour = $1
+
+statement ok con1
+DELETE FROM lk.plain WHERE hour = '2026-10-31 08:00'
+
+statement ok con1
+INSERT INTO lk.plain VALUES ('2026-10-31 09:00', 14)
+
+statement ok con2
+INSERT INTO lk.plain VALUES ('2026-10-31 16:00', 15)
+
+statement ok con2
+DELETE FROM lk.plain WHERE hour = '2026-10-31 07:00'
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.plain WHERE hour < '2026-10-31 12:00' ORDER BY hour
+----
+2026-10-31 03:00:00	11
+2026-10-31 09:00:00	14
+2026-10-31 11:00:00	2
+
+# and the delete of a partition commits after a file was added for another
+statement ok
+COPY (SELECT TIMESTAMP '2026-10-31 13:00' AS hour, 4::BIGINT AS n) TO '{DATA_PATH}/delete_insert_filters_added2.parquet'
+
+statement ok con1
+BEGIN
+
+statement ok con1
+DELETE FROM lk.plain WHERE hour = '2026-10-31 11:00'
+
+statement ok con2
+CALL ducklake_add_data_files('lk', 'plain', '{DATA_PATH}/delete_insert_filters_added2.parquet')
+
+statement ok con1
+COMMIT
+
+query II
+SELECT hour, n FROM lk.plain ORDER BY hour
+----
+2026-10-31 03:00:00	11
+2026-10-31 09:00:00	14
+2026-10-31 13:00:00	4
+2026-10-31 14:00:00	50
+2026-10-31 15:00:00	6
+2026-10-31 16:00:00	15
+2026-10-31 23:00:00	9

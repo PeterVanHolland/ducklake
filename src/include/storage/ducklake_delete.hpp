@@ -10,6 +10,7 @@
 
 #include "storage/ducklake_insert.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
+#include "duckdb/optimizer/optimizer_extension.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "storage/ducklake_delete_filter.hpp"
 #include "storage/ducklake_metadata_info.hpp"
@@ -151,6 +152,9 @@ public:
 		return true;
 	}
 
+	//! Records the scans of a statement and the filters of a delete or update that reads only its target table,
+	//! before the optimizer changes the plan
+	static void RecordDeleteFilters(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan);
 	static PhysicalOperator &PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner,
 	                                    DuckLakeTableEntry &table, PhysicalOperator &child_plan,
 	                                    vector<idx_t> row_id_indexes, string encryption_key,

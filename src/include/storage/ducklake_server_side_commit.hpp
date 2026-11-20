@@ -86,6 +86,9 @@ private:
 	unique_ptr<QueryResult> RunQuery(const string &query, const char *what);
 	//! Scan a temporary staging table via the catalog API (no SQL, no lock).
 	unique_ptr<QueryResult> ScanStagedTable(DuckLakeStagedTableType kind);
+	optional_ptr<TableCatalogEntry> StagedTableEntry(DuckLakeStagedTableType kind);
+	bool StagedTableExists(DuckLakeStagedTableType kind);
+	void DropStagedTable(DuckLakeStagedTableType kind);
 
 private:
 	ClientContext &context;
@@ -106,6 +109,8 @@ private:
 	bool supports_v1_1_metadata = false;
 	bool supports_v2_0_metadata = false;
 	bool branch_keyed_lookups = false;
+	//! Whether the client staged the tables it read, an older client did not
+	bool tables_read_staged = false;
 	bool staged_dropped_files_read = false;
 	vector<pair<string, idx_t>> staged_dropped_files;
 	map<TableIndex, DroppedDataFileStats> staged_dropped_file_stats;

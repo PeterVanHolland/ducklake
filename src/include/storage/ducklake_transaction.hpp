@@ -359,7 +359,7 @@ public:
 	void GetLocalInlinedFileDeletesForFile(TableIndex table_id, idx_t file_id, set<idx_t> &result) const;
 
 	bool HasDroppedFiles() const;
-	const unordered_map<string, DataFileIndex> &GetDroppedFiles() const;
+	const map<DataFileIndex, string> &GetDroppedFiles() const;
 	const set<TableIndex> &GetTablesDeletedFrom() const;
 	const set<TableIndex> &GetTablesDeleteAttempted() const;
 	const vector<FlushedInlinedTableInfo> &GetFlushedInlinedTables() const;
@@ -367,7 +367,7 @@ public:
 	const DuckLakeNameMapSet &GetNewNameMaps() const {
 		return new_name_maps;
 	}
-	bool FileIsDropped(const string &path) const;
+	bool FileIsDropped(DataFileIndex file_id) const;
 	//! Check if there are any uncommitted changes for this table (inserts, deletes, or dropped files)
 	bool HasAnyLocalChanges(TableIndex table_id) const;
 

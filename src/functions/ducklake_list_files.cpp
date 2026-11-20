@@ -2,13 +2,14 @@
 #include "storage/ducklake_catalog.hpp"
 #include "storage/ducklake_table_entry.hpp"
 #include "storage/ducklake_transaction.hpp"
+#include "storage/ducklake_multi_file_list.hpp"
 #include "common/ducklake_util.hpp"
 #include "storage/ducklake_transaction_changes.hpp"
 #include "duckdb/planner/tableref/bound_at_clause.hpp"
 
 namespace duckdb {
 
-static void AddFileInfo(DuckLakeFileData &file_info, vector<Value> &row_values) {
+static void AddFileInfo(const DuckLakeFileData &file_info, vector<Value> &row_values) {
 	// add the file info - if we have a file
 	if (file_info.path.empty()) {
 		// no file - push NULL values
@@ -87,12 +88,21 @@ static unique_ptr<FunctionData> DuckLakeListFilesBind(ClientContext &context, Ta
 	auto &ducklake_table = DuckLakeBaseMetadataFunction::GetTableEntry(context, catalog, schema, table_lookup);
 	auto snapshot = transaction.GetSnapshot(at_clause.get());
 
-	// fetch the file list
-	auto &metadata_manager = transaction.GetMetadataManager();
-	// FIXME: support predicate pushdown
-	// only the files are listed, not the columns of the inlined rows
-	vector<DuckLakeProjectedColumn> no_columns;
-	auto files = metadata_manager.GetFilesForTable(ducklake_table, snapshot, nullptr, true, no_columns);
+	// an AT clause excludes the changes of the transaction, as it does for a scan
+	bool include_local_changes = !at_clause;
+	auto table_id = ducklake_table.GetTableId();
+	vector<DuckLakeFileListEntry> files;
+	if (!IsTransactionLocal(table_id)) {
+		auto &metadata_manager = transaction.GetMetadataManager();
+		// FIXME: support predicate pushdown
+		// only the files are listed, not the columns of the inlined rows
+		vector<DuckLakeProjectedColumn> no_columns;
+		files = metadata_manager.GetFilesForTable(ducklake_table, snapshot, nullptr, include_local_changes, no_columns);
+	}
+	if (include_local_changes) {
+		DuckLakeMultiFileList::ApplyLocalFileChanges(transaction, table_id, files);
+		DuckLakeMultiFileList::AddTransactionLocalFiles(transaction.GetTransactionLocalFiles(table_id), files);
+	}
 	// generate the result
 	auto result = make_uniq<MetadataBindData>();
 	for (auto &file : files) {

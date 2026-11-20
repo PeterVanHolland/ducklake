@@ -61,6 +61,12 @@ public:
 	const DuckLakeDeleteScanEntry &GetDeleteScanEntry(idx_t file_idx);
 	static DuckLakeFileData GetDeleteData(const DuckLakeDataFile &file);
 	static DuckLakeFileData GetDeleteData(const DuckLakeDeleteFile &delete_file);
+	//! Removes the files the transaction dropped and sets the delete files it wrote, as a scan of the table does
+	static void ApplyLocalFileChanges(DuckLakeTransaction &transaction, TableIndex table_id,
+	                                  vector<DuckLakeFileListEntry> &files);
+	//! Appends the files the transaction wrote and returns the row id after them
+	static idx_t AddTransactionLocalFiles(const vector<DuckLakeDataFile> &local_files,
+	                                      vector<DuckLakeFileListEntry> &files);
 
 protected:
 	//! Get the i-th expanded file

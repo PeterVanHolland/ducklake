@@ -16,6 +16,7 @@
 #include "rest/ducklake_rest_multipart.hpp"
 
 #include <chrono>
+#include <condition_variable>
 #include <thread>
 
 namespace duckdb_httplib {
@@ -123,7 +124,7 @@ public:
 		return client_overrides;
 	}
 
-	//! Binds the socket and starts serving in the background, returns the bound port
+	//! Binds the socket and starts serving in the background, returns the bound port once the worker threads exist
 	idx_t Start(const string &host, idx_t port);
 	//! Requests have to carry the token as a bearer token, if it is set
 	void SetToken(string token_p) {
@@ -165,6 +166,10 @@ private:
 	unique_ptr<duckdb_httplib::Server> server;
 	std::thread server_thread;
 	string listen_uri;
+	mutex start_lock;
+	std::condition_variable start_signal;
+	bool workers_created = false;
+	bool listen_ended = false;
 };
 
 //! The REST servers running in this process, by listen URI

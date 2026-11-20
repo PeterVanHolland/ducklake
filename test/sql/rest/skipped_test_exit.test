@@ -1,0 +1,14 @@
+# name: test/sql/rest/skipped_test_exit.test
+# description: A test every configuration skips, the REST server that on_init started must not abort the process
+# group: [rest]
+
+require ducklake
+
+# the scanner loads right after the server start of on_init
+require postgres_scanner
+
+# the variable is never set, so the runner skips the test right after on_init started the REST server
+require-env DUCKLAKE_TEST_ALWAYS_SKIPPED
+
+statement ok
+SELECT 1

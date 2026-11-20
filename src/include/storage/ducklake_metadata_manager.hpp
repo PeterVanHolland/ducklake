@@ -770,9 +770,14 @@ public:
 	//! The other additions, the second batch of a rebuild copies from the renamed tables
 	static string V2_0Dev2AdditionsSql(const V2_0Dev2Additions &add);
 	bool HasMetadataColumn(const string &table, const string &column);
-	//! The listed columns of a metadata table, probed on its own when the pass listed none, none for a missing table
-	const vector<DuckLakeMetadataColumn> &ProbedMetadataColumns(const string &table);
-	//! Whether the metadata database folds the case of a table name, so a listing can spell it differently
+	//! The listed columns of a metadata table, asked for when the pass listed none, none for a missing table
+	//! With probe_unlisted a table the listing lacks is asked for too, where the engine finds it by a name of any case
+	const vector<DuckLakeMetadataColumn> &ProbedMetadataColumns(const string &table, bool probe_unlisted);
+	//! The columns of a table from the local catalog, a view by the columns it has now
+	vector<DuckLakeMetadataColumn> LookupMetadataColumns(const string &table);
+	//! The columns of a table from a query, which the metadata database resolves itself
+	vector<DuckLakeMetadataColumn> QueryMetadataColumns(const string &table);
+	//! Whether the metadata database finds a table by a name of any case, so an unlisted table can be asked for
 	virtual bool FoldsMetadataTableCase() const;
 	//! Scans the metadata schema into the memo, once per probe pass
 	void ProbeMetadataSchema();
@@ -971,6 +976,8 @@ protected:
 	bool probed_metadata_schema = false;
 	//! Whether the pass read the columns of every metadata table at once
 	bool probed_all_columns = false;
+	//! Whether the pass listed the local catalog, which also finds a table the listing lacks
+	bool probed_local_catalog = false;
 	bool read_file_counts = false;
 };
 

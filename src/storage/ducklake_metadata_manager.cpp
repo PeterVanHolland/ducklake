@@ -606,7 +606,7 @@ void DuckLakeMetadataManager::ValidateMetadataTables() {
 		}
 		const auto &info = create_info.Cast<CreateTableInfo>();
 		auto &table_name = info.GetTableName();
-		auto &actual_columns = ProbedMetadataColumns(table_name.GetIdentifierName());
+		auto &actual_columns = ProbedMetadataColumns(table_name.GetIdentifierName(), true);
 		if (actual_columns.empty()) {
 			throw InvalidInputException("Failed to load DuckLake: the metadata catalog has no table %s", table_name);
 		}
@@ -942,13 +942,7 @@ bool DuckLakeMetadataManager::ProbeMetadataColumns() {
 				return;
 				// LCOV_EXCL_STOP
 			}
-			// a view binds after the scan, which holds the lock of the catalog set its tables are in
-			vector<reference<ViewCatalogEntry>> views;
 			schema->Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
-				if (entry.type == CatalogType::VIEW_ENTRY) {
-					views.push_back(entry.Cast<ViewCatalogEntry>());
-					return;
-				}
 				if (entry.type != CatalogType::TABLE_ENTRY) {
 					return;
 				}
@@ -958,18 +952,6 @@ bool DuckLakeMetadataManager::ProbeMetadataColumns() {
 				}
 				probed_columns[entry.name.GetIdentifierName()] = std::move(columns);
 			});
-			for (auto &view_ref : views) {
-				// a view in place of a table is checked through the columns it has now
-				auto &view = view_ref.get();
-				view.BindView(context, BindViewAction::FORCE_REBIND);
-				auto view_columns = view.GetColumnInfo();
-				vector<DuckLakeMetadataColumn> columns;
-				for (idx_t i = 0; i < view_columns->names.size(); i++) {
-					auto &column_name = i < view.aliases.size() ? view.aliases[i] : view_columns->names[i];
-					columns.push_back({column_name, view_columns->types[i].ToString()});
-				}
-				probed_columns[view.name.GetIdentifierName()] = std::move(columns);
-			}
 		});
 	} catch (std::exception &) {
 		// LCOV_EXCL_START
@@ -984,7 +966,50 @@ bool DuckLakeMetadataManager::ProbeMetadataColumns() {
 		return false;
 		// LCOV_EXCL_STOP
 	}
+	probed_local_catalog = true;
 	return true;
+}
+
+vector<DuckLakeMetadataColumn> DuckLakeMetadataManager::LookupMetadataColumns(const string &table) {
+	auto &ducklake_catalog = transaction.GetCatalog();
+	auto &context = *transaction.GetConnection().context;
+	vector<DuckLakeMetadataColumn> columns;
+	context.RunFunctionInTransaction([&]() {
+		QualifiedName name(ducklake_catalog.MetadataDatabaseName(), ducklake_catalog.MetadataSchemaName(),
+		                   Identifier(table));
+		auto entry =
+		    Catalog::GetEntry(context, EntryLookupInfo(CatalogType::TABLE_ENTRY, name), OnEntryNotFound::RETURN_NULL);
+		if (!entry) {
+			return;
+		}
+		if (entry->type == CatalogType::VIEW_ENTRY) {
+			// a view in place of a table is checked through the columns it has now
+			auto &view = entry->Cast<ViewCatalogEntry>();
+			view.BindView(context, BindViewAction::FORCE_REBIND);
+			auto view_columns = view.GetColumnInfo();
+			for (idx_t i = 0; i < view_columns->names.size(); i++) {
+				auto &column_name = i < view.aliases.size() ? view.aliases[i] : view_columns->names[i];
+				columns.push_back({column_name, view_columns->types[i].ToString()});
+			}
+			return;
+		}
+		for (auto &column : entry->Cast<TableCatalogEntry>().GetColumns().Logical()) {
+			columns.push_back({column.Name(), column.Type().ToString()});
+		}
+	});
+	return columns;
+}
+
+vector<DuckLakeMetadataColumn> DuckLakeMetadataManager::QueryMetadataColumns(const string &table) {
+	vector<DuckLakeMetadataColumn> columns;
+	auto result = Query(StringUtil::Format("SELECT * FROM {METADATA_CATALOG}.%s LIMIT 0", table));
+	if (!result->HasError()) {
+		auto names = result->GetNames();
+		for (idx_t i = 0; i < names.size(); i++) {
+			columns.push_back({names[i], result->GetTypes()[i].ToString()});
+		}
+	}
+	return columns;
 }
 
 bool DuckLakeMetadataManager::ProbeMetadataColumnsFromListing(string query) {
@@ -1008,6 +1033,7 @@ void DuckLakeMetadataManager::ResetProbedColumns() {
 	probed_columns.clear();
 	probed_metadata_schema = false;
 	probed_all_columns = false;
+	probed_local_catalog = false;
 }
 
 void DuckLakeMetadataManager::ProbeMetadataSchema() {
@@ -1019,30 +1045,15 @@ void DuckLakeMetadataManager::ProbeMetadataSchema() {
 	probed_all_columns = ProbeMetadataColumns();
 }
 
-const vector<DuckLakeMetadataColumn> &DuckLakeMetadataManager::ProbedMetadataColumns(const string &table) {
+const vector<DuckLakeMetadataColumn> &DuckLakeMetadataManager::ProbedMetadataColumns(const string &table,
+                                                                                     bool probe_unlisted) {
 	ProbeMetadataSchema();
 	auto entry = probed_columns.find(table);
-	if (entry == probed_columns.end() && probed_all_columns && FoldsMetadataTableCase()) {
-		// the listing spells a renamed table in its own case
-		for (entry = probed_columns.begin(); entry != probed_columns.end(); entry++) {
-			if (StringUtil::CIEquals(entry->first, table)) {
-				break;
-			}
-		}
-	}
 	if (entry == probed_columns.end()) {
 		vector<DuckLakeMetadataColumn> columns;
-		if (!probed_all_columns) {
-			// LCOV_EXCL_START
-			// a catalog that lists no tables is probed table by table
-			auto result = Query(StringUtil::Format("SELECT * FROM {METADATA_CATALOG}.%s LIMIT 0", table));
-			if (!result->HasError()) {
-				auto names = result->GetNames();
-				for (idx_t i = 0; i < names.size(); i++) {
-					columns.push_back({names[i], result->GetTypes()[i].ToString()});
-				}
-			}
-			// LCOV_EXCL_STOP
+		// a catalog that lists no tables is probed table by table, a listing can lack a view or spell another case
+		if (!probed_all_columns || (probe_unlisted && FoldsMetadataTableCase())) {
+			columns = probed_local_catalog ? LookupMetadataColumns(table) : QueryMetadataColumns(table);
 		}
 		entry = probed_columns.emplace(table, std::move(columns)).first;
 	}
@@ -1055,7 +1066,7 @@ bool DuckLakeMetadataManager::FoldsMetadataTableCase() const {
 }
 
 bool DuckLakeMetadataManager::HasMetadataColumn(const string &table, const string &column) {
-	for (auto &probed : ProbedMetadataColumns(table)) {
+	for (auto &probed : ProbedMetadataColumns(table, false)) {
 		if (probed.name == column) {
 			return true;
 		}

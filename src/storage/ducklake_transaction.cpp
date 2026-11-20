@@ -1453,6 +1453,7 @@ DuckLakeGlobalStatsInfo DuckLakeTransaction::ConvertNewGlobalStats(TableIndex ta
 	stats.record_count_unknown = new_stats.record_count_unknown;
 	stats.next_row_id = new_stats.next_row_id;
 	stats.table_size_bytes = new_stats.table_size_bytes;
+	stats.missing_table_size = new_stats.table_size_unknown;
 	return stats;
 }
 
@@ -1862,9 +1863,9 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		}
 		return names;
 	};
-	context.get_net_data_file_row_count = [&](TableIndex table_id) -> idx_t {
+	context.get_net_data_file_row_count = [&](TableIndex table_id) -> optional_idx {
 		auto table = get_table_entry(table_id);
-		return table ? table->GetNetDataFileRowCount(*this) : 0;
+		return table ? table->GetNetDataFileRowCount(*this) : optional_idx(0);
 	};
 	context.build_stats_map = [&](vector<DuckLakeGlobalStatsInfo> &stats) {
 		// flushed data commits across a concurrent alter, so its stats take the latest schema

@@ -61,6 +61,7 @@ DuckLakeTableStats::FromGlobalStats(const DuckLakeGlobalStatsInfo &stats,
 	result->record_count_unknown = stats.record_count_unknown;
 	result->next_row_id = stats.next_row_id;
 	result->table_size_bytes = stats.table_size_bytes;
+	result->table_size_unknown = stats.missing_table_size;
 	for (auto &col_stats : stats.column_stats) {
 		auto type = get_column_type(col_stats.column_id);
 		if (!type) {
@@ -379,7 +380,10 @@ void DuckLakeTableStats::MergeFileStats(const DuckLakeDataFile &file,
 		record_count += file.row_count;
 		next_row_id += file.row_count;
 	}
-	table_size_bytes += file.file_size_bytes;
+	// an unknown size stays unknown
+	if (!table_size_unknown) {
+		table_size_bytes += file.file_size_bytes;
+	}
 	for (auto &entry : column_stats) {
 		MergeStats(entry.first, entry.second);
 	}

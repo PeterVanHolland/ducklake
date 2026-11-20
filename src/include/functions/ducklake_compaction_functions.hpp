@@ -94,6 +94,9 @@ public:
 	DuckLakeCompactor(ClientContext &context, DuckLakeCatalog &catalog, DuckLakeTransaction &transaction,
 	                  Binder &binder, TableIndex table_id, uint64_t max_files, double delete_threshold);
 	void GenerateCompactions(DuckLakeTableEntry &table, vector<unique_ptr<LogicalOperator>> &compactions);
+	//! The VARIANT columns that a source file stores without shredding, which the rewritten file keeps that way
+	vector<string> UnshreddedVariantColumns(const DuckLakeTableEntry &table,
+	                                        const vector<DuckLakeCompactionFileEntry> &files);
 	unique_ptr<LogicalOperator> GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry> source_files,
 	                                                      bool bind_to_latest_schema = false);
 	//! Sort the scan of a schema version of the table by the sort of its latest version

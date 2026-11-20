@@ -249,6 +249,12 @@
         "test/sql/cleanup/expire_cleanup_in_transaction.test",
         "test/sql/cleanup/expire_cleanup_concurrent_commit.test"
       ]
+    },
+    {
+      "reason": "A Quack catalog renders inlined rows as SQL text, which the 700 level VARIANT of this test exceeds the parser's nesting with",
+      "paths": [
+        "test/sql/data_inlining/data_inlining_variant_depth.test"
+      ]
     }
   ]
 }

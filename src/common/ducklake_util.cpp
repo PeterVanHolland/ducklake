@@ -31,6 +31,9 @@
 #include "duckdb/execution/operator/helper/physical_set.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/common/types/interval.hpp"
+#include "duckdb/common/types/variant.hpp"
+#include "duckdb/common/vector/unified_vector_format.hpp"
+#include "duckdb/function/scalar/variant_utils.hpp"
 #include "duckdb/common/unordered_map.hpp"
 
 #include <cmath>
@@ -236,6 +239,36 @@ string DuckLakeUtil::ValueToSQL(DuckLakeMetadataManager &metadata_manager, Clien
 		return result;
 	}
 	return SQLString::ToString(result);
+}
+
+idx_t DuckLakeUtil::VariantNestingDepth(Vector &data, idx_t count) {
+	RecursiveUnifiedVectorFormat format;
+	Vector::RecursiveToUnifiedFormat(data, format);
+	UnifiedVariantVectorData variant(format);
+	idx_t max_depth = 0;
+	vector<pair<uint32_t, idx_t>> pending;
+	for (idx_t row = 0; row < count; row++) {
+		if (!variant.RowIsValid(row)) {
+			continue;
+		}
+		// a value index and the number of containers around the value
+		pending.emplace_back(0, 0);
+		while (!pending.empty()) {
+			auto entry = pending.back();
+			pending.pop_back();
+			if (!VariantUtils::IsNestedType(variant, row, entry.first)) {
+				continue;
+			}
+			// the container counts as a level whether it has children or not
+			auto level = entry.second + 1;
+			max_depth = MaxValue<idx_t>(max_depth, level);
+			auto nested = VariantUtils::DecodeNestedData(variant, row, entry.first);
+			for (idx_t child = 0; child < nested.child_count; child++) {
+				pending.emplace_back(variant.GetValuesIndex(row, nested.children_idx + child), level);
+			}
+		}
+	}
+	return max_depth;
 }
 
 void DuckLakeUtil::EnsureDirectoryExists(FileSystem &fs, const string &data_path) {

@@ -1,0 +1,204 @@
+# name: test/sql/data_inlining/data_inlining_variant_depth.test
+# description: A flush writes a VARIANT column whose inlined values are nested deeper than 16 levels without shredding and a compaction keeps it so, so the data files stay readable
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/data_inlining_variant_depth', DATA_INLINING_ROW_LIMIT 10)
+
+# the headers of nested arrays and objects as in the issue, 700 levels deep
+statement ok
+CREATE TEMP TABLE levels AS
+WITH RECURSIVE levels(depth, child_length, width) AS (
+    SELECT 1, 1, 1
+    UNION ALL
+    SELECT depth + 1, child_length + 2 + depth % 2 + 2 * width,
+           CASE WHEN child_length + 2 + depth % 2 + 2 * width < 256 THEN 1
+                WHEN child_length + 2 + depth % 2 + 2 * width < 65536 THEN 2 ELSE 3 END
+    FROM levels WHERE depth < 700
+)
+SELECT depth,
+       CASE WHEN depth % 2 = 1 THEN printf('%02x0100', 2 + 4 * (width - 1))
+            ELSE printf('%02x01', 3 + 4 * (width - 1)) END ||
+       repeat('00', width) ||
+       left(printf('%02x%02x%02x', child_length % 256, child_length // 256 % 256, child_length // 65536), 2 * width) AS header
+FROM levels
+
+statement ok
+CREATE TEMP TABLE deep_value AS
+SELECT variant_bytes_to_variant(unhex('1101000161' || string_agg(header, '' ORDER BY depth DESC) || '04')) AS v
+FROM levels
+
+statement ok
+CREATE TABLE ducklake.deep (i INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO ducklake.deep SELECT 1, v FROM deep_value
+
+# an array nested 30 levels deep would take minutes to read back from a shredded file
+statement ok
+INSERT INTO ducklake.deep
+WITH RECURSIVE n(d, v) AS (SELECT 1, [1]::VARIANT UNION ALL SELECT d + 1, [v]::VARIANT FROM n WHERE d < 30)
+SELECT 2, v FROM n WHERE d = 30
+
+# 16 nested arrays are still shredded, 17 are not, an empty innermost array counts as a level too
+statement ok
+CREATE TABLE ducklake.arrays16 (i INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO ducklake.arrays16
+WITH RECURSIVE n(d, v) AS (SELECT 1, [1]::VARIANT UNION ALL SELECT d + 1, [v]::VARIANT FROM n WHERE d < 16)
+SELECT 1, v FROM n WHERE d = 16
+
+statement ok
+CREATE TABLE ducklake.arrays17 (i INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO ducklake.arrays17
+WITH RECURSIVE n(d, v) AS (SELECT 1, []::INTEGER[]::VARIANT UNION ALL SELECT d + 1, [v]::VARIANT FROM n WHERE d < 17)
+SELECT 1, v FROM n WHERE d = 17
+
+# a deep value that was deleted again is still written by the flush, so it counts as well
+statement ok
+CREATE TABLE ducklake.deleted (i INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO ducklake.deleted
+WITH RECURSIVE n(d, v) AS (SELECT 1, [1]::VARIANT UNION ALL SELECT d + 1, [v]::VARIANT FROM n WHERE d < 30)
+SELECT 1, v FROM n WHERE d = 30
+
+statement ok
+INSERT INTO ducklake.deleted VALUES (2, 42)
+
+statement ok
+DELETE FROM ducklake.deleted WHERE i = 1
+
+# a table of ordinary values stays shredded
+statement ok
+CREATE TABLE ducklake.shallow (i INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO ducklake.shallow VALUES (1, {'k': [1, 2], 'o': {'x': 'y'}}), (2, [[[[1]]]]), (3, NULL)
+
+query II
+SELECT count(*), (SELECT count(*) FROM ducklake_list_files('ducklake', 'deep')) FROM ducklake.deep
+----
+2	0
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake')
+
+query II
+SELECT (SELECT count(*) FROM ducklake_list_files('ducklake', 'deep')), (SELECT count(*) FROM ducklake_list_files('ducklake', 'shallow'))
+----
+1	1
+
+# the deep column has no typed_value in its data file, the shallow one has
+query I
+SELECT count(*) FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/deep/*.parquet') WHERE name = 'typed_value'
+----
+0
+
+query I
+SELECT count(*) > 0 FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/arrays16/*.parquet') WHERE name = 'typed_value'
+----
+true
+
+query I
+SELECT count(*) FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/arrays17/*.parquet') WHERE name = 'typed_value'
+----
+0
+
+query I
+SELECT count(*) FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/deleted/*.parquet') WHERE name = 'typed_value'
+----
+0
+
+query II
+SELECT i, v::VARCHAR FROM ducklake.deleted
+----
+2	42
+
+query I
+SELECT count(*) > 0 FROM parquet_schema('{DATA_PATH}/data_inlining_variant_depth/main/shallow/*.parquet') WHERE name = 'typed_value'
+----
+true
+
+# every value reads back as it went in
+query II
+SELECT i, v::VARCHAR = (SELECT v::VARCHAR FROM deep_value) FROM ducklake.deep WHERE i = 1
+----
+1	true
+
+query II
+WITH RECURSIVE n(d, v) AS (SELECT 1, [1]::VARIANT UNION ALL SELECT d + 1, [v]::VARIANT FROM n WHERE d < 30)
+SELECT i, v::VARCHAR = (SELECT v::VARCHAR FROM n WHERE d = 30) FROM ducklake.deep WHERE i = 2
+----
+2	true
+
+query II
+SELECT i, v::VARCHAR FROM ducklake.shallow ORDER BY i
+----
+1	{'k': [1, 2], 'o': {'x': y}}
+2	[[[[1]]]]
+3	NULL
+
+# a compaction keeps the column of a deep file unshredded and the column of a shallow file shredded
+statement ok
+INSERT INTO ducklake.deep SELECT 3, v FROM deep_value
+
+statement ok
+INSERT INTO ducklake.shallow VALUES (4, [1, 2, 3])
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake')
+
+query II
+SELECT (SELECT count(*) FROM ducklake_list_files('ducklake', 'deep')), (SELECT count(*) FROM ducklake_list_files('ducklake', 'shallow'))
+----
+2	2
+
+statement ok
+CALL ducklake_merge_adjacent_files('ducklake')
+
+query II
+SELECT (SELECT count(*) FROM ducklake_list_files('ducklake', 'deep')), (SELECT count(*) FROM ducklake_list_files('ducklake', 'shallow'))
+----
+1	1
+
+statement ok
+SET VARIABLE deep_file = (SELECT data_file FROM ducklake_list_files('ducklake', 'deep'))
+
+statement ok
+SET VARIABLE shallow_file = (SELECT data_file FROM ducklake_list_files('ducklake', 'shallow'))
+
+query I
+SELECT count(*) FROM parquet_schema(getvariable('deep_file')) WHERE name = 'typed_value'
+----
+0
+
+query I
+SELECT count(*) > 0 FROM parquet_schema(getvariable('shallow_file')) WHERE name = 'typed_value'
+----
+true
+
+query II
+SELECT i, v::VARCHAR = (SELECT v::VARCHAR FROM deep_value) FROM ducklake.deep WHERE i IN (1, 3) ORDER BY i
+----
+1	true
+3	true
+
+query II
+SELECT i, v::VARCHAR FROM ducklake.shallow ORDER BY i
+----
+1	{'k': [1, 2], 'o': {'x': y}}
+2	[[[[1]]]]
+3	NULL
+4	[1, 2, 3]

@@ -28,6 +28,9 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "common/ducklake_util.hpp"
+#include "duckdb/common/sql_identifier.hpp"
+#include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "storage/ducklake_delete.hpp"
 #include "storage/ducklake_delete_filter.hpp"
@@ -246,6 +249,8 @@ public:
 
 private:
 	string GetFlushSortOrderSQL(const DuckLakeTableEntry &table);
+	//! The VARIANT columns whose inlined values are nested too deep for a shredded data file
+	vector<string> UnshreddedVariantColumns(const DuckLakeTableEntry &table);
 
 	ClientContext &context;
 	DuckLakeCatalog &catalog;
@@ -282,6 +287,47 @@ string DuckLakeDataFlusher::GetFlushSortOrderSQL(const DuckLakeTableEntry &table
 	return DuckLakeSort::BuildSortOrderSQL(context, bound_orders, latest_table, table);
 }
 
+//! Shredding nests the Parquet schema of a data file once per level of a VARIANT, the reader of the pinned DuckDB
+//! refuses a schema deeper than 500 levels and takes twice as long per level of nested arrays, so the deepest nesting
+//! a flush still shreds
+static constexpr idx_t MAX_SHREDDED_VARIANT_DEPTH = 16;
+
+vector<string> DuckLakeDataFlusher::UnshreddedVariantColumns(const DuckLakeTableEntry &table) {
+	vector<string> names;
+	vector<string> expressions;
+	vector<LogicalType> types;
+	auto &metadata_manager = transaction.GetMetadataManager();
+	for (auto &column : table.GetColumns().Logical()) {
+		if (column.Type().id() != LogicalTypeId::VARIANT) {
+			continue;
+		}
+		names.push_back(column.Name().GetIdentifierName());
+		// the flush source decodes the stored form of the column itself
+		expressions.push_back(SQLIdentifier::ToString(column.Name()));
+		types.push_back(column.Type());
+	}
+	vector<string> result;
+	if (names.empty()) {
+		return result;
+	}
+	// the same rows the flush writes, the deleted versions included
+	auto query_result = metadata_manager.ReadAllInlinedDataForFlush(transaction.GetSnapshot(), inlined_table.table_name,
+	                                                                table, string(), expressions);
+	auto data = metadata_manager.TransformInlinedData(*query_result, types, inlined_table.table_name);
+	vector<idx_t> depths(names.size(), 0);
+	for (auto &chunk : data->data->Chunks()) {
+		for (idx_t c = 0; c < names.size(); c++) {
+			depths[c] = MaxValue<idx_t>(depths[c], DuckLakeUtil::VariantNestingDepth(chunk.data[c], chunk.size()));
+		}
+	}
+	for (idx_t c = 0; c < names.size(); c++) {
+		if (depths[c] > MAX_SHREDDED_VARIANT_DEPTH) {
+			result.push_back(names[c]);
+		}
+	}
+	return result;
+}
+
 unique_ptr<LogicalOperator> DuckLakeDataFlusher::GenerateFlushCommand() {
 	auto table_entry = catalog.GetTableAtSchemaVersion(transaction, table_id, inlined_table.schema_version);
 	if (!table_entry) {
@@ -297,6 +343,7 @@ unique_ptr<LogicalOperator> DuckLakeDataFlusher::GenerateFlushCommand() {
 	}
 
 	DuckLakeCopyInput copy_input(context, table);
+	copy_input.unshredded_variant_columns = UnshreddedVariantColumns(table);
 	unique_ptr<LogicalCopyToFile> copy;
 	auto root = DuckLakeCompactor::PlanRewriteScan(
 	    context, binder, table, copy_input, true,

@@ -71,6 +71,9 @@ DuckLakeFlushData::DuckLakeFlushData(PhysicalPlan &physical_plan, const vector<L
 SourceResultType DuckLakeFlushData::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                     OperatorSourceInput &input) const {
 	auto &gstate = this->sink_state->Cast<DuckLakeInsertGlobalState>();
+	if (gstate.state == SinkFinalizeType::NO_OUTPUT_POSSIBLE) {
+		return SourceResultType::FINISHED;
+	}
 	// the table can have been renamed since its rows were inlined
 	auto &catalog = table.ParentCatalog().Cast<DuckLakeCatalog>();
 	auto &transaction = DuckLakeTransaction::Get(context.client, catalog);
@@ -182,8 +185,12 @@ SinkFinalizeType DuckLakeFlushData::Finalize(Pipeline &pipeline, Event &event, C
 	}
 
 	bool wrote_files = !global_state.written_files.empty();
+	if (!transaction.MarkInlinedDataForDeletion(inlined_table, snapshot.snapshot_id, wrote_files)) {
+		// another flush of this statement flushed the table
+		DuckLakeInsert::RemoveWrittenFiles(context, global_state);
+		return SinkFinalizeType::NO_OUTPUT_POSSIBLE;
+	}
 	transaction.AppendFiles(global_state.table.GetTableId(), std::move(global_state.written_files));
-	transaction.MarkInlinedDataForDeletion(inlined_table, snapshot.snapshot_id, wrote_files);
 	return SinkFinalizeType::READY;
 }
 

@@ -1,0 +1,78 @@
+# name: test/sql/data_inlining/flush_twice_in_statement.test
+# description: two flush calls in one statement flush each inlined table once
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/flush_twice_in_statement', DATA_INLINING_ROW_LIMIT 500, METADATA_CATALOG 'meta')
+
+# the flushes of one statement run concurrently
+statement ok
+SET threads=4
+
+statement ok
+CREATE TABLE lake.t AS SELECT i FROM range(100) t(i)
+
+query I
+SELECT count(*) FROM meta.ducklake_data_file
+----
+0
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('lake')
+UNION ALL
+SELECT * FROM ducklake_flush_inlined_data('lake')
+----
+main	t	100
+
+query I
+SELECT count(*) FROM meta.ducklake_data_file WHERE end_snapshot IS NULL
+----
+1
+
+query III
+SELECT (SELECT count(*) FROM lake.t), count(*), count(DISTINCT i) FROM lake.t
+----
+100	100	100
+
+# the lost flush of a table with deleted inlined rows removes its data file and its delete file
+statement ok
+CREATE TABLE lake.u AS SELECT i FROM range(100) t(i)
+
+statement ok
+DELETE FROM lake.u WHERE i = 3
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('lake', table_name => 'u')
+UNION ALL
+SELECT * FROM ducklake_flush_inlined_data('lake', table_name => 'u')
+----
+main	u	100
+
+query I
+SELECT count(*) FROM meta.ducklake_data_file WHERE end_snapshot IS NULL
+----
+2
+
+query I
+SELECT count(*) FROM meta.ducklake_delete_file WHERE end_snapshot IS NULL
+----
+1
+
+query III
+SELECT (SELECT count(*) FROM lake.u), count(*), count(DISTINCT i) FROM lake.u
+----
+99	99	99
+
+# the two data files and the delete file are the only files on disk
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/flush_twice_in_statement/**')
+----
+3

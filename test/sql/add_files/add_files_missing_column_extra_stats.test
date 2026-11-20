@@ -1,0 +1,56 @@
+# name: test/sql/add_files/add_files_missing_column_extra_stats.test
+# description: A GEOMETRY or VARIANT column that an added file lacks reads its default, so its statistics become unknown
+# group: [add_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/add_files_missing_column_extra_stats.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/add_files_missing_column_extra_stats', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.g (id INTEGER, g GEOMETRY DEFAULT 'POINT(1 2)'::GEOMETRY)
+
+statement ok
+INSERT INTO dl.g VALUES (1, 'POINT(100 100)'::GEOMETRY)
+
+statement ok
+CREATE TABLE dl.v (id INTEGER, v VARIANT DEFAULT 'text'::VARIANT)
+
+statement ok
+INSERT INTO dl.v VALUES (1, 42::VARIANT)
+
+statement ok
+COPY (SELECT 2 AS id) TO '{DATA_PATH}/add_files_missing_column_extra_stats.parquet'
+
+statement ok
+CALL ducklake_add_data_files('dl', 'g', '{DATA_PATH}/add_files_missing_column_extra_stats.parquet', allow_missing => true)
+
+statement ok
+CALL ducklake_add_data_files('dl', 'v', '{DATA_PATH}/add_files_missing_column_extra_stats.parquet', allow_missing => true)
+
+loop i 0 2
+
+query II
+SELECT id, st_astext(g) FROM dl.g WHERE st_intersects_extent(g, 'POINT(1 2)'::GEOMETRY)
+----
+2	POINT (1 2)
+
+query II
+SELECT id, v FROM dl.v ORDER BY id
+----
+1	42
+2	text
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/add_files_missing_column_extra_stats')
+
+endloop

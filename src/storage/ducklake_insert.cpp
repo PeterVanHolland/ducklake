@@ -580,8 +580,7 @@ DuckLakeCopyOptions DuckLakeInsert::GetCopyOptions(ClientContext &context, DuckL
 	// Get Parquet Copy function
 	auto &copy_fun = DuckLakeFunctions::GetCopyFunction(context, "parquet");
 
-	auto &fs = FileSystem::GetFileSystem(context);
-	DuckLakeUtil::EnsureDirectoryExists(fs, copy_input.data_path);
+	DuckLakeUtil::EnsureDirectoryExists(context, copy_input.data_path);
 
 	// Bind Copy Function
 	CopyFunctionBindInput bind_input(*info);
@@ -604,6 +603,8 @@ DuckLakeCopyOptions DuckLakeInsert::GetCopyOptions(ClientContext &context, DuckL
 	    make_uniq<LogicalCopyToFile>(copy_fun.function, std::move(function_data), std::move(info), TableIndex());
 	auto &copy = *result.copy;
 	copy.use_tmp_file = false;
+	// the catalog references the files, so they and their directory entries are synced before the copy completes
+	copy.fsync = true;
 	copy.filename_pattern.SetFilenamePattern("ducklake-{uuidv7}");
 	static constexpr idx_t MINIMUM_WRITE_FILE_SIZE = 4096;
 	copy.file_size_bytes = MaxValue<idx_t>(target_file_size, MINIMUM_WRITE_FILE_SIZE);

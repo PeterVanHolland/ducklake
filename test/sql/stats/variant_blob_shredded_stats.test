@@ -1,0 +1,51 @@
+# name: test/sql/stats/variant_blob_shredded_stats.test
+# description: Shredded VARIANT fields of a type without DuckLake stats get unknown stats instead of empty ones
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/variant_blob_shredded_stats', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+USE ducklake
+
+statement ok
+CREATE TABLE blobs AS SELECT 'payload'::BLOB::VARIANT AS v
+
+statement ok
+INSERT INTO blobs VALUES ('second'::BLOB::VARIANT)
+
+query II
+SELECT v::BLOB, COALESCE(v::BLOB, 'fallback'::BLOB) FROM blobs ORDER BY ALL
+----
+payload	payload
+second	second
+
+query I
+SELECT stats(v) FROM blobs LIMIT 1
+----
+{'fully_shredded': {'stats': {'has_no_null': true, 'has_null': true, 'has_unicode': true}, 'type': BLOB}, 'has_no_null': true, 'has_null': true, 'shredding_state': SHREDDED}
+
+# a BLOB field of a struct and a BLOB element of a list
+statement ok
+CREATE TABLE objects AS SELECT {'k': 'payload'::BLOB, 'n': 1}::VARIANT AS v
+
+query II
+SELECT COALESCE(v.k::BLOB, 'fallback'::BLOB), COALESCE(v.n::INTEGER, 0) FROM objects
+----
+payload	1
+
+statement ok
+CREATE TABLE lists AS SELECT ['payload'::BLOB]::VARIANT AS v
+
+query I
+SELECT COALESCE(v[1]::BLOB, 'fallback'::BLOB) FROM lists
+----
+payload

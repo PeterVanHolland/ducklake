@@ -1,0 +1,93 @@
+# name: test/sql/migration/v10_unmigrated_field_defaults.test
+# description: a v1.0 catalog that is not migrated reads the defaults of struct fields that DuckDB 1.5.6 dropped when renaming them
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# the catalog of v10_renamed_field_defaults.test, written by DuckDB 1.5.6
+unzip data/old_ducklake/renamed_field_default.db.gz {TEST_DIR}/v10_unmigrated_field_defaults.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_unmigrated_field_defaults.db' AS lake (DATA_PATH 'data/old_ducklake/renamed_field_default/', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta')
+
+query I
+SELECT value FROM meta.ducklake_metadata WHERE key = 'version'
+----
+1.0
+
+# the row of t is in a Parquet file, the row of u is inlined
+query III
+SELECT s, c, (SELECT count(*) FROM lake.t WHERE s.h = 5) FROM lake.t
+----
+{'a': 1, 'h': 5, 'm': NULL}	1	1
+
+query II
+SELECT s, (SELECT count(*) FROM lake.u WHERE s.g = 'x') FROM lake.u
+----
+{'a': 2, 'g': x}	1
+
+query I
+SELECT s FROM lake.t AT (VERSION => 5)
+----
+{'a': 1, 'g': 5, 'n': NULL}
+
+# the rows stay as the older version wrote them
+query II
+SELECT column_name, initial_default FROM meta.ducklake_column
+WHERE parent_column IS NOT NULL AND column_name IN ('g', 'h') ORDER BY table_id, column_id, begin_snapshot
+----
+g	NULL
+h	NULL
+g	NULL
+
+# the same rows on the metadata catalog of the test config
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/v10_unmigrated_field_defaults_config.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS config_lake (DATA_PATH '{DATA_PATH}/v10_unmigrated_field_defaults_files', METADATA_CATALOG 'config_meta', DATA_INLINING_ROW_LIMIT 0, DUCKLAKE_VERSION '1.0')
+
+statement ok
+CREATE TABLE config_lake.t(s STRUCT(a INT));
+
+statement ok
+INSERT INTO config_lake.t VALUES ({'a': 1});
+
+statement ok
+ALTER TABLE config_lake.t ADD COLUMN s.f INT DEFAULT 5;
+
+statement ok
+ALTER TABLE config_lake.t RENAME s.f TO g;
+
+# the row that versions before the fix wrote for the rename
+statement ok
+UPDATE config_meta.ducklake_column SET initial_default = NULL, default_value = 'NULL', default_value_type = ''
+WHERE column_name = 'g';
+
+statement ok
+DETACH config_lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS config_lake (DATA_PATH '{DATA_PATH}/v10_unmigrated_field_defaults_files', METADATA_CATALOG 'config_meta')
+
+query II
+SELECT s, (SELECT count(*) FROM config_lake.t WHERE s.g = 5) FROM config_lake.t
+----
+{'a': 1, 'g': 5}	1
+
+# a later rename keeps the default
+statement ok
+ALTER TABLE config_lake.t RENAME s.g TO h;
+
+query I
+SELECT s FROM config_lake.t
+----
+{'a': 1, 'h': 5}
+
+query I
+SELECT value FROM config_meta.ducklake_metadata WHERE key = 'version'
+----
+1.0

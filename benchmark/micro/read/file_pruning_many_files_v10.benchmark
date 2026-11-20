@@ -1,0 +1,25 @@
+# name: benchmark/micro/read/file_pruning_many_files_v10.benchmark
+# description: The selective queries of file_pruning_many_files.benchmark on a v1.0 catalog
+# group: [read]
+
+name File Pruning Many Files v1.0
+group micro
+subgroup read
+
+require ducklake
+
+require parquet
+
+argument lake many_files_v10
+
+argument ducklake_version 1.0
+
+include benchmark/micro/fixtures/many_files.benchmark.in
+
+# The TIMESTAMP and DOUBLE bounds of a v1.0 catalog are checked for added files and files from before a retype
+run benchmark/micro/queries/file_pruning.sql
+
+result_query II
+SELECT * FROM __answer
+----
+1234567	617283.5

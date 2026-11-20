@@ -1,0 +1,34 @@
+# name: benchmark/micro/fixtures/flush_schema_versions.benchmark.in
+# description: Three hundred inlined tables of 25 columns, each created with its row in its own snapshot and schema version
+# group: [fixtures]
+
+argument lake flush_schema_versions
+
+cache_file ${lake}_ready.marker
+
+# Every table is created in its own transaction, so its inlined row sits in a schema version of its own
+load
+@create ${lake}_pristine
+@attach ${lake}_pristine AS lake (DATA_PATH '${BENCHMARK_DIR}/${lake}_files')
+CALL lake.set_option('data_inlining_row_limit', 10);
+@for k in range(300)
+CREATE TABLE lake.s@{k} AS SELECT @{k} AS id, @{k} + 1 AS c1, @{k} + 2 AS c2, @{k} + 3 AS c3, @{k} + 4 AS c4, @{k} + 5 AS c5, @{k} + 6 AS c6, @{k} + 7 AS c7, @{k} + 8 AS c8, @{k} + 9 AS c9, @{k} + 10 AS c10, @{k} + 11 AS c11, @{k} + 12 AS c12, @{k} + 13 AS c13, @{k} + 14 AS c14, @{k} + 15 AS c15, @{k} + 16 AS c16, @{k} + 17 AS c17, @{k} + 18 AS c18, @{k} + 19 AS c19, @{k} + 20 AS c20, @{k} + 21 AS c21, @{k} + 22 AS c22, @{k} + 23 AS c23, @{k} + 24 AS c24;
+@end
+SELECT CASE WHEN (SELECT count(*) <> 300 FROM __ducklake_metadata_lake.ducklake_table)
+OR (SELECT count(DISTINCT schema_version) <> 300 FROM __ducklake_metadata_lake.ducklake_inlined_data_tables)
+OR (SELECT count(*) <> 0 FROM __ducklake_metadata_lake.ducklake_data_file)
+THEN error('unexpected flush schema versions fixture') END;
+DETACH lake;
+COPY (SELECT count(*) FROM glob('${BENCHMARK_DIR}/${lake}_files/**'))
+TO '${BENCHMARK_DIR}/${lake}_filecount.csv' (FORMAT CSV, HEADER false);
+@seal ${lake}_pristine
+COPY (SELECT 1) TO '${BENCHMARK_DIR}/${lake}_ready.marker' (FORMAT CSV);
+DETACH DATABASE IF EXISTS lake;
+@copy ${lake}_pristine TO ${work}
+@attach ${work} AS lake
+CALL ducklake_delete_orphaned_files('lake', cleanup_all => true);
+SELECT CASE WHEN (SELECT count(*) FROM glob('${BENCHMARK_DIR}/${lake}_files/**'))
+<> (SELECT column0 FROM read_csv('${BENCHMARK_DIR}/${lake}_filecount.csv', header = false))
+THEN error('the fixture files were not restored') END;
+
+include benchmark/micro/fixtures/restore_reload.benchmark.in

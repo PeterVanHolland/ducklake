@@ -1729,6 +1729,12 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	context.commit_error_without_query = [&](const string &message) {
 		return metadata_manager->CommitErrorWithoutQuery(message);
 	};
+	bool commit_invalidated = false;
+	context.commit_outcome_unknown = [&](const ErrorData &error) {
+		return commit_invalidated || metadata_manager->CommitOutcomeUnknown(error);
+	};
+	// a catalog that commits each statement runs the batch in a transaction of its own, which the batch commits
+	context.batch_commits = metadata_manager->CommitsEachStatement();
 	context.commit_error_hint = [&](const string &message) {
 		if (context.skip_retry()) {
 			return string("Another transaction changed options at the same time, and a retry would undo what the "
@@ -1743,7 +1749,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		}
 	};
 	context.commit_connection = [&]() {
-		connection->Commit();
+		DuckLakeMetadataManager::CommitConnection(*connection, commit_invalidated);
 	};
 	context.try_rollback = [&]() {
 		if (connection->context->transaction.HasActiveTransaction()) {

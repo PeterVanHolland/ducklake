@@ -1,0 +1,95 @@
+# name: test/sql/quack/inline_deep_variant.test
+# description: A Quack catalog inlines a VARIANT nested 2500 levels deep, which the catalog receives as its Parquet encoding instead of a text built once per level
+# group: [quack]
+
+require ducklake
+
+require parquet
+
+require-env DUCKLAKE_CONNECTION quack:localhost:19999
+
+require quack
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/inline_deep_variant', DATA_INLINING_ROW_LIMIT 10)
+
+# the headers of 2500 nested arrays, from the innermost to the outermost
+statement ok
+CREATE TEMP TABLE levels AS
+WITH RECURSIVE levels(depth, child_length, width) AS (
+    SELECT 1, 1, 1
+    UNION ALL
+    SELECT depth + 1, child_length + 2 + depth % 2 + 2 * width,
+           CASE WHEN child_length + 2 + depth % 2 + 2 * width < 256 THEN 1
+                WHEN child_length + 2 + depth % 2 + 2 * width < 65536 THEN 2 ELSE 3 END
+    FROM levels WHERE depth < 2500
+)
+SELECT depth,
+       CASE WHEN depth % 2 = 1 THEN printf('%02x0100', 2 + 4 * (width - 1))
+            ELSE printf('%02x01', 3 + 4 * (width - 1)) END ||
+       repeat('00', width) ||
+       left(printf('%02x%02x%02x', child_length % 256, child_length // 256 % 256, child_length // 65536), 2 * width) AS header
+FROM levels
+
+statement ok
+CREATE TEMP TABLE deep_value AS
+SELECT variant_bytes_to_variant(unhex('1101000161' || string_agg(header, '' ORDER BY depth DESC) || '04')) AS v
+FROM levels
+
+# the row is inlined, the catalog receives it as its Parquet encoding
+statement ok
+CREATE TABLE lake.deep AS SELECT v FROM deep_value
+
+query II
+SELECT count(*), (SELECT count(*) FROM ducklake_list_files('lake', 'deep')) FROM lake.deep
+----
+1	0
+
+# the value comes back as it went in
+query I
+SELECT CAST(variant_to_parquet_variant(d.v) AS STRUCT(metadata BLOB, value BLOB)) = CAST(variant_to_parquet_variant(e.v) AS STRUCT(metadata BLOB, value BLOB)) FROM lake.deep d, deep_value e
+----
+true
+
+# ordinary values keep their text form, which keeps the types the Parquet encoding would widen
+statement ok
+CREATE TABLE lake.shallow(v VARIANT)
+
+statement ok
+INSERT INTO lake.shallow VALUES ({'k': [1, 2], 's': 'x'}), ([1, 2, NULL]), (NULL), ('text'), (42), (250::UTINYINT), (60000::USMALLINT), (1.00::DECIMAL(18,2))
+
+query II
+SELECT variant_typeof(v), v::VARCHAR FROM lake.shallow ORDER BY rowid
+----
+OBJECT(k, s)	{'k': [1, 2], 's': x}
+ARRAY(3)	[1, 2, NULL]
+VARIANT_NULL	NULL
+VARCHAR	text
+INT32	42
+UINT8	250
+UINT16	60000
+DECIMAL(18, 2)	1.00
+
+# a value nested beyond the text limit goes as its Parquet encoding, which widens the integer
+statement ok
+CREATE TABLE lake.nested(v VARIANT)
+
+statement ok
+INSERT INTO lake.nested
+WITH RECURSIVE n(d, v) AS (SELECT 1, [250::UTINYINT]::VARIANT UNION ALL SELECT d + 1, [v]::VARIANT FROM n WHERE d < 200)
+SELECT v FROM n WHERE d = 200
+
+query II
+SELECT variant_typeof(v), v::VARCHAR = (
+    WITH RECURSIVE n(d, v) AS (SELECT 1, [250::UTINYINT]::VARIANT UNION ALL SELECT d + 1, [v]::VARIANT FROM n WHERE d < 200)
+    SELECT v::VARCHAR FROM n WHERE d = 200)
+FROM lake.nested
+----
+ARRAY(1)	true
+
+query I
+SELECT variant_typeof(v) FROM lake.deep
+----
+ARRAY(1)

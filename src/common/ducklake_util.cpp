@@ -31,6 +31,12 @@
 #include "duckdb/execution/operator/helper/physical_set.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/common/types/interval.hpp"
+#include "duckdb/common/types/variant.hpp"
+#include "duckdb/common/types/variant/parquet_variant_iterator.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
+#include "duckdb/common/vector/unified_vector_format.hpp"
+#include "duckdb/function/scalar/variant_utils.hpp"
 #include "duckdb/common/unordered_map.hpp"
 
 #include <cmath>
@@ -127,6 +133,48 @@ static string EscapeVarcharForSQL(const string &str_val) {
 	return "'" + ret + "'";
 }
 
+//! The deepest nesting a VARIANT value is rendered as text with, its text is built once per level
+static constexpr idx_t VARIANT_TEXT_DEPTH_LIMIT = 128;
+
+//! The nesting depth of a VARIANT value, found over its flat list of values rather than by recursion
+static idx_t VariantNestingDepth(const Value &value) {
+	Vector input(value.type(), 1);
+	input.SetValue(0, value);
+	RecursiveUnifiedVectorFormat format;
+	Vector::RecursiveToUnifiedFormat(input, format);
+	UnifiedVariantVectorData variant(format);
+	idx_t max_depth = 0;
+	vector<pair<uint32_t, idx_t>> pending;
+	pending.emplace_back(0, 1);
+	while (!pending.empty()) {
+		auto entry = pending.back();
+		pending.pop_back();
+		max_depth = MaxValue<idx_t>(max_depth, entry.second);
+		if (!VariantUtils::IsNestedType(variant, 0, entry.first)) {
+			continue;
+		}
+		auto nested = VariantUtils::DecodeNestedData(variant, 0, entry.first);
+		for (idx_t child = 0; child < nested.child_count; child++) {
+			pending.emplace_back(variant.GetValuesIndex(0, nested.children_idx + child), entry.second + 1);
+		}
+	}
+	return max_depth;
+}
+
+//! The Parquet encoding of a VARIANT value as one BLOB, the metadata followed by the value
+static Value ParquetVariantBlob(const Value &value) {
+	Vector input(value.type(), 1);
+	input.SetValue(0, value);
+	child_list_t<LogicalType> parquet_variant {{"metadata", LogicalType::BLOB}, {"value", LogicalType::BLOB}};
+	Vector encoded(LogicalType::STRUCT(std::move(parquet_variant)), 1);
+	ParquetVariantConversion::ToParquetVariant(input, 1, encoded);
+	encoded.Flatten(1);
+	auto &entries = StructVector::GetEntries(encoded);
+	auto metadata = FlatVector::GetData<string_t>(entries[0])[0];
+	auto data = FlatVector::GetData<string_t>(entries[1])[0];
+	return Value::BLOB_RAW(metadata.GetString() + data.GetString());
+}
+
 string ToSQLString(DuckLakeMetadataManager &metadata_manager, const Value &value) {
 	if (value.IsNull()) {
 		return value.ToString();
@@ -167,7 +215,11 @@ string ToSQLString(DuckLakeMetadataManager &metadata_manager, const Value &value
 			                        "inlined in this catalog type");
 			// LCOV_EXCL_STOP
 		}
-		return value.ToSQLString();
+		// the text keeps the types of the values, the Parquet encoding is flat but widens some of them
+		if (VariantNestingDepth(value) <= VARIANT_TEXT_DEPTH_LIMIT) {
+			return value.ToSQLString();
+		}
+		return "variant_bytes_to_variant(" + ToSQLString(metadata_manager, ParquetVariantBlob(value)) + ")";
 	}
 	case LogicalTypeId::FLOAT: {
 		float fval = FloatValue::Get(value);

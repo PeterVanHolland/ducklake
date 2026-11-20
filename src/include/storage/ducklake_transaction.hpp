@@ -108,6 +108,7 @@ public:
 	void Clear();
 	bool HasChanges() const;
 	LocalTableChangeIterationHelper Changes() const;
+	//! Skips a file that cannot be removed, so the error of the caller is kept
 	void CleanupFiles(DatabaseInstance &db);
 	void CleanupFiles(ClientContext &context, TableIndex table_id);
 	//! Forgets the changes of a table, the files stay
@@ -392,7 +393,7 @@ public:
 	                   const DuckLakeRetryConfig &retry_config);
 	//! Applies a commit that the server made, the next file id of the committed snapshot is the key of its stats
 	void ApplyServerSideCommit(idx_t schema_version, optional_idx committed_next_file_id = optional_idx());
-	//! Removes the files that this transaction wrote
+	//! Removes the files that this transaction wrote and skips those that cannot be removed
 	void CleanupFiles();
 	//! Post-commit cleanup of empty inlined-data tables superseded by later schema versions.
 	void DropEmptySupersededInlinedTablesClientSide();

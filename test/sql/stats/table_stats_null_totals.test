@@ -83,7 +83,8 @@ FROM ducklake_meta.ducklake_table_stats
 ----
 1	NULL	6	true
 
-# dropping a whole data file without totals
+# dropping a whole data file without totals recomputes the stats from the remaining files, so the count is
+# known again and the bounds are theirs
 statement ok
 UPDATE ducklake_meta.ducklake_table_stats SET file_size_bytes = NULL
 
@@ -107,7 +108,12 @@ SELECT count(*), max(record_count), max(next_row_id),
 	max(file_size_bytes) = (SELECT sum(file_size_bytes) FROM ducklake_meta.ducklake_data_file WHERE end_snapshot IS NULL)
 FROM ducklake_meta.ducklake_table_stats
 ----
-1	NULL	6	true
+1	5	6	true
+
+query III
+SELECT count(*), min(min_value), max(max_value) FROM ducklake_meta.ducklake_table_column_stats
+----
+1	10	30
 
 # an unknown count never makes the bounds exact, even after an update kept the row ids
 statement ok

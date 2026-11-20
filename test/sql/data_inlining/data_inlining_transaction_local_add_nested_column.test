@@ -152,7 +152,7 @@ statement ok
 INSERT INTO ducklake.probe VALUES (1)
 
 statement ok
-ALTER TABLE ducklake.probe ADD COLUMN v VARIANT DEFAULT 7
+ALTER TABLE ducklake.probe ADD COLUMN v VARIANT DEFAULT '7'
 
 statement ok
 INSERT INTO ducklake.probe VALUES (2, 7)

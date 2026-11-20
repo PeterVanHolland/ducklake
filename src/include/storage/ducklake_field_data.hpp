@@ -17,6 +17,7 @@
 namespace duckdb {
 struct AlterTableInfo;
 struct SetPartitionedByInfo;
+class ClientContext;
 class DuckLakeTransaction;
 class ColumnDefinition;
 class ColumnList;
@@ -68,11 +69,15 @@ public:
 	//! The value of this field in rows written before it existed
 	unique_ptr<ParsedExpression> GetInitialDefault() const;
 
+	//! The context casts the default to its initial value in the time zone of the session, unless initial_default is
+	//! set
 	static unique_ptr<DuckLakeFieldId> FieldIdFromColumn(const ColumnDefinition &col, idx_t &column_id,
-	                                                     bool add_column = false);
+	                                                     optional_ptr<ClientContext> context, bool add_column = false,
+	                                                     const Value &initial_default = Value());
 	static unique_ptr<DuckLakeFieldId> FieldIdFromType(const Identifier &name, const LogicalType &type,
 	                                                   optional_ptr<const ParsedExpression> default_expr,
-	                                                   idx_t &column_id, bool add_column);
+	                                                   idx_t &column_id, optional_ptr<ClientContext> context,
+	                                                   bool add_column, const Value &initial_default = Value());
 	static unique_ptr<DuckLakeFieldId> Rename(const DuckLakeFieldId &field_id, const Identifier &new_name);
 	static unique_ptr<DuckLakeFieldId> SetDefault(const DuckLakeFieldId &field_id,
 	                                              optional_ptr<const ParsedExpression> default_expr);
@@ -117,15 +122,19 @@ public:
 		return field_ids;
 	}
 
-	static shared_ptr<DuckLakeFieldData> FromColumns(const ColumnList &columns);
-	static shared_ptr<DuckLakeFieldData> FromColumns(const ColumnList &columns, idx_t &column_id);
+	static shared_ptr<DuckLakeFieldData> FromColumns(const ColumnList &columns, ClientContext &context);
+	static shared_ptr<DuckLakeFieldData> FromColumns(const ColumnList &columns, idx_t &column_id,
+	                                                 ClientContext &context,
+	                                                 const vector<Value> &initial_defaults = vector<Value>());
 	static shared_ptr<DuckLakeFieldData> RenameColumn(const DuckLakeFieldData &field_data, FieldIndex rename_index,
 	                                                  const Identifier &new_name);
 	static shared_ptr<DuckLakeFieldData> DropColumn(const DuckLakeFieldData &field_data, FieldIndex drop_index);
 	static shared_ptr<DuckLakeFieldData> AddColumn(const DuckLakeFieldData &field_data, const ColumnDefinition &new_col,
-	                                               idx_t &next_column_id);
+	                                               idx_t &next_column_id, ClientContext &context,
+	                                               const Value &initial_default = Value());
 	static shared_ptr<DuckLakeFieldData> SetDefault(const DuckLakeFieldData &field_data, FieldIndex field_index,
-	                                                const ColumnDefinition &new_col, bool add_column);
+	                                                const ColumnDefinition &new_col, ClientContext &context,
+	                                                bool add_column);
 	static shared_ptr<DuckLakeFieldData> ReplaceRootField(const DuckLakeFieldData &field_data, PhysicalIndex root_index,
 	                                                      unique_ptr<DuckLakeFieldId> new_field);
 

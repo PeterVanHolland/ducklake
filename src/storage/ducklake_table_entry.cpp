@@ -167,23 +167,28 @@ DuckLakeTableEntry::DuckLakeTableEntry(DuckLakeTableEntry &parent, CreateTableIn
 		sort_data = make_uniq<DuckLakeSort>(*parent.sort_data);
 	}
 	table_options = parent.table_options;
-	if (local_change.type == LocalChangeType::ADD_COLUMN) {
-		LogicalIndex new_col_idx(columns.LogicalColumnCount() - 1);
-		auto &new_col = GetColumn(new_col_idx);
-		idx_t next_col = next_column_id.GetIndex();
-		field_data = DuckLakeFieldData::AddColumn(*field_data, new_col, next_col);
-		next_column_id = next_col;
-	} else if (local_change.type == LocalChangeType::REMOVE_COLUMN) {
+	if (local_change.type == LocalChangeType::REMOVE_COLUMN) {
 		auto changed_id = local_change.field_index;
 		field_data = DuckLakeFieldData::DropColumn(*field_data, changed_id);
 	}
 }
 
+// ALTER TABLE ADD COLUMN
+DuckLakeTableEntry::DuckLakeTableEntry(DuckLakeTableEntry &parent, CreateTableInfo &info, LocalChange local_change,
+                                       ClientContext &context, const Value &initial_default)
+    : DuckLakeTableEntry(parent, info, local_change) {
+	LogicalIndex new_col_idx(columns.LogicalColumnCount() - 1);
+	auto &new_col = GetColumn(new_col_idx);
+	idx_t next_col = next_column_id.GetIndex();
+	field_data = DuckLakeFieldData::AddColumn(*field_data, new_col, next_col, context, initial_default);
+	next_column_id = next_col;
+}
+
 DuckLakeTableEntry::DuckLakeTableEntry(DuckLakeTableEntry &parent, CreateTableInfo &info,
-                                       SetDefaultLocalChange local_change)
+                                       SetDefaultLocalChange local_change, ClientContext &context)
     : DuckLakeTableEntry(parent, info, static_cast<LocalChange>(local_change)) {
 	auto changed_id = local_change.field_index;
-	field_data = DuckLakeFieldData::SetDefault(*field_data, changed_id, GetColumnByFieldId(changed_id),
+	field_data = DuckLakeFieldData::SetDefault(*field_data, changed_id, GetColumnByFieldId(changed_id), context,
 	                                           local_change.is_column_new);
 }
 
@@ -514,33 +519,18 @@ idx_t DuckLakeTableEntry::GetNetDataFileRowCount(DuckLakeTransaction &transactio
 vector<DuckLakeInlinedTableInfo> DuckLakeTableEntry::GetInlinedDataTables(DuckLakeTransaction &transaction,
                                                                           DuckLakeSnapshot snapshot,
                                                                           bool include_local_changes) const {
-	// another attach can drop superseded inlined tables without bumping the schema version
-	bool may_be_dropped = inlined_data_tables.size() > 1;
-	if (inlined_data_tables.size() == 1) {
-		// the only inlined table can be superseded after an older or pinned snapshot
-		may_be_dropped = transaction.GetCatalog().CatalogSnapshot() ||
-		                 snapshot.schema_version < transaction.GetSnapshot().schema_version;
-	}
-	identifier_set_t registered_tables;
-	if (may_be_dropped) {
-		registered_tables = transaction.GetMetadataManager().GetInlinedTableNames(GetTableId());
-	}
 	vector<DuckLakeInlinedTableInfo> result;
-	for (auto &inlined_table : inlined_data_tables) {
+	for (auto &inlined_table : transaction.GetMetadataManager().GetInlinedDataTables(*this, snapshot)) {
 		if (include_local_changes && transaction.InlinedTableFlushed(inlined_table.table_name)) {
 			continue;
 		}
-		if (may_be_dropped && registered_tables.find(inlined_table.table_name) == registered_tables.end()) {
-			continue;
-		}
-		result.push_back(inlined_table);
+		result.push_back(std::move(inlined_table));
 	}
 	return result;
 }
 
-idx_t DuckLakeTableEntry::GetNetInlinedRowCount(DuckLakeTransaction &transaction) {
+idx_t DuckLakeTableEntry::GetNetInlinedRowCount(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
 	auto &metadata_manager = transaction.GetMetadataManager();
-	auto snapshot = transaction.GetSnapshot();
 	idx_t total = 0;
 	for (auto &inlined_table : GetInlinedDataTables(transaction, snapshot)) {
 		total += metadata_manager.GetNetInlinedRowCount(inlined_table.table_name, snapshot);
@@ -883,7 +873,8 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 	CheckSupportedType(info.new_column.Type());
 
 	RequireNextColumnId(transaction);
-	auto new_entry = make_uniq<DuckLakeTableEntry>(*this, table_info, LocalChangeType::ADD_COLUMN);
+	auto new_entry = make_uniq<DuckLakeTableEntry>(*this, table_info, LocalChangeType::ADD_COLUMN, context,
+	                                               transaction.TakeInitialDefault());
 
 	if (transaction.HasTransactionInlinedData(GetTableId())) {
 		auto &new_table = new_entry->Cast<DuckLakeTableEntry>();
@@ -1057,7 +1048,8 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::GetNestedEvolution(const DuckLak
 			// type not found - this is a new entry
 			// first construct a new field id for this entry
 			idx_t next_col = next_column_id.GetIndex();
-			auto field_id = DuckLakeFieldId::FieldIdFromType(target_name, target_type, nullptr, next_col, false);
+			auto field_id =
+			    DuckLakeFieldId::FieldIdFromType(target_name, target_type, nullptr, next_col, nullptr, false);
 			next_column_id = next_col;
 
 			// add the column to the list of "to-be-added" columns
@@ -1248,16 +1240,18 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 
 	// existing rows read the initial value of the field, which only a literal default gives
 	// nested types reject any default when the field id is built
+	auto context = transaction.context.lock();
 	Value literal_default;
 	if (info.new_field.HasDefaultValue() && !DuckLakeTypes::IsNested(info.new_field.Type()) &&
-	    !DuckLakeUtil::TryGetLiteralValue(info.new_field.DefaultValue(), literal_default)) {
+	    !DuckLakeUtil::TryGetLiteralValue(info.new_field.DefaultValue(), literal_default, context.get())) {
 		throw NotImplementedException("We cannot add a struct field with a non-literal default value. Use a literal "
 		                              "default, or add the field without a default and UPDATE the existing rows");
 	}
 
 	// generate a new field id for the column
 	auto next_field_id = next_column_id.GetIndex();
-	auto child_field_id = DuckLakeFieldId::FieldIdFromColumn(info.new_field, next_field_id);
+	auto child_field_id = DuckLakeFieldId::FieldIdFromColumn(info.new_field, next_field_id, context.get(), false,
+	                                                         transaction.TakeInitialDefault());
 	next_column_id = next_field_id;
 
 	ValidateAddedFieldsCanSkipStats(parent_id, *child_field_id);
@@ -1364,8 +1358,9 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	// ADD COLUMN with an expression default arrives as ADD COLUMN, UPDATE and SET DEFAULT
 	bool new_column = AddedColumn(field_id.GetFieldIndex());
 
-	return make_uniq<DuckLakeTableEntry>(*this, table_info,
-	                                     SetDefaultLocalChange::SetDefault(field_id.GetFieldIndex(), new_column));
+	auto context = transaction.context.lock();
+	return make_uniq<DuckLakeTableEntry>(
+	    *this, table_info, SetDefaultLocalChange::SetDefault(field_id.GetFieldIndex(), new_column), *context);
 }
 
 static bool SortFieldsMatch(optional_ptr<DuckLakeSort> current_sort, const DuckLakeSort &requested_sort) {

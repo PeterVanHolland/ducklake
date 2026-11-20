@@ -1,0 +1,322 @@
+# name: test/sql/stats/column_stats_update_plain.test
+# description: the column stats update and the other UPDATEs of a commit are plain statements without a joined VALUES list
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+# a DuckDB file catalog runs the statements of every commit locally, where the query log shows them
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/{BASE_TEST_NAME}_logged.db' AS logged (DATA_PATH '{DATA_PATH}/column_stats_update_plain_logged', DATA_INLINING_ROW_LIMIT 0)
+
+# the whole UPDATE statements of the logged commits
+statement ok
+CREATE VIEW updates AS
+SELECT stmt, regexp_matches(stmt, '\bVALUES\b|\sFROM\s') AS joined
+FROM (SELECT unnest(regexp_extract_all(message, '[^;]*UPDATE\s+\S*ducklake_\w+[^;]*')) AS stmt FROM duckdb_logs WHERE type = 'QueryLog')
+
+statement ok
+CREATE TABLE logged.t (i INTEGER, d DOUBLE, s VARCHAR, n INTEGER, st STRUCT(a INTEGER, b VARCHAR))
+
+statement ok
+INSERT INTO logged.t VALUES (1, 1.5, 'b', NULL, {'a': 1, 'b': 'x'})
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+INSERT INTO logged.t VALUES (2, 'nan', 'a', NULL, {'a': 2, 'b': 'y'}), (3, 2.5, 'c', NULL, {'a': NULL, 'b': 'z'})
+
+statement ok
+CALL disable_logging()
+
+# one column stats UPDATE, without a VALUES list or FROM clause
+query II
+SELECT count(*), count(*) FILTER (WHERE joined) FROM updates WHERE regexp_matches(stmt, 'ducklake_table_column_stats\b')
+----
+1	0
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+CALL logged.set_option('data_inlining_row_limit', 10, table_name => 't')
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+ALTER TABLE logged.t DROP COLUMN n
+
+statement ok
+COMMENT ON COLUMN logged.t.i IS 'a number'
+
+statement ok
+COMMENT ON COLUMN logged.t.i IS 'the number'
+
+statement ok
+COMMENT ON TABLE logged.t IS 'a table'
+
+statement ok
+COMMENT ON TABLE logged.t IS 'the table'
+
+statement ok
+INSERT INTO logged.t VALUES (4, 4.5, 'd', {'a': 4, 'b': 'w'}), (5, 5.5, 'e', {'a': 5, 'b': 'v'})
+
+statement ok
+DELETE FROM logged.t WHERE i = 4
+
+statement ok
+CALL disable_logging()
+
+# the dropped column, the overwritten comments and the deleted inlined row end with plain UPDATEs
+query II
+SELECT count(*) FILTER (WHERE joined),
+       list_sort(list(DISTINCT regexp_extract(stmt, 'UPDATE\s+\S*?(ducklake_[a-z_]+?)(_\d+_\d+)?"?\s', 1)))
+FROM updates
+----
+0	[ducklake_column, ducklake_column_tag, ducklake_inlined_data, ducklake_table_column_stats, ducklake_table_stats, ducklake_tag]
+
+# a table of 520 columns updates its stats in statements of at most 512 columns
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+CREATE TABLE logged.w (c0 INTEGER)
+
+statement ok
+BEGIN
+
+loop i 1 520
+
+statement ok
+ALTER TABLE logged.w ADD COLUMN c{i} INTEGER
+
+endloop
+
+statement ok
+COMMIT
+
+statement ok
+INSERT INTO logged.w (c0, c519) VALUES (1, 1)
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+INSERT INTO logged.w (c0, c511, c512, c519) VALUES (2, 7, 8, 9)
+
+statement ok
+CALL disable_logging()
+
+query II
+SELECT count(*) FILTER (WHERE joined),
+       list_sort(list(len(regexp_extract_all(regexp_extract(stmt, 'column_id IN \(([^)]*)\)', 1), '\d+'))))
+FROM updates WHERE regexp_matches(stmt, 'ducklake_table_column_stats\b')
+----
+0	[8, 512]
+
+# 520 column comments of one commit end the old tags in statements of at most 512 conditions
+statement ok
+BEGIN
+
+loop i 0 520
+
+statement ok
+COMMENT ON COLUMN logged.w.c{i} IS 'column {i}'
+
+endloop
+
+statement ok
+COMMIT
+
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+CALL enable_logging('QueryLog', storage = 'memory')
+
+statement ok
+BEGIN
+
+loop i 0 520
+
+statement ok
+COMMENT ON COLUMN logged.w.c{i} IS 'column {i} again'
+
+endloop
+
+statement ok
+COMMIT
+
+statement ok
+CALL disable_logging()
+
+query II
+SELECT count(*) FILTER (WHERE joined), list_sort(list(len(regexp_extract_all(stmt, 'column_id='))))
+FROM updates WHERE regexp_matches(stmt, 'ducklake_column_tag\b')
+----
+0	[8, 512]
+
+# the same changes on the configured catalog keep every stat, comment, tag row and row
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/column_stats_update_plain', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t (i INTEGER, d DOUBLE, s VARCHAR, n INTEGER, st STRUCT(a INTEGER, b VARCHAR))
+
+statement ok
+INSERT INTO lake.t VALUES (1, 1.5, 'b', NULL, {'a': 1, 'b': 'x'})
+
+statement ok
+INSERT INTO lake.t VALUES (2, 'nan', 'a', NULL, {'a': 2, 'b': 'y'}), (3, 2.5, 'c', NULL, {'a': NULL, 'b': 'z'})
+
+statement ok
+CALL lake.set_option('data_inlining_row_limit', 10, table_name => 't')
+
+statement ok
+ALTER TABLE lake.t DROP COLUMN n
+
+statement ok
+COMMENT ON COLUMN lake.t.i IS 'a number'
+
+statement ok
+COMMENT ON COLUMN lake.t.i IS 'the number'
+
+statement ok
+COMMENT ON TABLE lake.t IS 'a table'
+
+statement ok
+COMMENT ON TABLE lake.t IS 'the table'
+
+statement ok
+INSERT INTO lake.t VALUES (4, 4.5, 'd', {'a': 4, 'b': 'w'}), (5, 5.5, 'e', {'a': 5, 'b': 'v'})
+
+statement ok
+DELETE FROM lake.t WHERE i = 4
+
+statement ok
+CREATE TABLE lake.w (c0 INTEGER)
+
+statement ok
+BEGIN
+
+loop i 1 520
+
+statement ok
+ALTER TABLE lake.w ADD COLUMN c{i} INTEGER
+
+endloop
+
+statement ok
+COMMIT
+
+statement ok
+INSERT INTO lake.w (c0, c519) VALUES (1, 1)
+
+statement ok
+INSERT INTO lake.w (c0, c511, c512, c519) VALUES (2, 7, 8, 9)
+
+statement ok
+BEGIN
+
+loop i 0 520
+
+statement ok
+COMMENT ON COLUMN lake.w.c{i} IS 'column {i}'
+
+endloop
+
+statement ok
+COMMIT
+
+statement ok
+BEGIN
+
+loop i 0 520
+
+statement ok
+COMMENT ON COLUMN lake.w.c{i} IS 'column {i} again'
+
+endloop
+
+statement ok
+COMMIT
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
+
+# the stats of every column kept their meaning
+query IIIII
+SELECT col.column_name, stats.contains_null::BOOLEAN, stats.contains_nan::BOOLEAN, stats.min_value, stats.max_value
+FROM __ducklake_metadata_lake.ducklake_table_column_stats stats
+JOIN __ducklake_metadata_lake.ducklake_column col USING (table_id, column_id)
+WHERE col.end_snapshot IS NULL AND col.column_name IN ('i', 'd', 's', 'n', 'a', 'b', 'c0', 'c1', 'c511', 'c512', 'c519')
+ORDER BY col.table_id, col.column_id
+----
+i	false	NULL	1	5
+d	false	true	1.5	5.5
+s	false	NULL	a	e
+a	true	NULL	1	5
+b	false	NULL	v	z
+c0	false	NULL	1	2
+c1	true	NULL	NULL	NULL
+c511	true	NULL	7	7
+c512	true	NULL	8	8
+c519	false	NULL	1	9
+
+query IIII
+SELECT count(*), min(i), max(s), count(*) FILTER (WHERE i > 3) FROM lake.t WHERE i >= 1
+----
+4	1	e	1
+
+query II
+SELECT comment, (SELECT comment FROM duckdb_tables() WHERE database_name = 'lake' AND table_name = 't')
+FROM duckdb_columns() WHERE database_name = 'lake' AND table_name = 't' AND column_name = 'i'
+----
+the number	the table
+
+# every first comment ended and every second one is current, on both sides of the 512 boundary
+query III
+SELECT col.column_name, tag.value, tag.end_snapshot IS NULL
+FROM __ducklake_metadata_lake.ducklake_column_tag tag
+JOIN __ducklake_metadata_lake.ducklake_column col USING (table_id, column_id)
+WHERE col.end_snapshot IS NULL AND col.column_name IN ('c0', 'c511', 'c512', 'c519')
+ORDER BY col.column_id, tag.begin_snapshot
+----
+c0	column 0	false
+c0	column 0 again	true
+c511	column 511	false
+c511	column 511 again	true
+c512	column 512	false
+c512	column 512 again	true
+c519	column 519	false
+c519	column 519 again	true
+
+query II
+SELECT count(*) FILTER (WHERE tag.end_snapshot IS NOT NULL), count(*) FILTER (WHERE tag.end_snapshot IS NULL)
+FROM __ducklake_metadata_lake.ducklake_column_tag tag
+JOIN __ducklake_metadata_lake.ducklake_column col USING (table_id, column_id)
+WHERE col.end_snapshot IS NULL AND col.column_name LIKE 'c%'
+----
+520	520
+
+query II
+SELECT count(DISTINCT comment), bool_and(comment = 'column ' || column_name[2:] || ' again')
+FROM duckdb_columns() WHERE database_name = 'lake' AND table_name = 'w'
+----
+520	true
+
+query II
+SELECT c0, c519 FROM lake.w ORDER BY c0
+----
+1	1
+2	9

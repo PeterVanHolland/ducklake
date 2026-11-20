@@ -376,12 +376,16 @@ string PostgresMetadataManager::CommitErrorWithoutQuery(const string &message) c
 	return server_error_start.IsValid() ? message.substr(server_error_start.GetIndex()) : message;
 }
 
-bool PostgresMetadataManager::IsRetryableCommitError(const string &message) const {
+string PostgresMetadataManager::ServerError(const string &message) const {
 	auto batch_server_error_start = BatchServerErrorStart(message);
 	// for another failed query, the server error is guessed to follow the last quote and colon
 	auto server_error_start =
 	    batch_server_error_start.IsValid() ? batch_server_error_start.GetIndex() : message.rfind("\": ");
-	auto server_error = server_error_start == string::npos ? message : message.substr(server_error_start);
+	return server_error_start == string::npos ? message : message.substr(server_error_start);
+}
+
+bool PostgresMetadataManager::IsRetryableCommitError(const string &message) const {
+	auto server_error = ServerError(message);
 	// constraint names are not translated, so a conflict on a metadata primary key is found in any language
 	for (auto end = server_error.find("_pkey"); end != string::npos; end = server_error.find("_pkey", end + 1)) {
 		auto start = end;
@@ -392,6 +396,48 @@ bool PostgresMetadataManager::IsRetryableCommitError(const string &message) cons
 		if (StringUtil::StartsWith(server_error.substr(start, end - start), "ducklake_")) {
 			return true;
 		}
+	}
+	return false;
+}
+
+//! Whether the message names the identifier and not a longer one that contains it
+static bool MentionsIdentifier(const string &message, const string &identifier) {
+	auto is_identifier_char = [](char c) {
+		return StringUtil::CharacterIsAlphaNumeric(c) || c == '_' || c == '$';
+	};
+	for (auto pos = message.find(identifier); pos != string::npos; pos = message.find(identifier, pos + 1)) {
+		auto end = pos + identifier.size();
+		if ((pos == 0 || !is_identifier_char(message[pos - 1])) &&
+		    (end == message.size() || !is_identifier_char(message[end]))) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool PostgresMetadataManager::IsDroppedInlinedTableError(const string &message,
+                                                         const map<TableIndex, vector<Identifier>> &inlined_tables) {
+	// the failed transaction still sees the registrations of its own snapshot
+	if (transaction.GetConnection().context->transaction.HasActiveTransaction()) {
+		return false;
+	}
+	// the lines after the primary message can quote the failed query
+	auto server_error = ServerError(message);
+	server_error = server_error.substr(0, server_error.find('\n'));
+	// a failing probe leaves the commit its own error
+	try {
+		for (auto &entry : inlined_tables) {
+			for (auto &table_name : entry.second) {
+				if (!MentionsIdentifier(server_error, table_name.GetIdentifierName())) {
+					continue;
+				}
+				auto registered = GetInlinedTableNames(entry.first);
+				if (registered.find(table_name) == registered.end()) {
+					return true;
+				}
+			}
+		}
+	} catch (std::exception &) { // NOLINT
 	}
 	return false;
 }

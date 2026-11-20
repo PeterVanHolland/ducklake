@@ -12,6 +12,7 @@
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/planner/tableref/bound_at_clause.hpp"
 #include "common/ducklake_types.hpp"
+#include "common/ducklake_util.hpp"
 #include "rest/ducklake_rest_catalog_changes.hpp"
 #include "rest/ducklake_rest_filters.hpp"
 #include "duckdb/catalog/catalog_entry/macro_catalog_entry.hpp"
@@ -420,6 +421,43 @@ RESTMetadataManager::GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapsho
 		inlined_rows_cache.Add(inlined_key, plan.projection, std::move(response.inlined_data));
 	}
 	return std::move(response.files);
+}
+
+bool RESTMetadataManager::HasDataFile(const DuckLakeTableEntry &table, DuckLakeSnapshot snapshot, const string &path) {
+	auto table_id = table.GetTableId();
+	if (IsTransactionLocal(table_id)) {
+		return false;
+	}
+	// the server lists the files the snapshot holds, not the files of earlier snapshots or those scheduled for deletion
+	auto &fs = GetFileSystem();
+	auto key = DuckLakeUtil::CanonicalPathKey(fs, path);
+	auto has_path = [&](const vector<DuckLakeFileListEntry> &files) {
+		for (auto &file : files) {
+			if (DuckLakeUtil::CanonicalPathKey(fs, file.file.path) == key) {
+				return true;
+			}
+		}
+		return false;
+	};
+	auto &client = GetClient();
+	RESTSelectRequest request;
+	request.snapshot = snapshot;
+	request.table_id = table_id.index;
+	// no columns of the inlined rows are needed
+	request.columns = RESTOptional<vector<RESTColumnIdentifier>>(vector<RESTColumnIdentifier>());
+	auto response = client.Select(request);
+	if (has_path(response.files)) {
+		return true;
+	}
+	for (auto &page_token : response.page_tokens) {
+		RESTSelectRequest page_request;
+		page_request.table_id = table_id.index;
+		page_request.page_token = page_token;
+		if (has_path(client.Select(page_request).files)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 vector<DuckLakeFileListExtendedEntry>

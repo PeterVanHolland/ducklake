@@ -110,6 +110,9 @@ SELECT * FROM lake.b ORDER BY id
 
 # a rolled back RESET leaves the table partitioned and adds nothing
 statement ok
+COPY (SELECT 7 AS id, 70 AS v) TO '{DATA_PATH}/add_files_after_reset_plain_two.parquet'
+
+statement ok
 ALTER TABLE lake.t SET PARTITIONED BY (id)
 
 statement ok
@@ -119,7 +122,7 @@ statement ok
 ALTER TABLE lake.t RESET PARTITIONED BY
 
 statement ok
-CALL ducklake_add_data_files('lake', 't', '{DATA_PATH}/add_files_after_reset_plain.parquet')
+CALL ducklake_add_data_files('lake', 't', '{DATA_PATH}/add_files_after_reset_plain_two.parquet')
 
 statement ok
 ROLLBACK

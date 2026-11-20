@@ -131,6 +131,7 @@
         "test/sql/data_inlining/data_inlining_null_type.test",
         "test/sql/data_inlining/data_inlining_partitions.test",
         "test/sql/data_inlining/data_inlining_variant_types.test",
+        "test/sql/data_inlining/data_inlining_variant_decimal_width.test",
         "test/sql/data_inlining/data_inlining_variant_unencodable.test",
         "test/sql/data_inlining/flush_concurrent_insert.test",
         "test/sql/data_inlining/partition_inlining.test",
@@ -681,6 +682,7 @@
         "test/sql/time_travel/postgres_at_timestamp_expired_read_committed.test",
         "test/sql/transaction/postgres_failed_rollback_releases_transaction.test",
         "test/sql/data_inlining/data_inlining_variant_sql_rollback.test",
+        "test/sql/data_inlining/data_inlining_variant_decimal_width_sqlite.test",
         "test/sql/catalog/snapshot_branch_key_statements_postgres.test"
       ]
     },

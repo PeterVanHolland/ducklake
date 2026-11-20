@@ -1,0 +1,161 @@
+# name: test/sql/data_inlining/data_inlining_variant_decimal_width.test
+# description: Inlined VARIANT decimals keep their declared width on every catalog
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lk (DATA_PATH '{DATA_PATH}/data_inlining_variant_decimal_width', DATA_INLINING_ROW_LIMIT 100)
+
+statement ok
+CREATE TABLE lk.t (v VARIANT)
+
+statement ok
+INSERT INTO lk.t VALUES (0::DECIMAL(18,9)::VARIANT), (1.5::DECIMAL(18,9)::VARIANT)
+
+query I
+SELECT count(*) FROM ducklake_list_files('lk', 't')
+----
+0
+
+query II
+SELECT v, variant_typeof(v) FROM lk.t
+----
+0.000000000	DECIMAL(18, 9)
+1.500000000	DECIMAL(18, 9)
+
+# a column of one decimal type keeps it in the data file as well
+statement ok
+CALL ducklake_flush_inlined_data('lk', table_name => 't')
+
+query II
+SELECT v, variant_typeof(v) FROM lk.t
+----
+0.000000000	DECIMAL(18, 9)
+1.500000000	DECIMAL(18, 9)
+
+# widths below and above the digits of the value, at every physical size, and inside objects and arrays
+statement ok
+CREATE TABLE lk.w (id INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO lk.w VALUES
+	(1, 1.5::DECIMAL(5,2)::VARIANT),
+	(2, 12345::DECIMAL(18,0)::VARIANT),
+	(3, 1.5::DECIMAL(38,10)::VARIANT),
+	(4, 123456789012::DECIMAL(18,3)::VARIANT),
+	(5, {'d': 1.5::DECIMAL(18,9)}::VARIANT),
+	(6, [1.5::DECIMAL(18,9)]::VARIANT),
+	(7, {'b': [1::DECIMAL(3,1)::VARIANT, {'c': -7.25::DECIMAL(12,4)}::VARIANT], 'a': 'x', 'z': 2::DECIMAL(2,0)}::VARIANT),
+	(8, NULL),
+	(9, 42::VARIANT),
+	(10, 0.005::DECIMAL(4,3)::VARIANT),
+	(11, (-123.4)::DECIMAL(9,1)::VARIANT),
+	(12, 99999999999999999999999999999999999999::DECIMAL(38,0)::VARIANT),
+	(13, 1.5::DECIMAL(19,2)::VARIANT),
+	(14, (-0.12345)::DECIMAL(25,5)::VARIANT),
+	(15, 999999999::DECIMAL(9,0)::VARIANT),
+	(16, 999999999999999999::DECIMAL(18,0)::VARIANT),
+	(17, (-9999999999999999.99)::DECIMAL(18,2)::VARIANT),
+	(18, 9999::DECIMAL(4,0)::VARIANT)
+
+query I
+SELECT count(*) FROM ducklake_list_files('lk', 'w')
+----
+0
+
+query III
+SELECT id, v, variant_typeof(v) FROM lk.w ORDER BY id
+----
+1	1.50	DECIMAL(5, 2)
+2	12345	DECIMAL(18, 0)
+3	1.5000000000	DECIMAL(38, 10)
+4	123456789012.000	DECIMAL(18, 3)
+5	{'d': 1.500000000}	OBJECT(d)
+6	[1.500000000]	ARRAY(1)
+7	{'a': x, 'b': [1.0, {'c': -7.2500}], 'z': 2}	OBJECT(a, b, z)
+8	NULL	VARIANT_NULL
+9	42	INT32
+10	0.005	DECIMAL(4, 3)
+11	-123.4	DECIMAL(9, 1)
+12	99999999999999999999999999999999999999	DECIMAL(38, 0)
+13	1.50	DECIMAL(19, 2)
+14	-0.12345	DECIMAL(25, 5)
+15	999999999	DECIMAL(9, 0)
+16	999999999999999999	DECIMAL(18, 0)
+17	-9999999999999999.99	DECIMAL(18, 2)
+18	9999	DECIMAL(4, 0)
+
+query III
+SELECT variant_typeof(v.b[1]), variant_typeof(v.b[2].c), variant_typeof(v.z) FROM lk.w WHERE id = 7
+----
+DECIMAL(3, 1)	DECIMAL(12, 4)	DECIMAL(2, 0)
+
+query I
+SELECT variant_typeof(variant_extract(v, 'd')) FROM lk.w WHERE id = 5
+----
+DECIMAL(18, 9)
+
+query I
+SELECT variant_typeof(v[1]) FROM lk.w WHERE id = 6
+----
+DECIMAL(18, 9)
+
+# a VARIANT inside a STRUCT column goes the same way
+statement ok
+CREATE TABLE lk.s (id INTEGER, st STRUCT(a VARIANT))
+
+statement ok
+INSERT INTO lk.s VALUES (1, {'a': 1.5::DECIMAL(18,9)::VARIANT}), (2, {'a': [0.25::DECIMAL(7,2)::VARIANT]})
+
+query III
+SELECT id, st, variant_typeof(st.a) FROM lk.s ORDER BY id
+----
+1	{'a': 1.500000000}	DECIMAL(18, 9)
+2	{'a': [0.25]}	ARRAY(1)
+
+query I
+SELECT variant_typeof(st.a[1]) FROM lk.s WHERE id = 2
+----
+DECIMAL(7, 2)
+
+# an update rewrites the inlined row with its types
+statement ok
+UPDATE lk.w SET v = 2.5::DECIMAL(10,4)::VARIANT WHERE id = 9
+
+statement ok
+SET VARIABLE updated = (SELECT max(snapshot_id) FROM lk.snapshots())
+
+query II
+SELECT v, variant_typeof(v) FROM lk.w WHERE id = 9
+----
+2.5000	DECIMAL(10, 4)
+
+query III
+SELECT change_type, v, variant_typeof(v) FROM lk.table_changes('w', getvariable('updated'), getvariable('updated')) ORDER BY ALL
+----
+update_postimage	2.5000	DECIMAL(10, 4)
+update_preimage	42	INT32
+
+# the values survive the flush, the Parquet Variant of a column with mixed types holds no width
+statement ok
+CALL ducklake_flush_inlined_data('lk', table_name => 'w')
+
+query II
+SELECT id, v FROM lk.w WHERE id IN (1, 4, 7, 12) ORDER BY id
+----
+1	1.50
+4	123456789012.000
+7	{'a': x, 'b': [1.0, {'c': -7.2500}], 'z': 2}
+12	99999999999999999999999999999999999999
+
+query II
+SELECT v = 0.005, variant_typeof(v) FROM lk.w WHERE id = 10
+----
+true	DECIMAL(3, 3)

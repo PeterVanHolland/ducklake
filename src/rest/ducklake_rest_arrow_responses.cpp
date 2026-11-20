@@ -13,12 +13,12 @@ namespace duckdb {
 namespace {
 
 //! The Arrow IPC stream of inlined rows
-string WriteInlinedRows(ClientContext &context, const RESTInlinedRows &rows) {
+string WriteInlinedRows(DuckLakeRESTRequest &request, const RESTInlinedRows &rows) {
 	vector<string> names;
 	for (auto &column : rows.columns) {
 		names.push_back(column.name);
 	}
-	return RESTArrow::Write(context, names, *rows.rows.rows);
+	return RESTArrow::Write(*request.connection.context, names, *rows.rows.rows, request.accepts_variant_bytes);
 }
 
 unique_ptr<RESTInlinedRows> ReadInlinedRows(ClientContext &context, const shared_ptr<const string> &body,
@@ -68,7 +68,7 @@ string DuckLakeRESTSerializer::ToResponse<RESTSelectResponse>(DuckLakeRESTReques
 		multipart.AddPart("extended_files", REST_ARROW_STREAM, RESTArrowFiles::Write(context, extended_files));
 	}
 	if (value.inlined_data) {
-		multipart.AddPart("inlined_data", REST_ARROW_STREAM, WriteInlinedRows(context, *value.inlined_data));
+		multipart.AddPart("inlined_data", REST_ARROW_STREAM, WriteInlinedRows(request, *value.inlined_data));
 	}
 	return multipart.Finish(request.content_type);
 }
@@ -122,7 +122,7 @@ string DuckLakeRESTSerializer::ToResponse<RESTTableChangesResponse>(DuckLakeREST
 		multipart.AddPart("deletions", REST_ARROW_STREAM, RESTArrowFiles::Write(context, deletions));
 	}
 	if (value.inlined_data) {
-		multipart.AddPart("inlined_data", REST_ARROW_STREAM, WriteInlinedRows(context, *value.inlined_data));
+		multipart.AddPart("inlined_data", REST_ARROW_STREAM, WriteInlinedRows(request, *value.inlined_data));
 	}
 	return multipart.Finish(request.content_type);
 }
@@ -156,9 +156,12 @@ RESTTableChangesResponse DuckLakeRESTSerializer::ReadResponse<RESTTableChangesRe
 // CommitTransaction
 //===--------------------------------------------------------------------===//
 template <>
-void DuckLakeRESTSerializer::AddParts<RESTCommitTransactionRequest>(ClientContext &context,
+void DuckLakeRESTSerializer::AddParts<RESTCommitTransactionRequest>(DuckLakeRESTClientAPI &client,
                                                                     const RESTCommitTransactionRequest &value,
                                                                     vector<RESTBodyPart> &parts) {
+	auto context = client.GetContext();
+	// a server from before variant bytes reads the rows as the columns of the table alone
+	bool variant_bytes = client.HasFeature(REST_FEATURE_VARIANT_BYTES);
 	for (idx_t i = 0; i < value.requests.size(); i++) {
 		auto &request = *value.requests[i];
 		if (request.type != RESTInsertRowsRequest::TYPE) {
@@ -169,7 +172,7 @@ void DuckLakeRESTSerializer::AddParts<RESTCommitTransactionRequest>(ClientContex
 		for (idx_t column = 0; column < rows.ColumnCount(); column++) {
 			names.push_back("column" + to_string(column));
 		}
-		parts.push_back({"rows." + to_string(i), RESTArrow::Write(context, names, rows)});
+		parts.push_back({"rows." + to_string(i), RESTArrow::Write(*context, names, rows, variant_bytes)});
 	}
 }
 

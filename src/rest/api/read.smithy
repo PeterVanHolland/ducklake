@@ -12,8 +12,9 @@ use ducklake.rest.codegen#noPrefix
 ///
 /// The client merges the properties of the response with its own: the `defaults` are used unless the client has a
 /// value of its own, and the `overrides` are used whatever the client has. The `prefix` override is the prefix of the
-/// catalog in the URLs of all other requests. The `endpoints` are the requests that the server supports, as the method and
-/// the path without prefix (e.g. `GET /v1/snapshots`).
+/// catalog in the URLs of all other requests. The `endpoints` are the requests that the server supports, as the
+/// method and the path without prefix (e.g. `GET /v1/snapshots`), and the `features` the optional parts of the API
+/// it supports.
 @http(method: "GET", uri: "/v1/config")
 @readonly
 @noPrefix
@@ -33,6 +34,9 @@ operation Config {
 
         /// The requests that the server supports.
         endpoints: StringList = []
+
+        /// The optional parts of the API that the server supports, see the Arrow section for `variant_bytes`.
+        features: StringList = []
     }
 }
 

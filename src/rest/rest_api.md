@@ -149,6 +149,16 @@ with the Arrow types of their DuckLake types. Types that Arrow does not have are
 DuckDB (e.g. `uuid`, `int128`, `timetz`, `geometry`, `variant`). The table is part of the response if the table has
 inlined data, also if it has no rows. The table of an `insert_rows` request has the columns of the table.
 
+The `variant` extension type is the Parquet Variant, which holds the scale of a decimal but not its width, so a
+`DECIMAL(18, 9)` in a `VARIANT` comes out of it as a decimal of as many digits as its value has. A server with the
+feature `variant_bytes` in its `config` instead sends the `VARIANT` columns of the inlined rows, also inside structs,
+lists, arrays and maps, as DuckLake variant bytes to a client that asks for them with the parameter `variant=ducklake`
+of the media type it accepts (`Accept: multipart/mixed;variant=ducklake`). The field of such a column is binary, named
+with the extension `ducklake.variant` (the `ARROW:extension:name` of its metadata), and holds per row the Parquet
+Variant of the value followed by the declared types of its decimals, in the encoding of the inlined `VARIANT` columns of
+the metadata (`ducklake_encode_inlined_variant`). A client that found the feature in the `config` sends the rows of
+`insert_rows` the same way. A client that does not ask for variant bytes gets the `variant` extension type.
+
 ## Specification
 
 The API is specified as a [Smithy](https://smithy.io) model in `src/rest/api/*.smithy`: the `DuckLake` service, an
@@ -193,8 +203,9 @@ Returns how a client connects to a catalog of the server. This is the first requ
 
 The client merges the properties of the response with its own: the `defaults` are used unless the client has a
 value of its own, and the `overrides` are used whatever the client has. The `prefix` override is the prefix of the
-catalog in the URLs of all other requests. The `endpoints` are the requests that the server supports, as the method and
-the path without prefix (e.g. `GET /v1/snapshots`).
+catalog in the URLs of all other requests. The `endpoints` are the requests that the server supports, as the
+method and the path without prefix (e.g. `GET /v1/snapshots`), and the `features` the optional parts of the API
+it supports.
 
 `GET /v1/config`
 
@@ -213,6 +224,7 @@ Response:
 | `defaults` | object of `string` (default `{}`) | Properties that the client uses if it has no value for them. |
 | `overrides` | object of `string` (default `{}`) | Properties that the client uses instead of its own values, e.g. `prefix`. |
 | `endpoints` | list of `string` (default `[]`) | The requests that the server supports. |
+| `features` | list of `string` (default `[]`) | The optional parts of the API that the server supports, see the Arrow section for `variant_bytes`. |
 
 ### `get_latest_snapshot`
 

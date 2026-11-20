@@ -359,35 +359,32 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				metadata_manager.MigrateV04();
 				catalog_version = DuckLakeVersion::V1_0;
 			}
+			if (catalog_version < target_version) {
+				if (catalog_version == DuckLakeVersion::V1_0 || catalog_version == DuckLakeVersion::V1_1_DEV_1) {
+					metadata_manager.MigrateV10(catalog_version == DuckLakeVersion::V1_1_DEV_1);
+					catalog_version = DuckLakeVersion::V1_1;
+				}
+				if (catalog_version == DuckLakeVersion::V1_1 && catalog_version < target_version) {
+					metadata_manager.MigrateV11();
+					catalog_version = DuckLakeVersion::V2_0_DEV1;
+				}
+				if (catalog_version == DuckLakeVersion::V2_0_DEV1 && catalog_version < target_version) {
+					metadata_manager.MigrateV20Dev1();
+					catalog_version = DuckLakeVersion::V2_0_DEV2;
+				}
+				if (catalog_version != target_version) {
+					// LCOV_EXCL_START
+					throw NotImplementedException("Unsupported DuckLake version '%s'",
+					                              DuckLakeVersionToString(catalog_version));
+					// LCOV_EXCL_STOP
+				}
+			}
 			if (catalog_version >= DuckLakeVersion::V1_1 && options.automatic_migration &&
 			    !catalog.GetAttached().IsReadOnly()) {
 				// a v1.0 session that stayed attached across the migration creates inlined tables with old names
 				metadata_manager.RepairLegacyInlinedTables();
 			}
-			if (catalog_version >= target_version) {
-				migrating = false;
-				resolved_version = catalog_version;
-				continue;
-			}
-			if (catalog_version == DuckLakeVersion::V1_0 || catalog_version == DuckLakeVersion::V1_1_DEV_1) {
-				metadata_manager.MigrateV10(catalog_version == DuckLakeVersion::V1_1_DEV_1);
-				catalog_version = DuckLakeVersion::V1_1;
-			}
-			if (catalog_version == DuckLakeVersion::V1_1 && catalog_version < target_version) {
-				metadata_manager.MigrateV11();
-				catalog_version = DuckLakeVersion::V2_0_DEV1;
-			}
-			if (catalog_version == DuckLakeVersion::V2_0_DEV1 && catalog_version < target_version) {
-				metadata_manager.MigrateV20Dev1();
-				catalog_version = DuckLakeVersion::V2_0_DEV2;
-			}
 			migrating = false;
-			if (catalog_version != target_version) {
-				// LCOV_EXCL_START
-				throw NotImplementedException("Unsupported DuckLake version '%s'",
-				                              DuckLakeVersionToString(catalog_version));
-				// LCOV_EXCL_STOP
-			}
 			resolved_version = catalog_version;
 		}
 		options.config_options[tag.key] = tag.value;

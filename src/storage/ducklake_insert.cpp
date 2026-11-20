@@ -161,8 +161,8 @@ void DuckLakeInsert::AddWrittenFiles(DuckLakeInsertGlobalState &global_state, Da
                                      const string &encryption_key, optional_idx partition_id, bool set_snapshot_id) {
 	auto skipped_fields = global_state.table.GetSkippedStatsFields();
 	auto &field_data = global_state.table.GetFieldData();
-	auto snapshot_id_name = InternalColumnName(field_data, "_ducklake_internal_snapshot_id");
-	auto row_id_name = InternalColumnName(field_data, "_ducklake_internal_row_id");
+	auto snapshot_id_name = InternalColumnName(field_data, MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID);
+	auto row_id_name = InternalColumnName(field_data, MultiFileReader::ROW_ID_FIELD_ID);
 	for (idx_t r = 0; r < chunk.size(); r++) {
 		DuckLakeDataFile data_file;
 		data_file.file_name = chunk.GetValue(0, r).GetValue<string>();
@@ -383,22 +383,25 @@ static Value GetFieldIdValue(const DuckLakeFieldId &field_id) {
 	return Value::STRUCT(std::move(values));
 }
 
-static bool WriteRowId(InsertVirtualColumns virtual_columns) {
-	return virtual_columns == InsertVirtualColumns::WRITE_ROW_ID ||
-	       virtual_columns == InsertVirtualColumns::WRITE_ROW_ID_AND_SNAPSHOT_ID;
+vector<int32_t> DuckLakeInsert::InternalFieldIds(InsertVirtualColumns virtual_columns) {
+	switch (virtual_columns) {
+	case InsertVirtualColumns::WRITE_ROW_ID:
+		return {MultiFileReader::ROW_ID_FIELD_ID};
+	case InsertVirtualColumns::WRITE_ROW_ID_AND_SNAPSHOT_ID:
+		return {MultiFileReader::ROW_ID_FIELD_ID, MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID};
+	default:
+		return {};
+	}
 }
 
-static bool WriteSnapshotId(InsertVirtualColumns virtual_columns) {
-	return virtual_columns == InsertVirtualColumns::WRITE_ROW_ID_AND_SNAPSHOT_ID;
-}
-
-Identifier DuckLakeInsert::InternalColumnName(const DuckLakeFieldData &field_data, const Identifier &name) {
+Identifier DuckLakeInsert::InternalColumnName(const DuckLakeFieldData &field_data, int32_t field_id) {
 	vector<Identifier> names;
-	for (auto &field_id : field_data.GetFieldIds()) {
-		names.push_back(field_id->Name());
+	for (auto &table_field : field_data.GetFieldIds()) {
+		names.push_back(table_field->Name());
 	}
 	// the reader finds internal columns by field id, so their name in the file only has to be unique
-	names.push_back(name);
+	names.push_back(field_id == MultiFileReader::ROW_ID_FIELD_ID ? DuckLakeConstants::ROW_ID_COLUMN_NAME
+	                                                             : DuckLakeConstants::SNAPSHOT_ID_COLUMN_NAME);
 	QueryResult::DeduplicateColumns(names);
 	return names.back();
 }
@@ -409,13 +412,9 @@ static Value WrittenFieldIds(DuckLakeFieldData &field_data, InsertVirtualColumns
 		auto &field_id = field_data.GetByRootIndex(PhysicalIndex(c_idx));
 		values.emplace_back(field_id.Name(), GetFieldIdValue(field_id));
 	}
-	if (WriteRowId(virtual_columns)) {
-		values.emplace_back(DuckLakeInsert::InternalColumnName(field_data, "_ducklake_internal_row_id"),
-		                    Value::BIGINT(MultiFileReader::ROW_ID_FIELD_ID));
-	}
-	if (WriteSnapshotId(virtual_columns)) {
-		values.emplace_back(DuckLakeInsert::InternalColumnName(field_data, "_ducklake_internal_snapshot_id"),
-		                    Value::BIGINT(MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID));
+	for (auto internal_field_id : DuckLakeInsert::InternalFieldIds(virtual_columns)) {
+		values.emplace_back(DuckLakeInsert::InternalColumnName(field_data, internal_field_id),
+		                    Value::BIGINT(internal_field_id));
 	}
 	return Value::STRUCT(std::move(values));
 }
@@ -502,8 +501,7 @@ static void GeneratePartitionExpressions(ClientContext &context, DuckLakeCopyInp
 		}
 		return;
 	}
-	idx_t virtual_column_count = static_cast<idx_t>(WriteRowId(copy_input.virtual_columns)) +
-	                             static_cast<idx_t>(WriteSnapshotId(copy_input.virtual_columns));
+	idx_t virtual_column_count = DuckLakeInsert::InternalFieldIds(copy_input.virtual_columns).size();
 	// if we have partition columns that are NOT identity, we need to compute them separately, and NOT write them
 	idx_t partition_column_start = copy_input.columns.PhysicalColumnCount() + virtual_column_count;
 	for (idx_t part_idx = 0; part_idx < copy_input.partition_data->fields.size(); part_idx++) {
@@ -588,12 +586,8 @@ DuckLakeCopyOptions DuckLakeInsert::GetCopyOptions(ClientContext &context, DuckL
 
 	auto names_to_write = StringsToIdentifiers(copy_input.columns.GetColumnNames());
 	auto types_to_write = copy_input.columns.GetColumnTypes();
-	if (WriteRowId(copy_input.virtual_columns)) {
-		names_to_write.push_back(InternalColumnName(*copy_input.field_data, "_ducklake_internal_row_id"));
-		types_to_write.push_back(LogicalType::BIGINT);
-	}
-	if (WriteSnapshotId(copy_input.virtual_columns)) {
-		names_to_write.push_back(InternalColumnName(*copy_input.field_data, "_ducklake_internal_snapshot_id"));
+	for (auto internal_field_id : InternalFieldIds(copy_input.virtual_columns)) {
+		names_to_write.push_back(InternalColumnName(*copy_input.field_data, internal_field_id));
 		types_to_write.push_back(LogicalType::BIGINT);
 	}
 

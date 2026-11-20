@@ -168,8 +168,7 @@ DeleteFileScanResult DuckLakeDeleteFilter::ScanDeleteFile(ClientContext &context
 	// is this from ducklake?
 	bool has_snapshot_id = false;
 	if (return_types.size() == 3 && return_types[2].id() == LogicalTypeId::BIGINT) {
-		// check if the name matches _ducklake_internal_snapshot_id
-		if (return_names.size() > 2 && return_names[2] == "_ducklake_internal_snapshot_id") {
+		if (return_names.size() > 2 && return_names[2] == DuckLakeConstants::SNAPSHOT_ID_COLUMN_NAME) {
 			has_snapshot_id = true;
 		}
 	}

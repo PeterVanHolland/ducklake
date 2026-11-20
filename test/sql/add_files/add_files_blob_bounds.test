@@ -1,0 +1,89 @@
+# name: test/sql/add_files/add_files_blob_bounds.test
+# description: ducklake_add_data_files stores BLOB bounds as hexadecimal like the files DuckLake writes
+# group: [add_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/add_files_blob_bounds.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/add_files_blob_bounds/', METADATA_CATALOG 'metadata', DATA_INLINING_ROW_LIMIT 0);
+
+statement ok
+CREATE TABLE ducklake.blobs(i INTEGER, b BLOB, s STRUCT(x BLOB));
+
+# the parquet metadata renders these bounds as \x01 and zz
+statement ok
+COPY (SELECT * FROM (VALUES (1, from_hex('01'), {'x': from_hex('01')}), (2, from_hex('7A7A'), {'x': from_hex('7A7A')})) v(i, b, s)) TO '{DATA_PATH}/afbb_printable.parquet';
+
+# a newline and backslashes are escaped in the rendering
+statement ok
+COPY (SELECT * FROM (VALUES (3, from_hex('0A'), {'x': from_hex('0A')}), (4, from_hex('5C5C'), {'x': from_hex('5C5C')})) v(i, b, s)) TO '{DATA_PATH}/afbb_escaped.parquet';
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'blobs', '{DATA_PATH}/afbb_printable.parquet');
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'blobs', '{DATA_PATH}/afbb_escaped.parquet');
+
+query III
+SELECT c.column_name, s.min_value, s.max_value FROM metadata.ducklake_file_column_stats s JOIN metadata.ducklake_column c USING (table_id, column_id) WHERE c.column_name IN ('b', 'x') ORDER BY s.data_file_id, c.column_name
+----
+b	01	7A7A
+x	01	7A7A
+b	0A	5C5C
+x	0A	5C5C
+
+query III
+SELECT c.column_name, s.min_value, s.max_value FROM metadata.ducklake_table_column_stats s JOIN metadata.ducklake_column c USING (table_id, column_id) WHERE c.column_name IN ('b', 'x') ORDER BY c.column_name
+----
+b	01	7A7A
+x	01	7A7A
+
+# the bounds of a written file merge with the registered bounds
+statement ok
+INSERT INTO ducklake.blobs VALUES (5, from_hex('FE'), {'x': from_hex('FE')});
+
+query III
+SELECT c.column_name, s.min_value, s.max_value FROM metadata.ducklake_table_column_stats s JOIN metadata.ducklake_column c USING (table_id, column_id) WHERE c.column_name IN ('b', 'x') ORDER BY c.column_name
+----
+b	01	FE
+x	01	FE
+
+query I
+SELECT i FROM ducklake.blobs WHERE b > from_hex('7A7A') ORDER BY i
+----
+5
+
+query I
+SELECT i FROM ducklake.blobs WHERE b < from_hex('0B') ORDER BY i
+----
+1
+3
+
+# a hive partition value of a BLOB column is a constant bound, stored the same way
+statement ok
+CREATE TABLE ducklake.hive(i INTEGER, b BLOB);
+
+statement ok
+COPY (SELECT 1 AS i, '9'::BLOB AS b) TO '{DATA_PATH}/afbb_hive' (FORMAT parquet, PARTITION_BY (b));
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'hive', '{DATA_PATH}/afbb_hive/*/*.parquet', hive_partitioning => true);
+
+statement ok
+INSERT INTO ducklake.hive VALUES (2, from_hex('41'));
+
+query II
+SELECT s.min_value, s.max_value FROM metadata.ducklake_table_column_stats s JOIN metadata.ducklake_table t USING (table_id) JOIN metadata.ducklake_column c USING (table_id, column_id) WHERE t.table_name = 'hive' AND c.column_name = 'b'
+----
+39	41
+
+query I
+SELECT i FROM ducklake.hive WHERE b < from_hex('40') ORDER BY i
+----
+1

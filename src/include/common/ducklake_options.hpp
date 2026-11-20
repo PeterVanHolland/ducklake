@@ -27,7 +27,7 @@ struct DuckLakeOptions {
 	string metadata_path;
 	Identifier metadata_schema;
 	string data_path;
-	//! The data path as the catalog stores it, relative to the catalog file, when the session uses another one
+	//! The stored spelling of a relative data path when the session uses the resolved one
 	string stored_data_path;
 	bool override_data_path = false;
 	AccessMode access_mode = AccessMode::AUTOMATIC;

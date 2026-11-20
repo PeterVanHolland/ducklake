@@ -10,6 +10,7 @@
 
 #include "rest/ducklake_rest_api.hpp"
 #include "common/index.hpp"
+#include "storage/ducklake_inlined_data.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/unordered_set.hpp"
@@ -48,6 +49,11 @@ struct RESTCachedInlinedRows {
 struct RESTInlinedRowsResponse {
 	RESTInlinedProjection projection;
 	shared_ptr<RESTCachedInlinedRows> rows;
+	//! The largest data file id of the file list that came with the rows, a later flush writes a larger one
+	optional_idx max_file_id;
+	//! The rows in the form a scan reads, built once
+	mutex committed_lock;
+	shared_ptr<DuckLakeCommittedInlinedRows> committed_rows;
 };
 
 //! The rows to be read: the table at a snapshot, or the changes of the table in a range of snapshots
@@ -62,19 +68,20 @@ struct RESTInlinedRowsKey {
 };
 
 //! The inlined rows that came along with the file lists of the scans of a transaction. Scans read the columns they
-//! need from them. The rows at a snapshot do not change, so the responses are only added to the cache: a response
-//! is never replaced, and a scan that holds one can always finish reading it.
+//! need from them. A flush moves the rows of a snapshot into a data file, so a response whose file list has a newer
+//! file supersedes the older responses. A scan that holds a response can always finish reading it.
 class RESTInlinedRowsCache {
 public:
-	//! Whether a response has the columns
-	bool Covers(const RESTInlinedRowsKey &key, const RESTInlinedProjection &projection) const;
 	//! Whether any response is known
 	bool HasResponse(const RESTInlinedRowsKey &key) const;
 	//! Whether a table has inlined rows at a snapshot, if a response of any kind knows
 	bool HasInlinedRows(idx_t snapshot_id, idx_t table_id, bool &has_inlined_rows) const;
-	//! Adds a response, which takes over the responses that have a subset of its columns
+	//! The newest response that has the columns
+	shared_ptr<RESTInlinedRowsResponse> FindResponse(const RESTInlinedRowsKey &key,
+	                                                 const RESTInlinedProjection &projection) const;
+	//! Adds a response, which takes over the responses that have a subset of its columns or an older file list
 	shared_ptr<RESTInlinedRowsResponse> Add(const RESTInlinedRowsKey &key, const RESTInlinedProjection &projection,
-	                                        unique_ptr<RESTInlinedRows> inlined_data);
+	                                        unique_ptr<RESTInlinedRows> inlined_data, optional_idx max_file_id);
 	//! The rows of a response that has the columns to read, which are column names that are optionally cast
 	shared_ptr<RESTCachedInlinedRows> Find(const RESTInlinedRowsKey &key, const vector<string> &columns_to_read) const;
 

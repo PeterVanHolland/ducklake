@@ -75,7 +75,8 @@ private:
 	                   identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>> &inlined_rows) const;
 	void GetTableInsertions() const;
 	void GetTableDeletions() const;
-	void AddInlinedDataTables(DuckLakeTransaction &transaction) const;
+	//! Adds the entry of every inlined data table, with the committed rows that were read along with the files
+	void AddInlinedDataEntries(const identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>> &inlined_rows) const;
 	void AddFilterToPushdownInfo(FilterPushdownInfo &pushdown_info, column_t column_id,
 	                             unique_ptr<TableFilter> filter) const;
 	//! Build the node for a table filter on one column - a leaf, or a conjunction of them when it

@@ -1,0 +1,54 @@
+# name: test/sql/rest/rest_flush_during_transaction.test
+# description: A REST transaction reads inlined rows once after another connection flushes them
+# group: [rest]
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.t(i INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1), (2), (3)
+
+# the transaction loads its snapshot when it begins
+statement ok
+SET immediate_transaction_mode = true
+
+statement ok con1
+BEGIN TRANSACTION
+
+query II con1
+SELECT count(i), sum(i) FROM dl.t
+----
+3	6
+
+# the flush moves the rows into a data file that the snapshot of the transaction reads
+statement ok rest_db:rest_server_con
+CALL ducklake_flush_inlined_data('rest_lake')
+
+query II con1
+SELECT count(i), sum(i) FROM dl.t
+----
+3	6
+
+query I con1
+SELECT i FROM dl.t WHERE i > 1 ORDER BY i
+----
+2
+3
+
+statement ok con1
+UPDATE dl.t SET i = i + 10
+
+statement ok con1
+COMMIT
+
+query II
+SELECT count(i), sum(i) FROM dl.t
+----
+3	36
+
+include test/template/rest_teardown.test_template

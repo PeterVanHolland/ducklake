@@ -32,43 +32,6 @@ unique_ptr<QueryResult> QuackMetadataManager::Query(string &query) {
 	return result;
 }
 
-map<Identifier, vector<pair<Identifier, string>>>
-QuackMetadataManager::GetMetadataTableColumns(const vector<Identifier> &table_names) {
-	// the catalog lives on the server, which runs the queries in the metadata database
-	auto schema_name = transaction.GetCatalog().MetadataSchemaName().GetIdentifierName();
-	auto tables = Query(StringUtil::Format(
-	    "SELECT table_name FROM duckdb_tables() WHERE database_name = current_database() AND schema_name = %s",
-	    SQLString(schema_name)));
-	tables->ThrowIfError("Failed to list the DuckLake metadata tables: ");
-	identifier_set_t existing_tables;
-	for (auto &row : *tables) {
-		existing_tables.insert(row.GetValue<Identifier>(0));
-	}
-	string query;
-	for (auto &table_name : table_names) {
-		if (!existing_tables.count(table_name)) {
-			continue;
-		}
-		if (!query.empty()) {
-			query += " UNION ALL ";
-		}
-		auto qualified_name =
-		    SQLQuotedIdentifier::ToString(schema_name) + "." + SQLQuotedIdentifier::ToString(table_name);
-		query += StringUtil::Format("SELECT %s, cid, name, type FROM pragma_table_info(%s)",
-		                            SQLString(table_name.GetIdentifierName()), SQLString(qualified_name));
-	}
-	map<Identifier, vector<pair<Identifier, string>>> result;
-	if (query.empty()) {
-		return result;
-	}
-	auto columns = Query(query + " ORDER BY 1, 2");
-	columns->ThrowIfError("Failed to read the columns of the DuckLake metadata tables: ");
-	for (auto &row : *columns) {
-		result[row.GetValue<Identifier>(0)].emplace_back(row.GetValue<Identifier>(2), row.GetValue<string>(3));
-	}
-	return result;
-}
-
 unique_ptr<QueryResult> QuackMetadataManager::AttachMetadata(const string &attach_query) {
 	auto query = attach_query;
 	SubstituteCatalogPlaceholders(query);
@@ -129,6 +92,13 @@ void QuackMetadataManager::ClearCache() {
 	lock_guard<std::recursive_mutex> guard(transaction.GetCatalog().GetMetadataQueryLock());
 	string clear = "CALL quack_clear_cache();";
 	transaction.ExecuteRaw(clear);
+}
+
+bool QuackMetadataManager::ProbeMetadataColumns() {
+	// duckdb_columns() lists every column of the server's metadata schema, so one statement serves every probe
+	return ProbeMetadataColumnsFromListing(
+	    "SELECT table_name, column_name, data_type FROM duckdb_columns() WHERE database_name = current_database() "
+	    "AND schema_name = {METADATA_SCHEMA_NAME_LITERAL} ORDER BY table_name, column_index");
 }
 
 void QuackMetadataManager::ProbeServerCapabilities() {

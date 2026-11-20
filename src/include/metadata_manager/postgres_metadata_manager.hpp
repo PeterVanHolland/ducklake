@@ -21,11 +21,13 @@ public:
 	}
 
 	bool TypeIsNativelySupported(const LogicalType &type) override;
-	map<Identifier, vector<pair<Identifier, string>>>
-	GetMetadataTableColumns(const vector<Identifier> &table_names) override;
-	//! GetMetadataTableColumns maps the Postgres types back to the created types
+	//! the probe of the metadata columns maps the Postgres types back to the created types
 	bool KnowsStoredMetadataTypes() const override {
 		return true;
+	}
+	//! a quoted name keeps its case, so a table of another case is another table
+	bool FoldsMetadataTableCase() const override {
+		return false;
 	}
 	bool CanInlineValues(DataChunk &chunk) override;
 	bool SupportsAppender() const override {
@@ -51,6 +53,7 @@ public:
 	bool InlinedDeletionTableExists(const Identifier &table_name) override;
 	void MigrateInlinedDataTypes() override;
 	bool IsRetryableCommitError(const string &message) const override;
+	bool ProbeMetadataColumns() override;
 	string CommitErrorWithoutQuery(const string &message) const override;
 	string ConfigOptionLockSql() const override;
 
@@ -70,8 +73,7 @@ protected:
 		return "clock_timestamp()";
 	}
 	string GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
-	                             const FilterPushdownInfo *filter_info,
-	                             const vector<DuckLakeFileListDynamicFilter> &dynamic_filters,
+	                             const FilterPushdownInfo *filter_info, const vector<DuckLakeFileListOrder> &file_order,
 	                             vector<idx_t> &runtime_filter_stats_columns, FileListType file_list_type,
 	                             const string &metadata_table_prefix) override;
 	bool MaterializeStatsCTEs() const override;

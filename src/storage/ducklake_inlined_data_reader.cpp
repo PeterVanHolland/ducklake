@@ -7,6 +7,7 @@
 #include "storage/ducklake_delete_filter.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/sql_identifier.hpp"
+#include "common/ducklake_util.hpp"
 
 namespace duckdb {
 
@@ -296,12 +297,8 @@ AsyncResult DuckLakeInlinedDataReader::Scan(ClientContext &context, GlobalTableF
 				                          chunk.data[c])) {
 					break;
 				}
-				if (chunk.data[c].GetType() != scan_chunk.data[column_id].GetType()) {
-					// type was changed, we gotta cast the data
-					VectorOperations::Cast(context, scan_chunk.data[column_id], chunk.data[c], scan_chunk.size());
-				} else {
-					chunk.data[c].Reference(scan_chunk.data[column_id]);
-				}
+				// the type may have changed after the rows were inlined
+				DuckLakeUtil::CastInlinedVector(context, scan_chunk.data[column_id], chunk.data[c], scan_chunk.size());
 				break;
 			}
 			case InlinedVirtualColumn::COLUMN_ROW_ID:

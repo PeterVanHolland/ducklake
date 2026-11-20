@@ -1675,6 +1675,7 @@ JSONMutableValue DuckLakeRESTSerializer::Write(JSONWriter &writer, const RESTCon
 	result.Add("defaults", RESTWriteValue<RESTDictCodec<RESTStringCodec>>(writer, value.defaults));
 	result.Add("overrides", RESTWriteValue<RESTDictCodec<RESTStringCodec>>(writer, value.overrides));
 	result.Add("endpoints", RESTWriteValue<RESTListCodec<RESTStringCodec>>(writer, value.endpoints));
+	result.Add("features", RESTWriteValue<RESTListCodec<RESTStringCodec>>(writer, value.features));
 	return result;
 }
 
@@ -1685,6 +1686,7 @@ RESTConfigResponse DuckLakeRESTSerializer::Read(RESTJsonIn in) {
 	RESTReadOptional<RESTDictCodec<RESTStringCodec>>(in, "defaults", result.defaults);
 	RESTReadOptional<RESTDictCodec<RESTStringCodec>>(in, "overrides", result.overrides);
 	RESTReadOptional<RESTListCodec<RESTStringCodec>>(in, "endpoints", result.endpoints);
+	RESTReadOptional<RESTListCodec<RESTStringCodec>>(in, "features", result.features);
 	return result;
 }
 
@@ -2722,7 +2724,7 @@ RESTConfigResponse DuckLakeRESTClientAPI::Config(const RESTConfigRequest &reques
 	RESTPathScope paths(GetPathMapper());
 	auto context = GetContext();
 	vector<RESTBodyPart> parts;
-	DuckLakeRESTSerializer::AddParts(*context, request, parts);
+	DuckLakeRESTSerializer::AddParts(*this, request, parts);
 	auto response = Call("config", DuckLakeRESTSerializer::ToJSON(request), true, parts);
 	response.context = context.get();
 	return DuckLakeRESTSerializer::ReadResponse<RESTConfigResponse>(response);
@@ -2732,7 +2734,7 @@ RESTSnapshotData DuckLakeRESTClientAPI::GetLatestSnapshot(const RESTGetLatestSna
 	RESTPathScope paths(GetPathMapper());
 	auto context = GetContext();
 	vector<RESTBodyPart> parts;
-	DuckLakeRESTSerializer::AddParts(*context, request, parts);
+	DuckLakeRESTSerializer::AddParts(*this, request, parts);
 	auto response = Call("get_latest_snapshot", DuckLakeRESTSerializer::ToJSON(request), true, parts);
 	response.context = context.get();
 	return DuckLakeRESTSerializer::ReadResponse<RESTSnapshotData>(response);
@@ -2742,7 +2744,7 @@ DuckLakeMetadata DuckLakeRESTClientAPI::GetMetadata(const RESTGetMetadataRequest
 	RESTPathScope paths(GetPathMapper());
 	auto context = GetContext();
 	vector<RESTBodyPart> parts;
-	DuckLakeRESTSerializer::AddParts(*context, request, parts);
+	DuckLakeRESTSerializer::AddParts(*this, request, parts);
 	auto response = Call("get_metadata", DuckLakeRESTSerializer::ToJSON(request), true, parts);
 	response.context = context.get();
 	return DuckLakeRESTSerializer::ReadResponse<DuckLakeMetadata>(response);
@@ -2752,7 +2754,7 @@ RESTSnapshotData DuckLakeRESTClientAPI::GetSnapshotAt(const RESTGetSnapshotAtReq
 	RESTPathScope paths(GetPathMapper());
 	auto context = GetContext();
 	vector<RESTBodyPart> parts;
-	DuckLakeRESTSerializer::AddParts(*context, request, parts);
+	DuckLakeRESTSerializer::AddParts(*this, request, parts);
 	auto response = Call("get_snapshot_at", DuckLakeRESTSerializer::ToJSON(request), true, parts);
 	response.context = context.get();
 	return DuckLakeRESTSerializer::ReadResponse<RESTSnapshotData>(response);
@@ -2762,7 +2764,7 @@ RESTListSnapshotsResponse DuckLakeRESTClientAPI::ListSnapshots(const RESTListSna
 	RESTPathScope paths(GetPathMapper());
 	auto context = GetContext();
 	vector<RESTBodyPart> parts;
-	DuckLakeRESTSerializer::AddParts(*context, request, parts);
+	DuckLakeRESTSerializer::AddParts(*this, request, parts);
 	auto response = Call("list_snapshots", DuckLakeRESTSerializer::ToJSON(request), true, parts);
 	response.context = context.get();
 	return DuckLakeRESTSerializer::ReadResponse<RESTListSnapshotsResponse>(response);
@@ -2772,7 +2774,7 @@ RESTSelectResponse DuckLakeRESTClientAPI::Select(const RESTSelectRequest &reques
 	RESTPathScope paths(GetPathMapper());
 	auto context = GetContext();
 	vector<RESTBodyPart> parts;
-	DuckLakeRESTSerializer::AddParts(*context, request, parts);
+	DuckLakeRESTSerializer::AddParts(*this, request, parts);
 	auto response = Call("select", DuckLakeRESTSerializer::ToJSON(request), true, parts);
 	response.context = context.get();
 	return DuckLakeRESTSerializer::ReadResponse<RESTSelectResponse>(response);
@@ -2782,7 +2784,7 @@ RESTTableChangesResponse DuckLakeRESTClientAPI::TableChanges(const RESTTableChan
 	RESTPathScope paths(GetPathMapper());
 	auto context = GetContext();
 	vector<RESTBodyPart> parts;
-	DuckLakeRESTSerializer::AddParts(*context, request, parts);
+	DuckLakeRESTSerializer::AddParts(*this, request, parts);
 	auto response = Call("table_changes", DuckLakeRESTSerializer::ToJSON(request), true, parts);
 	response.context = context.get();
 	return DuckLakeRESTSerializer::ReadResponse<RESTTableChangesResponse>(response);
@@ -2792,7 +2794,7 @@ RESTCompactResponse DuckLakeRESTClientAPI::Compact(const RESTCompactRequest &req
 	RESTPathScope paths(GetPathMapper());
 	auto context = GetContext();
 	vector<RESTBodyPart> parts;
-	DuckLakeRESTSerializer::AddParts(*context, request, parts);
+	DuckLakeRESTSerializer::AddParts(*this, request, parts);
 	auto response = Call("compact", DuckLakeRESTSerializer::ToJSON(request), false, parts);
 	response.context = context.get();
 	return DuckLakeRESTSerializer::ReadResponse<RESTCompactResponse>(response);
@@ -2802,7 +2804,7 @@ RESTCommitTransactionResponse DuckLakeRESTClientAPI::CommitTransaction(const RES
 	RESTPathScope paths(GetPathMapper());
 	auto context = GetContext();
 	vector<RESTBodyPart> parts;
-	DuckLakeRESTSerializer::AddParts(*context, request, parts);
+	DuckLakeRESTSerializer::AddParts(*this, request, parts);
 	auto response = Call("commit_transaction", DuckLakeRESTSerializer::ToJSON(request), false, parts);
 	response.context = context.get();
 	return DuckLakeRESTSerializer::ReadResponse<RESTCommitTransactionResponse>(response);

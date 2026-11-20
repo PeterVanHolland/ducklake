@@ -48,6 +48,8 @@ public:
 	string prefix;
 	//! Whether the lists of the response are Arrow IPC streams in a multipart response, rather than JSON
 	bool accepts_arrow = false;
+	//! Whether the client reads VARIANT columns as DuckLake variant bytes, which keep the declared decimal types
+	bool accepts_variant_bytes = false;
 	//! The parts of the request that are tables, if it is a multipart request, and the data they are regions of
 	vector<RESTMultipartPart> request_parts;
 	shared_ptr<const string> request_data;

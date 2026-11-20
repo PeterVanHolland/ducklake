@@ -1,3 +1,5 @@
+#include "functions/ducklake_inlined_variant.hpp"
+
 #include "duckdb/common/types/variant/parquet_variant_iterator.hpp"
 #include "duckdb/common/types/variant/variant_binary_decoder.hpp"
 #include "duckdb/common/types/variant/variant_builder.hpp"
@@ -157,9 +159,7 @@ bool HoldsDecimal(const UnifiedVariantVectorData &variant, idx_t row) {
 	return false;
 }
 
-void EncodeInlinedVariant(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &input = args.data[0];
-	auto count = args.size();
+void EncodeInlinedVariantRows(Vector &input, idx_t count, Vector &result) {
 	child_list_t<LogicalType> parquet_children;
 	parquet_children.emplace_back("metadata", LogicalType::BLOB);
 	parquet_children.emplace_back("value", LogicalType::BLOB);
@@ -209,9 +209,6 @@ void EncodeInlinedVariant(DataChunk &args, ExpressionState &state, Vector &resul
 		}
 		blob.Finalize();
 		writer.WriteStringRef(blob);
-	}
-	if (args.AllConstant()) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}
 }
 
@@ -424,9 +421,7 @@ struct TypedVariantSource {
 	const vector<string_t> &row_types;
 };
 
-void DecodeInlinedVariant(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &input = args.data[0];
-	auto count = args.size();
+void DecodeInlinedVariantRows(Vector &input, idx_t count, Vector &result) {
 	UnifiedVectorFormat input_format;
 	input.ToUnifiedFormat(input_format);
 	auto blobs = UnifiedVectorFormat::GetData<string_t>(input_format);
@@ -469,6 +464,25 @@ void DecodeInlinedVariant(DataChunk &args, ExpressionState &state, Vector &resul
 }
 
 } // namespace
+
+void DuckLakeInlinedVariant::Encode(Vector &input, idx_t count, Vector &result) {
+	EncodeInlinedVariantRows(input, count, result);
+}
+
+void DuckLakeInlinedVariant::Decode(Vector &input, idx_t count, Vector &result) {
+	DecodeInlinedVariantRows(input, count, result);
+}
+
+static void EncodeInlinedVariant(DataChunk &args, ExpressionState &state, Vector &result) {
+	EncodeInlinedVariantRows(args.data[0], args.size(), result);
+	if (args.AllConstant()) {
+		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+}
+
+static void DecodeInlinedVariant(DataChunk &args, ExpressionState &state, Vector &result) {
+	DecodeInlinedVariantRows(args.data[0], args.size(), result);
+}
 
 ScalarFunction DuckLakeEncodeInlinedVariantFunction() {
 	ScalarFunction function("ducklake_encode_inlined_variant", {LogicalType::VARIANT()}, LogicalType::BLOB,

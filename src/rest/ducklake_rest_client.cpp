@@ -1,4 +1,6 @@
 #include "rest/ducklake_rest_client.hpp"
+
+#include "rest/ducklake_rest_arrow.hpp"
 #include "rest/ducklake_rest_multipart.hpp"
 
 #include "duckdb/common/error_data.hpp"
@@ -124,7 +126,15 @@ void DuckLakeRESTClient::Discover(const string &catalog_name) {
 	for (auto &route : response.endpoints) {
 		endpoints.insert(route);
 	}
+	features.clear();
+	for (auto &feature : response.features) {
+		features.insert(feature);
+	}
 	prefix = GetProperty("prefix", prefix);
+}
+
+bool DuckLakeRESTClient::HasFeature(const string &name) const {
+	return features.count(name) > 0;
 }
 
 string DuckLakeRESTClient::GetProperty(const string &name, const string &client_value) const {
@@ -162,8 +172,14 @@ RESTHttpResponse DuckLakeRESTClient::Call(const string &endpoint, const string &
 		}
 		body = multipart.Finish(request_content_type);
 	}
-	auto status = Send(route.method, target, body, idempotent, response, result.content_type,
-	                   "multipart/mixed, application/json;q=0.9", request_content_type);
+	// the lists of a response are Arrow, with VARIANT columns as variant bytes when the server knows them
+	string accept = "multipart/mixed";
+	if (HasFeature(REST_FEATURE_VARIANT_BYTES)) {
+		accept += string(";") + REST_ACCEPT_VARIANT_BYTES;
+	}
+	accept += ", application/json;q=0.9";
+	auto status =
+	    Send(route.method, target, body, idempotent, response, result.content_type, accept, request_content_type);
 	if (status != 200) {
 		RESTErrorResponse error;
 		try {

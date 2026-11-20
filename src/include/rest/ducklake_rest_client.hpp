@@ -38,6 +38,7 @@ public:
 	//! The value of a property: the value of the server if it overrides it, the client value if it has one, else the
 	//! default
 	string GetProperty(const string &name, const string &client_value = string()) const;
+	bool HasFeature(const string &name) const override;
 
 	//! The client has another view of the data path than the server: paths are mapped between the two
 	void SetPathMapping(string client_path, string server_path);
@@ -71,6 +72,8 @@ private:
 	unique_ptr<RESTPathMapper> path_mapper;
 	//! The requests that the server supports, as the method and the path, unknown before Discover
 	unordered_set<string> endpoints;
+	//! The optional parts of the API that the server supports, unknown before Discover
+	unordered_set<string> features;
 	map<string, string> defaults;
 	map<string, string> overrides;
 	//! The URL of the server and the prefix of the catalog on the server, which is the path of the URL

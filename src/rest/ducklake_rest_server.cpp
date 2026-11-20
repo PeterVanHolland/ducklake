@@ -228,6 +228,7 @@ int32_t DuckLakeRESTServer::HandleRequest(const RESTRoute &route, optional_ptr<c
 		// lists are Arrow, unless the request asks for JSON only
 		request.accepts_arrow =
 		    accept.empty() || accept.find("multipart/mixed") != string::npos || accept.find("*/*") != string::npos;
+		request.accepts_variant_bytes = accept.find(REST_ACCEPT_VARIANT_BYTES) != string::npos;
 		try {
 			response = entry->second(request, request_json);
 			content_type = request.content_type;

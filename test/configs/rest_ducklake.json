@@ -131,6 +131,7 @@
         "test/sql/data_inlining/data_inlining_null_type.test",
         "test/sql/data_inlining/data_inlining_partitions.test",
         "test/sql/data_inlining/data_inlining_variant_types.test",
+        "test/sql/data_inlining/data_inlining_variant_decimal_width.test",
         "test/sql/data_inlining/data_inlining_variant_unencodable.test",
         "test/sql/data_inlining/flush_concurrent_insert.test",
         "test/sql/data_inlining/partition_inlining.test",

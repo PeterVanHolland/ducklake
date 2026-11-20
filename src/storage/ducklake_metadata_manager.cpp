@@ -27,7 +27,11 @@
 #include "duckdb/planner/expression.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "storage/ducklake_partition_data.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/parsed_data/create_table_info.hpp"
+#include "duckdb/parser/statement/create_statement.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/statement/insert_statement.hpp"
 #include "duckdb/parser/tableref/column_data_ref.hpp"
@@ -106,6 +110,17 @@ idx_t DuckLakeMetadataManager::MaxColumnCount() const {
 
 vector<string> DuckLakeMetadataManager::SystemColumnNames() const {
 	return GetMetadataProfile().system_column_names;
+}
+
+string DuckLakeMetadataManager::StoredMetadataType(const LogicalType &type) const {
+	auto &stored_types = GetMetadataProfile().stored_types;
+	auto entry = stored_types.find(type.id());
+	return entry == stored_types.end() ? type.ToString() : entry->second;
+}
+
+bool DuckLakeMetadataManager::KnowsStoredMetadataTypes() const {
+	// a DuckDB catalog keeps the types as created, another catalog's profile has to list its stored types
+	return transaction.GetCatalog().MetadataCatalogType() == "duckdb" || !GetMetadataProfile().stored_types.empty();
 }
 
 bool DuckLakeMetadataManager::IsRetryableCommitError(const string &message) const {
@@ -575,6 +590,56 @@ static string V1_1MigrationQuery(bool has_additions) {
 	return query;
 }
 
+void DuckLakeMetadataManager::ValidateMetadataTables() {
+	auto parser = Parser::GetBuiltinParser();
+	parser.ParseQuery(StringUtil::Replace(GetCreateTableStatements(), "{METADATA_CATALOG}.", ""));
+	bool compare_types = KnowsStoredMetadataTypes();
+	// the check probes the catalog in a pass of its own
+	ResetProbedColumns();
+	for (auto &statement : parser.statements) {
+		if (statement->type != StatementType::CREATE_STATEMENT) {
+			continue;
+		}
+		const auto &create_info = *statement->Cast<CreateStatement>().info;
+		if (create_info.type != CatalogType::TABLE_ENTRY) {
+			continue;
+		}
+		const auto &info = create_info.Cast<CreateTableInfo>();
+		auto &table_name = info.GetTableName();
+		auto &actual_columns = ProbedMetadataColumns(table_name.GetIdentifierName(), true);
+		if (actual_columns.empty()) {
+			throw InvalidInputException("Failed to load DuckLake: the metadata catalog has no table %s", table_name);
+		}
+		idx_t column_idx = 0;
+		for (auto &expected : info.columns.Logical()) {
+			auto &expected_name = expected.Name();
+			if (column_idx >= actual_columns.size()) {
+				throw InvalidInputException("Failed to load DuckLake: metadata table %s has no column %s", table_name,
+				                            expected_name);
+			}
+			auto &actual = actual_columns[column_idx++];
+			if (actual.name != expected_name) {
+				throw InvalidInputException(
+				    "Failed to load DuckLake: column %d of metadata table %s is %s, expected %s", column_idx,
+				    table_name, actual.name, expected_name);
+			}
+			if (!compare_types) {
+				continue;
+			}
+			auto expected_type = StoredMetadataType(UnboundType::TryDefaultBind(expected.Type()));
+			if (actual.type != expected_type) {
+				throw InvalidInputException(
+				    "Failed to load DuckLake: column %s of metadata table %s has type %s, expected %s", expected_name,
+				    table_name, actual.type, expected_type);
+			}
+		}
+		if (column_idx < actual_columns.size()) {
+			throw InvalidInputException("Failed to load DuckLake: metadata table %s has an unexpected column %s",
+			                            table_name, actual_columns[column_idx].name);
+		}
+	}
+}
+
 bool DuckLakeMetadataManager::HasV1_1Additions() {
 	string probe = "SELECT 1 FROM (SELECT * FROM {METADATA_CATALOG}.ducklake_view_column_tag LIMIT 0)";
 	idx_t alias_index = 0;
@@ -881,9 +946,9 @@ bool DuckLakeMetadataManager::ProbeMetadataColumns() {
 				if (entry.type != CatalogType::TABLE_ENTRY) {
 					return;
 				}
-				vector<Identifier> columns;
+				vector<DuckLakeMetadataColumn> columns;
 				for (auto &column : entry.Cast<TableCatalogEntry>().GetColumns().Logical()) {
-					columns.push_back(column.Name());
+					columns.push_back({column.Name(), column.Type().ToString()});
 				}
 				probed_columns[entry.name.GetIdentifierName()] = std::move(columns);
 			});
@@ -901,14 +966,57 @@ bool DuckLakeMetadataManager::ProbeMetadataColumns() {
 		return false;
 		// LCOV_EXCL_STOP
 	}
+	probed_local_catalog = true;
 	return true;
+}
+
+vector<DuckLakeMetadataColumn> DuckLakeMetadataManager::LookupMetadataColumns(const string &table) {
+	auto &ducklake_catalog = transaction.GetCatalog();
+	auto &context = *transaction.GetConnection().context;
+	vector<DuckLakeMetadataColumn> columns;
+	context.RunFunctionInTransaction([&]() {
+		QualifiedName name(ducklake_catalog.MetadataDatabaseName(), ducklake_catalog.MetadataSchemaName(),
+		                   Identifier(table));
+		auto entry =
+		    Catalog::GetEntry(context, EntryLookupInfo(CatalogType::TABLE_ENTRY, name), OnEntryNotFound::RETURN_NULL);
+		if (!entry) {
+			return;
+		}
+		if (entry->type == CatalogType::VIEW_ENTRY) {
+			// a view in place of a table is checked through the columns it has now
+			auto &view = entry->Cast<ViewCatalogEntry>();
+			view.BindView(context, BindViewAction::FORCE_REBIND);
+			auto view_columns = view.GetColumnInfo();
+			for (idx_t i = 0; i < view_columns->names.size(); i++) {
+				auto &column_name = i < view.aliases.size() ? view.aliases[i] : view_columns->names[i];
+				columns.push_back({column_name, view_columns->types[i].ToString()});
+			}
+			return;
+		}
+		for (auto &column : entry->Cast<TableCatalogEntry>().GetColumns().Logical()) {
+			columns.push_back({column.Name(), column.Type().ToString()});
+		}
+	});
+	return columns;
+}
+
+vector<DuckLakeMetadataColumn> DuckLakeMetadataManager::QueryMetadataColumns(const string &table) {
+	vector<DuckLakeMetadataColumn> columns;
+	auto result = Query(StringUtil::Format("SELECT * FROM {METADATA_CATALOG}.%s LIMIT 0", table));
+	if (!result->HasError()) {
+		auto names = result->GetNames();
+		for (idx_t i = 0; i < names.size(); i++) {
+			columns.push_back({names[i], result->GetTypes()[i].ToString()});
+		}
+	}
+	return columns;
 }
 
 bool DuckLakeMetadataManager::ProbeMetadataColumnsFromListing(string query) {
 	auto result = Query(query);
 	if (!result->HasError()) {
 		for (auto &row : *result) {
-			probed_columns[row.GetValue<string>(0)].push_back(Identifier(row.GetValue<string>(1)));
+			probed_columns[row.GetValue<string>(0)].push_back({row.GetValue<Identifier>(1), row.GetValue<string>(2)});
 		}
 		if (probed_columns.find("ducklake_metadata") != probed_columns.end()) {
 			return true;
@@ -925,6 +1033,7 @@ void DuckLakeMetadataManager::ResetProbedColumns() {
 	probed_columns.clear();
 	probed_metadata_schema = false;
 	probed_all_columns = false;
+	probed_local_catalog = false;
 }
 
 void DuckLakeMetadataManager::ProbeMetadataSchema() {
@@ -936,24 +1045,29 @@ void DuckLakeMetadataManager::ProbeMetadataSchema() {
 	probed_all_columns = ProbeMetadataColumns();
 }
 
-bool DuckLakeMetadataManager::HasMetadataColumn(const string &table, const string &column) {
+const vector<DuckLakeMetadataColumn> &DuckLakeMetadataManager::ProbedMetadataColumns(const string &table,
+                                                                                     bool probe_unlisted) {
 	ProbeMetadataSchema();
 	auto entry = probed_columns.find(table);
 	if (entry == probed_columns.end()) {
-		vector<Identifier> columns;
-		if (!probed_all_columns) {
-			// LCOV_EXCL_START
-			// a catalog that lists no tables is probed table by table
-			auto result = Query(StringUtil::Format("SELECT * FROM {METADATA_CATALOG}.%s LIMIT 0", table));
-			if (!result->HasError()) {
-				columns = result->GetNames();
-			}
-			// LCOV_EXCL_STOP
+		vector<DuckLakeMetadataColumn> columns;
+		// a catalog that lists no tables is probed table by table, a listing can lack a view or spell another case
+		if (!probed_all_columns || (probe_unlisted && FoldsMetadataTableCase())) {
+			columns = probed_local_catalog ? LookupMetadataColumns(table) : QueryMetadataColumns(table);
 		}
 		entry = probed_columns.emplace(table, std::move(columns)).first;
 	}
-	for (auto &name : entry->second) {
-		if (name == column) {
+	return entry->second;
+}
+
+bool DuckLakeMetadataManager::FoldsMetadataTableCase() const {
+	// DuckDB and SQLite find a table by a name of any case
+	return true;
+}
+
+bool DuckLakeMetadataManager::HasMetadataColumn(const string &table, const string &column) {
+	for (auto &probed : ProbedMetadataColumns(table, false)) {
+		if (probed.name == column) {
 			return true;
 		}
 	}
@@ -1256,6 +1370,7 @@ WHERE table_id = {TABLE_ID} AND schema_version = {SCHEMA_VERSION})";
 	query = StringUtil::Replace(query, "{TABLE_ID}", to_string(table_id.index));
 	query = StringUtil::Replace(query, "{SCHEMA_VERSION}", to_string(schema_version));
 	auto result = Query(query);
+	result->ThrowIfError("Failed to get the begin snapshot of a schema version from DuckLake: ");
 	for (auto &row : *result) {
 		auto begin_snapshot = row.GetValue<idx_t>(0);
 		// only cache rows that are already committed - a schema version written by this transaction can still

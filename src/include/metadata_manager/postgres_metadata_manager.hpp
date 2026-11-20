@@ -21,6 +21,14 @@ public:
 	}
 
 	bool TypeIsNativelySupported(const LogicalType &type) override;
+	//! the probe of the metadata columns maps the Postgres types back to the created types
+	bool KnowsStoredMetadataTypes() const override {
+		return true;
+	}
+	//! a quoted name keeps its case, so a table of another case is another table
+	bool FoldsMetadataTableCase() const override {
+		return false;
+	}
 	bool CanInlineValues(DataChunk &chunk) override;
 	bool SupportsAppender() const override {
 		return false;

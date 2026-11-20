@@ -1,0 +1,83 @@
+# name: test/sql/metadata/metadata_table_validation_sqlite.test
+# description: ATTACH checks the column names of a SQLite catalog, and the types once its profile lists the stored types
+# group: [metadata]
+
+require ducklake
+
+require parquet
+
+require sqlite_scanner
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/metadata_table_validation_sqlite.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation_sqlite')
+
+statement ok
+CREATE TABLE dl.t AS SELECT 42 AS i
+
+statement ok
+DETACH dl
+
+# the sqlite scanner reads the types by affinity, which the profile of the sqlite extension does not describe
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/metadata_table_validation_sqlite.db' AS dl
+
+query I
+SELECT typeof(snapshot_time) FROM __ducklake_metadata_dl.ducklake_snapshot LIMIT 1
+----
+VARCHAR
+
+query I
+SELECT i FROM dl.t
+----
+42
+
+statement ok
+DETACH dl
+
+# the names and their order are still checked
+statement ok
+ATTACH '{TEST_DIR}/metadata_table_validation_sqlite.db' AS meta (TYPE sqlite)
+
+statement ok
+ALTER TABLE meta.ducklake_snapshot RENAME COLUMN next_file_id TO file_id
+
+statement ok
+DETACH meta
+
+statement error
+ATTACH 'ducklake:sqlite:{TEST_DIR}/metadata_table_validation_sqlite.db' AS dl
+----
+column 5 of metadata table "ducklake_snapshot" is "file_id", expected "next_file_id"
+
+statement ok
+ATTACH '{TEST_DIR}/metadata_table_validation_sqlite.db' AS meta (TYPE sqlite)
+
+statement ok
+ALTER TABLE meta.ducklake_snapshot RENAME COLUMN file_id TO next_file_id
+
+statement ok
+DETACH meta
+
+# a profile that lists the stored types gets the type check back
+statement ok
+CALL ducklake_register_metadata_profile('sqlite', '{"base": "sqlite", "types": {"stored_types": {"BOOLEAN": "BIGINT"}}}')
+
+statement error
+ATTACH 'ducklake:sqlite:{TEST_DIR}/metadata_table_validation_sqlite.db' AS dl
+----
+column "snapshot_time" of metadata table "ducklake_snapshot" has type VARCHAR, expected TIMESTAMP WITH TIME ZONE
+
+statement ok
+CALL ducklake_register_metadata_profile('sqlite', '{"base": "sqlite", "types": {"stored_types": {"BOOLEAN": "BIGINT", "UUID": "VARCHAR", "TIMESTAMP WITH TIME ZONE": "VARCHAR"}}}')
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/metadata_table_validation_sqlite.db' AS dl
+
+statement ok
+INSERT INTO dl.t VALUES (43)
+
+query I
+SELECT i FROM dl.t ORDER BY i
+----
+42
+43

@@ -97,7 +97,7 @@ void QuackMetadataManager::ClearCache() {
 bool QuackMetadataManager::ProbeMetadataColumns() {
 	// duckdb_columns() lists every column of the server's metadata schema, so one statement serves every probe
 	return ProbeMetadataColumnsFromListing(
-	    "SELECT table_name, column_name FROM duckdb_columns() WHERE database_name = current_database() "
+	    "SELECT table_name, column_name, data_type FROM duckdb_columns() WHERE database_name = current_database() "
 	    "AND schema_name = {METADATA_SCHEMA_NAME_LITERAL} ORDER BY table_name, column_index");
 }
 

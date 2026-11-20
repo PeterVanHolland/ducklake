@@ -179,7 +179,7 @@ metadata table "ducklake_table" has no column "path_is_relative"
 
 # a missing branch table
 statement ok
-ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_9.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation')
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_9.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', DUCKLAKE_VERSION '2.0-dev2')
 
 statement ok
 CREATE TABLE dl.t AS SELECT 42 AS i
@@ -197,7 +197,7 @@ statement ok
 DETACH meta
 
 statement error
-ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_9.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation')
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_9.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', DUCKLAKE_VERSION '2.0-dev2')
 ----
 the metadata catalog has no table "ducklake_branch"
 

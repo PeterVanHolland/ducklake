@@ -791,7 +791,7 @@ SELECT list(i ORDER BY i) FROM dl.t
 statement ok
 DETACH dl
 
-# a 2.0-dev2 attach runs no probe or migration statement
+# a 2.0-dev2 attach runs no migration probe or statement, it only lists the metadata columns to check them
 statement ok
 CALL truncate_duckdb_logs()
 
@@ -812,7 +812,7 @@ true
 query I
 SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata')
 WHERE query LIKE '%heal_complete%' OR query LIKE '%ducklake_branch%' OR query LIKE '%_rebuild%'
-    OR query LIKE '%RENAME TO%' OR query LIKE '%pg_attribute%' OR query LIKE '%duckdb_columns()%'
+    OR query LIKE '%RENAME TO%'
 ----
 0
 

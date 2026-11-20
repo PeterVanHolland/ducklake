@@ -1,0 +1,53 @@
+# name: test/sql/add_files/add_files_geometry_wrapped_bbox.test
+# description: A geometry box whose minimum is above its maximum, as around the antimeridian, is added as unknown
+# group: [add_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/add_files_geometry_wrapped_bbox')
+
+# the points are at x -175 and 175, and the footer box goes from 175 to -175
+query II
+SELECT geo_bbox.xmin, geo_bbox.xmax FROM parquet_metadata('data/parquet/geometry_antimeridian_bbox.parquet')
+----
+175.0	-175.0
+
+statement ok
+CREATE TABLE dl.wrapped (g GEOMETRY)
+
+statement ok
+CALL ducklake_add_data_files('dl', 'wrapped', 'data/parquet/geometry_antimeridian_bbox.parquet')
+
+loop i 0 2
+
+query I
+SELECT count(*) FROM dl.wrapped WHERE st_intersects_extent(g, 'POINT (175 0)'::GEOMETRY)
+----
+1
+
+query I
+SELECT count(*) FROM dl.wrapped WHERE vertex_extract(g, 'y') = 0
+----
+2
+
+# only x is unknown, y keeps the range of the file
+query I
+SELECT contains(extra_stats, '"ymin":0.0,"ymax":0.0') FROM __ducklake_metadata_dl.ducklake_file_column_stats
+----
+true
+
+# the statistics read back from the catalog stay unknown in x
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/add_files_geometry_wrapped_bbox')
+
+endloop

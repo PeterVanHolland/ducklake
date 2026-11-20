@@ -174,7 +174,8 @@ static void AddSnapshotData(DuckLakeRESTRequest &request, const RESTSnapshotIncl
 	bool include_stats = includes.include_stats || (includes.cached_data_version.IsValid() &&
 	                                                includes.cached_data_version.GetIndex() != snapshot.next_file_id);
 	if (include_catalog) {
-		result.catalog = make_uniq<DuckLakeCatalogInfo>(metadata_manager.GetCatalogForSnapshot(snapshot));
+		result.catalog = make_uniq<DuckLakeCatalogInfo>(
+		    metadata_manager.GetCatalogForSnapshot(snapshot, DuckLakeCatalogLoadFilter::All()));
 		auto next_column_ids = metadata_manager.GetNextColumnIds();
 		for (auto &table : result.catalog->tables) {
 			auto entry = next_column_ids.find(table.id.index);

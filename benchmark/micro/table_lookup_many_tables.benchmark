@@ -1,0 +1,44 @@
+# name: benchmark/micro/table_lookup_many_tables.benchmark
+# description: Look up one table of a freshly attached catalog with many tables
+# group: [micro]
+
+argument tables 2000
+
+name Table Lookup Many Tables
+group micro
+
+require ducklake
+
+cache_file table_lookup_many_tables_${tables}_ready.marker
+
+load
+EXPORT DATABASE '${BENCHMARK_DIR}/table_lookup_many_tables_${tables}_ddl';
+COPY (SELECT 'CREATE TABLE ducklake.tbl_' || i || ' (id INTEGER, random_data VARCHAR);' FROM range(${tables}) t(i))
+TO '${BENCHMARK_DIR}/table_lookup_many_tables_${tables}_ddl/schema.sql' (HEADER false, QUOTE '');
+@create table_lookup_many_tables_${tables}
+@attach table_lookup_many_tables_${tables} AS ducklake (DATA_PATH '${BENCHMARK_DIR}/table_lookup_many_tables_${tables}_files')
+BEGIN;
+IMPORT DATABASE '${BENCHMARK_DIR}/table_lookup_many_tables_${tables}_ddl';
+COMMIT;
+INSERT INTO ducklake.tbl_42 VALUES (42, 'the looked up table');
+CALL ducklake_delete_orphaned_files('ducklake', cleanup_all => true);
+DETACH ducklake;
+@seal table_lookup_many_tables_${tables}
+COPY (SELECT 1) TO '${BENCHMARK_DIR}/table_lookup_many_tables_${tables}_ready.marker' (FORMAT CSV);
+@attach table_lookup_many_tables_${tables} AS ducklake
+
+reload
+@attach table_lookup_many_tables_${tables} AS ducklake
+
+run
+SELECT id FROM ducklake.tbl_42;
+
+# Reattaching clears the catalog cache
+cleanup
+DETACH ducklake;
+@attach table_lookup_many_tables_${tables} AS ducklake
+
+result_query I
+SELECT id FROM __answer
+----
+42

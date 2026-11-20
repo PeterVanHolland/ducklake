@@ -1005,7 +1005,7 @@ void DuckLakeRESTCommit::CreateTable(RESTCreateTableRequest &parameters) {
 	vector<Value> initial_defaults;
 	for (auto &column : parameters.columns) {
 		auto logical_index = LogicalIndex(info->columns.LogicalColumnCount());
-		initial_defaults.push_back(DuckLakeRESTCatalogChanges::ReadInitialDefault(context, column));
+		initial_defaults.push_back(DuckLakeRESTCatalogChanges::ReadInitialDefault(context, column, false));
 		info->columns.AddColumn(DuckLakeRESTCatalogChanges::ReadColumn(context, column));
 		if (column.not_null) {
 			info->constraints.push_back(make_uniq<NotNullConstraint>(logical_index));
@@ -1086,9 +1086,9 @@ void DuckLakeRESTCommit::CreateMacro(RESTCreateMacroRequest &parameters) {
 static Value GetAddedInitialDefault(ClientContext &context, const RESTAlteration &alteration) {
 	switch (alteration.type) {
 	case RESTAlterationType::ADD_COLUMN:
-		return DuckLakeRESTCatalogChanges::ReadInitialDefault(context, alteration.Cast<RESTAddColumn>().column);
+		return DuckLakeRESTCatalogChanges::ReadInitialDefault(context, alteration.Cast<RESTAddColumn>().column, true);
 	case RESTAlterationType::ADD_FIELD:
-		return DuckLakeRESTCatalogChanges::ReadInitialDefault(context, alteration.Cast<RESTAddField>().field);
+		return DuckLakeRESTCatalogChanges::ReadInitialDefault(context, alteration.Cast<RESTAddField>().field, true);
 	default:
 		return Value();
 	}

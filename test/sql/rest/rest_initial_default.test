@@ -71,6 +71,31 @@ SELECT initial_default FROM __ducklake_metadata_rest_lake.ducklake_column WHERE 
 ----
 2024-01-01 08:00:00+00
 
+# a time zone literal gives a VARIANT column of a new table no initial default, an added one the client's text
+statement ok
+CREATE TABLE dl.v(i INTEGER, v VARIANT DEFAULT TIMESTAMPTZ '2024-01-01 00:00:00')
+
+query I rest_db:rest_server_con
+SELECT initial_default IS NULL FROM __ducklake_metadata_rest_lake.ducklake_column WHERE column_name = 'v' AND end_snapshot IS NULL
+----
+true
+
+statement ok
+INSERT INTO dl.v (i) VALUES (1)
+
+statement ok
+ALTER TABLE dl.v ADD COLUMN w VARIANT DEFAULT TIMESTAMPTZ '2024-01-01 00:00:00'
+
+query I rest_db:rest_server_con
+SELECT initial_default FROM __ducklake_metadata_rest_lake.ducklake_column WHERE column_name = 'w' AND end_snapshot IS NULL
+----
+2024-01-01 08:00:00+00
+
+query III
+SELECT v::TIMESTAMPTZ = TIMESTAMPTZ '2024-01-01 08:00:00+00', variant_typeof(w), w::VARCHAR FROM dl.v
+----
+true	VARCHAR	2024-01-01 08:00:00+00
+
 # the definition of a column that exists is not evaluated
 statement ok
 ALTER TABLE dl.t ADD COLUMN IF NOT EXISTS i DATE DEFAULT 'not-a-date'

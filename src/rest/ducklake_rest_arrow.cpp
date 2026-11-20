@@ -67,6 +67,13 @@ LogicalType VariantBytesType(const LogicalType &type) {
 LogicalType StreamType(const ArrowSchema &field, const LogicalType &type) {
 	ArrowSchemaMetadata metadata(field.metadata);
 	if (metadata.GetOption(ArrowSchemaMetadata::ARROW_EXTENSION_NAME) == REST_VARIANT_EXTENSION) {
+		if (type.id() != LogicalTypeId::BLOB) {
+			// LCOV_EXCL_START
+			// the DuckLake server and client write variant bytes as BLOB fields
+			throw InvalidInputException("The Arrow field %s holds %s variant bytes, which have to be binary",
+			                            field.name, REST_VARIANT_EXTENSION);
+			// LCOV_EXCL_STOP
+		}
 		return LogicalType::VARIANT();
 	}
 	switch (type.id()) {

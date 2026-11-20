@@ -132,6 +132,11 @@ SELECT contains(response::VARCHAR, 'ducklake.variant'), contains(response::VARCH
 ----
 false	true
 
+query II
+SELECT contains(response::VARCHAR, 'ducklake.variant'), contains(response::VARCHAR, 'arrow.parquet.variant') FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/tables/1/scan', '{}', accept := 'multipart/mixed;profile="x;variant=ducklake"')
+----
+false	true
+
 statement ok
 DETACH dl
 

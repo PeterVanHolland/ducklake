@@ -152,12 +152,12 @@ inlined data, also if it has no rows. The table of an `insert_rows` request has 
 The `variant` extension type is the Parquet Variant, which holds the scale of a decimal but not its width, so a
 `DECIMAL(18, 9)` in a `VARIANT` comes out of it as a decimal of as many digits as its value has. A server with the
 feature `variant_bytes` in its `config` instead sends the `VARIANT` columns of the inlined rows, also inside structs,
-lists and maps, as DuckLake variant bytes to a client that asks for them with the parameter `variant=ducklake` of the
-media type it accepts (`Accept: multipart/mixed;variant=ducklake`). The field of such a column is binary, named with the
-extension `ducklake.variant` (the `ARROW:extension:name` of its metadata), and holds per row the Parquet Variant of the
-value followed by the declared types of its decimals, in the encoding of the inlined `VARIANT` columns of the metadata
-(`ducklake_encode_inlined_variant`). A client that found the feature in the `config` sends the rows of `insert_rows`
-the same way. A client that does not ask for variant bytes gets the `variant` extension type.
+lists, arrays and maps, as DuckLake variant bytes to a client that asks for them with the parameter `variant=ducklake`
+of the media type it accepts (`Accept: multipart/mixed;variant=ducklake`). The field of such a column is binary, named
+with the extension `ducklake.variant` (the `ARROW:extension:name` of its metadata), and holds per row the Parquet
+Variant of the value followed by the declared types of its decimals, in the encoding of the inlined `VARIANT` columns of
+the metadata (`ducklake_encode_inlined_variant`). A client that found the feature in the `config` sends the rows of
+`insert_rows` the same way. A client that does not ask for variant bytes gets the `variant` extension type.
 
 ## Specification
 

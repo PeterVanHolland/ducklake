@@ -191,13 +191,30 @@ static string ErrorBody(ExceptionType type, const string &message, int32_t statu
 	return DuckLakeRESTSerializer::ToJSON(response);
 }
 
+//! Splits a header at a delimiter outside of its quoted strings
+static vector<string> SplitOutsideQuotes(const string &header, char delimiter) {
+	vector<string> result;
+	string current;
+	bool quoted = false;
+	for (auto c : header) {
+		if (c == '"') {
+			quoted = !quoted;
+		}
+		if (c == delimiter && !quoted) {
+			result.push_back(current);
+			current.clear();
+		} else {
+			current += c;
+		}
+	}
+	result.push_back(current);
+	return result;
+}
+
 //! Whether a multipart media range of the Accept header has the parameter that asks for variant bytes
 static bool AcceptsVariantBytes(const string &accept) {
-	for (auto &range : StringUtil::Split(accept, ',')) {
-		auto parts = StringUtil::Split(range, ';');
-		if (parts.empty()) {
-			continue;
-		}
+	for (auto &range : SplitOutsideQuotes(accept, ',')) {
+		auto parts = SplitOutsideQuotes(range, ';');
 		auto type = StringUtil::Lower(parts[0]);
 		StringUtil::Trim(type);
 		if (type != "multipart/mixed" && type != "*/*") {

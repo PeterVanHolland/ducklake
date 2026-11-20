@@ -85,8 +85,6 @@ void DuckLakeInitializer::Initialize() {
 	}
 	// attach the metadata database
 	AttachMetadata(transaction);
-	// a relative DATA_PATH of a DuckDB file catalog lies next to the catalog file, wherever the session runs
-	ResolveRelativeDataPath(transaction);
 
 	bool has_explicit_schema = !options.metadata_schema.empty();
 	if (options.metadata_schema.empty()) {
@@ -316,9 +314,7 @@ void DuckLakeInitializer::ResolveRelativeDataPath(DuckLakeTransaction &transacti
 	if (resolved == options.data_path) {
 		return;
 	}
-	if (options.stored_data_path.empty()) {
-		options.stored_data_path = options.data_path;
-	}
+	options.stored_data_path = options.data_path;
 	options.data_path = std::move(resolved);
 }
 

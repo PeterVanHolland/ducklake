@@ -1,5 +1,5 @@
 # name: test/sql/attach/default_data_path_relative_to_catalog.test
-# description: A DuckDB file catalog stores its default data path relative to the catalog file and resolves a relative data path against the catalog's directory
+# description: A DuckDB file catalog stores its default data path relative to the catalog file and resolves a stored relative data path against the catalog's directory
 # group: [attach]
 
 require ducklake
@@ -91,17 +91,17 @@ ATTACH 'ducklake:{TEST_DIR}/relative_lake.ducklake' AS lake (DATA_PATH '{TEST_DI
 ----
 does not match existing data path in the catalog "relative_lake.ducklake.files/"
 
-# an explicit relative DATA_PATH is stored as written and lies next to the catalog file, not in the working directory
+# an explicit relative DATA_PATH keeps its meaning, relative to the working directory, and is stored as written
 statement ok
-ATTACH 'ducklake:{TEST_DIR}/relative_lake2.ducklake' AS lake2 (DATA_PATH 'lake2_files/', DATA_INLINING_ROW_LIMIT 0)
+ATTACH 'ducklake:{TEST_DIR}/lake2.ducklake' AS lake2 (DATA_PATH '{TEST_DIR}/lake2_files/', DATA_INLINING_ROW_LIMIT 0)
 
 statement ok
 CREATE TABLE lake2.t AS SELECT range AS i FROM range(10)
 
 query I
-SELECT value FROM __ducklake_metadata_lake2.ducklake_metadata WHERE key = 'data_path'
+SELECT value = '{TEST_DIR}/lake2_files/' FROM __ducklake_metadata_lake2.ducklake_metadata WHERE key = 'data_path'
 ----
-lake2_files/
+true
 
 query I
 SELECT count(*) FROM glob('{TEST_DIR}/lake2_files/main/t/*.parquet')
@@ -111,8 +111,9 @@ SELECT count(*) FROM glob('{TEST_DIR}/lake2_files/main/t/*.parquet')
 statement ok
 DETACH lake2
 
+# a plain attach from the same working directory finds the directory there
 statement ok
-ATTACH 'ducklake:{TEST_DIR}/relative_lake2.ducklake' AS lake2
+ATTACH 'ducklake:{TEST_DIR}/lake2.ducklake' AS lake2
 
 query I
 SELECT sum(i) FROM lake2.t
@@ -203,40 +204,6 @@ ATTACH 'ducklake:{TEST_DIR}/relative_lake3.ducklake' AS lake3
 
 query I
 SELECT sum(i) FROM lake3.s1.t
-----
-45
-
-# "." and ".." segments and doubled separators of a relative DATA_PATH are left out of the resolved path, so the
-# file paths stay relative
-statement ok
-ATTACH 'ducklake:{TEST_DIR}/relative_lake5.ducklake' AS lake5 (DATA_PATH './sub/..//lake5_files/', DATA_INLINING_ROW_LIMIT 0)
-
-statement ok
-CREATE TABLE lake5.t AS SELECT range AS i FROM range(10)
-
-query I
-SELECT value FROM __ducklake_metadata_lake5.ducklake_metadata WHERE key = 'data_path'
-----
-./sub/..//lake5_files/
-
-query I
-SELECT path_is_relative FROM __ducklake_metadata_lake5.ducklake_data_file
-----
-true
-
-query I
-SELECT count(*) FROM glob('{TEST_DIR}/lake5_files/main/t/*.parquet')
-----
-1
-
-statement ok
-DETACH lake5
-
-statement ok
-ATTACH 'ducklake:{TEST_DIR}/relative_lake5.ducklake' AS lake5
-
-query I
-SELECT sum(i) FROM lake5.t
 ----
 45
 

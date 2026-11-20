@@ -12,16 +12,25 @@ DuckLakeTransactionManager::DuckLakeTransactionManager(AttachedDatabase &db_p, D
 Transaction &DuckLakeTransactionManager::StartTransaction(ClientContext &context) {
 	auto transaction = make_shared_ptr<DuckLakeTransaction>(ducklake_catalog, *this, context);
 	transaction->Start();
+	auto &result = *transaction;
+	{
+		// registered before it reads the metadata, so a drop of a table it may read sees it
+		lock_guard<mutex> l(transaction_lock);
+		transactions[result] = std::move(transaction);
+	}
 	if (Settings::Get<ImmediateTransactionModeSetting>(context) && get_snapshot && ducklake_catalog.IsInitialized() &&
 	    !context.registered_state->Get<DuckLakeInternalConnectionState>(DuckLakeInternalConnectionState::KEY)) {
 		get_snapshot = false;
-		// no snapshot loaded yet for this transaction - load it
-		transaction->GetSnapshot();
+		try {
+			// no snapshot loaded yet for this transaction - load it
+			result.GetSnapshot();
+		} catch (...) {
+			get_snapshot = true;
+			RemoveTransaction(result);
+			throw;
+		}
 		get_snapshot = true;
 	}
-	auto &result = *transaction;
-	lock_guard<mutex> l(transaction_lock);
-	transactions[result] = std::move(transaction);
 	return result;
 }
 
@@ -50,6 +59,24 @@ ErrorData DuckLakeTransactionManager::CommitTransaction(ClientContext &context, 
 	// the caller does not roll back a failed commit, so it is released here without removing its files
 	RemoveTransaction(transaction);
 	return error;
+}
+
+bool DuckLakeTransactionManager::OtherTransactionHasMetadataConnection(DuckLakeTransaction &transaction) {
+	vector<shared_ptr<DuckLakeTransaction>> others;
+	{
+		lock_guard<mutex> l(transaction_lock);
+		for (auto &entry : transactions) {
+			if (entry.second.get() != &transaction) {
+				others.push_back(entry.second);
+			}
+		}
+	}
+	for (auto &other : others) {
+		if (other->HasMetadataConnection()) {
+			return true;
+		}
+	}
+	return false;
 }
 
 void DuckLakeTransactionManager::GetWrittenFiles(vector<string> &result) {

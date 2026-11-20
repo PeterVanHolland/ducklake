@@ -1,0 +1,182 @@
+# name: test/sql/metadata/postgres_publication_replica_identity.test
+# description: a Postgres catalog whose metadata schema is in a publication still commits its updates
+# group: [metadata]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require-env DUCKLAKE_CI
+
+require-env DUCKLAKE_CONNECTION
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/pub_identity', METADATA_SCHEMA 'pub_identity', DATA_INLINING_ROW_LIMIT 10)
+
+# Postgres refuses an UPDATE or DELETE on a published table without a replica identity
+statement ok
+CALL postgres_execute('__ducklake_metadata_lake', 'DROP PUBLICATION IF EXISTS ducklake_pub_identity')
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_lake', 'CREATE PUBLICATION ducklake_pub_identity FOR TABLES IN SCHEMA pub_identity')
+
+statement ok
+CREATE TABLE lake.t (i INTEGER)
+
+# an inlined table created under the publication, a stats update, an inlined delete
+statement ok
+INSERT INTO lake.t VALUES (1)
+
+statement ok
+INSERT INTO lake.t VALUES (2)
+
+statement ok
+DELETE FROM lake.t WHERE i = 1
+
+statement ok
+CREATE TABLE lake.p AS SELECT range AS i FROM range(100)
+
+statement ok
+INSERT INTO lake.p SELECT range FROM range(100, 200)
+
+# deleted rows of a data file go to an inlined delete table, which the flush deletes from
+statement ok
+DELETE FROM lake.p WHERE i = 5
+
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+# an overwritten tag and a dropped table end rows
+statement ok
+COMMENT ON TABLE lake.p IS 'a'
+
+statement ok
+COMMENT ON TABLE lake.p IS 'b'
+
+statement ok
+DROP TABLE lake.t
+
+query III
+SELECT count(*), max(i), (SELECT comment FROM duckdb_tables() WHERE database_name = 'lake' AND table_name = 'p') FROM lake.p
+----
+199	199	b
+
+# every metadata table has a replica identity, a primary key or the full row
+query I
+SELECT count(*) FROM postgres_query('__ducklake_metadata_lake', 'SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity'' AND c.relkind = ''r'' AND c.relreplident = ''d'' AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)')
+----
+0
+
+# a catalog written by an older DuckLake has no identities, the next attach that can write sets them
+statement ok
+CALL postgres_execute('__ducklake_metadata_lake', 'DO $$ DECLARE r record; BEGIN FOR r IN SELECT c.oid::regclass AS tbl FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity'' AND c.relkind = ''r'' LOOP EXECUTE format(''ALTER TABLE %s REPLICA IDENTITY DEFAULT'', r.tbl); END LOOP; END $$')
+
+statement ok
+DETACH lake
+
+statement ok
+CALL enable_logging('DuckLakeMetadata')
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/pub_identity', METADATA_SCHEMA 'pub_identity', DATA_INLINING_ROW_LIMIT 10)
+
+query I
+SELECT count(*) FROM postgres_query('__ducklake_metadata_lake', 'SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity'' AND c.relkind = ''r'' AND c.relreplident = ''d'' AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)')
+----
+0
+
+# the attach read the identities, found tables without one and completed them in one statement
+query II
+SELECT count(*) FILTER (WHERE query LIKE '%relreplident%'),
+	count(*) FILTER (WHERE query LIKE '%REPLICA IDENTITY FULL%')
+FROM duckdb_logs_parsed('DuckLakeMetadata')
+----
+2	1
+
+# an attach of a complete catalog reads the identities and alters nothing
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/pub_identity', METADATA_SCHEMA 'pub_identity', DATA_INLINING_ROW_LIMIT 10)
+
+query II
+SELECT count(*) FILTER (WHERE query LIKE '%relreplident%'),
+	count(*) FILTER (WHERE query LIKE '%REPLICA IDENTITY FULL%')
+FROM duckdb_logs_parsed('DuckLakeMetadata')
+----
+1	0
+
+statement ok
+CALL disable_logging()
+
+query I
+SELECT count(*) FROM postgres_query('__ducklake_metadata_lake', 'SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity'' AND c.relkind = ''r'' AND c.relreplident = ''d'' AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)')
+----
+0
+
+statement ok
+INSERT INTO lake.p VALUES (200)
+
+query II
+SELECT count(*), max(i) FROM lake.p
+----
+200	200
+
+# a 1.0 catalog of an older client, without identities, migrates under the publication
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS old (DATA_PATH '{DATA_PATH}/pub_identity_old', METADATA_SCHEMA 'pub_identity_old', DUCKLAKE_VERSION '1.0', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE old.t (i INTEGER, s VARCHAR)
+
+statement ok
+INSERT INTO old.t VALUES (1, 'one')
+
+# DuckLake 0.3 stored the text natively, the migration rewrites such an inlined table
+statement ok
+CALL postgres_execute('__ducklake_metadata_old', 'ALTER TABLE pub_identity_old.ducklake_inlined_data_1_1 ALTER COLUMN s TYPE VARCHAR USING convert_from(s, ''UTF8'')')
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_old', 'ALTER PUBLICATION ducklake_pub_identity ADD TABLES IN SCHEMA pub_identity_old')
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_old', 'DO $$ DECLARE r record; BEGIN FOR r IN SELECT c.oid::regclass AS tbl FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity_old'' AND c.relkind = ''r'' LOOP EXECUTE format(''ALTER TABLE %s REPLICA IDENTITY DEFAULT'', r.tbl); END LOOP; END $$')
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS old (DATA_PATH '{DATA_PATH}/pub_identity_old', METADATA_SCHEMA 'pub_identity_old', AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT i, s FROM old.t
+----
+1	one
+
+query I
+SELECT count(*) FROM postgres_query('__ducklake_metadata_old', 'SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity_old'' AND c.relkind = ''r'' AND c.relreplident = ''d'' AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)')
+----
+0
+
+statement ok
+INSERT INTO old.t VALUES (2, 'two')
+
+# the rewritten inlined table takes the delete
+statement ok
+DELETE FROM old.t WHERE i = 1
+
+query II
+SELECT i, s FROM old.t
+----
+2	two
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_lake', 'DROP PUBLICATION ducklake_pub_identity')

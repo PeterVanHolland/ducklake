@@ -1,0 +1,29 @@
+# name: benchmark/micro/write/delete_whole_files.benchmark
+# description: A DELETE that empties all 4096 files of a table, each of which has a delete file
+# group: [write]
+
+name Delete Whole Files
+group micro
+subgroup write
+
+require ducklake
+
+require parquet
+
+argument work delete_whole_files_work
+
+include benchmark/micro/fixtures/delete_files.benchmark.in
+
+include benchmark/micro/fixtures/restore_cleanup.benchmark.in
+
+run
+DELETE FROM lake.bg;
+
+# A missed restore leaves nothing to delete in the next run
+result_query III
+SELECT Count, (SELECT count(*) FROM lake.bg),
+(SELECT count(*) FROM __ducklake_metadata_lake.ducklake_data_file WHERE end_snapshot IS NULL AND table_id = (
+SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'bg' AND end_snapshot IS NULL))
+FROM __answer
+----
+8384512	0	0

@@ -392,9 +392,9 @@ void DuckLakeTransactionState::CheckTaggedSnapshotsExist(const DuckLakeCommitCon
 	if (new_snapshot_tags.empty()) {
 		return;
 	}
-	auto result = context.conflict_query_executor(
-	    StringUtil::Format("SELECT snapshot_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id IN (%s)",
-	                       TaggedSnapshotIdList(new_snapshot_tags)));
+	auto result = context.conflict_query_executor(StringUtil::Format(
+	    "SELECT snapshot_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id IN (%s)%s",
+	    TaggedSnapshotIdList(new_snapshot_tags), context.branch_keyed_lookups ? " AND branch_id = 0" : ""));
 	set<idx_t> existing;
 	for (auto &row : *result) {
 		existing.insert(row.GetValue<idx_t>(0));
@@ -435,7 +435,7 @@ void AddCreatedChangeInfo(vector<string> &changes_made,
 
 string DuckLakeTransactionState::WriteSnapshotChanges(DuckLakeCommitState &commit_state,
                                                       TransactionChangeInformation &changes,
-                                                      const DuckLakeSnapshotCommit &commit_info) const {
+                                                      const DuckLakeCommitContext &context) const {
 	// re-add all inserted tables - transaction-local table identifiers should have been converted at this stage
 	changes.tables_deleted_from = tables_deleted_from;
 	for (auto &entry : local_changes.Changes()) {
@@ -484,7 +484,8 @@ string DuckLakeTransactionState::WriteSnapshotChanges(DuckLakeCommitState &commi
 	SnapshotChangeInfo change_info;
 	change_info.changes_made = StringUtil::Join(changes_made, ",");
 	commit_state.changes_made = change_info.changes_made;
-	return DuckLakeMetadataManager::WriteSnapshotChangesSql(change_info, commit_info);
+	return DuckLakeMetadataManager::WriteSnapshotChangesSql(change_info, context.commit_info,
+	                                                        context.supports_v2_0_metadata);
 }
 
 //! Replaces a field queued by this transaction, which keeps the children queued for it
@@ -2838,8 +2839,8 @@ WHERE idt.schema_version < (
 	}
 	if (dropped) {
 		// We also need to invalidate the existing schema versions in our catalog
-		string snapshot_versions_sql = "SELECT DISTINCT schema_version FROM {METADATA_CATALOG}.ducklake_snapshot;";
-		auto snapshot_versions = context.query_metadata(snapshot_versions_sql);
+		auto snapshot_versions =
+		    context.query_metadata("SELECT DISTINCT schema_version FROM {METADATA_CATALOG}.ducklake_snapshot;");
 		snapshot_versions->ThrowIfError("Failed to list schema versions for cache invalidation: ");
 		for (auto &row : *snapshot_versions) {
 			context.invalidate_schema_cache(row.GetValue<idx_t>(0));
@@ -2911,8 +2912,8 @@ DuckLakeTransactionState::VerifyCommit(const DuckLakeCommitContext &context, con
 	auto snapshot_id = commit_state.commit_snapshot.snapshot_id;
 	try {
 		auto changes = context.query_metadata(StringUtil::Format(
-		    "SELECT changes_made FROM {METADATA_CATALOG}.ducklake_snapshot_changes WHERE snapshot_id = %llu",
-		    snapshot_id));
+		    "SELECT changes_made FROM {METADATA_CATALOG}.ducklake_snapshot_changes WHERE snapshot_id = %llu%s",
+		    snapshot_id, context.branch_keyed_lookups ? " AND branch_id = 0" : ""));
 		changes->ThrowIfError("Failed to read the snapshot of a commit with an unknown outcome: ");
 		bool snapshot_found = false;
 		for (auto &row : *changes) {
@@ -3040,16 +3041,17 @@ void DuckLakeTransactionState::Commit(DuckLakeSnapshot transaction_snapshot,
 			string batch_queries;
 			if (wrote_snapshot) {
 				// write the new snapshot
-				batch_queries = DuckLakeMetadataManager::InsertSnapshotSql();
+				batch_queries = DuckLakeMetadataManager::InsertSnapshotSql(context.supports_v2_0_metadata);
 				if (!expired_snapshots.empty()) {
-					batch_queries += DuckLakeMetadataManager::DeleteSnapshotsSql(expired_snapshots);
+					batch_queries +=
+					    DuckLakeMetadataManager::DeleteSnapshotsSql(expired_snapshots, context.branch_keyed_lookups);
 				}
 				for (auto &tag : expiry.tags) {
 					batch_queries += DuckLakeMetadataManager::EndSnapshotTagSql(tag);
 				}
 				batch_queries +=
 				    CommitChanges(commit_state, attempt_changes, stats, context, attempt_dropped_file_stats);
-				batch_queries += WriteSnapshotChanges(commit_state, attempt_changes, context.commit_info);
+				batch_queries += WriteSnapshotChanges(commit_state, attempt_changes, context);
 			}
 			auto res = context.execute_commit_batch(commit_snapshot, batch_queries);
 			if (res->HasError()) {

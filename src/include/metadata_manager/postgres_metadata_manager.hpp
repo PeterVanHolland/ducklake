@@ -49,6 +49,7 @@ public:
 	void ExecuteMigration(string migrate_query, bool allow_failures, const string &from_version,
 	                      const string &to_version) override;
 	bool IsRetryableCommitError(const string &message) const override;
+	bool ProbeMetadataColumns() override;
 	string CommitErrorWithoutQuery(const string &message) const override;
 	string ConfigOptionLockSql() const override;
 
@@ -68,8 +69,7 @@ protected:
 		return "clock_timestamp()";
 	}
 	string GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
-	                             const FilterPushdownInfo *filter_info,
-	                             const vector<DuckLakeFileListDynamicFilter> &dynamic_filters,
+	                             const FilterPushdownInfo *filter_info, const vector<DuckLakeFileListOrder> &file_order,
 	                             vector<idx_t> &runtime_filter_stats_columns, FileListType file_list_type,
 	                             const string &metadata_table_prefix) override;
 	bool MaterializeStatsCTEs() const override;

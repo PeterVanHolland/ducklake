@@ -1,0 +1,176 @@
+# name: test/sql/alter/promotion_initial_default_time_zone.test
+# description: promoting an added column to a time zone type reads its initial default in the session time zone
+# group: [alter]
+
+require ducklake
+
+require parquet
+
+require icu
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS l (DATA_PATH '{DATA_PATH}/promotion_initial_default_time_zone', DATA_INLINING_ROW_LIMIT 1000)
+
+statement ok
+CREATE TABLE l.t(id INTEGER)
+
+statement ok
+INSERT INTO l.t VALUES (1)
+
+statement ok
+SET TimeZone = 'America/Los_Angeles'
+
+statement ok
+ALTER TABLE l.t ADD COLUMN d DATE DEFAULT DATE '2024-01-01'
+
+statement ok
+INSERT INTO l.t(id) VALUES (2)
+
+# the row before the ADD COLUMN takes the initial default, the row after it stores the date
+statement ok
+ALTER TABLE l.t ALTER COLUMN d TYPE TIMESTAMPTZ
+
+query II
+SELECT id, d = TIMESTAMPTZ '2024-01-01 08:00:00+00' FROM l.t ORDER BY id
+----
+1	true
+2	true
+
+# the catalog keeps the instant the promotion gave
+statement ok
+DETACH l
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS l (DATA_PATH '{DATA_PATH}/promotion_initial_default_time_zone', DATA_INLINING_ROW_LIMIT 1000)
+
+query II
+SELECT id, d = TIMESTAMPTZ '2024-01-01 08:00:00+00' FROM l.t ORDER BY id
+----
+1	true
+2	true
+
+query I
+SELECT initial_default FROM __ducklake_metadata_l.ducklake_column WHERE column_name = 'd' AND end_snapshot IS NULL
+----
+2024-01-01 08:00:00+00
+
+# a timestamp without time zone is read in the session too
+statement ok
+CREATE TABLE l.u(id INTEGER)
+
+statement ok
+INSERT INTO l.u VALUES (1)
+
+statement ok
+ALTER TABLE l.u ADD COLUMN ts TIMESTAMP DEFAULT TIMESTAMP '2024-01-01 10:00:00'
+
+statement ok
+INSERT INTO l.u(id) VALUES (2)
+
+statement ok
+ALTER TABLE l.u ALTER COLUMN ts TYPE TIMESTAMPTZ
+
+query II
+SELECT id, ts = TIMESTAMPTZ '2024-01-01 18:00:00+00' FROM l.u ORDER BY id
+----
+1	true
+2	true
+
+# a struct field added with a default gets the same reading when its struct is promoted
+statement ok
+CREATE TABLE l.s(id INTEGER, v STRUCT(a INTEGER))
+
+statement ok
+INSERT INTO l.s VALUES (1, {'a': 1})
+
+statement ok
+ALTER TABLE l.s ADD COLUMN v.d DATE DEFAULT DATE '2024-01-01'
+
+statement ok
+INSERT INTO l.s VALUES (2, {'a': 2, 'd': DATE '2024-01-01'})
+
+statement ok
+ALTER TABLE l.s ALTER COLUMN v TYPE STRUCT(a INTEGER, d TIMESTAMPTZ)
+
+query II
+SELECT id, v.d = TIMESTAMPTZ '2024-01-01 08:00:00+00' FROM l.s ORDER BY id
+----
+1	true
+2	true
+
+# the same with the rows in Parquet files, read before the commit as well
+statement ok
+CALL l.set_option('data_inlining_row_limit', 0)
+
+statement ok
+CREATE TABLE l.f(id INTEGER)
+
+statement ok
+INSERT INTO l.f VALUES (1)
+
+statement ok
+ALTER TABLE l.f ADD COLUMN d DATE DEFAULT DATE '2024-01-01'
+
+statement ok
+INSERT INTO l.f(id) VALUES (2)
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE l.f ALTER COLUMN d TYPE TIMESTAMPTZ
+
+query II
+SELECT id, d = TIMESTAMPTZ '2024-01-01 08:00:00+00' FROM l.f ORDER BY id
+----
+1	true
+2	true
+
+statement ok
+COMMIT
+
+query II
+SELECT id, d = TIMESTAMPTZ '2024-01-01 08:00:00+00' FROM l.f ORDER BY id
+----
+1	true
+2	true
+
+# another session keeps the instant of the promotion for the default
+statement ok
+SET TimeZone = 'Asia/Tokyo'
+
+statement ok
+DETACH l
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS l (DATA_PATH '{DATA_PATH}/promotion_initial_default_time_zone', DATA_INLINING_ROW_LIMIT 1000)
+
+query I
+SELECT d = TIMESTAMPTZ '2024-01-01 08:00:00+00' FROM l.f WHERE id = 1
+----
+true
+
+statement ok
+SET TimeZone = 'America/Los_Angeles'
+
+# a type without time zone promotes as before
+statement ok
+CREATE TABLE l.w(id INTEGER)
+
+statement ok
+INSERT INTO l.w VALUES (1)
+
+statement ok
+ALTER TABLE l.w ADD COLUMN i INTEGER DEFAULT 7
+
+statement ok
+ALTER TABLE l.w ALTER COLUMN i TYPE BIGINT
+
+query II
+SELECT id, i FROM l.w
+----
+1	7

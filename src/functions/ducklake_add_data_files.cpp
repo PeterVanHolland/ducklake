@@ -439,6 +439,15 @@ FROM parquet_full_metadata(%s)
 				auto max_is_exact = stats_entry.GetChildValue<9>();
 				stats.max_is_exact = max_is_exact.IsValid() && max_is_exact.GetValue();
 			}
+			if (!check_bounds && column_field.second.id() == LogicalTypeId::BLOB) {
+				// parquet_metadata shows BLOB bounds as display text
+				if (stats.has_min) {
+					stats.min = DuckLakeColumnStats::BoundToString(Value::BLOB(stats.min));
+				}
+				if (stats.has_max) {
+					stats.max = DuckLakeColumnStats::BoundToString(Value::BLOB(stats.max));
+				}
+			}
 			if (check_bounds) {
 				auto dropped_value = stats.CastBoundsFrom(column.bounds_type);
 				if (dropped_value) {

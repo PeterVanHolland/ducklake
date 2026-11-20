@@ -11,6 +11,7 @@
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/vector/map_vector.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/types/variant/parquet_variant_iterator.hpp"
 
 namespace duckdb {
@@ -34,14 +35,85 @@ public:
 	ColumnDataScanState emit_scan;
 };
 
+//! Inlined rows are written into the metadata catalog, so their data is bounded per row of the limit
+static constexpr idx_t MAX_INLINED_BYTES_PER_ROW = 16384;
+
+//! Bytes of the strings and list elements of a vector, sized until they exceed the budget
+static idx_t VariableDataSize(const Vector &vector, bool count_values, idx_t budget) {
+	auto physical_type = vector.GetType().InternalType();
+	idx_t size = count_values ? vector.size() * GetTypeIdSize(physical_type) : 0;
+	switch (physical_type) {
+	case PhysicalType::VARCHAR:
+		for (auto &entry : vector.ValidValues<string_t>()) {
+			size += entry.GetValue().GetSize();
+		}
+		break;
+	case PhysicalType::LIST: {
+		auto &child = ListVector::GetChild(vector);
+		auto child_type = child.GetType().InternalType();
+		if (!child.GetType().IsNested() && child_type != PhysicalType::VARCHAR) {
+			return size + ListVector::GetTotalEntryCount(vector) * GetTypeIdSize(child_type);
+		}
+		// rows can share elements, so the elements of each row are sized in batches
+		SelectionVector sel(STANDARD_VECTOR_SIZE);
+		idx_t sel_count = 0;
+		auto add_elements = [&]() {
+			Vector elements(child, sel, sel_count);
+			size += VariableDataSize(elements, true, budget);
+			sel_count = 0;
+		};
+		for (auto &entry : vector.ValidValues<list_entry_t>()) {
+			auto &list = entry.GetValue();
+			for (idx_t i = 0; i < list.length; i++) {
+				sel.set_index(sel_count++, list.offset + i);
+				if (sel_count == STANDARD_VECTOR_SIZE) {
+					add_elements();
+					if (size > budget) {
+						return size;
+					}
+				}
+			}
+		}
+		if (sel_count > 0) {
+			add_elements();
+		}
+		break;
+	}
+	case PhysicalType::STRUCT:
+		for (auto &child : StructVector::GetEntries(vector)) {
+			size += VariableDataSize(child, count_values, budget);
+			if (size > budget) {
+				return size;
+			}
+		}
+		break;
+	default:
+		break;
+	}
+	return size;
+}
+
 class InlineDataGlobalState : public GlobalOperatorState {
 public:
 	explicit InlineDataGlobalState(const DuckLakeInlineData &op) : op(op), total_inlined_rows(0) {
+		if (!TryMultiplyOperator::Operation(op.inline_row_limit, MAX_INLINED_BYTES_PER_ROW, max_inlined_bytes)) {
+			max_inlined_bytes = NumericLimits<idx_t>::Maximum();
+		}
 	}
 
-	InlinePhase AddRows(InlineDataState &state, idx_t new_rows, bool can_inline) {
+	InlinePhase AddRows(InlineDataState &state, DataChunk &input, DuckLakeMetadataManager &metadata_manager) {
+		idx_t new_bytes = 0;
+		// a chunk with more rows than the limit is not inlined whatever its size
+		for (idx_t c = 0;
+		     c < input.ColumnCount() && input.size() <= op.inline_row_limit && new_bytes <= max_inlined_bytes; c++) {
+			new_bytes += VariableDataSize(input.data[c], false, max_inlined_bytes);
+		}
+		// a chunk over either limit is not inlined, so its values need no check
+		bool can_inline = input.size() > op.inline_row_limit || new_bytes > max_inlined_bytes ||
+		                  metadata_manager.CanInlineValues(input);
 		lock_guard<mutex> guard(lock);
-		total_inlined_rows += new_rows;
+		total_inlined_rows += input.size();
+		total_inlined_bytes += new_bytes;
 		if (!can_inline) {
 			inlining_stopped = true;
 		}
@@ -57,7 +129,7 @@ public:
 	}
 
 	bool InliningStopped() const {
-		return inlining_stopped || total_inlined_rows > op.inline_row_limit;
+		return inlining_stopped || total_inlined_rows > op.inline_row_limit || total_inlined_bytes > max_inlined_bytes;
 	}
 
 	static void AddToCollection(unique_ptr<ColumnDataCollection> source, unique_ptr<ColumnDataCollection> &target) {
@@ -71,6 +143,8 @@ public:
 	const DuckLakeInlineData &op;
 	mutex lock;
 	idx_t total_inlined_rows = 0;
+	idx_t total_inlined_bytes = 0;
+	idx_t max_inlined_bytes;
 	bool inlining_stopped = false;
 	unique_ptr<ColumnDataCollection> global_inlined_data;
 };
@@ -105,9 +179,7 @@ OperatorResultType DuckLakeInlineData::Execute(ExecutionContext &context, DataCh
 	// we have a new batch of rows
 	// add the count to the global count and check if we are still inlining rows
 	auto &metadata_manager = DuckLakeTransaction::Get(context.client, catalog).GetMetadataManager();
-	// a chunk over the limit is not inlined, so its values need no check
-	bool can_inline = input.size() > inline_row_limit || metadata_manager.CanInlineValues(input);
-	auto new_phase = gstate.AddRows(state, input.size(), can_inline);
+	auto new_phase = gstate.AddRows(state, input, metadata_manager);
 	if (new_phase != InlinePhase::INLINING_ROWS) {
 		if (state.inlined_data) {
 			// start a scan

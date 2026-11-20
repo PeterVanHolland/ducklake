@@ -1199,7 +1199,7 @@ void RESTMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tran
 		catalog.SetConfigOption(option);
 	}
 	catalog.SetCommittedSnapshotId(response.snapshot.snapshot_id);
-	flush_transaction.ApplyServerSideCommit(response.snapshot.schema_version, response.snapshot.next_file_id);
+	flush_transaction.ApplyServerSideCommit(response.snapshot.schema_version);
 }
 
 } // namespace duckdb

@@ -29,7 +29,7 @@ CREATE TABLE ducklake.e1 (id INTEGER)
 statement ok
 CREATE TABLE ducklake.e2 (id INTEGER)
 
-# the commit moves next_file_id, which is part of the stats cache key of every table
+# the commit creates a snapshot, whose id is part of the stats cache key of every table
 statement ok
 INSERT INTO ducklake.t1 VALUES (100)
 

@@ -18,7 +18,10 @@ ParquetFileScanner::ParquetFileScanner(ClientContext &context, const DuckLakeFil
 	if (use_file_metadata) {
 		child_list_t<Value> file_entry;
 		file_entry.emplace_back(MultiFileReader::FILE_PATH_FIELD, Value(file.path));
-		file_entry.emplace_back("file_size", Value::UBIGINT(file.file_size_bytes));
+		// remote readers such as Azure trust the size hint, an unknown size is looked up instead
+		if (file.file_size_bytes > 0) {
+			file_entry.emplace_back("file_size", Value::UBIGINT(file.file_size_bytes));
+		}
 		file_entry.emplace_back("etag", Value(""));
 		file_entry.emplace_back("last_modified", Value::TIMESTAMP(timestamp_t(0)));
 		if (!file.encryption_key.empty()) {

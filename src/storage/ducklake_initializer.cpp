@@ -337,7 +337,7 @@ void DuckLakeInitializer::InitializeNewDuckLake(DuckLakeTransaction &transaction
 			    "Attempting to create a new ducklake instance but data_path is not set - set the "
 			    "DATA_PATH parameter to the desired location of the data files");
 		}
-		// for DuckDB instances - use a default data path next to the catalog file
+		// a DuckDB instance uses a default data path next to the catalog file
 		auto path = metadata_catalog.GetAttached().GetStorageManager().GetDBPath();
 		options.data_path = path + ".files";
 		auto directory = CatalogDirectory(transaction);
@@ -408,8 +408,7 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				if (is_rest && options.data_path != metadata_manager.LoadPath(tag.value)) {
 					catalog.GetRESTClient().SetPathMapping(options.data_path, metadata_manager.LoadPath(tag.value));
 				}
-				// verify that they match if override_data_path is not set to true, a stored relative path also by
-				// where it resolves to
+				// without OVERRIDE_DATA_PATH the given path has to name the stored one or the directory it resolves to
 				if (!options.override_data_path && !is_rest) {
 					auto given_path = metadata_manager.StorePath(options.data_path);
 					auto resolved_path = ResolvedDataPath(transaction, metadata_manager.LoadPath(tag.value));

@@ -1,0 +1,290 @@
+# name: test/sql/data_inlining/data_inlining_transaction_local_struct_field_readd.test
+# description: struct fields dropped by a type change in the transaction that inlined the rows are gone from those rows
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/inlining_struct_field_readd', METADATA_CATALOG 'ducklake_meta', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE ducklake.t(k INTEGER, s STRUCT(a INTEGER, b INTEGER))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.t VALUES (1, {'a': 1, 'b': 100})
+
+statement ok
+ALTER TABLE ducklake.t ALTER s TYPE STRUCT(a INTEGER)
+
+query II
+SELECT k, s FROM ducklake.t
+----
+1	{'a': 1}
+
+statement ok
+ALTER TABLE ducklake.t ALTER s TYPE STRUCT(a INTEGER, b INTEGER)
+
+query II
+SELECT k, s FROM ducklake.t
+----
+1	{'a': 1, 'b': NULL}
+
+statement ok
+COMMIT
+
+query II
+SELECT k, s FROM ducklake.t
+----
+1	{'a': 1, 'b': NULL}
+
+query I
+SELECT count(*) FROM ducklake.t WHERE s.b IS NULL
+----
+1
+
+# the field got a new column id
+query III
+SELECT column_name, begin_snapshot, end_snapshot FROM ducklake_meta.ducklake_column
+WHERE column_name = 'b' ORDER BY column_id
+----
+b	1	2
+b	2	NULL
+
+# an insert between the drop and the add
+statement ok
+CREATE TABLE ducklake.between(k INTEGER, s STRUCT(a INTEGER, b INTEGER))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.between VALUES (1, {'a': 1, 'b': 100})
+
+statement ok
+ALTER TABLE ducklake.between ALTER s TYPE STRUCT(a INTEGER)
+
+statement ok
+INSERT INTO ducklake.between VALUES (2, {'a': 2})
+
+statement ok
+ALTER TABLE ducklake.between ALTER s TYPE STRUCT(a INTEGER, b INTEGER)
+
+statement ok
+COMMIT
+
+query II
+SELECT k, s FROM ducklake.between ORDER BY k
+----
+1	{'a': 1, 'b': NULL}
+2	{'a': 2, 'b': NULL}
+
+# a struct inside a list and a struct map value
+statement ok
+CREATE TABLE ducklake.nested(k INTEGER, l STRUCT(a INTEGER, b INTEGER)[], m MAP(VARCHAR, STRUCT(a INTEGER, b INTEGER)))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.nested VALUES (1, [{'a': 1, 'b': 100}, {'a': 2, 'b': 200}], MAP {'x': {'a': 3, 'b': 300}})
+
+statement ok
+ALTER TABLE ducklake.nested ALTER l TYPE STRUCT(a INTEGER)[]
+
+statement ok
+ALTER TABLE ducklake.nested ALTER m TYPE MAP(VARCHAR, STRUCT(a INTEGER))
+
+statement ok
+ALTER TABLE ducklake.nested ALTER l TYPE STRUCT(a INTEGER, b INTEGER)[]
+
+statement ok
+ALTER TABLE ducklake.nested ALTER m TYPE MAP(VARCHAR, STRUCT(a INTEGER, b INTEGER))
+
+statement ok
+COMMIT
+
+query III
+SELECT k, l, m FROM ducklake.nested
+----
+1	[{'a': 1, 'b': NULL}, {'a': 2, 'b': NULL}]	{x={'a': 3, 'b': NULL}}
+
+# a dropped struct field hides its children too
+statement ok
+CREATE TABLE ducklake.deep(k INTEGER, s STRUCT(a INTEGER, b STRUCT(c INTEGER)))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.deep VALUES (1, {'a': 1, 'b': {'c': 7}})
+
+statement ok
+ALTER TABLE ducklake.deep ALTER s TYPE STRUCT(a INTEGER)
+
+statement ok
+ALTER TABLE ducklake.deep ALTER s TYPE STRUCT(a INTEGER, b STRUCT(c INTEGER))
+
+query III
+SELECT s, s.b, s.b.c FROM ducklake.deep
+----
+{'a': 1, 'b': NULL}	NULL	NULL
+
+statement ok
+COMMIT
+
+query III
+SELECT s, s.b, s.b.c FROM ducklake.deep
+----
+{'a': 1, 'b': NULL}	NULL	NULL
+
+# a field added again with another type, then another drop
+statement ok
+CREATE TABLE ducklake.retyped(k INTEGER, s STRUCT(a INTEGER, b INTEGER[], d INTEGER))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.retyped VALUES (1, {'a': 1, 'b': [1, 2], 'd': 4})
+
+statement ok
+ALTER TABLE ducklake.retyped ALTER s TYPE STRUCT(a INTEGER, d INTEGER)
+
+statement ok
+ALTER TABLE ducklake.retyped ALTER s TYPE STRUCT(a INTEGER, d INTEGER, b INTEGER)
+
+statement ok
+ALTER TABLE ducklake.retyped ALTER s TYPE STRUCT(a INTEGER, b INTEGER)
+
+query II
+SELECT k, s FROM ducklake.retyped
+----
+1	{'a': 1, 'b': NULL}
+
+statement ok
+COMMIT
+
+query II
+SELECT k, s FROM ducklake.retyped
+----
+1	{'a': 1, 'b': NULL}
+
+# a struct replaced by one with no common member, whole, nested, in a list and as a map value, in one or two steps
+statement ok
+CREATE TABLE ducklake.replaced(k INTEGER, s STRUCT(a INTEGER), n STRUCT(a INTEGER, b STRUCT(c INTEGER)),
+	m STRUCT(a INTEGER, b STRUCT(c INTEGER)), l STRUCT(a INTEGER)[], mp MAP(VARCHAR, STRUCT(a INTEGER)))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.replaced VALUES
+	(1, {'a': 1}, {'a': 2, 'b': {'c': 7}}, {'a': 3, 'b': {'c': 8}}, [{'a': 4}, {'a': 5}], MAP {'x': {'a': 6}}),
+	(2, NULL, NULL, NULL, [], MAP {})
+
+statement ok
+ALTER TABLE ducklake.replaced ALTER s TYPE STRUCT(b INTEGER)
+
+statement ok
+ALTER TABLE ducklake.replaced ALTER n TYPE STRUCT(a INTEGER, b STRUCT(d INTEGER))
+
+statement ok
+ALTER TABLE ducklake.replaced ALTER m TYPE STRUCT(a INTEGER)
+
+statement ok
+ALTER TABLE ducklake.replaced ALTER m TYPE STRUCT(a INTEGER, b STRUCT(d INTEGER))
+
+statement ok
+ALTER TABLE ducklake.replaced ALTER l TYPE STRUCT(b INTEGER)[]
+
+statement ok
+ALTER TABLE ducklake.replaced ALTER mp TYPE MAP(VARCHAR, STRUCT(b INTEGER))
+
+query IIIIII
+SELECT k, s, n, m, l, mp FROM ducklake.replaced ORDER BY k
+----
+1	{'b': NULL}	{'a': 2, 'b': {'d': NULL}}	{'a': 3, 'b': NULL}	[{'b': NULL}, {'b': NULL}]	{x={'b': NULL}}
+2	NULL	NULL	NULL	[]	{}
+
+statement ok
+COMMIT
+
+query IIIIII
+SELECT k, s, n, m, l, mp FROM ducklake.replaced ORDER BY k
+----
+1	{'b': NULL}	{'a': 2, 'b': {'d': NULL}}	{'a': 3, 'b': NULL}	[{'b': NULL}, {'b': NULL}]	{x={'b': NULL}}
+2	NULL	NULL	NULL	[]	{}
+
+# a type change that keeps the field keeps its values
+statement ok
+CREATE TABLE ducklake.widen(k INTEGER, s STRUCT(a INTEGER, b INTEGER))
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.widen VALUES (1, {'a': 1, 'b': 100})
+
+statement ok
+ALTER TABLE ducklake.widen ALTER s TYPE STRUCT(a BIGINT, b INTEGER)
+
+statement ok
+ALTER TABLE ducklake.widen ALTER s TYPE STRUCT(a BIGINT, b BIGINT, c INTEGER)
+
+statement ok
+COMMIT
+
+query II
+SELECT k, s FROM ducklake.widen
+----
+1	{'a': 1, 'b': 100, 'c': NULL}
+
+# the rows read the same once flushed to a data file
+statement ok
+CALL ducklake_flush_inlined_data('ducklake')
+
+query II
+SELECT k, s FROM ducklake.t
+----
+1	{'a': 1, 'b': NULL}
+
+query II
+SELECT k, s FROM ducklake.between ORDER BY k
+----
+1	{'a': 1, 'b': NULL}
+2	{'a': 2, 'b': NULL}
+
+query III
+SELECT k, l, m FROM ducklake.nested
+----
+1	[{'a': 1, 'b': NULL}, {'a': 2, 'b': NULL}]	{x={'a': 3, 'b': NULL}}
+
+query III
+SELECT s, s.b, s.b.c FROM ducklake.deep
+----
+{'a': 1, 'b': NULL}	NULL	NULL
+
+query II
+SELECT k, s FROM ducklake.retyped
+----
+1	{'a': 1, 'b': NULL}
+
+query IIIIII
+SELECT k, s, n, m, l, mp FROM ducklake.replaced ORDER BY k
+----
+1	{'b': NULL}	{'a': 2, 'b': {'d': NULL}}	{'a': 3, 'b': NULL}	[{'b': NULL}, {'b': NULL}]	{x={'b': NULL}}
+2	NULL	NULL	NULL	[]	{}
+
+query II
+SELECT k, s FROM ducklake.widen
+----
+1	{'a': 1, 'b': 100, 'c': NULL}

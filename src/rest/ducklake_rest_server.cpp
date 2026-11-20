@@ -191,6 +191,38 @@ static string ErrorBody(ExceptionType type, const string &message, int32_t statu
 	return DuckLakeRESTSerializer::ToJSON(response);
 }
 
+//! Whether a multipart media range of the Accept header has the parameter that asks for variant bytes
+static bool AcceptsVariantBytes(const string &accept) {
+	for (auto &range : StringUtil::Split(accept, ',')) {
+		auto parts = StringUtil::Split(range, ';');
+		if (parts.empty()) {
+			continue;
+		}
+		auto type = StringUtil::Lower(parts[0]);
+		StringUtil::Trim(type);
+		if (type != "multipart/mixed" && type != "*/*") {
+			continue;
+		}
+		bool variant_bytes = false;
+		bool excluded = false;
+		for (idx_t i = 1; i < parts.size(); i++) {
+			auto parameter = StringUtil::Replace(StringUtil::Lower(parts[i]), "\"", "");
+			StringUtil::Trim(parameter);
+			if (parameter == REST_ACCEPT_VARIANT_BYTES) {
+				variant_bytes = true;
+			} else if (StringUtil::StartsWith(parameter, "q=") &&
+			           parameter.find_first_not_of("0.", 2) == string::npos) {
+				// a quality of zero excludes the range
+				excluded = true;
+			}
+		}
+		if (variant_bytes && !excluded) {
+			return true;
+		}
+	}
+	return false;
+}
+
 int32_t DuckLakeRESTServer::HandleRequest(const RESTRoute &route, optional_ptr<const string> prefix,
                                           const vector<string> &path_values, const vector<pair<string, string>> &query,
                                           const string &body, const string &request_content_type, const string &accept,
@@ -228,7 +260,7 @@ int32_t DuckLakeRESTServer::HandleRequest(const RESTRoute &route, optional_ptr<c
 		// lists are Arrow, unless the request asks for JSON only
 		request.accepts_arrow =
 		    accept.empty() || accept.find("multipart/mixed") != string::npos || accept.find("*/*") != string::npos;
-		request.accepts_variant_bytes = accept.find(REST_ACCEPT_VARIANT_BYTES) != string::npos;
+		request.accepts_variant_bytes = AcceptsVariantBytes(accept);
 		try {
 			response = entry->second(request, request_json);
 			content_type = request.content_type;

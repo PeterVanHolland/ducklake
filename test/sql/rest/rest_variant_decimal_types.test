@@ -13,17 +13,17 @@ SELECT response->>'$.features[0]' FROM ducklake_rest_request('{rest_server}', 'G
 variant_bytes
 
 statement ok
-ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 100)
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 10000)
 
 statement ok
-CREATE TABLE dl.t (id INTEGER, v VARIANT, st STRUCT(a VARIANT), l VARIANT[], m MAP(VARCHAR, VARIANT))
+CREATE TABLE dl.t (id INTEGER, v VARIANT, st STRUCT(a VARIANT), l VARIANT[], m MAP(VARCHAR, VARIANT), b BLOB)
 
 statement ok
 INSERT INTO dl.t VALUES
-	(1, 0::DECIMAL(18,9)::VARIANT, {'a': 1.5::DECIMAL(18,9)::VARIANT}, [0.25::DECIMAL(7,2)::VARIANT], MAP {'k': 2::DECIMAL(3,1)::VARIANT}),
-	(2, 12345.25::DECIMAL(12,2)::VARIANT, {'a': NULL}, [], MAP {}),
-	(3, NULL, NULL, NULL, NULL),
-	(4, {'d': 1.5::DECIMAL(38,10), 'n': [1::DECIMAL(2,0)]}::VARIANT, {'a': 'x'::VARIANT}, [NULL, 7::DECIMAL(9,0)::VARIANT], MAP {'a': 'b'::VARIANT, 'c': 0.5::DECIMAL(25,5)::VARIANT})
+	(1, 0::DECIMAL(18,9)::VARIANT, {'a': 1.5::DECIMAL(18,9)::VARIANT}, [0.25::DECIMAL(7,2)::VARIANT], MAP {'k': 2::DECIMAL(3,1)::VARIANT}, '\x00\x01'::BLOB),
+	(2, 12345.25::DECIMAL(12,2)::VARIANT, {'a': NULL}, [], MAP {}, ''::BLOB),
+	(3, NULL, NULL, NULL, NULL, NULL),
+	(4, {'d': 1.5::DECIMAL(38,10), 'n': [1::DECIMAL(2,0)]}::VARIANT, {'a': 'x'::VARIANT}, [NULL, 7::DECIMAL(9,0)::VARIANT], MAP {'a': 'b'::VARIANT, 'c': 0.5::DECIMAL(25,5)::VARIANT}, 'bytes'::BLOB)
 
 query I
 SELECT count(*) FROM ducklake_list_files('dl', 't')
@@ -47,6 +47,15 @@ query IIII
 SELECT variant_typeof(v.d), variant_typeof(v.n[1]), variant_typeof(l[2]), variant_typeof(m['c']) FROM dl.t WHERE id = 4
 ----
 DECIMAL(38, 10)	DECIMAL(2, 0)	DECIMAL(9, 0)	DECIMAL(25, 5)
+
+# NULL containers, empty containers and containers that hold a NULL, next to a BLOB column that is not a VARIANT
+query IIIIII
+SELECT id, st IS NULL, st, l, m, b FROM dl.t ORDER BY id
+----
+1	false	{'a': 1.500000000}	[0.25]	{k=2.0}	\x00\x01
+2	false	{'a': NULL}	[]	{}	(empty)
+3	true	NULL	NULL	NULL	NULL
+4	false	{'a': x}	[NULL, 7]	{a=b, c=0.50000}	bytes
 
 # the change feed reads the same rows
 statement ok
@@ -78,6 +87,28 @@ SELECT change_type, v, variant_typeof(v) FROM dl.table_changes('t', getvariable(
 update_postimage	2.5000	DECIMAL(10, 4)
 update_preimage	12345.25	DECIMAL(12, 2)
 
+# rows of several vectors, with lists whose children exceed a vector
+statement ok
+CREATE TABLE dl.many (id INTEGER, l VARIANT[])
+
+statement ok
+INSERT INTO dl.many SELECT i, [i::DECIMAL(18,9)::VARIANT, NULL, (2 * i)::DECIMAL(12,3)::VARIANT] FROM range(2500) t(i)
+
+query I
+SELECT count(*) FROM ducklake_list_files('dl', 'many')
+----
+0
+
+query IIII
+SELECT variant_typeof(l[1]), variant_typeof(l[2]), variant_typeof(l[3]), count(*) FROM dl.many GROUP BY ALL
+----
+DECIMAL(18, 9)	VARIANT_NULL	DECIMAL(12, 3)	2500
+
+query III
+SELECT sum(l[1]::DECIMAL(18,9)), sum(l[3]::DECIMAL(12,3)), count(*) FROM dl.many
+----
+3123750.000000000	6247500.000	2500
+
 # a client that does not ask for variant bytes gets the Parquet Variant extension type, whose decimals have the width
 # of their digits
 query III
@@ -85,5 +116,23 @@ SELECT variant_typeof(v), variant_typeof(st.a), variant_typeof(l[1]) FROM duckla
 ----
 DECIMAL(9, 9)	DECIMAL(10, 9)	DECIMAL(2, 2)
 
+# the parameter is read from the media ranges of the Accept header, quoted or not, and not from an excluded range
+query II
+SELECT contains(response::VARCHAR, 'ducklake.variant'), contains(response::VARCHAR, 'arrow.parquet.variant') FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/tables/1/scan', '{}', accept := 'multipart/mixed;variant="ducklake"')
+----
+true	false
+
+query II
+SELECT contains(response::VARCHAR, 'ducklake.variant'), contains(response::VARCHAR, 'arrow.parquet.variant') FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/tables/1/scan', '{}', accept := 'multipart/mixed;variant=ducklake2, application/json;q=0.9')
+----
+false	true
+
+query II
+SELECT contains(response::VARCHAR, 'ducklake.variant'), contains(response::VARCHAR, 'arrow.parquet.variant') FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/tables/1/scan', '{}', accept := 'multipart/mixed;variant=ducklake;q=0, multipart/mixed')
+----
+false	true
+
 statement ok
 DETACH dl
+
+include test/template/rest_teardown.test_template

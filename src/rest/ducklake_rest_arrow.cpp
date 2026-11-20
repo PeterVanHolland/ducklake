@@ -137,7 +137,12 @@ void ConvertVariantLeaves(Vector &source, Vector &target, idx_t count, const Log
 		return;
 	}
 	if (variant_type.id() == LogicalTypeId::VARIANT) {
-		leaf(source, target, count);
+		if (source.GetType() == target.GetType()) {
+			// a VARIANT field that is not variant bytes, which a stream of another writer can hold next to them
+			target.Reference(source);
+		} else {
+			leaf(source, target, count);
+		}
 		return;
 	}
 	source.Flatten(count);

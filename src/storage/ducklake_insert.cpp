@@ -676,20 +676,11 @@ PhysicalOperator &DuckLakeInsert::PlanCopyForInsert(ClientContext &context, Phys
 
 	copy.SetEstimatedCardinality(1);
 	copy.ResolveOperatorTypes();
-	auto &physical_copy = planner.CreatePlan(copy, *plan).Cast<PhysicalCopyToFile>();
-	if (copy_input.ordered_input) {
-		PreserveSortedOrder(physical_copy);
+	if (copy_input.ordered_input && !copy.partition_output && !copy.per_thread_output) {
+		// a sorted copy keeps its order across the files it rotates
+		copy.preserve_order = PreserveOrderType::PRESERVE_ORDER;
 	}
-	return physical_copy;
-}
-
-void DuckLakeInsert::PreserveSortedOrder(PhysicalCopyToFile &physical_copy) {
-	if (!physical_copy.function.execution_mode) {
-		return;
-	}
-	// the rows are sorted and the batch copy operator does not rotate files by size
-	auto execution_mode = physical_copy.function.execution_mode(true, false);
-	physical_copy.parallel = execution_mode == CopyFunctionExecutionMode::PARALLEL_COPY_TO_FILE;
+	return planner.CreatePlan(copy, *plan);
 }
 
 PhysicalOperator &DuckLakeInsert::PlanInsert(ClientContext &context, PhysicalPlanGenerator &planner,
@@ -809,6 +800,7 @@ DuckLakeInsertPipeline DuckLakeInsert::PlanInsertPipeline(ClientContext &context
 		auto &inline_data =
 		    planner.Make<DuckLakeInlineData>(result.root.get(), schema.ParentCatalog(), data_inlining_row_limit);
 		result.inline_data = inline_data.Cast<DuckLakeInlineData>();
+		result.inline_data->preserve_order = result.sorted;
 		result.root = inline_data;
 		// with sort_on_insert off only the Parquet bound overflow rows are sorted, after inlining
 		if (sort_data && !sort_on_insert) {

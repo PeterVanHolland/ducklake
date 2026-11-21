@@ -28,6 +28,8 @@ public:
 	Catalog &catalog;
 	idx_t inline_row_limit;
 	optional_ptr<DuckLakeInsert> insert;
+	//! Whether the sorted input must leave this operator in order
+	bool preserve_order = false;
 
 public:
 	unique_ptr<OperatorState> GetOperatorState(ExecutionContext &context) const override;
@@ -46,7 +48,8 @@ public:
 		return true;
 	}
 	bool ParallelOperator() const override {
-		return true;
+		// rows held back for inlining keep their order only when one thread runs the operator
+		return !preserve_order;
 	}
 	string GetName() const override;
 

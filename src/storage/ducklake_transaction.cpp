@@ -2399,7 +2399,8 @@ unique_ptr<QueryResult> DuckLakeTransaction::ExecuteStatement(unique_ptr<SQLStat
 	auto &connection = GetConnection();
 	auto query = statement->query;
 	auto start = std::chrono::steady_clock::now();
-	auto result = connection.Query(std::move(statement));
+	// the rows of the statement come from memory and have no SQL text, so the statement verifier cannot reparse it
+	auto result = connection.context->RunInternalStatement(std::move(statement), QueryParameters());
 	ReportMetadataQuery(query, std::chrono::steady_clock::now() - start);
 	return std::move(result);
 }

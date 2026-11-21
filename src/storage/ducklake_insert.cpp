@@ -677,7 +677,7 @@ PhysicalOperator &DuckLakeInsert::PlanCopyForInsert(ClientContext &context, Phys
 	copy.SetEstimatedCardinality(1);
 	copy.ResolveOperatorTypes();
 	if (copy_input.ordered_input && !copy.partition_output && !copy.per_thread_output) {
-		// the rows are sorted: the copy keeps their order across the files it rotates
+		// a sorted copy keeps its order across the files it rotates
 		copy.preserve_order = PreserveOrderType::PRESERVE_ORDER;
 	}
 	return planner.CreatePlan(copy, *plan);
@@ -800,6 +800,7 @@ DuckLakeInsertPipeline DuckLakeInsert::PlanInsertPipeline(ClientContext &context
 		auto &inline_data =
 		    planner.Make<DuckLakeInlineData>(result.root.get(), schema.ParentCatalog(), data_inlining_row_limit);
 		result.inline_data = inline_data.Cast<DuckLakeInlineData>();
+		result.inline_data->preserve_order = result.sorted;
 		result.root = inline_data;
 		// with sort_on_insert off only the Parquet bound overflow rows are sorted, after inlining
 		if (sort_data && !sort_on_insert) {

@@ -1,0 +1,47 @@
+# name: test/sql/rest/rest_compaction_data_path.test
+# description: The REST server names its data path when it cannot read the files a client wrote to another data path
+# group: [rest]
+
+include test/template/rest_setup.test_template
+
+# the client writes its files into a data path of its own, which the server does not see
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_client', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t(i INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1), (2), (3)
+
+statement ok
+INSERT INTO dl.t VALUES (4)
+
+query I
+SELECT count(*) FROM ducklake_list_files('dl', 't')
+----
+2
+
+statement error
+CALL ducklake_merge_adjacent_files('dl')
+----
+<REGEX>:.*_rest_files[/\\]", a client with another DATA_PATH has to write its files.*
+
+statement ok
+DELETE FROM dl.t WHERE i < 3
+
+statement error
+CALL ducklake_rewrite_data_files('dl', delete_threshold := 0.5)
+----
+<REGEX>:.*_rest_files[/\\]", a client with another DATA_PATH has to write its files.*
+
+# the client still reads its own files
+query I
+SELECT sum(i) FROM dl.t
+----
+7
+
+statement ok
+DETACH dl
+
+include test/template/rest_teardown.test_template

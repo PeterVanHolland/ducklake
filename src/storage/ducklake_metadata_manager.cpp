@@ -784,7 +784,6 @@ static string StaleBoundColumnSql(const string &alias) {
 	                          alias, alias, HadNonDoubleTypeSql("col"));
 }
 
-//! The data files with their ranges, which a migration to 2.0 can hold in the renamed table or as events
 static string RangedDataFileSource(const string &data_file_table, bool file_events) {
 	if (!file_events) {
 		return "{METADATA_CATALOG}." + data_file_table;

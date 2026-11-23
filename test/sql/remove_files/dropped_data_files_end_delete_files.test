@@ -40,12 +40,12 @@ statement ok
 CALL ducklake_remove_data_files('ducklake', 't', getvariable('t_file'))
 
 query II
-SELECT begin_snapshot, end_snapshot FROM __ducklake_metadata_ducklake.ducklake_data_file WHERE table_id = getvariable('t_id')
+SELECT begin_snapshot, end_snapshot FROM (SELECT f.*, v.begin_snapshot, v.end_snapshot FROM __ducklake_metadata_ducklake.ducklake_data_file f JOIN (SELECT data_file_id, MAX(CASE WHEN is_delete = FALSE THEN snapshot_id END) begin_snapshot, MAX(CASE WHEN is_delete = TRUE THEN snapshot_id END) end_snapshot FROM __ducklake_metadata_ducklake.ducklake_file_visibility WHERE branch_id = 0 GROUP BY data_file_id) v ON v.data_file_id = f.data_file_id) WHERE table_id = getvariable('t_id')
 ----
 2	4
 
 query II
-SELECT begin_snapshot, end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file WHERE table_id = getvariable('t_id')
+SELECT begin_snapshot, end_snapshot FROM (SELECT f.*, v.begin_snapshot, v.end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file f JOIN (SELECT delete_file_id, MAX(CASE WHEN is_delete = FALSE THEN snapshot_id END) begin_snapshot, MAX(CASE WHEN is_delete = TRUE THEN snapshot_id END) end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file_visibility WHERE branch_id = 0 GROUP BY delete_file_id) v ON v.delete_file_id = f.delete_file_id) WHERE table_id = getvariable('t_id')
 ----
 3	4
 
@@ -86,12 +86,12 @@ statement ok
 SET VARIABLE u_id = (SELECT table_id FROM __ducklake_metadata_ducklake.ducklake_table WHERE table_name = 'u')
 
 query II
-SELECT begin_snapshot, end_snapshot FROM __ducklake_metadata_ducklake.ducklake_data_file WHERE table_id = getvariable('u_id')
+SELECT begin_snapshot, end_snapshot FROM (SELECT f.*, v.begin_snapshot, v.end_snapshot FROM __ducklake_metadata_ducklake.ducklake_data_file f JOIN (SELECT data_file_id, MAX(CASE WHEN is_delete = FALSE THEN snapshot_id END) begin_snapshot, MAX(CASE WHEN is_delete = TRUE THEN snapshot_id END) end_snapshot FROM __ducklake_metadata_ducklake.ducklake_file_visibility WHERE branch_id = 0 GROUP BY data_file_id) v ON v.data_file_id = f.data_file_id) WHERE table_id = getvariable('u_id')
 ----
 6	8
 
 query II
-SELECT begin_snapshot, end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file WHERE table_id = getvariable('u_id')
+SELECT begin_snapshot, end_snapshot FROM (SELECT f.*, v.begin_snapshot, v.end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file f JOIN (SELECT delete_file_id, MAX(CASE WHEN is_delete = FALSE THEN snapshot_id END) begin_snapshot, MAX(CASE WHEN is_delete = TRUE THEN snapshot_id END) end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file_visibility WHERE branch_id = 0 GROUP BY delete_file_id) v ON v.delete_file_id = f.delete_file_id) WHERE table_id = getvariable('u_id')
 ----
 7	8
 
@@ -129,13 +129,13 @@ statement ok
 SET VARIABLE v_id = (SELECT table_id FROM __ducklake_metadata_ducklake.ducklake_table WHERE table_name = 'v')
 
 query II
-SELECT begin_snapshot, end_snapshot FROM __ducklake_metadata_ducklake.ducklake_data_file WHERE table_id = getvariable('v_id') ORDER BY begin_snapshot
+SELECT begin_snapshot, end_snapshot FROM (SELECT f.*, v.begin_snapshot, v.end_snapshot FROM __ducklake_metadata_ducklake.ducklake_data_file f JOIN (SELECT data_file_id, MAX(CASE WHEN is_delete = FALSE THEN snapshot_id END) begin_snapshot, MAX(CASE WHEN is_delete = TRUE THEN snapshot_id END) end_snapshot FROM __ducklake_metadata_ducklake.ducklake_file_visibility WHERE branch_id = 0 GROUP BY data_file_id) v ON v.data_file_id = f.data_file_id) WHERE table_id = getvariable('v_id') ORDER BY begin_snapshot
 ----
 10	13
 11	NULL
 
 query II
-SELECT begin_snapshot, end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file WHERE table_id = getvariable('v_id') ORDER BY end_snapshot NULLS LAST
+SELECT begin_snapshot, end_snapshot FROM (SELECT f.*, v.begin_snapshot, v.end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file f JOIN (SELECT delete_file_id, MAX(CASE WHEN is_delete = FALSE THEN snapshot_id END) begin_snapshot, MAX(CASE WHEN is_delete = TRUE THEN snapshot_id END) end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file_visibility WHERE branch_id = 0 GROUP BY delete_file_id) v ON v.delete_file_id = f.delete_file_id) WHERE table_id = getvariable('v_id') ORDER BY end_snapshot NULLS LAST
 ----
 12	13
 12	NULL
@@ -313,7 +313,7 @@ statement ok
 SET VARIABLE y_s = (SELECT max(snapshot_id) FROM ducklake.snapshots())
 
 query II
-SELECT begin_snapshot = getvariable('y_d'), end_snapshot = getvariable('y_s') FROM __ducklake_metadata_ducklake.ducklake_delete_file WHERE table_id = getvariable('y_id')
+SELECT begin_snapshot = getvariable('y_d'), end_snapshot = getvariable('y_s') FROM (SELECT f.*, v.begin_snapshot, v.end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file f JOIN (SELECT delete_file_id, MAX(CASE WHEN is_delete = FALSE THEN snapshot_id END) begin_snapshot, MAX(CASE WHEN is_delete = TRUE THEN snapshot_id END) end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file_visibility WHERE branch_id = 0 GROUP BY delete_file_id) v ON v.delete_file_id = f.delete_file_id) WHERE table_id = getvariable('y_id')
 ----
 true	true
 
@@ -376,7 +376,7 @@ statement ok
 SET VARIABLE z_s = (SELECT max(snapshot_id) FROM ducklake.snapshots())
 
 query II
-SELECT COUNT(*), COUNT(end_snapshot) FROM __ducklake_metadata_ducklake.ducklake_delete_file WHERE table_id = getvariable('z_id')
+SELECT COUNT(*), COUNT(end_snapshot) FROM (SELECT f.*, v.begin_snapshot, v.end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file f JOIN (SELECT delete_file_id, MAX(CASE WHEN is_delete = FALSE THEN snapshot_id END) begin_snapshot, MAX(CASE WHEN is_delete = TRUE THEN snapshot_id END) end_snapshot FROM __ducklake_metadata_ducklake.ducklake_delete_file_visibility WHERE branch_id = 0 GROUP BY delete_file_id) v ON v.delete_file_id = f.delete_file_id) WHERE table_id = getvariable('z_id')
 ----
 1	1
 

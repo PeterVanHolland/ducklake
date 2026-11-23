@@ -22,8 +22,7 @@ DELETE FROM lake.bg;
 # A missed restore leaves nothing to delete in the next run
 result_query III
 SELECT Count, (SELECT count(*) FROM lake.bg),
-(SELECT count(*) FROM __ducklake_metadata_lake.ducklake_data_file WHERE end_snapshot IS NULL AND table_id = (
-SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'bg' AND end_snapshot IS NULL))
+(SELECT file_count FROM ducklake_table_info('lake') WHERE table_name = 'bg')
 FROM __answer
 ----
 8384512	0	0

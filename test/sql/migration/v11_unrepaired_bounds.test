@@ -103,7 +103,7 @@ r	false
 i2f	false
 dc	NULL
 
-# a copy of the catalog that the attach migrates to 2.0-dev1 is repaired before the migration
+# a copy of the catalog that the attach migrates to 2.0-dev1 is repaired after the migration
 unzip data/old_ducklake/migrate_bounds_v200.db.gz {TEST_DIR}/v11_unrepaired_bounds_migrated.db
 
 statement ok

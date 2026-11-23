@@ -15,6 +15,7 @@
 #include "storage/ducklake_initializer.hpp"
 #include "storage/ducklake_metadata_profile.hpp"
 #include "storage/ducklake_catalog.hpp"
+#include "rest/ducklake_rest_client.hpp"
 #include "storage/ducklake_transaction.hpp"
 #include "storage/ducklake_schema_entry.hpp"
 #include "common/ducklake_version.hpp"
@@ -71,6 +72,15 @@ string DuckLakeInitializer::GetAttachOptions() {
 
 void DuckLakeInitializer::Initialize() {
 	auto &transaction = DuckLakeTransaction::Get(context, catalog);
+	if (transaction.GetMetadataManager().IsRemote()) {
+		catalog.ConnectREST();
+		// a remote metadata server has no metadata database to attach or migrate
+		LoadExistingDuckLake(transaction);
+		if (options.at_clause) {
+			transaction.GetSnapshot();
+		}
+		return;
+	}
 	// attach the metadata database
 	AttachMetadata(transaction);
 
@@ -262,11 +272,18 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 	// load the data path from the existing duck lake
 	auto &metadata_manager = transaction.GetMetadataManager();
 	auto metadata = metadata_manager.LoadDuckLake();
+	// check the attach options against the stored tags before a migration commits anything
 	DuckLakeVersion resolved_version = DuckLakeVersion::UNSET;
+	DuckLakeVersion catalog_version = DuckLakeVersion::UNSET;
+	DuckLakeVersion target_version = DuckLakeVersion::UNSET;
+	string missing_step;
 	for (auto &tag : metadata.tags) {
-		if (tag.key == "version") {
-			auto catalog_version = DuckLakeVersionFromString(tag.value);
-			auto target_version = ResolveTargetVersion(catalog_version, tag.value);
+		if (tag.key == "version" && metadata_manager.IsRemote()) {
+			// the server takes care of migrating the metadata
+			resolved_version = DuckLakeVersionFromString(tag.value);
+		} else if (tag.key == "version") {
+			catalog_version = DuckLakeVersionFromString(tag.value);
+			target_version = ResolveTargetVersion(catalog_version, tag.value);
 			if (catalog_version > target_version) {
 				// catalog is newer than the requested version, no FWC
 				throw InvalidInputException(
@@ -284,7 +301,64 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				catalog.VerifyWritable();
 				metadata_cache_stale = true;
 			}
-			migrating = catalog_version < target_version;
+			if (catalog_version == DuckLakeVersion::V2_0_DEV1 && target_version == DuckLakeVersion::V2_0_DEV1) {
+				// one dev version, so the shape of the catalog tells which of its steps are missing
+				missing_step = metadata_manager.MissingV2_0Step();
+				if (!missing_step.empty() && !options.automatic_migration) {
+					throw InvalidInputException(
+					    "DuckLake catalog version is %s, but the catalog lacks %s. To "
+					    "automatically migrate, set AUTOMATIC_MIGRATION to TRUE when attaching.",
+					    tag.value, missing_step);
+				}
+				if (!missing_step.empty()) {
+					catalog.VerifyWritable();
+					metadata_cache_stale = true;
+				}
+			}
+			if (catalog_version == DuckLakeVersion::V1_1 && target_version == DuckLakeVersion::V1_1 &&
+			    !metadata_manager.HasV1_1Layout()) {
+				// the first batch of the migration to 2.0 commits with the version still 1.1
+				throw InvalidInputException(
+				    "DuckLake catalog version is %s, but a migration to 2.0-dev1 moved its tables "
+				    "aside. To automatically migrate, set AUTOMATIC_MIGRATION to TRUE when "
+				    "attaching.",
+				    tag.value);
+			}
+		}
+		if (tag.key == "data_path") {
+			if (options.data_path.empty()) {
+				options.data_path = metadata_manager.LoadPath(tag.value);
+				InitializeDataPath();
+			} else {
+				// the client of a REST catalog can have another view of the data path than the server
+				bool is_rest = catalog.MetadataType() == "rest";
+				if (is_rest && options.data_path != metadata_manager.LoadPath(tag.value)) {
+					catalog.GetRESTClient().SetPathMapping(options.data_path, metadata_manager.LoadPath(tag.value));
+				}
+				// verify that they match if override_data_path is not set to true
+				if (metadata_manager.StorePath(options.data_path) != tag.value && !options.override_data_path &&
+				    !is_rest) {
+					throw InvalidConfigurationException(
+					    "DATA_PATH parameter \"%s\" does not match existing data path in the catalog \"%s\".\nYou can "
+					    "override the DATA_PATH by setting OVERRIDE_DATA_PATH to True.",
+					    options.data_path, tag.value);
+				}
+			}
+		}
+		if (tag.key == "encrypted") {
+			if (tag.value == "true") {
+				catalog.SetEncryption(DuckLakeEncryption::ENCRYPTED);
+			} else if (tag.value == "false") {
+				catalog.SetEncryption(DuckLakeEncryption::UNENCRYPTED);
+			} else {
+				throw NotImplementedException("Encrypted should be either true or false");
+			}
+		}
+	}
+	for (auto &tag : metadata.tags) {
+		if (tag.key == "version" && !metadata_manager.IsRemote()) {
+			// every check passed, migrate the catalog to the target version
+			migrating = catalog_version < target_version || !missing_step.empty();
 			if (catalog_version == DuckLakeVersion::V0_1) {
 				metadata_manager.MigrateV01();
 				catalog_version = DuckLakeVersion::V0_2;
@@ -309,7 +383,7 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				metadata_manager.MigrateV04();
 				catalog_version = DuckLakeVersion::V1_0;
 			}
-			if (catalog_version >= target_version) {
+			if (catalog_version >= target_version && missing_step.empty()) {
 				migrating = false;
 				resolved_version = catalog_version;
 				continue;
@@ -319,8 +393,11 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				catalog_version = DuckLakeVersion::V1_1;
 			}
 			if (catalog_version == DuckLakeVersion::V1_1 && catalog_version < target_version) {
-				metadata_manager.MigrateV11();
+				metadata_manager.MigrateV11(false);
 				catalog_version = DuckLakeVersion::V2_0_DEV1;
+			}
+			if (catalog_version == DuckLakeVersion::V2_0_DEV1 && !missing_step.empty()) {
+				metadata_manager.MigrateV11(true);
 			}
 			migrating = false;
 			if (catalog_version != target_version) {
@@ -330,29 +407,6 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				// LCOV_EXCL_STOP
 			}
 			resolved_version = catalog_version;
-		}
-		if (tag.key == "data_path") {
-			if (options.data_path.empty()) {
-				options.data_path = metadata_manager.LoadPath(tag.value);
-				InitializeDataPath();
-			} else {
-				// verify that they match if override_data_path is not set to true
-				if (metadata_manager.StorePath(options.data_path) != tag.value && !options.override_data_path) {
-					throw InvalidConfigurationException(
-					    "DATA_PATH parameter \"%s\" does not match existing data path in the catalog \"%s\".\nYou can "
-					    "override the DATA_PATH by setting OVERRIDE_DATA_PATH to True.",
-					    options.data_path, tag.value);
-				}
-			}
-		}
-		if (tag.key == "encrypted") {
-			if (tag.value == "true") {
-				catalog.SetEncryption(DuckLakeEncryption::ENCRYPTED);
-			} else if (tag.value == "false") {
-				catalog.SetEncryption(DuckLakeEncryption::UNENCRYPTED);
-			} else {
-				throw NotImplementedException("Encrypted should be either true or false");
-			}
 		}
 		options.config_options[tag.key] = tag.value;
 	}
@@ -407,10 +461,14 @@ void DuckLakeInitializer::SetVersionedMetadataManager(DuckLakeTransaction &trans
 		// base metadata managers are already V1.0, nop
 		return;
 	}
+	if (transaction.GetMetadataManager().IsRemote()) {
+		// the server takes care of the metadata format
+		return;
+	}
 	unique_ptr<DuckLakeMetadataManager> new_manager;
 	if (version == DuckLakeVersion::V1_1) {
 		new_manager = MakeVersionedManager<DuckLakeMetadataManagerV1_1>(transaction);
-	} else if (version == DuckLakeVersion::V2_0_DEV1) {
+	} else if (version >= DuckLakeVersion::V2_0_DEV1) {
 		new_manager = MakeVersionedManager<DuckLakeMetadataManagerV2_0>(transaction);
 	} else {
 		throw InternalException("SetVersionedMetadataManager: unsupported version");

@@ -177,9 +177,9 @@ ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_4.db' AS dl (DATA_PATH '{T
 ----
 metadata table "ducklake_table" has no column "path_is_relative"
 
-# a missing branch table
+# a missing branch table is a missing step of 2.0-dev1, reported before the columns are checked
 statement ok
-ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_9.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', DUCKLAKE_VERSION '2.0-dev2')
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_9.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', DUCKLAKE_VERSION '2.0-dev1')
 
 statement ok
 CREATE TABLE dl.t AS SELECT 42 AS i
@@ -197,9 +197,21 @@ statement ok
 DETACH meta
 
 statement error
-ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_9.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', DUCKLAKE_VERSION '2.0-dev2')
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_9.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', DUCKLAKE_VERSION '2.0-dev1')
 ----
-the metadata catalog has no table "ducklake_branch"
+catalog version is 2.0-dev1, but the catalog lacks the branch key of the snapshot tables
+
+# the migration restores the table and the columns are checked afterwards
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_9.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation', DUCKLAKE_VERSION '2.0-dev1', AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT i FROM dl.t
+----
+42
+
+statement ok
+DETACH dl
 
 # a missing table
 statement ok

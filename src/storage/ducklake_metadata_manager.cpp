@@ -3491,8 +3491,9 @@ set<idx_t> DuckLakeMetadataManager::GetTableRewriteSnapshots(TableIndex table_id
 	}
 	// a rewrite stays out of the change feed while its snapshot exists, since the files it ended stay until then
 	auto result = Query(StringUtil::Format(
-	    "SELECT snapshot_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id IN (%s)",
-	    StringUtil::Join(rewrite_snapshots, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); })));
+	    "SELECT snapshot_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE snapshot_id IN (%s)%s",
+	    StringUtil::Join(rewrite_snapshots, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); }),
+	    MainSnapshotFilter()));
 	result->ThrowIfError("Failed to get the snapshots of rewrites from DuckLake: ");
 	set<idx_t> existing_rewrites;
 	for (auto &row : *result) {
@@ -7130,8 +7131,9 @@ AND NOT EXISTS (
 		if (!end_snapshots.empty()) {
 			auto result = Query(StringUtil::Format(
 			    "SELECT snapshot_id, changes_made FROM {METADATA_CATALOG}.ducklake_snapshot_changes WHERE snapshot_id "
-			    "IN (%s)",
-			    StringUtil::Join(end_snapshots, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); })));
+			    "IN (%s)%s",
+			    StringUtil::Join(end_snapshots, ", ", [](idx_t snapshot_id) { return to_string(snapshot_id); }),
+			    MainSnapshotFilter()));
 			result->ThrowIfError("Failed to get the changes of the snapshots that ended files from DuckLake: ");
 			for (auto &rewrite : ReadRewrites(*result)) {
 				rewrites.emplace(rewrite.second, rewrite.first.index);

@@ -60,7 +60,7 @@ SELECT count(*) FROM ducklake_list_files('enc', 'deep')
 1
 
 query I
-SELECT bool_and(s.extra_stats IS NULL) FROM __ducklake_metadata_enc.ducklake_file_column_stats s JOIN __ducklake_metadata_enc.ducklake_data_file f USING (data_file_id) WHERE f.end_snapshot IS NULL AND s.column_id = 2
+SELECT bool_and(s.extra_stats IS NULL) FROM __ducklake_metadata_enc.ducklake_file_column_stats s JOIN __ducklake_metadata_enc.ducklake_data_file f USING (data_file_id) WHERE s.column_id = 2 AND EXISTS (SELECT 1 FROM ducklake_list_files('enc', 'deep') l WHERE ends_with(l.data_file, f.path))
 ----
 true
 

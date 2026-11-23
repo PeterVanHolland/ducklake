@@ -784,8 +784,17 @@ static string StaleBoundColumnSql(const string &alias) {
 	                          alias, alias, HadNonDoubleTypeSql("col"));
 }
 
+//! The data files with their ranges, which a migration to 2.0 can hold in the renamed table or as events
+static string RangedDataFileSource(const string &data_file_table, bool file_events) {
+	if (!file_events) {
+		return "{METADATA_CATALOG}." + data_file_table;
+	}
+	return FileSourceOverEvents("{METADATA_CATALOG}", data_file_table, "ducklake_file_visibility", "data_file_id",
+	                            optional_idx());
+}
+
 //! Table bounds that do not cover the bounds of the live files, as merged from bounds of another type
-static string TableBoundsMissFilesSql(bool file_events) {
+static string TableBoundsMissFilesSql(const string &data_files) {
 	string cases;
 	for (auto id : {LogicalTypeId::DOUBLE, LogicalTypeId::TIMESTAMP, LogicalTypeId::TIMESTAMP_MS,
 	                LogicalTypeId::TIMESTAMP_SEC, LogicalTypeId::TIMESTAMP_TZ}) {
@@ -804,11 +813,10 @@ static string TableBoundsMissFilesSql(bool file_events) {
 	AND CASE col.column_type%s
 		ELSE FALSE END
 )))",
-	                          StaleBoundColumnSql("table_stats"),
-	                          DuckLakeMetadataManager::DataFileSource(file_events, "{METADATA_CATALOG}"), cases);
+	                          StaleBoundColumnSql("table_stats"), data_files, cases);
 }
 
-void DuckLakeMetadataManager::MigrateRetypedBounds(bool legacy_rows, bool file_events) {
+void DuckLakeMetadataManager::MigrateRetypedBounds(bool legacy_rows, const string &data_file_table, bool file_events) {
 	// older versions stored the bounds of added files in the type of the file and kept the bounds of a file across a
 	// type change, while the column history does not show the type of every file, so those bounds become unknown
 	auto column_has_type = [](const string &types) {
@@ -819,14 +827,16 @@ void DuckLakeMetadataManager::MigrateRetypedBounds(bool legacy_rows, bool file_e
 		                          types);
 	};
 	auto retyped = HadNonDoubleTypeSql("stats");
-	auto added_file = string(R"(EXISTS (
-	SELECT 1 FROM {METADATA_CATALOG}.ducklake_data_file AS added
+	auto added_file = StringUtil::Format(R"(EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.%s AS added
 	WHERE added.data_file_id = stats.data_file_id AND added.mapping_id IS NOT NULL
-))");
-	auto table_has_added_file = string(R"(EXISTS (
-	SELECT 1 FROM {METADATA_CATALOG}.ducklake_data_file AS added
+))",
+	                                     data_file_table);
+	auto table_has_added_file = StringUtil::Format(R"(EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.%s AS added
 	WHERE added.table_id = stats.table_id AND added.mapping_id IS NOT NULL
-))");
+))",
+	                                               data_file_table);
 	auto float_column = column_has_type("'float64'");
 	auto timestamp_column = column_has_type("'timestamp', 'timestamp_ms', 'timestamp_s'");
 	auto timestamptz_column = column_has_type("'timestamptz'");
@@ -851,7 +861,7 @@ WHERE (table_stats.min_value IS NOT NULL OR table_stats.max_value IS NOT NULL) A
 	AND ((%s) OR (%s) OR (%s))
 ) OR %s);)",
 		                            file_rows, float_bounds, timestamp_bounds, timestamptz_bounds,
-		                            TableBoundsMissFilesSql(file_events));
+		                            TableBoundsMissFilesSql(RangedDataFileSource(data_file_table, file_events)));
 	}
 	query +=
 	    StringUtil::Format(R"(
@@ -888,44 +898,6 @@ AND ((%s AND (%s OR %s)) OR ((%s OR %s) AND %s));)",
 	}
 	auto result = Execute(query);
 	result->ThrowIfError("Failed to clear the bounds of retyped columns while migrating to v1.1: ");
-}
-
-void DuckLakeMetadataManager::RepairV10Bounds(bool file_events) {
-	// only catalogs migrated from 1.0 have rows without exactness flags
-	auto legacy = Query(R"(
-SELECT 1 FROM {METADATA_CATALOG}.ducklake_file_column_stats
-WHERE min_is_exact IS NULL AND max_is_exact IS NULL AND (min_value IS NOT NULL OR max_value IS NOT NULL)
-LIMIT 1)");
-	legacy->ThrowIfError("Failed to look for the bounds of retyped columns: ");
-	auto found = legacy->Fetch();
-	if (!found || found->size() == 0) {
-		return;
-	}
-	// only added files and retyped columns can hold such bounds
-	auto candidates = Query(StringUtil::Format(R"(
-SELECT 1 FROM {METADATA_CATALOG}.ducklake_column_mapping
-UNION ALL
-SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS retyped WHERE retyped.column_type = 'float64' AND %s
-LIMIT 1)",
-	                                           HadNonDoubleTypeSql("retyped")));
-	candidates->ThrowIfError("Failed to look for the bounds of retyped columns: ");
-	found = candidates->Fetch();
-	if (!found || found->size() == 0) {
-		return;
-	}
-	// rows that 1.0 wrote and that no repair checked yet
-	auto unchecked = Query(StringUtil::Format(R"(
-SELECT 1 FROM {METADATA_CATALOG}.ducklake_file_column_stats AS stats
-WHERE stats.min_is_exact IS NULL AND stats.max_is_exact IS NULL
-AND (stats.min_value IS NOT NULL OR stats.max_value IS NOT NULL) AND %s
-LIMIT 1)",
-	                                          StaleBoundColumnSql("stats")));
-	unchecked->ThrowIfError("Failed to look for the bounds of retyped columns: ");
-	found = unchecked->Fetch();
-	if (!found || found->size() == 0) {
-		return;
-	}
-	MigrateRetypedBounds(true, file_events);
 }
 
 void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
@@ -1040,6 +1012,48 @@ DuckLakeMetadataManager::V2_0FileRanges DuckLakeMetadataManager::ProbeV2_0FileRa
 		}
 	}
 	return ranges;
+}
+
+void DuckLakeMetadataManager::RepairV10Bounds() {
+	// only catalogs migrated from 1.0 have rows without exactness flags
+	auto legacy = Query(R"(
+SELECT 1 FROM {METADATA_CATALOG}.ducklake_file_column_stats
+WHERE min_is_exact IS NULL AND max_is_exact IS NULL AND (min_value IS NOT NULL OR max_value IS NOT NULL)
+LIMIT 1)");
+	legacy->ThrowIfError("Failed to look for the bounds of retyped columns: ");
+	auto found = legacy->Fetch();
+	if (!found || found->size() == 0) {
+		return;
+	}
+	// only added files and retyped columns can hold such bounds
+	auto candidates = Query(StringUtil::Format(R"(
+SELECT 1 FROM {METADATA_CATALOG}.ducklake_column_mapping
+UNION ALL
+SELECT 1 FROM {METADATA_CATALOG}.ducklake_column AS retyped WHERE retyped.column_type = 'float64' AND %s
+LIMIT 1)",
+	                                           HadNonDoubleTypeSql("retyped")));
+	candidates->ThrowIfError("Failed to look for the bounds of retyped columns: ");
+	found = candidates->Fetch();
+	if (!found || found->size() == 0) {
+		return;
+	}
+	// rows that 1.0 wrote and that no repair checked yet
+	auto unchecked = Query(StringUtil::Format(R"(
+SELECT 1 FROM {METADATA_CATALOG}.ducklake_file_column_stats AS stats
+WHERE stats.min_is_exact IS NULL AND stats.max_is_exact IS NULL
+AND (stats.min_value IS NOT NULL OR stats.max_value IS NOT NULL) AND %s
+LIMIT 1)",
+	                                          StaleBoundColumnSql("stats")));
+	unchecked->ThrowIfError("Failed to look for the bounds of retyped columns: ");
+	found = unchecked->Fetch();
+	if (!found || found->size() == 0) {
+		return;
+	}
+	// a migration to 2.0 can hold the data files in the renamed table or have turned their ranges into events
+	ResetProbedColumns();
+	auto range_table = RangeTableName("ducklake_data_file");
+	auto data_file_table = HasMetadataColumn(range_table, "table_id") ? range_table : string("ducklake_data_file");
+	MigrateRetypedBounds(true, data_file_table, !HasMetadataColumn(data_file_table, "end_snapshot"));
 }
 
 //! Takes a snapshot table without its branch key away by name, the first batch of its rebuild

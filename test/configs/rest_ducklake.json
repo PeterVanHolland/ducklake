@@ -521,6 +521,7 @@
         "test/sql/migration/v10_renamed_field_defaults.test",
         "test/sql/migration/v10_retyped_bounds.test",
         "test/sql/migration/v11_unrepaired_bounds.test",
+        "test/sql/migration/v11_unrepaired_bounds_interrupted_events.test",
         "test/sql/migration/v11_unrepaired_bounds_interrupted_migration.test",
         "test/sql/migration/v11_dev1_to_v11.test",
         "test/sql/partitioning/bucket_long_values.test",

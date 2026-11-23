@@ -842,9 +842,10 @@ public:
 	//! Restores the defaults that older versions dropped when they renamed a struct field
 	void MigrateRenamedFieldDefaults();
 	//! Clears the bounds that older versions may have stored in the type of a file or of an earlier column type
-	void MigrateRetypedBounds(bool legacy_rows = false, bool file_events = false);
-	//! Clears the bounds that MigrateRetypedBounds clears in a catalog that was migrated to v1.1 without it
-	void RepairV10Bounds(bool file_events);
+	void MigrateRetypedBounds(bool legacy_rows = false, const string &data_file_table = "ducklake_data_file",
+	                          bool file_events = false);
+	//! Clears the bounds a migration to v1.1 without MigrateRetypedBounds left
+	void RepairV10Bounds();
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
 	virtual void MigrateInlinedDataTypes() {
 	}

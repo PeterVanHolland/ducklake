@@ -386,7 +386,7 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 			if (catalog_version >= target_version && missing_step.empty()) {
 				migrating = false;
 				if (catalog_version == DuckLakeVersion::V1_1 && options.access_mode != AccessMode::READ_ONLY) {
-					metadata_manager.RepairV10Bounds(false);
+					metadata_manager.RepairV10Bounds();
 				}
 				resolved_version = catalog_version;
 				continue;
@@ -395,19 +395,16 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				metadata_manager.MigrateV10(catalog_version == DuckLakeVersion::V1_1_DEV_1);
 				catalog_version = DuckLakeVersion::V1_1;
 			}
-			bool completed_v2_0_layout = false;
 			if (catalog_version == DuckLakeVersion::V1_1 && catalog_version < target_version) {
+				// the repair runs before the version moves on, so an interrupted attach repeats it
+				metadata_manager.RepairV10Bounds();
 				metadata_manager.MigrateV11(false);
 				catalog_version = DuckLakeVersion::V2_0_DEV1;
-				completed_v2_0_layout = true;
 			}
 			if (catalog_version == DuckLakeVersion::V2_0_DEV1 && !missing_step.empty()) {
+				// a dev catalog of an older build can hold such bounds too
+				metadata_manager.RepairV10Bounds();
 				metadata_manager.MigrateV11(true);
-				completed_v2_0_layout = true;
-			}
-			if (completed_v2_0_layout) {
-				// a resumed sequence finds the file tables moved aside, so the repair follows the sequence
-				metadata_manager.RepairV10Bounds(true);
 			}
 			migrating = false;
 			if (catalog_version != target_version) {

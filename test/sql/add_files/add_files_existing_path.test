@@ -86,7 +86,7 @@ SELECT i FROM ducklake.t
 42
 
 query I
-SELECT COUNT(*) FROM metadata.ducklake_data_file WHERE end_snapshot IS NULL
+SELECT file_count FROM ducklake_table_info('ducklake') WHERE table_name = 't'
 ----
 1
 
@@ -97,7 +97,7 @@ CALL ducklake_add_data_files('ducklake', 't', '{LOCAL_DATA_PATH}/existing_*.parq
 existing_one.parquet" is already a data file of table "t"
 
 query I
-SELECT COUNT(*) FROM metadata.ducklake_data_file WHERE end_snapshot IS NULL
+SELECT file_count FROM ducklake_table_info('ducklake') WHERE table_name = 't'
 ----
 1
 
@@ -286,7 +286,7 @@ SELECT i FROM local_lake.n ORDER BY i
 2
 
 query I
-SELECT COUNT(*) FROM local_metadata.ducklake_data_file WHERE end_snapshot IS NULL
+SELECT file_count FROM ducklake_table_info('local_lake') WHERE table_name = 'n'
 ----
 2
 
@@ -322,7 +322,7 @@ SELECT i FROM local_lake.n ORDER BY i
 45
 
 query I
-SELECT COUNT(*) FROM local_metadata.ducklake_data_file WHERE end_snapshot IS NULL
+SELECT file_count FROM ducklake_table_info('local_lake') WHERE table_name = 'n'
 ----
 3
 
@@ -370,7 +370,7 @@ SELECT i FROM local_lake.m ORDER BY i
 2
 
 query I
-SELECT COUNT(*) FROM local_metadata.ducklake_data_file WHERE end_snapshot IS NULL AND table_id = (SELECT table_id FROM local_metadata.ducklake_table WHERE table_name = 'm')
+SELECT file_count FROM ducklake_table_info('local_lake') WHERE table_name = 'm'
 ----
 1
 

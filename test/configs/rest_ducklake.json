@@ -523,6 +523,7 @@
         "test/sql/migration/v11_unrepaired_bounds.test",
         "test/sql/migration/v11_unrepaired_bounds_interrupted_events.test",
         "test/sql/migration/v11_unrepaired_bounds_interrupted_migration.test",
+        "test/sql/migration/v11_unrepaired_bounds_repair_order.test",
         "test/sql/migration/v11_dev1_to_v11.test",
         "test/sql/partitioning/bucket_long_values.test",
         "test/sql/partitioning/bucket_pruning_reset_retype_set.test",

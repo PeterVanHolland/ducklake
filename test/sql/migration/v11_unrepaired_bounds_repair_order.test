@@ -1,0 +1,54 @@
+# name: test/sql/migration/v11_unrepaired_bounds_repair_order.test
+# description: the migration of a v1.1 catalog to 2.0-dev1 repairs the bounds DuckDB v2.0.0 left before it moves the version on
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 0, DUCKLAKE_VERSION '1.1')
+
+statement ok
+CREATE TABLE dl.r (f FLOAT)
+
+statement ok
+INSERT INTO dl.r VALUES (0.1)
+
+statement ok
+ALTER TABLE dl.r ALTER COLUMN f TYPE DOUBLE
+
+# the row that DuckDB 1.5.6 wrote and DuckDB v2.0.0 kept in its migration
+statement ok
+UPDATE meta.ducklake_file_column_stats SET min_value = '0.1', max_value = '0.1', min_is_exact = NULL, max_is_exact = NULL
+
+statement ok
+UPDATE meta.ducklake_table_column_stats SET min_value = '0.1', max_value = '0.1'
+
+statement ok
+DETACH dl
+
+statement ok
+CALL enable_logging('DuckLakeMetadata')
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta', AUTOMATIC_MIGRATION TRUE)
+
+statement ok
+CALL disable_logging()
+
+query II
+SELECT (SELECT value FROM meta.ducklake_metadata WHERE key = 'version'), (SELECT count(*) FROM dl.r WHERE f = 0.10000000149011612)
+----
+2.0-dev1	1
+
+# the repair commits before the sequence moves the version on, so an interrupted attach repeats it
+query I
+SELECT min(timestamp) FILTER (WHERE query LIKE '%SET min_is_exact = false%') < min(timestamp) FILTER (WHERE query LIKE '%SET value = ''2.0-dev1''%')
+FROM duckdb_logs_parsed('DuckLakeMetadata')
+----
+true

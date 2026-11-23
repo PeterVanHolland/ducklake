@@ -261,6 +261,12 @@
       "paths": [
         "test/sql/retry/retry_conflict_read_shapes.test"
       ]
+    },
+    {
+      "reason": "The migration of a quack catalog runs in the sidecar, so the client log holds no repair or version statement to order",
+      "paths": [
+        "test/sql/migration/v11_unrepaired_bounds_repair_order.test"
+      ]
     }
   ]
 }

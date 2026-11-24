@@ -23,7 +23,7 @@ FROM ducklake_flush_inlined_data('lake');
 result_query III
 SELECT tables_flushed, rows_flushed,
 (SELECT count(*) = 300 AND sum(record_count) = 300
-FROM __ducklake_metadata_lake.ducklake_data_file WHERE end_snapshot IS NULL)
+FROM __ducklake_metadata_lake.ducklake_data_file)
 FROM __answer
 ----
 300	300	true

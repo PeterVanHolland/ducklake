@@ -30,11 +30,11 @@ INSERT INTO lake.t VALUES (2, 'b', 2)
 statement ok
 INSERT INTO lake.t VALUES (3, NULL, 3)
 
+# the table is not altered yet, so each column has one version row
 query IIII
 SELECT col.column_name, stats.contains_null::BOOLEAN, stats.min_value, stats.max_value
 FROM __ducklake_metadata_lake.{DUCKLAKE_MYSQL_METADATA_SCHEMA}.ducklake_table_column_stats stats
 JOIN __ducklake_metadata_lake.{DUCKLAKE_MYSQL_METADATA_SCHEMA}.ducklake_column col USING (table_id, column_id)
-WHERE col.end_snapshot IS NULL
 ORDER BY col.column_id
 ----
 i	false	1	3

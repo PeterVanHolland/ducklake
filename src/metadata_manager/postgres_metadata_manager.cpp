@@ -412,8 +412,9 @@ void PostgresMetadataManager::MigrateInlinedDataTypes(bool prefixed_inlined_colu
 	auto metadata_query = [this](string sql) {
 		return DuckLakeMetadataManager::Query(std::move(sql));
 	};
-	auto columns =
-	    InlinedTableColumns(metadata_query, DuckLakeInlinedColNames(prefixed_inlined_columns), optional_idx());
+	// a 2.0 catalog whose version string was rewound reaches this step with the column rows already converted
+	auto columns = InlinedTableColumns(metadata_query, DuckLakeInlinedColNames(prefixed_inlined_columns),
+	                                   optional_idx(), HasMetadataColumn("ducklake_column", "branch_id"));
 	columns->ThrowIfError("Failed to read the columns of inlined-data tables while migrating: ");
 	map<Identifier, identifier_map_t<string>> inlined_tables;
 	for (auto &row : *columns) {
@@ -479,6 +480,16 @@ void PostgresMetadataManager::MigrateInlinedDataTypes(bool prefixed_inlined_colu
 		result->ThrowIfError(
 		    StringUtil::Format("Failed to migrate the column types of inlined-data table %s: ", table_name));
 	}
+}
+
+string PostgresMetadataManager::RowCompanionRenameSql(const string &kind) const {
+	// a renamed table keeps the name of its primary key index, a fresh catalog names it after the final table
+	auto table = RowVisibilityTableName(kind);
+	auto schema = SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName());
+	auto rename_index =
+	    StringUtil::Format("ALTER INDEX IF EXISTS %s.%s_pending_pkey RENAME TO %s_pkey", schema, table, table);
+	return DuckLakeMetadataManager::RowCompanionRenameSql(kind) +
+	       StringUtil::Format("CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, %s);\n", SQLString(rename_index));
 }
 
 string PostgresMetadataManager::ConfigOptionLockSql() const {

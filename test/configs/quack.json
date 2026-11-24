@@ -26,6 +26,13 @@
       ]
     },
     {
+      "reason": "An open transaction on Quack, which commits each statement, fails its read of a tag target that another connection expired instead of reading the old target",
+      "paths": [
+        "test/sql/tags/tags_expires_at_conflict.test",
+        "test/sql/tags/tags_replace_conflict.test"
+      ]
+    },
+    {
       "reason": "Quack commits each statement, so a repeated COUNT(*) reads the row count again to notice an expired snapshot",
       "paths": [
         "test/sql/stats/count_star_optimization_cache.test"

@@ -65,10 +65,10 @@ statement ok
 ATTACH '{TEST_DIR}/metadata_table_validation_0.db' AS meta
 
 statement ok
-ALTER TABLE meta.ducklake_table DROP COLUMN schema_id;
+ALTER TABLE meta.ducklake_table DROP COLUMN table_uuid;
 
 statement ok
-ALTER TABLE meta.ducklake_table ADD COLUMN schema_id BIGINT
+ALTER TABLE meta.ducklake_table ADD COLUMN table_uuid UUID
 
 statement ok
 DETACH meta
@@ -76,7 +76,7 @@ DETACH meta
 statement error
 ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_0.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation')
 ----
-column 5 of metadata table "ducklake_table" is "table_name", expected "schema_id"
+column 2 of metadata table "ducklake_table" is "begin_snapshot", expected "table_uuid"
 
 # a column of another type
 statement ok
@@ -167,7 +167,7 @@ statement ok
 ATTACH '{TEST_DIR}/metadata_table_validation_4.db' AS meta
 
 statement ok
-ALTER TABLE meta.ducklake_table DROP COLUMN path_is_relative
+ALTER TABLE meta.ducklake_table_stats DROP COLUMN file_size_bytes
 
 statement ok
 DETACH meta
@@ -175,7 +175,7 @@ DETACH meta
 statement error
 ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_4.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation')
 ----
-metadata table "ducklake_table" has no column "path_is_relative"
+metadata table "ducklake_table_stats" has no column "file_size_bytes"
 
 # a missing branch table is a missing step of 2.0-dev1, reported before the columns are checked
 statement ok

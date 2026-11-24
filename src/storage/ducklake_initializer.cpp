@@ -405,7 +405,7 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 			if (catalog_version >= DuckLakeVersion::V1_1 && options.automatic_migration &&
 			    !catalog.GetAttached().IsReadOnly()) {
 				// a v1.0 session that stayed attached across the migration creates inlined tables with old names
-				metadata_manager.RepairLegacyInlinedTables();
+				metadata_manager.RepairLegacyInlinedTables(catalog_version >= DuckLakeVersion::V2_0_DEV1);
 			}
 			migrating = false;
 			resolved_version = catalog_version;

@@ -74,8 +74,7 @@ DELETE FROM logged.t WHERE i = 4
 statement ok
 CALL disable_logging()
 
-# no UPDATE of the commits joins a VALUES list, the stats and the deleted inlined row end with plain UPDATEs
-# a 2.0 catalog ends the dropped column and the overwritten comments in their companions, a 1.x catalog with the UPDATEs checked below
+# the stats and the deleted inlined row end with plain UPDATEs, a 2.0 catalog ends the catalog rows in their companions
 query II
 SELECT count(*) FILTER (WHERE joined),
        list_sort(list(DISTINCT regexp_extract(stmt, 'UPDATE\s+\S*?(ducklake_[a-z_]+?)(_\d+_\d+)?"?\s', 1)) FILTER (WHERE regexp_matches(stmt, 'ducklake_(inlined_data|table_column_stats|table_stats)')))
@@ -229,6 +228,31 @@ SELECT count(*) FILTER (WHERE joined), list_sort(list(len(regexp_extract_all(stm
 FROM updates WHERE regexp_matches(stmt, 'ducklake_column_tag\b')
 ----
 0	[8, 512]
+
+# every first comment ended and every second one is current, on both sides of the 512 boundary
+query III
+SELECT col.column_name, tag.value, tag.end_snapshot IS NULL
+FROM __ducklake_metadata_logged11.ducklake_column_tag tag
+JOIN __ducklake_metadata_logged11.ducklake_column col USING (table_id, column_id)
+WHERE col.column_name IN ('c0', 'c511', 'c512', 'c519')
+ORDER BY col.column_id, tag.begin_snapshot
+----
+c0	column 0	false
+c0	column 0 again	true
+c511	column 511	false
+c511	column 511 again	true
+c512	column 512	false
+c512	column 512 again	true
+c519	column 519	false
+c519	column 519 again	true
+
+query II
+SELECT count(*) FILTER (WHERE tag.end_snapshot IS NOT NULL), count(*) FILTER (WHERE tag.end_snapshot IS NULL)
+FROM __ducklake_metadata_logged11.ducklake_column_tag tag
+JOIN __ducklake_metadata_logged11.ducklake_column col USING (table_id, column_id)
+WHERE col.column_name LIKE 'c%'
+----
+520	520
 
 # the same changes on the configured catalog keep every stat, comment, tag row and row
 statement ok

@@ -1,5 +1,5 @@
 # name: test/sql/migration/v11_unrepaired_bounds_fenced_end_column.test
-# description: the attach that resumes a row companions step which fenced the end column of the columns repairs the bounds DuckDB v2.0.0 left
+# description: a resumed row companions step that fenced the column end still repairs the bounds DuckDB v2.0.0 left
 # group: [migration]
 
 require ducklake
@@ -61,10 +61,32 @@ CALL ducklake_expire_snapshots('dl', older_than => now())
 statement ok
 DETACH dl
 
-# the interrupted step of the column kind created the pending companion and fenced the end column before the backfill
+# the interrupted migration turned the file ranges into events before it reached the column kind
 statement ok
 ATTACH '{DUCKLAKE_CONNECTION}' AS meta
 
+statement ok
+CREATE TABLE meta.ducklake_file_visibility(branch_id BIGINT, table_id BIGINT, data_file_id BIGINT, snapshot_id BIGINT, is_delete BOOLEAN, PRIMARY KEY(branch_id, data_file_id, is_delete))
+
+statement ok
+CREATE TABLE meta.ducklake_delete_file_visibility(branch_id BIGINT, table_id BIGINT, delete_file_id BIGINT, snapshot_id BIGINT, is_delete BOOLEAN, PRIMARY KEY(branch_id, delete_file_id, is_delete))
+
+statement ok
+INSERT INTO meta.ducklake_file_visibility SELECT 0, table_id, data_file_id, begin_snapshot, false FROM meta.ducklake_data_file
+
+statement ok
+ALTER TABLE meta.ducklake_data_file DROP COLUMN begin_snapshot
+
+statement ok
+ALTER TABLE meta.ducklake_data_file DROP COLUMN end_snapshot
+
+statement ok
+ALTER TABLE meta.ducklake_delete_file DROP COLUMN begin_snapshot
+
+statement ok
+ALTER TABLE meta.ducklake_delete_file DROP COLUMN end_snapshot
+
+# the column kind got its pending companion and the fence of its end column, the backfill did not start
 statement ok
 ALTER TABLE meta.ducklake_column ADD COLUMN branch_id BIGINT DEFAULT 0
 
@@ -81,7 +103,7 @@ ALTER TABLE meta.ducklake_column RENAME COLUMN end_snapshot TO end_snapshot_old
 statement ok
 DETACH meta
 
-# the writable migrating attach reads the live columns through the fenced column, then resumes the sequence
+# the repair reads the live columns through the fenced column, then the sequence resumes
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta', AUTOMATIC_MIGRATION TRUE)
 
@@ -111,7 +133,7 @@ JOIN meta.ducklake_table tbl USING (table_id) ORDER BY tbl.table_name
 compacted	true
 r	true
 
-# the resumed step backfilled the end of the FLOAT version row into the companion and renamed it into place
+# the resumed step backfilled the end of the FLOAT version row and renamed the companion into place
 query II
 SELECT row_snapshot, end_snapshot FROM meta.ducklake_column_visibility ORDER BY row_snapshot
 ----

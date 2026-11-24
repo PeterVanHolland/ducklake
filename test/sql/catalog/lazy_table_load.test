@@ -202,7 +202,7 @@ endloop
 
 # a load that fails leaves no half built entries, the partition keys of p2 come with its table
 statement ok
-UPDATE lazy_meta.ducklake_column SET column_type = 'nonsense' WHERE table_id = (SELECT table_id FROM lazy_meta.ducklake_table WHERE table_name = 'broken' AND end_snapshot IS NULL)
+UPDATE lazy_meta.ducklake_column SET column_type = 'nonsense' WHERE table_id = (SELECT table_id FROM lazy_meta.ducklake_table WHERE table_name = 'broken')
 
 statement error
 SELECT count(*) FROM duckdb_tables() WHERE database_name = 'lake'

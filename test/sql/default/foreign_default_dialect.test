@@ -25,8 +25,10 @@ INSERT INTO lake.t (id) VALUES (1)
 statement ok
 INSERT INTO lake.u VALUES (1)
 
+# the newest version row of the column is its current one
 query I
-SELECT default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a' AND end_snapshot IS NULL
+SELECT default_value_dialect FROM __ducklake_metadata_lake.ducklake_column c
+WHERE column_name = 'a' AND begin_snapshot = (SELECT max(begin_snapshot) FROM __ducklake_metadata_lake.ducklake_column WHERE column_id = c.column_id)
 ----
 duckdb
 
@@ -65,7 +67,8 @@ statement ok
 ALTER TABLE lake.t ADD COLUMN b INTEGER
 
 query III
-SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a' AND end_snapshot IS NULL
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column c
+WHERE column_name = 'a' AND begin_snapshot = (SELECT max(begin_snapshot) FROM __ducklake_metadata_lake.ducklake_column WHERE column_id = c.column_id)
 ----
 7 DIV 2	expression	spark
 
@@ -116,7 +119,8 @@ statement ok
 ALTER TABLE lake.t ALTER COLUMN a2 TYPE BIGINT
 
 query III
-SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column c
+WHERE column_name = 'a2' AND begin_snapshot = (SELECT max(begin_snapshot) FROM __ducklake_metadata_lake.ducklake_column WHERE column_id = c.column_id)
 ----
 7 DIV 2	expression	spark
 
@@ -154,7 +158,8 @@ statement ok
 ALTER TABLE lake.t RENAME COLUMN a TO a2
 
 query III
-SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column c
+WHERE column_name = 'a2' AND begin_snapshot = (SELECT max(begin_snapshot) FROM __ducklake_metadata_lake.ducklake_column WHERE column_id = c.column_id)
 ----
 3	spark's literal	spark
 
@@ -179,7 +184,8 @@ statement ok
 ALTER TABLE lake.t RENAME COLUMN a TO a2
 
 query III
-SELECT default_value, default_value_type IS NULL, default_value_dialect IS NULL FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
+SELECT default_value, default_value_type IS NULL, default_value_dialect IS NULL FROM __ducklake_metadata_lake.ducklake_column c
+WHERE column_name = 'a2' AND begin_snapshot = (SELECT max(begin_snapshot) FROM __ducklake_metadata_lake.ducklake_column WHERE column_id = c.column_id)
 ----
 3	true	true
 
@@ -262,7 +268,8 @@ statement ok
 ALTER TABLE lake.t RENAME COLUMN a TO a2
 
 query III
-SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column c
+WHERE column_name = 'a2' AND begin_snapshot = (SELECT max(begin_snapshot) FROM __ducklake_metadata_lake.ducklake_column WHERE column_id = c.column_id)
 ----
 7 DIV 2	expression	duckdb
 
@@ -288,7 +295,8 @@ statement ok
 ALTER TABLE lake.t RENAME COLUMN a TO a2
 
 query III
-SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a2' AND end_snapshot IS NULL
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column c
+WHERE column_name = 'a2' AND begin_snapshot = (SELECT max(begin_snapshot) FROM __ducklake_metadata_lake.ducklake_column WHERE column_id = c.column_id)
 ----
 ARRAY(SELECT 1, 2)	expression	DuckDB
 
@@ -310,6 +318,7 @@ SELECT id, a FROM lake.t ORDER BY id
 3	9
 
 query III
-SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column WHERE column_name = 'a' AND end_snapshot IS NULL
+SELECT default_value, default_value_type, default_value_dialect FROM __ducklake_metadata_lake.ducklake_column c
+WHERE column_name = 'a' AND begin_snapshot = (SELECT max(begin_snapshot) FROM __ducklake_metadata_lake.ducklake_column WHERE column_id = c.column_id)
 ----
 9	literal	duckdb

@@ -170,10 +170,10 @@ struct DuckLakeBaseColumnStats {
 
 struct StatsNumericFallbackOperator {
 	static bool SmallerThan(const LogicalType &type, string_t left, string_t right) {
-		return Value(left).DefaultCastAs(type) < Value(right).DefaultCastAs(type);
+		return StatsBoundLessThan(Value(left).DefaultCastAs(type), Value(right).DefaultCastAs(type));
 	}
 	static bool GreaterThan(const LogicalType &type, string_t left, string_t right) {
-		return Value(left).DefaultCastAs(type) > Value(right).DefaultCastAs(type);
+		return StatsBoundLessThan(Value(right).DefaultCastAs(type), Value(left).DefaultCastAs(type));
 	}
 	static string GetFinalStats(string_t input) {
 		return input.GetString();
@@ -266,8 +266,28 @@ static void ThrowIfNegativeInterval(Vector &input_vec, idx_t row_count) {
 	}
 }
 
+//! A VARIANT has no bounds, only its null count is collected
+static DuckLakeColumnStats GetVariantStats(Vector &input_vec, idx_t row_count) {
+	UnifiedVectorFormat format;
+	input_vec.ToUnifiedFormat(format);
+	DuckLakeColumnStats result(input_vec.GetType());
+	result.any_valid = false;
+	result.has_null_count = true;
+	for (idx_t i = 0; i < row_count; i++) {
+		if (format.validity.RowIsValid(format.sel->get_index(i))) {
+			result.any_valid = true;
+		} else {
+			result.null_count++;
+		}
+	}
+	return result;
+}
+
 DuckLakeColumnStats GetVectorStats(Vector &input_vec, idx_t row_count) {
 	auto &type = input_vec.GetType();
+	if (type.id() == LogicalTypeId::VARIANT) {
+		return GetVariantStats(input_vec, row_count);
+	}
 	Vector str_vector(LogicalType::VARCHAR, row_count);
 	VectorOperations::DefaultCast(input_vec, str_vector, row_count);
 	// FIXME: we can be more efficient here by templating on other types (numerics...)
@@ -455,8 +475,8 @@ OperatorFinalResultType DuckLakeInlineData::OperatorFinalize(Pipeline &pipeline,
 
 		if (column_stats.stats.null_count > 0) {
 			auto column_name = table.GetColumn(LogicalIndex(c)).GetName();
-			if (not_null_fields.count(column_name.GetIdentifierName())) {
-				table.ThrowNotNullViolation(column_name.GetIdentifierName());
+			if (not_null_fields.count(column_name)) {
+				table.ThrowNotNullViolation(column_name);
 			}
 		}
 	}
@@ -492,9 +512,10 @@ OperatorFinalResultType DuckLakeInlineData::OperatorFinalize(Pipeline &pipeline,
 		VerifyParquetVariants(*result->data);
 	}
 	auto &catalog = table.ParentCatalog().Cast<DuckLakeCatalog>();
-	if (table.GetInlinedDataTables().empty() ||
-	    !table.HasCurrentInlinedDataTable(
-	        catalog.GetTableSchemaVersions(transaction, table.GetTableId()).last_change)) {
+	// the server of a REST catalog decides itself whether the rows need a new inlined table
+	if (!catalog.IsREST() && (table.GetInlinedDataTables().empty() ||
+	                          !table.HasCurrentInlinedDataTable(
+	                              catalog.GetTableSchemaVersions(transaction, table.GetTableId()).last_change))) {
 		transaction.SetRequiresNewInlinedTable(true);
 	}
 	transaction.AppendInlinedData(table.GetTableId(), std::move(result));

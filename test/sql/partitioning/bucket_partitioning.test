@@ -138,6 +138,11 @@ ALTER TABLE bucketed_tbl SET PARTITIONED BY (bucket(-1, user_id));
 ----
 Bucket count must be positive
 
+statement error
+ALTER TABLE bucketed_tbl SET PARTITIONED BY (bucket(NULL, user_id));
+----
+Bucket count cannot be NULL
+
 # Bucket count exceeding INT32 maximum leads to error.
 statement error
 ALTER TABLE bucketed_tbl SET PARTITIONED BY (bucket(2147483648, user_id));
@@ -149,6 +154,22 @@ statement error
 ALTER TABLE bucketed_tbl SET PARTITIONED BY (bucket(4, nonexistent_col));
 ----
 does not exist
+
+# The failed statements keep the partitioning of the table
+query I
+SELECT transform FROM ducklake_metadata.ducklake_partition_column WHERE table_id = 1
+----
+bucket(4)
+
+statement error
+CREATE TABLE bucket_null_create(i INTEGER) PARTITIONED BY (bucket(NULL, i))
+----
+Bucket count cannot be NULL
+
+statement error
+CREATE TABLE bucket_null_ctas PARTITIONED BY (bucket(NULL, i)) AS SELECT 1 AS i
+----
+Bucket count cannot be NULL
 
 # ----------------------------------------------------------------------------------------------------------------------
 # Case insensitivity tests
@@ -653,14 +674,25 @@ dave	4
 eve	5
 frank	6
 
-# Verify partition metadata now says bucket(8)
+# Verify partition metadata now says bucket(8), the spec history ends with it
 query I
 SELECT transform FROM ducklake_metadata.ducklake_partition_info part
 JOIN ducklake_metadata.ducklake_partition_column part_col USING (partition_id, table_id)
-WHERE part.end_snapshot IS NULL
-AND part.table_id = (SELECT table_id FROM ducklake_metadata.ducklake_table WHERE table_name = 'bucket_repart_tbl')
+WHERE part.table_id = (SELECT table_id FROM ducklake_metadata.ducklake_table WHERE table_name = 'bucket_repart_tbl')
+ORDER BY part.begin_snapshot
 ----
+bucket(4)
 bucket(8)
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake');
+
+# the files written under the two bucket counts reference their own spec
+query I
+SELECT count(DISTINCT partition_id) FROM ducklake_metadata.ducklake_data_file
+WHERE table_id = (SELECT table_id FROM ducklake_metadata.ducklake_table WHERE table_name = 'bucket_repart_tbl')
+----
+2
 
 # ----------------------------------------------------------------------------------------------------------------------
 # ducklake_add_data_files

@@ -194,7 +194,9 @@
         "test/sql/cte/materialized/cte_runtime_filter_sibling_dependencies.test",
         "test/sql/optimizer/struct_extract_cast_filter.test",
         "test/sql/optimizer/pushdown/pushdown_safe_decimal_cast.test",
-        "test/sql/types/struct/struct_variant_projection_pushdown.test"
+        "test/sql/types/struct/struct_variant_projection_pushdown.test",
+        "test/optimizer/partial_aggregate_pushdown_throwing_argument.test",
+        "test/sql/setops/compression_expression_collation.test"
       ]
     },
     {
@@ -222,7 +224,8 @@
         "test/optimizer/statistics/statistics_early_join_range.test",
         "test/sql/serialization/logical_operator_serialization.test",
         "test/sql/parser/reject_unknown_option_values.test",
-        "test/optimizer/statistics/current_domain_cardinality.test"
+        "test/optimizer/statistics/current_domain_cardinality.test",
+        "test/optimizer/statistics/current_domain_semi_anti.test"
       ]
     },
     {
@@ -268,7 +271,8 @@
         "test/sql/alter/drop_col/test_drop_col_transactions.test",
         "test/sql/transactions/transaction_insert_mixed_deletes.test",
         "test/sql/transactions/transaction_insert_delete_chunks.test",
-        "test/sql/json/table/json_table_in_out_threads.test"
+        "test/sql/json/table/json_table_in_out_threads.test",
+        "test/sql/table_function/range_lateral_threads.test"
       ]
     },
     {
@@ -391,7 +395,8 @@
         "test/sql/transactions/test_commit_cleanup_oom.test",
         "test/sql/transactions/test_commit_cleanup_oom_index_retry.test",
         "test/sql/storage/temp_directory/offload_small_transient_segments_no_optimistic_write.test",
-        "test/sql/storage/temp_directory/offload_small_transient_segments.test"
+        "test/sql/storage/temp_directory/offload_small_transient_segments.test",
+        "test/sql/storage/partial_blocks/partial_block_tail_memory.test"
       ]
     },
     {
@@ -876,7 +881,8 @@
         "test/sql/optimizer/plan/dense_or_filter_pushdown.test",
         "test/sql/storage/distinct_statistics_sample.test",
         "test/sql/explain/tree_renderer_branches.test",
-        "test/optimizer/statistics/current_domain_join.test"
+        "test/optimizer/statistics/current_domain_join.test",
+        "test/optimizer/statistics/statistics_additive_duplication.test"
       ]
     },
     {

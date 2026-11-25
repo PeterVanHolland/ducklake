@@ -1,0 +1,61 @@
+# name: test/sql/migration/v11_to_v20_dev1_expired_snapshot.test
+# description: time travel to the time of a snapshot that a 1.1 catalog expired fails after the migration to 2.0-dev1
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+    METADATA_CATALOG 'meta', DUCKLAKE_VERSION '1.1')
+
+statement ok
+CREATE TABLE lake.t (a INTEGER)
+
+loop i 1 3
+
+statement ok
+INSERT INTO lake.t VALUES ({i})
+
+endloop
+
+# the name of the table that snapshot 4 creates reads like the record of an expiry
+statement ok
+CREATE TABLE lake."expired_snapshot:9" (a INTEGER)
+
+statement ok
+SET VARIABLE t3 = (SELECT snapshot_time FROM lake.snapshots() WHERE snapshot_id = 3)
+
+statement ok
+SET VARIABLE t4 = (SELECT snapshot_time FROM lake.snapshots() WHERE snapshot_id = 4)
+
+statement ok
+CALL ducklake_expire_snapshots('lake', versions => [3])
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+    METADATA_CATALOG 'meta', AUTOMATIC_MIGRATION TRUE)
+
+query IT
+SELECT snapshot_id, changes_made FROM meta.ducklake_snapshot_changes WHERE changes_made LIKE '%expired_snapshot%'
+----
+4	created_table:"main"."expired_snapshot:9",expired_snapshot:3
+
+# the time of snapshot 3 lies in the gap
+statement error
+SELECT * FROM lake.t AT (TIMESTAMP => getvariable('t3'))
+----
+snapshot 3 was expired and its commit time is not kept
+
+query I
+SELECT list(a ORDER BY a) FROM lake.t AT (TIMESTAMP => getvariable('t4'))
+----
+[1, 2]

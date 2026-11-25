@@ -1,0 +1,31 @@
+# name: test/sql/migration/v10_expired_snapshot_gap.test
+# description: time travel to the time of a snapshot that the 1.0 release expired fails after the migration to 2.0-dev1
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.6, which expired snapshot 3 and kept no record of it
+unzip data/old_ducklake/expired_snapshot_gap.db.gz {TEST_DIR}/v10_expired_snapshot_gap.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_expired_snapshot_gap.db' AS lake (DATA_PATH '{TEST_DIR}/v10_expired_snapshot_gap',
+    OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT list(snapshot_id ORDER BY snapshot_id) FROM lake.snapshots()
+----
+[0, 1, 2, 4, 5]
+
+# the time of snapshot 3 lies in the gap
+statement error
+SELECT * FROM lake.t AT (TIMESTAMP => TIMESTAMPTZ '2026-11-25 21:45:41.346414+00')
+----
+snapshot 3 was expired and its commit time is not kept
+
+# the time of snapshot 4
+query I
+SELECT list(a ORDER BY a) FROM lake.t AT (TIMESTAMP => TIMESTAMPTZ '2026-11-25 21:45:41.355148+00')
+----
+[1, 2, 3]

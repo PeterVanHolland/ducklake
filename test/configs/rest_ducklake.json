@@ -592,7 +592,9 @@
         "test/sql/data_inlining/inlining_obstacle_log.test",
         "test/sql/compaction/user_columns_named_like_internal_columns.test",
         "test/sql/data_inlining/data_inlining_transaction_local_field_readd_rejected.test",
-        "test/sql/data_inlining/data_inlining_variant_stats.test"
+        "test/sql/data_inlining/data_inlining_variant_stats.test",
+        "test/sql/migration/v11_to_v20_dev1_expired_gap.test",
+        "test/sql/migration/v11_to_v20_dev1_expired_snapshot.test"
       ]
     },
     {

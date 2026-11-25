@@ -114,6 +114,11 @@ optional_ptr<CatalogEntry> DuckLakeCatalogLoader::GetEntryById(DuckLakeTransacti
 	return entry;
 }
 
+optional_ptr<CatalogEntry> DuckLakeCatalogLoader::GetLoadedEntryById(TableIndex entry_id) {
+	lock_guard<mutex> guard(lock);
+	return schemas.GetEntryById(entry_id);
+}
+
 void DuckLakeCatalogLoader::LoadSchema(DuckLakeTransaction &transaction, DuckLakeSchemaEntry &schema) {
 	Locked([&]() {
 		auto schema_id = schema.GetSchemaId();

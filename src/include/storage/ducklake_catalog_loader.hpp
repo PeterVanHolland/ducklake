@@ -40,6 +40,8 @@ public:
 	                                    const Identifier &name);
 	//! The committed table or view with the id
 	optional_ptr<CatalogEntry> GetEntryById(DuckLakeTransaction &transaction, TableIndex entry_id);
+	//! The committed table or view with the id if it is loaded
+	optional_ptr<CatalogEntry> GetLoadedEntryById(TableIndex entry_id);
 	//! Loads every table and view of the schema
 	void LoadSchema(DuckLakeTransaction &transaction, DuckLakeSchemaEntry &schema);
 	//! Loads every table and view

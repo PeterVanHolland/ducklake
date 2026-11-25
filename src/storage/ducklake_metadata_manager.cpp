@@ -1914,8 +1914,7 @@ DuckLakeSchemaVersionSnapshot
 DuckLakeMetadataManager::StandInSchemaVersionSnapshot(const MetadataQuery &query,
                                                       const DuckLakeInlinedColNames &col_names, TableIndex table_id,
                                                       idx_t schema_version, bool row_visibility) {
-	// a version without a row of the table is the one an inlined table was registered at, any surviving snapshot
-	// of the version has its catalog, else the row of another table has its commit
+	// any surviving snapshot of the version has its catalog
 	auto snapshot = QueryOptIdx(
 	    query,
 	    StringUtil::Format(
@@ -1925,6 +1924,7 @@ DuckLakeMetadataManager::StandInSchemaVersionSnapshot(const MetadataQuery &query
 	if (snapshot.IsValid()) {
 		return {snapshot.GetIndex(), true};
 	}
+	// the row of another table has the commit of the version
 	auto recorded = QueryOptIdx(
 	    query,
 	    StringUtil::Format(

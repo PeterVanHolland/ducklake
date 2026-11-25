@@ -1093,9 +1093,10 @@
       ]
     },
     {
-      "reason": "FIXME: fails on DuckDB itself, timestamps in the lowest hours of the int64 range cannot be converted to strings for statistics (pdet/ducklake_internal#202)",
+      "reason": "FIXME: fails on DuckDB itself, timestamps in the lowest hours of the int64 range and the smallest finite DATE cannot be converted to strings and back for statistics (pdet/ducklake_internal#202)",
       "paths": [
-        "test/sql/optimizer/monotone_preimage_tz.test"
+        "test/sql/optimizer/monotone_preimage_tz.test",
+        "test/optimizer/statistics/statistics_monotone_infinity.test"
       ]
     },
     {

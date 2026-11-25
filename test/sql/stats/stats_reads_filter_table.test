@@ -20,8 +20,15 @@ CREATE TABLE dl.other AS SELECT i AS a, i AS b FROM range(10) t(i)
 statement ok
 CREATE TABLE dl.t (id INTEGER, s VARCHAR)
 
+# t gets an inlined data table, whose columns a commit reads
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 't')
+
 statement ok
 INSERT INTO dl.t VALUES (1, NULL)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 0, table_name => 't')
 
 statement ok
 INSERT INTO dl.t VALUES (2, NULL)

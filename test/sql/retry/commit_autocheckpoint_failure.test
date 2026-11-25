@@ -34,11 +34,11 @@ SET wal_autocheckpoint = '1B'
 statement ok
 SET debug_checkpoint_abort = 'BEFORE_HEADER_NON_FATAL'
 
-# the error of the first attempt is reported, a commit that may have taken effect is not retried
+# the durable commit is published, its error is reported without a retry
 statement error
 COMMIT
 ----
-<REGEX>:.*Failed to commit DuckLake transaction\.\nThe commit may have taken effect, so the files it wrote are kept\. ducklake_delete_orphaned_files removes them if it did not\.\nTransaction COMMIT succeeded and is durable, but the autocheckpoint failed\..*__ducklake_metadata_unique_lake.*
+<REGEX>:.*Transaction COMMIT succeeded and is durable, but the autocheckpoint failed\..*__ducklake_metadata_unique_lake.*
 
 statement ok
 SET debug_checkpoint_abort = 'NONE'

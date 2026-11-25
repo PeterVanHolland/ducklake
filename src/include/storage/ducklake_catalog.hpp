@@ -30,6 +30,9 @@
 #include <mutex>
 
 namespace duckdb {
+class DuckLakeRESTClient;
+struct CreateMacroInfo;
+struct DuckLakeMacroInfo;
 struct DuckLakeCopyInput;
 struct DuckLakeMetadataProfile;
 struct DuckLakeGlobalStatsInfo;
@@ -157,6 +160,10 @@ private:
 
 enum class InlinedDeletionCacheResult { EXISTS, DOES_NOT_EXIST, UNKNOWN };
 
+//! The CREATE MACRO info of a macro stored in DuckLake
+unique_ptr<CreateMacroInfo> CreateMacroInfoFromDucklake(ClientContext &context, DuckLakeMacroInfo &macro,
+                                                        const Identifier &schema_name);
+
 class DuckLakeCatalog : public Catalog {
 public:
 	// default target file size: 512MB
@@ -201,6 +208,10 @@ public:
 	const DuckLakeMetadataProfile &MetadataProfile() const;
 	//! Set once the metadata database is attached, when its extension has had the chance to register the profile
 	void SetMetadataProfile(shared_ptr<const DuckLakeMetadataProfile> profile);
+	//! Whether the catalog attaches a metadata database, rather than reading its metadata from a REST server
+	bool OwnsMetadataDatabase() const {
+		return metadata_type != "rest";
+	}
 	bool IsInitialized() const {
 		return initialized;
 	}
@@ -253,6 +264,9 @@ public:
 	optional_ptr<BoundAtClause> CatalogSnapshot() const;
 
 	optional_ptr<CatalogEntry> CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info) override;
+	//! Creates a schema with the given uuid and data path, new ones if they are empty
+	optional_ptr<CatalogEntry> CreateSchemaExtended(CatalogTransaction transaction, CreateSchemaInfo &info,
+	                                                string schema_uuid, string schema_data_path);
 
 	ErrorData SupportsCreateTable(BoundCreateTableInfo &info) override;
 
@@ -297,6 +311,11 @@ public:
 	//! The committed table at the snapshot, without the changes of the transaction
 	optional_ptr<CatalogEntry> GetEntryById(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
 	                                        TableIndex table_id);
+	//! The committed macro at the snapshot
+	optional_ptr<CatalogEntry> GetEntryById(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
+	                                        MacroIndex macro_id);
+	//! The data path of a table at the snapshot if its schema is loaded, empty otherwise
+	string GetLoadedTableDataPath(DuckLakeSnapshot snapshot, TableIndex table_id);
 	string GeneratePathFromName(const string &uuid, const string &name);
 
 	bool InMemory() override;
@@ -327,6 +346,7 @@ public:
 		                                                 default_value ? "true" : "false", table_options);
 		return hive_file_pattern == "true";
 	}
+	bool UseHiveFilePattern(bool default_value, DuckLakeTableEntry &table) const;
 
 	bool WriteDeletionVectors(SchemaIndex schema_id, TableIndex table_id,
 	                          optional_ptr<const map<string, string>> table_options = nullptr) const {
@@ -358,6 +378,17 @@ public:
 		return ducklake_version >= DuckLakeVersion::V1_1;
 	}
 	bool SupportsSnapshotTags() const {
+		return ducklake_version >= DuckLakeVersion::V2_0_DEV1;
+	}
+	//! Whether the snapshot tables are keyed by branch and snapshot, the layout of 2.0
+	bool SupportsBranching() const {
+		return ducklake_version >= DuckLakeVersion::V2_0_DEV1;
+	}
+	bool SupportsFileVisibilityEvents() const {
+		return ducklake_version >= DuckLakeVersion::V2_0_DEV1;
+	}
+	//! Whether the catalog rows keep their birth and end in companion tables, the layout of 2.0
+	bool SupportsRowVisibility() const {
 		return ducklake_version >= DuckLakeVersion::V2_0_DEV1;
 	}
 	//! Whether an expiry commits a snapshot whose changes list the expired snapshots
@@ -406,6 +437,19 @@ public:
 	std::recursive_mutex &GetMetadataQueryLock() {
 		return metadata_query_lock;
 	}
+
+	//! Connects to the REST server that serves the metadata, for REST catalogs
+	void ConnectREST();
+	//! Whether the metadata is served by a REST server
+	bool IsREST() const {
+		return rest_client != nullptr;
+	}
+	//! The ids of the name maps that are loaded
+	set<idx_t> GetLoadedNameMapIds();
+	//! Adds name maps that are not loaded yet, e.g. the ones that a REST server returns with a scan
+	void AddNameMaps(vector<DuckLakeColumnMappingInfo> column_mappings);
+	//! The client of the REST server that serves the metadata, for REST catalogs
+	DuckLakeRESTClient &GetRESTClient();
 
 	shared_ptr<const DuckLakeNameMap> TryGetMappingById(DuckLakeTransaction &transaction, MappingIndex mapping_id);
 	MappingIndex TryGetCompatibleNameMap(DuckLakeTransaction &transaction, const DuckLakeNameMap &name_map);
@@ -456,6 +500,11 @@ public:
 	void SetColumnHoldsValues(TableIndex table_id, FieldIndex column_id, idx_t snapshot_id);
 	//! The columns found with values stay valid for the snapshot of a commit that directly follows theirs
 	void AdvanceColumnsWithValues(idx_t snapshot_id);
+	//! The snapshot of the columns found with values if it is older than `snapshot_id` and they include the column
+	optional_idx OlderColumnsWithValuesSnapshot(TableIndex table_id, FieldIndex column_id, idx_t snapshot_id);
+	//! Moves the columns found with values across the commits of other catalogs, without the tables they changed
+	//! A null `changed` means the changes are unknown, and forgets all of them
+	void AdvanceColumnsWithValues(idx_t from_snapshot, idx_t to_snapshot, optional_ptr<const set<TableIndex>> changed);
 	void ForgetColumnsWithValues(const set<TableIndex> &table_ids);
 
 	//! Invalidate the cached table stats entry for a given stats cache key.
@@ -521,6 +570,8 @@ private:
 	string metadata_catalog_type;
 	//! The profile of the metadata database, nullptr if it has none
 	shared_ptr<const DuckLakeMetadataProfile> metadata_profile;
+	//! The client of the REST server that serves the metadata, for REST catalogs
+	unique_ptr<DuckLakeRESTClient> rest_client;
 	//! The resolved DuckLake spec version of the attached catalog
 	DuckLakeVersion ducklake_version = DuckLakeVersion::V1_0;
 	//! A per-instance identifier used to scope ObjectCache keys.

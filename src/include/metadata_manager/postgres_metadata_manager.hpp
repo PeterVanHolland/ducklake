@@ -42,11 +42,16 @@ public:
 
 	string GetColumnTypeInternal(const LogicalType &type) override;
 	string GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot snapshot, bool include_exactness) const override;
-	bool InlinedDeletionTableExists(const Identifier &table_name) override;
+	bool ListsInlinedDeletionTables() const override {
+		return true;
+	}
+	unordered_set<string> ListInlinedDeletionTables() override;
 	void MigrateInlinedDataTypes() override;
 	bool IsRetryableCommitError(const string &message) const override;
+	bool ProbeMetadataColumns() override;
 	string CommitErrorWithoutQuery(const string &message) const override;
 	string ConfigOptionLockSql() const override;
+	string RowCompanionRenameSql(const string &kind) const override;
 
 	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query) override;
 	unique_ptr<QueryResult> ExecuteDropInTransaction(string &query) override;
@@ -64,8 +69,7 @@ protected:
 		return "clock_timestamp()";
 	}
 	string GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
-	                             const FilterPushdownInfo *filter_info,
-	                             const vector<DuckLakeFileListDynamicFilter> &dynamic_filters,
+	                             const FilterPushdownInfo *filter_info, const vector<DuckLakeFileListOrder> &file_order,
 	                             vector<idx_t> &runtime_filter_stats_columns, FileListType file_list_type,
 	                             const string &metadata_table_prefix) override;
 	bool MaterializeStatsCTEs() const override;

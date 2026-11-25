@@ -7,6 +7,7 @@
 #include "storage/ducklake_staged_commit.hpp"
 #include "storage/ducklake_transaction.hpp"
 #include "storage/ducklake_transaction_changes.hpp"
+#include "storage/ducklake_transaction_state.hpp"
 
 namespace duckdb {
 
@@ -70,28 +71,25 @@ string QuackMetadataManager::MetadataExistsQuery() const {
 	       "WHERE table_name = 'ducklake_metadata' AND table_schema = {METADATA_SCHEMA_NAME_LITERAL}";
 }
 
-bool QuackMetadataManager::InlinedDeletionTableExists(const Identifier &table_name) {
-	// duckdb_tables() builds a row for every table on the server, so one listing serves every table of the snapshot
-	// keyed by the newest snapshot of the transaction, which a catalog attached at an older snapshot can read too
-	auto tables = transaction.GetCatalog().GetInlinedDeletionTables(transaction.GetNewestVisibleSnapshotId(), [&]() {
-		string query = "SELECT table_name FROM duckdb_tables() WHERE database_name = current_database() "
-		               "AND schema_name = {METADATA_SCHEMA_NAME_LITERAL} AND starts_with(table_name, "
-		               "'ducklake_inlined_delete_')";
-		auto result = Query(query);
-		result->ThrowIfError("Failed to probe for DuckLake inlined-deletion table: ");
-		unordered_set<string> listed;
-		for (auto &row : *result) {
-			listed.insert(row.GetValue<string>(0));
-		}
-		return listed;
-	});
-	return tables->count(table_name.GetIdentifierName()) > 0;
+unordered_set<string> QuackMetadataManager::ListInlinedDeletionTables() {
+	// duckdb_tables() builds a row for every table on the server
+	string query = "SELECT table_name FROM duckdb_tables() WHERE database_name = current_database() "
+	               "AND schema_name = {METADATA_SCHEMA_NAME_LITERAL} AND starts_with(table_name, "
+	               "'ducklake_inlined_delete_')";
+	return ReadTableNames(*Query(query));
 }
 
 void QuackMetadataManager::ClearCache() {
 	lock_guard<std::recursive_mutex> guard(transaction.GetCatalog().GetMetadataQueryLock());
 	string clear = "CALL quack_clear_cache();";
 	transaction.ExecuteRaw(clear);
+}
+
+bool QuackMetadataManager::ProbeMetadataColumns() {
+	// duckdb_columns() lists every column of the server's metadata schema, so one statement serves every probe
+	return ProbeMetadataColumnsFromListing(
+	    "SELECT table_name, column_name FROM duckdb_columns() WHERE database_name = current_database() "
+	    "AND schema_name = {METADATA_SCHEMA_NAME_LITERAL} ORDER BY table_name, column_index");
 }
 
 void QuackMetadataManager::ProbeServerCapabilities() {
@@ -179,7 +177,14 @@ void QuackMetadataManager::FlushChangesServerSide(DuckLakeTransaction &flush_tra
 	if (!result) {
 		throw IOException("Failed to invoke server-side ducklake_commit: empty result");
 	}
+	if (result->HasError() && DuckLakeTransactionState::CommitMayHaveBeenPublished(result->GetErrorObject())) {
+		// LCOV_EXCL_START: the server did not answer, or its checkpoint failed after it committed
+		flush_transaction.ReportCommitOutcome(DuckLakeCommitOutcome::PUBLICATION_UNKNOWN);
+		// LCOV_EXCL_STOP
+	}
 	result->ThrowIfError("Failed to invoke server-side ducklake_commit: ");
+	// the server answered: the commit is published, also if applying its answer fails
+	flush_transaction.ReportCommitOutcome(DuckLakeCommitOutcome::PUBLISHED);
 	auto row = result->begin();
 	if (row == result->end()) {
 		throw IOException("Server-side ducklake_commit returned no rows");

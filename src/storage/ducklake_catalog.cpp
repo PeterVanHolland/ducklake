@@ -561,7 +561,7 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
 	auto version_snapshot = transaction.GetMetadataManager().GetSchemaVersionSnapshot(table_id, schema_version);
 	DuckLakeSnapshot snapshot(version_snapshot.begin_snapshot, schema_version, 0, 0);
 	optional_ptr<CatalogEntry> entry;
-	if (version_snapshot.recorded) {
+	if (version_snapshot.has_version) {
 		entry = GetEntryById(transaction, snapshot, table_id);
 	} else {
 		// a stand-in snapshot can differ per table, so its catalog is cached apart from the one of the version

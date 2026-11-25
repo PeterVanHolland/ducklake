@@ -500,8 +500,8 @@ public:
 	using MetadataQuery = std::function<unique_ptr<QueryResult>(string)>;
 	//! The snapshot at which a schema version of a table begins, stood in for when the version has no row
 	virtual DuckLakeSchemaVersionSnapshot GetSchemaVersionSnapshot(TableIndex table_id, idx_t schema_version);
-	//! The stand-in of a schema version that no row of the table records: the row of another table, else a surviving
-	//! snapshot of the version, else the snapshot whose columns the inlined tables of the version hold, else the
+	//! The stand-in of a schema version that no row of the table records, a surviving snapshot of the version, else
+	//! the row of another table, else the snapshot whose columns the inlined tables of the version hold, else the
 	//! version recorded before it, else the creation of the table
 	static DuckLakeSchemaVersionSnapshot StandInSchemaVersionSnapshot(const MetadataQuery &query,
 	                                                                  const DuckLakeInlinedColNames &col_names,

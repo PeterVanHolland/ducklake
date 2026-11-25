@@ -1914,8 +1914,17 @@ DuckLakeSchemaVersionSnapshot
 DuckLakeMetadataManager::StandInSchemaVersionSnapshot(const MetadataQuery &query,
                                                       const DuckLakeInlinedColNames &col_names, TableIndex table_id,
                                                       idx_t schema_version, bool row_visibility) {
-	// a version without a row of the table came from an inlined table of a 1.0 catalog: the row of another table has
-	// its commit, a surviving snapshot of the version has the columns of its commit
+	// a version without a row of the table is the one an inlined table was registered at, any surviving snapshot
+	// of the version has its catalog, else the row of another table has its commit
+	auto snapshot = QueryOptIdx(
+	    query,
+	    StringUtil::Format(
+	        "SELECT snapshot_id FROM {METADATA_CATALOG}.ducklake_snapshot WHERE schema_version = %d LIMIT 1",
+	        schema_version),
+	    "Failed to read the snapshots of a schema version from DuckLake: ");
+	if (snapshot.IsValid()) {
+		return {snapshot.GetIndex(), true};
+	}
 	auto recorded = QueryOptIdx(
 	    query,
 	    StringUtil::Format(
@@ -1924,15 +1933,6 @@ DuckLakeMetadataManager::StandInSchemaVersionSnapshot(const MetadataQuery &query
 	    "Failed to read the begin snapshot of a schema version from DuckLake: ");
 	if (recorded.IsValid()) {
 		return {recorded.GetIndex(), true};
-	}
-	auto snapshot =
-	    QueryOptIdx(query,
-	                StringUtil::Format(
-	                    "SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot WHERE schema_version = %d",
-	                    schema_version),
-	                "Failed to read the snapshots of a schema version from DuckLake: ");
-	if (snapshot.IsValid()) {
-		return {snapshot.GetIndex(), false};
 	}
 	// the inlined tables of the version show which columns they hold
 	auto tables = query(StringUtil::Format(R"(

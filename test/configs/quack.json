@@ -267,7 +267,8 @@
       "reason": "A data-only commit of a quack catalog runs on the server, so the client log never shows the metadata reads it makes",
       "paths": [
         "test/sql/stats/stats_reads_filter_table.test",
-        "test/sql/stats/null_first_bounds_unrelated_commits.test"
+        "test/sql/stats/null_first_bounds_unrelated_commits.test",
+        "test/sql/data_inlining/inlined_missing_schema_version_reads.test"
       ]
     }
   ]

@@ -104,10 +104,10 @@ struct DuckLakeTableSchemaVersions {
 	}
 };
 
-//! The snapshot at which a schema version of a table begins, recorded in ducklake_schema_versions or stood in for
+//! The snapshot at which a schema version of a table is read, one that has the version or a stand-in for it
 struct DuckLakeSchemaVersionSnapshot {
 	idx_t begin_snapshot;
-	bool recorded;
+	bool has_version;
 };
 
 struct DuckLakeTableInfo {

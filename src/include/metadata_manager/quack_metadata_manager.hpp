@@ -47,6 +47,7 @@ public:
 		return true;
 	}
 	unordered_set<string> ListInlinedDeletionTables() override;
+	identifier_set_t GetLegacyNamedInlinedTables() override;
 
 protected:
 	string MetadataExistsQuery() const override;

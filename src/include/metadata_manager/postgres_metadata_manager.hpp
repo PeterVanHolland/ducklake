@@ -47,6 +47,7 @@ public:
 	}
 	unordered_set<string> ListInlinedDeletionTables() override;
 	void MigrateInlinedDataTypes() override;
+	identifier_set_t GetLegacyNamedInlinedTables() override;
 	bool IsRetryableCommitError(const string &message) const override;
 	bool ProbeMetadataColumns() override;
 	string CommitErrorWithoutQuery(const string &message) const override;

@@ -1513,7 +1513,39 @@ bool DuckLakeMetadataManager::HasMetadataColumn(const string &table, const strin
 	return false;
 }
 
-void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed) {
+identifier_set_t DuckLakeMetadataManager::GetLegacyNamedInlinedTables() {
+	// the catalog knows the column names, probing every inlined table is slow
+	auto &context = *transaction.GetConnection().context;
+	auto &ducklake_catalog = transaction.GetCatalog();
+	auto &catalog = Catalog::GetCatalog(context, ducklake_catalog.MetadataDatabaseName());
+	auto &schema = catalog.GetSchema(context, ducklake_catalog.MetadataSchemaName());
+	auto legacy_row_id = DuckLakeInlinedColNames(false).row_id;
+	identifier_set_t legacy_tables;
+	schema.Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
+		if (entry.type != CatalogType::TABLE_ENTRY || !entry.name.StartsWith("ducklake_inlined_data_")) {
+			return;
+		}
+		auto &columns = entry.Cast<TableCatalogEntry>().GetColumns();
+		if (columns.LogicalColumnCount() > 0 && columns.GetColumn(LogicalIndex(0)).Name() == legacy_row_id) {
+			legacy_tables.insert(entry.name);
+		}
+	});
+	return legacy_tables;
+}
+
+void DuckLakeMetadataManager::RepairLegacyInlinedTables(bool row_visibility) {
+	auto legacy_tables = GetLegacyNamedInlinedTables();
+	if (legacy_tables.empty()) {
+		return;
+	}
+	// a v1.0 session can also leave out schema versions, added first since the rename ends the repair
+	MigrateInlinedSchemaVersions();
+	MigrateInlinedColumnNames(false, &legacy_tables, row_visibility);
+}
+
+void DuckLakeMetadataManager::MigrateInlinedColumnNames(bool probe_renamed,
+                                                        optional_ptr<const identifier_set_t> legacy_tables,
+                                                        bool row_visibility) {
 	// a dev catalog may have lost its end column already, so its latest version row names the table
 	string tables_query;
 	if (probe_renamed) {
@@ -1522,6 +1554,14 @@ SELECT idt.table_name AS inlined_table_name,
 	(SELECT tbl.table_name FROM {METADATA_CATALOG}.ducklake_table tbl
 	 WHERE tbl.table_id = idt.table_id ORDER BY tbl.begin_snapshot DESC LIMIT 1) AS user_table_name
 FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt)";
+	} else if (row_visibility) {
+		// the live version row of a 2.0 catalog is the one without an end in its companion
+		tables_query = StringUtil::Format(R"(
+SELECT idt.table_name AS inlined_table_name,
+	(SELECT tbl.table_name FROM {METADATA_CATALOG}.ducklake_table tbl WHERE tbl.table_id = idt.table_id AND %s)
+		AS user_table_name
+FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt)",
+		                                  RowVisibility("tbl", RowKind("table"), ""));
 	} else {
 		tables_query = R"(
 SELECT idt.table_name AS inlined_table_name, tbl.table_name AS user_table_name
@@ -1540,6 +1580,9 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 	string renamed_probe;
 	for (auto &row : *tables) {
 		auto table_name = row.GetValue<Identifier>(0);
+		if (legacy_tables && !legacy_tables->count(table_name)) {
+			continue;
+		}
 		auto user_table_name = row.IsNull(1) ? table_name : row.GetValue<Identifier>(1);
 		if (!renamed_probe.empty()) {
 			renamed_probe += " UNION ALL ";
@@ -1580,6 +1623,11 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 				break;
 			}
 			if (user_columns.count(entry.second)) {
+				if (legacy_tables) {
+					// the repair of an attach does not fail for a table it cannot rename
+					table_renames.clear();
+					break;
+				}
 				throw InvalidInputException(
 				    "Failed to rename inlined-data metadata columns while migrating to v1.1: table %s has a "
 				    "column %s colliding with the renamed metadata column. Rename the column and call "
@@ -1589,6 +1637,9 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_table tbl ON idt.table_id = tbl.table_id A
 			table_renames.push_back(entry);
 		}
 		if (unexpected_layout) {
+			if (legacy_tables) {
+				continue;
+			}
 			throw InvalidInputException(
 			    "Failed to rename inlined-data metadata columns of %s while migrating to v1.1: the table has "
 			    "an unexpected column layout",

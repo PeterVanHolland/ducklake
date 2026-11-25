@@ -904,7 +904,14 @@ public:
 	//! Drops the memo of a probe pass
 	void ResetProbedColumns();
 	//! Renames inlined metadata columns to the prefixed variants, skipping already renamed tables
-	virtual void MigrateInlinedColumnNames(bool probe_renamed);
+	//! With legacy_tables only those are renamed, and a table that cannot be renamed is skipped
+	virtual void MigrateInlinedColumnNames(bool probe_renamed,
+	                                       optional_ptr<const identifier_set_t> legacy_tables = nullptr,
+	                                       bool row_visibility = false);
+	//! Repairs the inlined tables that a v1.0 session created after the migration
+	void RepairLegacyInlinedTables(bool row_visibility);
+	//! The inlined tables whose metadata columns have the v1.0 names
+	virtual identifier_set_t GetLegacyNamedInlinedTables();
 	//! Renames the given (old name, new name) columns of each inlined table
 	virtual void RenameInlinedColumns(const map<Identifier, vector<pair<Identifier, Identifier>>> &renames);
 	//! Renames by copying the tables, for a database that parses its whole schema for every renamed column

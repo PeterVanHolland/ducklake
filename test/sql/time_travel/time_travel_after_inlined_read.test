@@ -1,0 +1,70 @@
+# name: test/sql/time_travel/time_travel_after_inlined_read.test
+# description: time travel after a read of a table that started inlining after its creation
+# group: [time_travel]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
+	(DATA_PATH '{DATA_PATH}/time_travel_after_inlined_read', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t0 (id INTEGER)
+
+statement ok
+CREATE TABLE lake.t1 (id INTEGER)
+
+statement ok
+DROP TABLE lake.t0
+
+statement ok
+CREATE TABLE lake.t0 (id INTEGER)
+
+statement ok
+INSERT INTO lake.t0 VALUES (1), (2), (3)
+
+statement ok
+CREATE TABLE lake.t2 AS SELECT 42 AS x
+
+# the first inlined rows of t1 raise the schema version without a schema change of t1
+statement ok
+CALL lake.set_option('data_inlining_row_limit', 5, table_name => 't1')
+
+statement ok
+INSERT INTO lake.t1 VALUES (7)
+
+statement ok
+CREATE TABLE lake.t3 (id INTEGER)
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/time_travel_after_inlined_read')
+
+query I
+SELECT id FROM lake.t1
+----
+7
+
+# snapshot 7 has the schema version of the inlined rows of t1
+query I
+SELECT count(*) FROM lake.t0 AT (VERSION => 7)
+----
+3
+
+query I
+SELECT x FROM lake.t2 AT (VERSION => 7)
+----
+42
+
+query I
+SELECT count(*) FROM ducklake_table_changes('lake', 'main', 't0', 5, 7)
+----
+3

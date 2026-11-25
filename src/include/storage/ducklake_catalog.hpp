@@ -114,11 +114,13 @@ struct DuckLakeTableRecordCountCacheEntry : public ObjectCacheEntry {
 
 //! Cache entry for a DuckLake schema version
 struct DuckLakeSchemaCacheEntry : public ObjectCacheEntry {
-	explicit DuckLakeSchemaCacheEntry(unique_ptr<DuckLakeCatalogSet> catalog_set_p)
-	    : catalog_set(std::move(*catalog_set_p)) {
+	DuckLakeSchemaCacheEntry(unique_ptr<DuckLakeCatalogSet> catalog_set_p, idx_t loaded_snapshot_p)
+	    : catalog_set(std::move(*catalog_set_p)), loaded_snapshot(loaded_snapshot_p) {
 	}
 
 	DuckLakeCatalogSet catalog_set;
+	//! The newest snapshot that the transaction that loaded the schema could see
+	idx_t loaded_snapshot;
 
 	static string ObjectType() {
 		return "ducklake_schema";
@@ -149,6 +151,10 @@ struct DuckLakeAttachedCatalogs : public ObjectCacheEntry {
 class DuckLakeSchemaPinState {
 public:
 	void Pin(shared_ptr<DuckLakeSchemaCacheEntry> entry);
+	//! The first entry kept for a schema cache key, which the transaction reads until its metadata transaction ends
+	shared_ptr<DuckLakeSchemaCacheEntry> GetKept(const string &key);
+	shared_ptr<DuckLakeSchemaCacheEntry> Keep(const string &key, shared_ptr<DuckLakeSchemaCacheEntry> entry);
+	void ForgetKept();
 	//! Clear all pinned schema cache entries for this pin state.
 	void Clear();
 
@@ -156,6 +162,8 @@ private:
 	mutex lock;
 	// Maps from address of the schema cache entry to the schema cache entry.
 	unordered_map<DuckLakeSchemaCacheEntry *, shared_ptr<DuckLakeSchemaCacheEntry>> pins;
+	// Maps from the schema cache key to the entry that the transaction keeps reading for it.
+	unordered_map<string, shared_ptr<DuckLakeSchemaCacheEntry>> kept;
 };
 
 enum class InlinedDeletionCacheResult { EXISTS, DOES_NOT_EXIST, UNKNOWN };
@@ -519,7 +527,7 @@ public:
 private:
 	void DropSchema(ClientContext &context, DropInfo &info) override;
 	unique_ptr<DuckLakeCatalogSet> LoadSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
-	//! Look up (or load) the ObjectCache entry for a given snapshot.
+	//! Look up (or load) the schema cache entry that the transaction reads for a given snapshot.
 	shared_ptr<DuckLakeSchemaCacheEntry> GetSchemaCacheEntry(DuckLakeTransaction &transaction,
 	                                                         DuckLakeSnapshot snapshot);
 	void LoadNameMaps(DuckLakeTransaction &transaction);

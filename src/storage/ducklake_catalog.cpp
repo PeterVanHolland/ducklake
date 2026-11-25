@@ -299,6 +299,7 @@ optional_idx DuckLakeSchemaCacheEntry::GetEstimatedCacheMemory() const {
 void DuckLakeSchemaPinState::Clear() {
 	lock_guard<mutex> guard(lock);
 	pins.clear();
+	kept.clear();
 }
 
 void DuckLakeSchemaPinState::Pin(shared_ptr<DuckLakeSchemaCacheEntry> entry) {
@@ -306,6 +307,24 @@ void DuckLakeSchemaPinState::Pin(shared_ptr<DuckLakeSchemaCacheEntry> entry) {
 	lock_guard<mutex> guard(lock);
 	auto *raw = entry.get();
 	pins.emplace(raw, std::move(entry));
+}
+
+shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeSchemaPinState::GetKept(const string &key) {
+	lock_guard<mutex> guard(lock);
+	auto entry = kept.find(key);
+	return entry == kept.end() ? nullptr : entry->second;
+}
+
+shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeSchemaPinState::Keep(const string &key,
+                                                                  shared_ptr<DuckLakeSchemaCacheEntry> entry) {
+	D_ASSERT(entry);
+	lock_guard<mutex> guard(lock);
+	return kept.emplace(key, std::move(entry)).first->second;
+}
+
+void DuckLakeSchemaPinState::ForgetKept() {
+	lock_guard<mutex> guard(lock);
+	kept.clear();
 }
 
 void DuckLakeCatalog::EnsureCommitInfoProvided(const DuckLakeSnapshotCommit &commit_info) const {
@@ -577,17 +596,35 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
 
 shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeCatalog::GetSchemaCacheEntry(DuckLakeTransaction &transaction,
                                                                           DuckLakeSnapshot snapshot) {
-	auto &cache = GetObjectCacheInstance();
 	auto key = SchemaCacheKey(snapshot.schema_version);
-	auto cached = cache.Get<DuckLakeSchemaCacheEntry>(key);
-	if (cached) {
-		return cached;
+	// a transaction that cannot read metadata tables created after it started keeps the schema it first read
+	bool keeps_schema = !transaction.GetMetadataManager().FindsConcurrentlyCreatedTables();
+	if (keeps_schema) {
+		auto kept = transaction.GetKeptSchemaCacheEntry(key);
+		if (kept) {
+			return kept;
+		}
 	}
-	auto catalog_set = LoadSchemaForSnapshot(transaction, snapshot);
-	lock_guard<mutex> guard(cache_entries_lock);
-	auto entry = cache.GetOrCreate<DuckLakeSchemaCacheEntry>(key, std::move(catalog_set));
-	TrackCacheEntry(key, entry);
-	return entry;
+	auto &cache = GetObjectCacheInstance();
+	auto entry = cache.Get<DuckLakeSchemaCacheEntry>(key);
+	if (!entry) {
+		auto loaded_snapshot = transaction.GetMetadataViewSnapshotId();
+		auto catalog_set = LoadSchemaForSnapshot(transaction, snapshot);
+		lock_guard<mutex> guard(cache_entries_lock);
+		entry = cache.GetOrCreate<DuckLakeSchemaCacheEntry>(key, std::move(catalog_set), loaded_snapshot);
+		TrackCacheEntry(key, entry);
+	}
+	if (!keeps_schema) {
+		return entry;
+	}
+	// a schema loaded after the transaction started can list inlined tables that the transaction cannot read
+	if (entry->loaded_snapshot > snapshot.snapshot_id &&
+	    entry->loaded_snapshot > transaction.GetMetadataViewSnapshotId()) {
+		auto loaded_snapshot = transaction.GetMetadataViewSnapshotId();
+		entry =
+		    make_shared_ptr<DuckLakeSchemaCacheEntry>(LoadSchemaForSnapshot(transaction, snapshot), loaded_snapshot);
+	}
+	return transaction.KeepSchemaCacheEntry(key, std::move(entry));
 }
 
 DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {

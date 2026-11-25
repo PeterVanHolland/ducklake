@@ -1,0 +1,85 @@
+# name: test/sql/data_inlining/inlined_table_created_after_transaction.test
+# description: A transaction keeps reading a table whose inlined table a later commit created, also after an expiry
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
+(DATA_PATH '{DATA_PATH}/inlined_table_created_after_transaction', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.acc (id INTEGER, bal INTEGER)
+
+statement ok
+INSERT INTO lake.acc SELECT range + 1, 100 FROM range(8)
+
+# the inlined table of a table that changed is registered with the schema version of that change
+statement ok
+ALTER TABLE lake.acc ADD COLUMN note VARCHAR
+
+statement ok reader
+BEGIN
+
+statement ok reader
+UPDATE lake.acc SET bal = bal + 2 WHERE id = 1
+
+# a transaction that has its snapshot but has not read the schema yet
+statement ok late
+BEGIN
+
+query I late
+FROM ducklake_current_snapshot('lake')
+----
+3
+
+# rows inlined after both transactions started create the inlined table
+statement ok
+CALL lake.set_option('data_inlining_row_limit', 10)
+
+statement ok
+INSERT INTO lake.acc VALUES (9, 100, 'new')
+
+# the expiry drops the cached schema of the expired snapshots, and the next read loads it again
+statement ok
+CALL ducklake_expire_snapshots('lake', older_than => now())
+
+query II
+SELECT count(*), sum(bal) FROM lake.acc
+----
+9	900
+
+query II reader
+SELECT count(*), sum(bal) FROM lake.acc
+----
+8	802
+
+statement ok reader
+UPDATE lake.acc SET bal = bal + 16 WHERE id = 2
+
+query II reader
+SELECT count(*), sum(bal) FROM lake.acc
+----
+8	818
+
+query II late
+SELECT count(*), sum(bal) FROM lake.acc
+----
+8	800
+
+statement ok late
+COMMIT
+
+statement ok reader
+ROLLBACK
+
+query II
+SELECT count(*), sum(bal) FROM lake.acc
+----
+9	900

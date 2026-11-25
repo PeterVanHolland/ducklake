@@ -1,0 +1,46 @@
+# name: test/sql/data_inlining/snapshot_transaction_reads_after_alter_flush.test
+# description: A transaction that only has its snapshot reads the rows of an inlined table that a flush dropped since
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+# a DuckDB catalog, whose transactions keep reading the metadata tables that were dropped after they started
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/{BASE_TEST_NAME}_lake.db' AS lake
+(DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.acc (id INTEGER, bal INTEGER)
+
+statement ok
+INSERT INTO lake.acc VALUES (1, 100), (2, 100)
+
+statement ok late
+BEGIN
+
+query I late
+FROM ducklake_current_snapshot('lake')
+----
+2
+
+statement ok
+ALTER TABLE lake.acc ADD COLUMN note VARCHAR
+
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+# a read of the old snapshot loads its schema after the flush
+query II
+SELECT count(*), sum(bal) FROM lake.acc AT (VERSION => 2)
+----
+2	200
+
+query II late
+SELECT count(*), sum(bal) FROM lake.acc
+----
+2	200
+
+statement ok late
+COMMIT

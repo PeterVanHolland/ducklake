@@ -271,6 +271,10 @@ public:
 	virtual bool ShowsConcurrentCommits() const {
 		return CommitsEachStatement();
 	}
+	//! Whether metadata reads inside a transaction find the tables that other transactions created after it started
+	virtual bool FindsConcurrentlyCreatedTables() const {
+		return ShowsConcurrentCommits();
+	}
 	//! Whether transactions that started before a metadata table was dropped still read it
 	virtual bool DroppedTablesStayReadable() const;
 	//! Whether a commit inserts inlined rows after its batch instead of sending them as VALUES text in it

@@ -1,0 +1,53 @@
+# name: test/sql/data_inlining/sqlite_wal_inlined_table_created_after_transaction.test
+# description: On a SQLite catalog in WAL mode a transaction keeps reading a table whose inlined table is created later
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+require sqlite_scanner
+
+# the SQLite config skips errors about locks, which none of these statements may raise
+set ignore_error_messages
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/sqlite_wal_inlined_table.db' AS lake
+(DATA_PATH '{TEST_DIR}/sqlite_wal_inlined_table', DATA_INLINING_ROW_LIMIT 0, META_JOURNAL_MODE 'wal')
+
+statement ok
+CREATE TABLE lake.acc (id INTEGER, bal INTEGER)
+
+statement ok
+INSERT INTO lake.acc SELECT range + 1, 100 FROM range(8)
+
+statement ok
+ALTER TABLE lake.acc ADD COLUMN note VARCHAR
+
+statement ok reader
+BEGIN
+
+statement ok reader
+UPDATE lake.acc SET bal = bal + 2 WHERE id = 1
+
+statement ok
+CALL lake.set_option('data_inlining_row_limit', 10)
+
+statement ok
+INSERT INTO lake.acc VALUES (9, 100, 'new')
+
+statement ok
+CALL ducklake_expire_snapshots('lake', older_than => now())
+
+query II
+SELECT count(*), sum(bal) FROM lake.acc
+----
+9	900
+
+query II reader
+SELECT count(*), sum(bal) FROM lake.acc
+----
+8	802
+
+statement ok reader
+ROLLBACK

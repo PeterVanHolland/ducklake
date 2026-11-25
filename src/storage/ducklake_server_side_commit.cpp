@@ -96,11 +96,16 @@ void DuckLakeServerSideCommit::SetRetryConfigOverride(const DuckLakeRetryConfig 
 	retry_config = retry_config_p;
 }
 
+void DuckLakeServerSideCommit::SetFilesOwnedByClient(bool files_owned_by_client_p) {
+	files_owned_by_client = files_owned_by_client_p;
+}
+
 DuckLakeServerSideCommitResult DuckLakeServerSideCommit::Run() {
 	auto catalog_version = ReadCatalogVersion();
 	supports_v1_1_metadata = catalog_version >= DuckLakeVersion::V1_1;
 	supports_v2_0_metadata = catalog_version >= DuckLakeVersion::V2_0_DEV1;
 	supports_file_visibility_events = catalog_version >= DuckLakeVersion::V2_0_DEV1;
+	supports_row_visibility = catalog_version >= DuckLakeVersion::V2_0_DEV1;
 	branch_keyed_lookups = BranchKeyedLookups();
 	ReadCommitHeader();
 	ReadColumnTypes();
@@ -157,6 +162,7 @@ void DuckLakeServerSideCommit::ReadCommitHeader() {
 	}
 	state = make_uniq<DuckLakeTransactionState>(*context.db, /*require_commit_message=*/false, new_name_maps,
 	                                            std::move(data_path), std::move(separator));
+	state->files_owned_by_client = files_owned_by_client;
 	state->commit_info.author = row.GetBaseValue(0);
 	state->commit_info.commit_message = row.GetBaseValue(1);
 	state->commit_info.commit_extra_info = row.GetBaseValue(2);
@@ -219,11 +225,17 @@ void DuckLakeServerSideCommit::ReadColumnTypes() {
 	if (table_ids.empty()) {
 		return;
 	}
-	auto query = StringUtil::Format("SELECT col.table_id, col.column_id, col.column_type "
-	                                "FROM %s.ducklake_column col "
-	                                "WHERE col.end_snapshot IS NULL "
-	                                "AND col.table_id IN (%s)",
-	                                schema_id, JoinIds(table_ids));
+	// the server commits on main, so the live columns are those of main at the transaction snapshot
+	string live = "col.end_snapshot IS NULL";
+	if (supports_row_visibility) {
+		live =
+		    DuckLakeMetadataManager::RowVisibility("col", DuckLakeMetadataManager::RowKind("column"), "{SNAPSHOT_ID}");
+	}
+	auto query = SubstitutePlaceholders(StringUtil::Format("SELECT col.table_id, col.column_id, col.column_type "
+	                                                       "FROM {METADATA_CATALOG}.ducklake_column col "
+	                                                       "WHERE %s AND col.table_id IN (%s)",
+	                                                       live, JoinIds(table_ids)),
+	                                    transaction_snapshot);
 	auto result = RunQuery(query, "read column types");
 	for (auto &row : *result) {
 		column_types.emplace(make_pair(TableIndex(AsIdx(row, 0)), FieldIndex(AsIdx(row, 1))),
@@ -665,10 +677,13 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
                                                              idx_t &committed_schema_version) {
 	DuckLakeCommitContext ctx;
 	ctx.commit_info = state->commit_info;
+	// a commit that a server passes on starts from the snapshot of its client, which other commits can have followed
+	ctx.check_conflicts_first = files_owned_by_client;
 	ctx.skip_drop_empty_inlined = true;
 	ctx.supports_v1_1_metadata = supports_v1_1_metadata;
 	ctx.supports_v2_0_metadata = supports_v2_0_metadata;
 	ctx.supports_file_visibility_events = supports_file_visibility_events;
+	ctx.supports_row_visibility = supports_row_visibility;
 	ctx.branch_keyed_lookups = branch_keyed_lookups;
 	ctx.snapshot_and_stats_query =
 	    DuckLakeMetadataManager::SnapshotAndStatsAndChangesQuery(supports_v1_1_metadata, branch_keyed_lookups, false);
@@ -685,6 +700,10 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
 	};
 	ctx.commit_connection = [this]() {
 		fresh_conn.Commit();
+	};
+	// the outcome only moves forward: PUBLISHED is final
+	ctx.report_commit_outcome = [this](DuckLakeCommitOutcome reported) {
+		commit_outcome = MaxValue(commit_outcome, reported);
 	};
 	ctx.try_rollback = [this]() {
 		if (fresh_conn.context->transaction.HasActiveTransaction()) {
@@ -720,8 +739,8 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
 	};
 	ctx.get_table_column_schema = [this](TableIndex table_id) {
 		vector<DuckLakeColumnSchemaEntry> schema;
-		auto sql =
-		    SubstitutePlaceholders(DuckLakeMetadataManager::GetTableColumnSchemaSql(table_id), transaction_snapshot);
+		auto sql = SubstitutePlaceholders(
+		    DuckLakeMetadataManager::GetTableColumnSchemaSql(table_id, supports_row_visibility), transaction_snapshot);
 		auto result = RunQuery(sql, "read table column schema");
 		for (auto &row : *result) {
 			// parent_column IS NULL => top-level root; otherwise a nested leaf carrying its own leaf type.

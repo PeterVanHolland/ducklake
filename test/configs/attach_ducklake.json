@@ -699,7 +699,8 @@
         "test/sql/storage/distinct_statistics_sample.test",
         "test/sql/explain/tree_renderer_branches.test",
         "test/optimizer/statistics/current_domain_join.test",
-        "test/optimizer/statistics/statistics_additive_duplication.test"
+        "test/optimizer/statistics/statistics_additive_duplication.test",
+        "test/optimizer/statistics/statistics_all_null_comparison.test"
       ]
     },
     {

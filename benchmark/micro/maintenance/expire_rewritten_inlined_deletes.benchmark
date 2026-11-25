@@ -1,0 +1,29 @@
+# name: benchmark/micro/maintenance/expire_rewritten_inlined_deletes.benchmark
+# description: Expire the snapshots that read 2000 rewritten files with an inlined deletion each, rolled back each run
+# group: [maintenance]
+
+name Expire Rewritten Inlined Deletes
+group micro
+subgroup maintenance
+
+require ducklake
+
+require parquet
+
+argument work expire_rewritten_inlined_deletes_work
+
+include benchmark/micro/fixtures/rewritten_inlined_deletes.benchmark.in
+
+run
+BEGIN;
+SELECT count(*) AS expired FROM ducklake_expire_snapshots('lake', older_than => TIMESTAMPTZ '2999-01-01');
+
+# The rollback keeps the snapshots and the old files, so a missed reset leaves nothing to expire in the next run
+cleanup
+@rollback ${lake}_pristine TO ${work}
+
+result_query II
+SELECT expired, (SELECT count(*) FROM ducklake_cleanup_old_files('lake', dry_run => true, cleanup_all => true))
+FROM __answer
+----
+5	2000

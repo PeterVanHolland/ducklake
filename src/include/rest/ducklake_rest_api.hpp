@@ -131,6 +131,8 @@ struct RESTAggregateResult;
 struct RESTChangeColumnType;
 struct RESTColumnDefinition;
 struct RESTColumnIdentifier;
+struct RESTCommitTransactionRequest;
+struct RESTCommitTransactionResponse;
 struct RESTCompactionResult;
 struct RESTCreatedEntry;
 struct RESTDropNotNull;
@@ -175,8 +177,6 @@ struct RESTTableChangesRequest;
 struct RESTTableChangesResponse;
 struct RESTCompactRequest;
 struct RESTCompactResponse;
-struct RESTCommitTransactionRequest;
-struct RESTCommitTransactionResponse;
 struct RESTCreateSchemaRequest;
 struct RESTCreateTableRequest;
 struct RESTCreateViewRequest;
@@ -254,6 +254,8 @@ struct DuckLakeRESTSerializer {
 	static JSONMutableValue Write(JSONWriter &writer, const DuckLakeColumnInfo &value);
 	static JSONMutableValue Write(JSONWriter &writer, const DuckLakeColumnStats &value);
 	static JSONMutableValue Write(JSONWriter &writer, const DuckLakeSnapshotCommit &value);
+	static JSONMutableValue Write(JSONWriter &writer, const RESTCommitTransactionRequest &value);
+	static JSONMutableValue Write(JSONWriter &writer, const RESTCommitTransactionResponse &value);
 	static JSONMutableValue Write(JSONWriter &writer, const RESTCompactionResult &value);
 	static JSONMutableValue Write(JSONWriter &writer, const RESTCreatedEntry &value);
 	static JSONMutableValue Write(JSONWriter &writer, const DuckLakeDataFile &value);
@@ -322,8 +324,6 @@ struct DuckLakeRESTSerializer {
 	static JSONMutableValue Write(JSONWriter &writer, const RESTTableChangesResponse &value);
 	static JSONMutableValue Write(JSONWriter &writer, const RESTCompactRequest &value);
 	static JSONMutableValue Write(JSONWriter &writer, const RESTCompactResponse &value);
-	static JSONMutableValue Write(JSONWriter &writer, const RESTCommitTransactionRequest &value);
-	static JSONMutableValue Write(JSONWriter &writer, const RESTCommitTransactionResponse &value);
 	static JSONMutableValue Write(JSONWriter &writer, const RESTCreateSchemaRequest &value);
 	static JSONMutableValue Write(JSONWriter &writer, const RESTCreateTableRequest &value);
 	static JSONMutableValue Write(JSONWriter &writer, const RESTCreateViewRequest &value);
@@ -358,6 +358,10 @@ template <>
 DuckLakeColumnStats DuckLakeRESTSerializer::Read(RESTJsonIn in);
 template <>
 DuckLakeSnapshotCommit DuckLakeRESTSerializer::Read(RESTJsonIn in);
+template <>
+RESTCommitTransactionRequest DuckLakeRESTSerializer::Read(RESTJsonIn in);
+template <>
+RESTCommitTransactionResponse DuckLakeRESTSerializer::Read(RESTJsonIn in);
 template <>
 RESTCompactionResult DuckLakeRESTSerializer::Read(RESTJsonIn in);
 template <>
@@ -494,10 +498,6 @@ template <>
 RESTCompactRequest DuckLakeRESTSerializer::Read(RESTJsonIn in);
 template <>
 RESTCompactResponse DuckLakeRESTSerializer::Read(RESTJsonIn in);
-template <>
-RESTCommitTransactionRequest DuckLakeRESTSerializer::Read(RESTJsonIn in);
-template <>
-RESTCommitTransactionResponse DuckLakeRESTSerializer::Read(RESTJsonIn in);
 template <>
 RESTCreateSchemaRequest DuckLakeRESTSerializer::Read(RESTJsonIn in);
 template <>
@@ -731,6 +731,66 @@ struct RESTColumnIdentifier {
 	vector<RESTColumnIdentifier> children;
 };
 
+//! The snapshot that a request reads. A `snapshot` is used as-is, which also allows reading at snapshots that
+struct RESTSnapshotReference {
+	//! The snapshot, as returned by `snapshots/latest` and `snapshots/at`.
+	DuckLakeSnapshot snapshot;
+	//! The id of the snapshot.
+	optional_idx snapshot_id;
+};
+
+//! How a commit is retried on conflicts.
+struct RESTRetryConfig {
+	//! The number of retries.
+	idx_t max_retry_count = 0;
+	//! The wait before the first retry.
+	idx_t retry_wait_ms = 0;
+	//! The factor the wait grows with on every retry.
+	double retry_backoff = 0;
+};
+
+//! The changes of a transaction to commit.
+struct RESTCommitTransactionRequest : public RESTSnapshotReference {
+	//! The commit information of the snapshot.
+	unique_ptr<DuckLakeSnapshotCommit> commit_info;
+	//! How the server retries the commit on conflicts.
+	unique_ptr<RESTRetryConfig> retry;
+	//! The changes, applied in order, e.g. `[{"create_table": {...}}, {"insert_rows": {...}}]`.
+	vector<unique_ptr<RESTCommitRequest>> requests;
+};
+
+//! An entry that a commit created.
+struct RESTCreatedEntry {
+	//! The placeholder id of the request that created the entry.
+	int64_t placeholder_id = 0;
+	//! The type of the entry, e.g. `TABLE_ENTRY`.
+	string type;
+	//! The id the commit gave the entry.
+	idx_t id = 0;
+};
+
+//! An option of the DuckLake.
+struct RESTOptionSetting {
+	//! The option, e.g. `data_inlining_row_limit`.
+	string key;
+	//! The value of the option.
+	string value = string("");
+	//! The schema, for options of a schema.
+	optional_idx schema_id;
+	//! The table, for options of a table. A table created in the transaction takes its options from `create_table`.
+	RESTOptional<int64_t> table_id;
+};
+
+//! The result of a commit.
+struct RESTCommitTransactionResponse {
+	//! The committed snapshot, absent if the requests did not create a snapshot (e.g. if they only set options).
+	DuckLakeSnapshot snapshot;
+	//! The entries the transaction created, with the ids the commit gave them.
+	vector<RESTCreatedEntry> entry_ids;
+	//! The options of the tables the transaction created or altered, with the ids the commit gave the tables.
+	vector<RESTOptionSetting> table_options;
+};
+
 //! The compaction of a table.
 struct RESTCompactionResult {
 	//! The schema of the table.
@@ -743,16 +803,6 @@ struct RESTCompactionResult {
 	optional_idx files_created;
 	//! For `flush_inlined_data`: the number of rows that were written to files.
 	optional_idx rows_flushed;
-};
-
-//! An entry that a commit created.
-struct RESTCreatedEntry {
-	//! The placeholder id of the request that created the entry.
-	int64_t placeholder_id = 0;
-	//! The type of the entry, e.g. `TABLE_ENTRY`.
-	string type;
-	//! The id the commit gave the entry.
-	idx_t id = 0;
 };
 
 struct RESTDropNotNull : public RESTAlteration {
@@ -829,18 +879,6 @@ struct RESTRowSet {
 
 //! A set of rows, e.g. the rows of an inlined data table, as the table of an Arrow IPC stream. The columns of the table
 struct RESTInlinedRows : public RESTRowSet {};
-
-//! An option of the DuckLake.
-struct RESTOptionSetting {
-	//! The option, e.g. `data_inlining_row_limit`.
-	string key;
-	//! The value of the option.
-	string value = string("");
-	//! The schema, for options of a schema.
-	optional_idx schema_id;
-	//! The table, for options of a table. A table created in the transaction takes its options from `create_table`.
-	RESTOptional<int64_t> table_id;
-};
 
 struct RESTRemoveColumn : public RESTAlteration {
 	static constexpr const RESTAlterationType TYPE = RESTAlterationType::REMOVE_COLUMN;
@@ -922,16 +960,6 @@ struct RESTResetOptions : public RESTAlteration {
 
 	//! The options to reset.
 	vector<string> options;
-};
-
-//! How a commit is retried on conflicts.
-struct RESTRetryConfig {
-	//! The number of retries.
-	idx_t max_retry_count = 0;
-	//! The wait before the first retry.
-	idx_t retry_wait_ms = 0;
-	//! The factor the wait grows with on every retry.
-	double retry_backoff = 0;
 };
 
 //! Filters of a scan. Filters are optional: a server may ignore them, and a client applies them to the scanned rows
@@ -1042,14 +1070,6 @@ struct RESTSnapshotIncludes {
 	optional_idx cached_metadata_version;
 	//! The next file id of the snapshot of the latest statistics the client has loaded. If the snapshot has a
 	optional_idx cached_data_version;
-};
-
-//! The snapshot that a request reads. A `snapshot` is used as-is, which also allows reading at snapshots that
-struct RESTSnapshotReference {
-	//! The snapshot, as returned by `snapshots/latest` and `snapshots/at`.
-	DuckLakeSnapshot snapshot;
-	//! The id of the snapshot.
-	optional_idx snapshot_id;
 };
 
 struct RESTConfigRequest {
@@ -1189,24 +1209,6 @@ struct RESTCompactRequest {
 struct RESTCompactResponse {
 	//! The compactions that were performed, per table.
 	vector<RESTCompactionResult> results;
-};
-
-struct RESTCommitTransactionRequest : public RESTSnapshotReference {
-	//! The commit information of the snapshot.
-	unique_ptr<DuckLakeSnapshotCommit> commit_info;
-	//! How the server retries the commit on conflicts.
-	unique_ptr<RESTRetryConfig> retry;
-	//! The changes, applied in order, e.g. `[{"create_table": {...}}, {"insert_rows": {...}}]`.
-	vector<unique_ptr<RESTCommitRequest>> requests;
-};
-
-struct RESTCommitTransactionResponse {
-	//! The committed snapshot, absent if the requests did not create a snapshot (e.g. if they only set options).
-	DuckLakeSnapshot snapshot;
-	//! The entries the transaction created, with the ids the commit gave them.
-	vector<RESTCreatedEntry> entry_ids;
-	//! The options of the tables the transaction created or altered, with the ids the commit gave the tables.
-	vector<RESTOptionSetting> table_options;
 };
 
 //! The `create_schema` request of a commit.
@@ -1424,6 +1426,9 @@ struct DuckLakeRESTEndpoints {
 	//! Commits a set of changes atomically.
 	static RESTCommitTransactionResponse CommitTransaction(DuckLakeRESTRequest &request,
 	                                                       const RESTCommitTransactionRequest &parameters);
+	//! Commits a set of changes atomically, in a snapshot that it can share with other transactions.
+	static RESTCommitTransactionResponse GroupCommitTransaction(DuckLakeRESTRequest &request,
+	                                                            const RESTCommitTransactionRequest &parameters);
 };
 
 //! Applies the requests of a commit
@@ -1525,6 +1530,8 @@ public:
 	RESTCompactResponse Compact(const RESTCompactRequest &request);
 	//! Commits a set of changes atomically.
 	RESTCommitTransactionResponse CommitTransaction(const RESTCommitTransactionRequest &request);
+	//! Commits a set of changes atomically, in a snapshot that it can share with other transactions.
+	RESTCommitTransactionResponse GroupCommitTransaction(const RESTCommitTransactionRequest &request);
 
 	//! Maps the paths of the requests and responses to and from the data path of the server, if set
 	virtual optional_ptr<const RESTPathMapper> GetPathMapper() const = 0;

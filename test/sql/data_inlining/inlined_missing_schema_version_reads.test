@@ -1,5 +1,5 @@
 # name: test/sql/data_inlining/inlined_missing_schema_version_reads.test
-# description: Inlined data whose schema version has no row is read at one snapshot of the version, with no catalog load
+# description: Inlined data whose schema version has no row is read at one snapshot of it, with the loaded catalog
 # group: [data_inlining]
 
 require ducklake

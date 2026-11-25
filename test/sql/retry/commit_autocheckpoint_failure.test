@@ -72,6 +72,46 @@ SELECT count(*) FROM glob('{DATA_PATH}/commit_autocheckpoint_failure/**/*.parque
 ----
 1
 
+# a checkpoint that replaces the WAL write fails after writing its header, so the commit took effect
+statement ok
+SET auto_checkpoint_skip_wal_threshold = 0
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO unique_lake.t VALUES (2)
+
+statement ok
+SET wal_autocheckpoint = '1B'
+
+statement ok
+SET debug_checkpoint_abort = 'BEFORE_TRUNCATE'
+
+# the invalidated database leaves the outcome unknown, so the files stay and no retry runs
+statement error
+COMMIT
+----
+<REGEX>:.*Failed to commit DuckLake transaction\.\nThe commit may have taken effect, so the files it wrote are kept\. ducklake_delete_orphaned_files removes them if it did not\.\nFailed to commit: Checkpoint failed for database.*__ducklake_metadata_unique_lake.*
+
+statement ok
+SET debug_checkpoint_abort = 'NONE'
+
+statement ok
+RESET wal_autocheckpoint
+
+statement ok
+DETACH unique_lake
+
+statement ok
+ATTACH 'ducklake:{DUCKDB_METADATA}' AS unique_lake (DATA_PATH '{DATA_PATH}/commit_autocheckpoint_failure', DATA_INLINING_ROW_LIMIT 0)
+
+query I
+SELECT i FROM unique_lake.t ORDER BY i
+----
+1
+2
+
 # a commit that fails before its COMMIT is sent still removes its files
 statement ok con2
 SET ducklake_max_retry_count = 0
@@ -83,10 +123,10 @@ statement ok con2
 BEGIN
 
 statement ok con1
-INSERT INTO unique_lake.t VALUES (2)
+INSERT INTO unique_lake.t VALUES (3)
 
 statement ok con2
-INSERT INTO unique_lake.t VALUES (3)
+INSERT INTO unique_lake.t VALUES (4)
 
 statement ok con1
 COMMIT
@@ -99,10 +139,11 @@ Exceeded the maximum retry count of 0
 query I
 SELECT count(*) FROM glob('{DATA_PATH}/commit_autocheckpoint_failure/**/*.parquet')
 ----
-2
+3
 
 query I
 SELECT i FROM unique_lake.t ORDER BY i
 ----
 1
 2
+3

@@ -593,7 +593,8 @@
         "test/sql/compaction/user_columns_named_like_internal_columns.test",
         "test/sql/data_inlining/data_inlining_transaction_local_field_readd_rejected.test",
         "test/sql/data_inlining/data_inlining_variant_stats.test",
-        "test/sql/compaction/compaction_shared_schema_version_begin.test"
+        "test/sql/compaction/compaction_shared_schema_version_begin.test",
+        "test/sql/data_inlining/data_inlining_shared_schema_version_begin.test"
       ]
     },
     {

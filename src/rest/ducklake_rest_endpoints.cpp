@@ -240,27 +240,11 @@ static string MissingFieldExpression(const DuckLakeFieldId &field) {
 	                          field.Type().ToString());
 }
 
-//! Whether a field was written with the type and the (nested) field ids that it has
-static bool SameFields(const DuckLakeFieldId &written, const DuckLakeFieldId &field) {
-	auto &written_children = written.Children();
-	auto &children = field.Children();
-	if (written.GetFieldIndex() != field.GetFieldIndex() || written.Type() != field.Type() ||
-	    written_children.size() != children.size()) {
-		return false;
-	}
-	for (idx_t i = 0; i < children.size(); i++) {
-		if (!SameFields(*written_children[i], *children[i])) {
-			return false;
-		}
-	}
-	return true;
-}
-
 //! The expression that turns a value of a field as it was written into a value of the field as it is, matching the
 //! (nested) fields by their field ids
 static string EvolveFieldExpression(const string &expression, const DuckLakeFieldId &written,
                                     const DuckLakeFieldId &field, idx_t depth) {
-	if (SameFields(written, field)) {
+	if (written.SameFields(field)) {
 		return expression;
 	}
 	auto &written_children = written.Children();

@@ -20,6 +20,12 @@
   ],
   "skip_tests": [
     {
+      "reason": "SQLite reports its own types for the columns of an inlined data table, they cannot confirm a table",
+      "paths": [
+        "test/sql/data_inlining/data_inlining_shared_schema_version_begin.test"
+      ]
+    },
+    {
       "reason": "Only DuckDB catalogs drop the empty inlined data table that an ALTER supersedes",
       "paths": [
         "test/sql/alter/alter_drops_empty_inlined_tables.test"

@@ -512,13 +512,15 @@ public:
 	                                                     bool require_columns = false);
 	//! The snapshots that ended columns of the table, in order
 	vector<idx_t> GetColumnEndSnapshots(TableIndex table_id);
-	//! The snapshot whose table has the columns of the inlined table of a schema version, the one that created the
-	//! table, else the one of its first row, else the first of that schema version, invalid when none has them,
-	//! with require_columns that throws when the inlined table has rows to flush
+	//! The snapshot of the table that the rows of the inlined table of a schema version were written for, invalid when
+	//! it cannot be told, which unresolved tells from a schema version without an inlined table. With require_columns
+	//! that throws when the inlined table has rows to flush
 	DuckLakeSnapshot GetInlinedTableSnapshot(TableIndex table_id, idx_t schema_version, DuckLakeSnapshot created,
-	                                         bool require_columns);
+	                                         bool require_columns, bool &unresolved);
 	//! The newest snapshot the transaction sees the table at, invalid when there is none
 	DuckLakeSnapshot GetNewestTableSnapshot(TableIndex table_id);
+	//! The snapshots at which a column of the table began or ended, in ascending order
+	vector<idx_t> GetColumnChangeSnapshots(TableIndex table_id);
 	virtual DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! The net row count of the data files that were committed before the snapshot's next file id
 	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);

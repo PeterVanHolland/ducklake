@@ -308,7 +308,7 @@ SELECT s, f FROM dl.f
 ----
 x	1.5
 
-# the text of y is converted, but without a snapshot of its schema version its row is read with the table as created
+# the text of y is converted, and without a snapshot of its schema version its row still tells its table
 query I
 SELECT string_agg(data_type, ', ' ORDER BY ordinal_position) FROM postgres_query('__ducklake_metadata_dl',
 	'SELECT data_type, ordinal_position FROM information_schema.columns
@@ -316,22 +316,18 @@ SELECT string_agg(data_type, ', ' ORDER BY ordinal_position) FROM postgres_query
 ----
 bytea, bytea
 
-query I
-SELECT a FROM dl.y
+query III
+SELECT a, b, c FROM dl.y
 ----
-x
+x	y	NULL
 
-# so a flush, which the text stopped before, is refused and the value of b stays
-statement error
+statement ok
 CALL ducklake_flush_inlined_data('dl', table_name => 'y')
-----
-the columns of its rows cannot be told
 
-query I
-SELECT * FROM postgres_query('__ducklake_metadata_dl',
-	'SELECT convert_from(b, ''UTF8'') FROM ducklake_inlined_data_7_21')
+query III
+SELECT a, b, c FROM dl.y
 ----
-y
+x	y	NULL
 
 # the row of w is read and flushed with the table as created, which has no b, so its text is kept and stops the flush
 query I
@@ -346,13 +342,19 @@ CALL ducklake_flush_inlined_data('dl', table_name => 'w')
 ----
 decode
 
-# the first schema version that v has left is read and flushed with the table at its begin, which has no b either
+# the table at the begin of the first schema version that v has left has no b, so its text is kept too. Its row
+# tells its table, a flush of the text still needs it converted
 query I
 SELECT string_agg(data_type, ', ' ORDER BY ordinal_position) FROM postgres_query('__ducklake_metadata_dl',
 	'SELECT data_type, ordinal_position FROM information_schema.columns
 	WHERE table_name = ''ducklake_inlined_data_9_27'' AND column_name IN (''a'', ''b'')')
 ----
 character varying, character varying
+
+query III
+SELECT a, b, c FROM dl.v
+----
+x	y	NULL
 
 statement error
 CALL ducklake_flush_inlined_data('dl', table_name => 'v')
@@ -382,8 +384,8 @@ query III
 SELECT table_id, begin_snapshot, schema_version FROM __ducklake_metadata_dl.ducklake_schema_versions
 WHERE table_id = 10 ORDER BY ALL
 ----
-10	39	29
-10	40	30
+10	40	29
+10	41	30
 
 statement ok
 CALL postgres_execute('__ducklake_metadata_dl',
@@ -391,7 +393,7 @@ CALL postgres_execute('__ducklake_metadata_dl',
 	ALTER COLUMN b TYPE VARCHAR USING convert_from(b, ''UTF8'')')
 
 statement ok
-UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 39 WHERE schema_version = 30
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 40 WHERE schema_version = 30
 
 statement ok
 DETACH dl

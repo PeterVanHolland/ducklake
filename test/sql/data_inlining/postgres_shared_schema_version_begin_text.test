@@ -33,14 +33,59 @@ INSERT INTO dl.t VALUES (1, 'text')
 statement ok
 ALTER TABLE dl.t ADD COLUMN c INTEGER
 
+statement ok
+CREATE TABLE dl.e (a INTEGER)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'e')
+
+statement ok
+ALTER TABLE dl.e ADD COLUMN s STRUCT(x INTEGER)
+
+statement ok
+INSERT INTO dl.e VALUES (1, {'x': 5})
+
+statement ok
+ALTER TABLE dl.e ADD COLUMN c INTEGER
+
+statement ok
+CREATE TABLE dl.f (a INTEGER)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'f')
+
+statement ok
+ALTER TABLE dl.f ADD COLUMN d DATE
+
+statement ok
+INSERT INTO dl.f VALUES (1, DATE '2026-01-02')
+
+statement ok
+ALTER TABLE dl.f ADD COLUMN c INTEGER
+
 # DuckLake 0.3 stored text as text, and its type migration skipped the inlined tables of such schema versions
 statement ok
 CALL postgres_execute('__ducklake_metadata_dl',
 	'ALTER TABLE ducklake_inlined_data_1_2 ALTER COLUMN b TYPE VARCHAR USING convert_from(b, ''UTF8'')')
 
+# a type migration that took the struct of e and the date of f for text columns of their names encoded them
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE ducklake_inlined_data_2_5 ALTER COLUMN s TYPE BYTEA USING convert_to(s, ''UTF8'')')
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE ducklake_inlined_data_3_8 ALTER COLUMN d TYPE BYTEA USING convert_to(d, ''UTF8'')')
+
 # the rows of test/sql/migration/migrated_inlined_schema_version.test
 statement ok
 UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 1 WHERE schema_version IN (2, 3)
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 5 WHERE schema_version IN (5, 6)
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 9 WHERE schema_version IN (8, 9)
 
 statement ok
 DETACH dl
@@ -59,3 +104,20 @@ query I
 SELECT a FROM dl.t WHERE b = 'text'
 ----
 1
+
+# no table reads a struct or a date from a blob, so the rows of e and f are read with the tables as created
+query I
+SELECT a FROM dl.e
+----
+1
+
+statement ok
+SELECT * FROM dl.e
+
+query I
+SELECT a FROM dl.f
+----
+1
+
+statement ok
+SELECT * FROM dl.f

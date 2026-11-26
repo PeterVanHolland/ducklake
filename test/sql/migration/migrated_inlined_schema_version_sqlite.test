@@ -93,7 +93,7 @@ NULL
 statement ok
 DETACH between
 
-# once the snapshots of those schema versions are expired SQLite has nothing to tell the columns of t by
+# once the snapshots of those schema versions are expired, the rows of an inlined table still tell its table
 unzip data/old_ducklake/migrated_inlined_schema_version_sqlite.db.gz {TEST_DIR}/migrated_inlined_sqlite_expired.db
 
 statement ok
@@ -112,31 +112,37 @@ ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite_expired.db' AS betwee
 	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite_expired', OVERRIDE_DATA_PATH TRUE,
 	METADATA_CATALOG 'between_expired_meta', DATA_INLINING_ROW_LIMIT 10)
 
-# a flush with the table as created would lose the values of b, so it is refused and the rows stay
-statement error
-CALL ducklake_flush_inlined_data('between_expired', table_name => 't')
-----
-the columns of its rows cannot be told
-
+# no column of t changed between the rows of its inlined table, so they were written for the table of the first one
 query II
-SELECT a, b FROM between_expired_meta.ducklake_inlined_data_1_2 ORDER BY ALL
+SELECT a, b FROM between_expired.t ORDER BY ALL
 ----
 1	10
 2	20
 
-# rows that the transaction deleted are not flushed, so they do not refuse it
-statement ok
-BEGIN
+query IIIII
+SELECT a, v, d, s, dc FROM between_expired.m
+----
+1	text	2026-01-02	{'x': 5}	1.25
+
+foreach flushed t m
 
 statement ok
-DELETE FROM between_expired.t
+CALL ducklake_flush_inlined_data('between_expired', table_name => '{flushed}')
 
-statement ok
-CALL ducklake_flush_inlined_data('between_expired', table_name => 't')
+endloop
 
-statement ok
-ROLLBACK
+query II
+SELECT a, b FROM between_expired.t ORDER BY ALL
+----
+1	10
+2	20
 
-# u has no such rows and is flushed
-statement ok
-CALL ducklake_flush_inlined_data('between_expired', table_name => 'u')
+query IIIII
+SELECT a, v, d, s, dc FROM between_expired.m
+----
+1	text	2026-01-02	{'x': 5}	1.25
+
+query I
+SELECT count(*) FROM between_expired_meta.ducklake_inlined_data_1_2
+----
+0

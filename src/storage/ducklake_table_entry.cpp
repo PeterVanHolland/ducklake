@@ -371,44 +371,44 @@ unique_ptr<BaseStatistics> DuckLakeTableEntry::GetStatistics(ClientContext &cont
 	return GetColumnStats(field_id, *table_stats);
 }
 
-//! Whether a value of the field can be NaN, which only the statistics of the table rule out
-static bool FieldCanHaveNaN(const DuckLakeFieldId &field_id, optional_ptr<const DuckLakeTableStats> table_stats) {
+//! Collects the floating point fields, returns false for a VARIANT whose statistics are not checked
+static bool CollectFloatingFields(const DuckLakeFieldId &field_id, vector<FieldIndex> &result) {
 	auto &type = field_id.Type();
 	if (type.id() == LogicalTypeId::VARIANT) {
-		// the statistics of shredded values are not checked
-		return true;
+		return false;
 	}
 	if (type.IsFloating()) {
-		if (!table_stats) {
-			return true;
-		}
-		auto entry = table_stats->column_stats.find(field_id.GetFieldIndex());
-		return entry == table_stats->column_stats.end() || !entry->second.has_contains_nan ||
-		       entry->second.contains_nan;
+		result.push_back(field_id.GetFieldIndex());
 	}
 	for (auto &child : field_id.Children()) {
-		if (FieldCanHaveNaN(*child, table_stats)) {
+		if (!CollectFloatingFields(*child, result)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool DuckLakeTableEntry::CanHaveNaN(DuckLakeTransaction &transaction) {
+	vector<FieldIndex> floating_fields;
+	for (auto &field_id : field_data->GetFieldIds()) {
+		if (!CollectFloatingFields(*field_id, floating_fields)) {
+			return true;
+		}
+	}
+	if (floating_fields.empty()) {
+		return false;
+	}
+	auto table_stats = GetTableStats(transaction);
+	if (!table_stats) {
+		return true;
+	}
+	for (auto &field_index : floating_fields) {
+		auto entry = table_stats->column_stats.find(field_index);
+		if (entry == table_stats->column_stats.end() || !entry->second.has_contains_nan || entry->second.contains_nan) {
 			return true;
 		}
 	}
 	return false;
-}
-
-bool DuckLakeTableEntry::CanHaveNaN(DuckLakeTransaction &transaction) {
-	auto any_field_can_have_nan = [&](optional_ptr<const DuckLakeTableStats> table_stats) {
-		for (auto &field_id : field_data->GetFieldIds()) {
-			if (FieldCanHaveNaN(*field_id, table_stats)) {
-				return true;
-			}
-		}
-		return false;
-	};
-	if (!any_field_can_have_nan(nullptr)) {
-		// no floating point values, so the statistics are not needed
-		return false;
-	}
-	auto table_stats = GetTableStats(transaction);
-	return any_field_can_have_nan(table_stats.get());
 }
 
 // LCOV_EXCL_START
@@ -422,7 +422,7 @@ unique_ptr<FunctionData> DuckLakeFunctions::BindDuckLakeScan(ClientContext &cont
 	named_argument_map_t param_map;
 	// the column types come from the catalog, so a session setting must not turn BLOB columns into VARCHAR
 	param_map.insert(Identifier("binary_as_string"), Value::BOOLEAN(false));
-	// the bounds of a file of another writer leave out its NaN values, so they only prune when no NaN is possible
+	// the bounds of a file of another writer do not cover its NaN values
 	auto &function_info = function.function_info->Cast<DuckLakeFunctionInfo>();
 	param_map.insert(Identifier("can_have_nan"), Value::BOOLEAN(function_info.CanHaveNaN()));
 	vector<LogicalType> return_types;

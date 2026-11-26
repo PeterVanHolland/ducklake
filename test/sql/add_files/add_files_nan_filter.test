@@ -105,11 +105,6 @@ UPDATE dl.t SET d = 7 WHERE d > 100
 ----
 1
 
-query I
-DELETE FROM dl.t WHERE f > 100
-----
-1
-
 query II
 SELECT f, d FROM dl.t ORDER BY ALL
 ----
@@ -117,6 +112,7 @@ SELECT f, d FROM dl.t ORDER BY ALL
 1.0	1.0
 5.0	5.0
 6.0	6.0
+nan	7.0
 
 # NaN values in nested columns
 statement ok
@@ -134,3 +130,8 @@ query I
 SELECT id FROM dl.n WHERE l[1] > 100
 ----
 3
+
+query I
+DELETE FROM dl.n WHERE s.x > 100
+----
+1

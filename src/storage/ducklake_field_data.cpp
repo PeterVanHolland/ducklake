@@ -2,6 +2,8 @@
 #include "common/ducklake_util.hpp"
 
 #include "duckdb/common/enum_util.hpp"
+#include "duckdb/common/sql_identifier.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/exception/catalog_exception.hpp"
 #include "duckdb/parser/column_list.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
@@ -138,6 +140,83 @@ unique_ptr<ParsedExpression> DuckLakeFieldId::GetInitialDefault() const {
 		return ConstantExpression::FromValue(Value(type));
 	}
 	return ConstantExpression::FromValue(column_data.initial_default);
+}
+
+string DuckLakeFieldId::MissingFieldExpression() const {
+	auto initial_default = GetInitialDefault();
+	return StringUtil::Format("CAST(%s AS %s)", initial_default ? initial_default->ToString() : "NULL",
+	                          type.ToString());
+}
+
+bool DuckLakeFieldId::SameFields(const DuckLakeFieldId &written) const {
+	auto &written_children = written.Children();
+	if (written.GetFieldIndex() != GetFieldIndex() || written.Type() != type ||
+	    written_children.size() != children.size()) {
+		return false;
+	}
+	for (idx_t i = 0; i < children.size(); i++) {
+		if (!children[i]->SameFields(*written_children[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
+string DuckLakeFieldId::EvolveFieldExpression(const string &expression, const DuckLakeFieldId &written,
+                                              idx_t depth) const {
+	if (SameFields(written)) {
+		return expression;
+	}
+	auto &written_children = written.Children();
+	auto variable = "x" + to_string(depth);
+	switch (type.id()) {
+	case LogicalTypeId::STRUCT: {
+		if (written.Type().id() != LogicalTypeId::STRUCT) {
+			break;
+		}
+		vector<string> entries;
+		for (auto &child : children) {
+			optional_ptr<const DuckLakeFieldId> written_child;
+			for (auto &candidate : written_children) {
+				if (candidate->GetFieldIndex() == child->GetFieldIndex()) {
+					written_child = candidate.get();
+				}
+			}
+			string value;
+			if (written_child) {
+				auto extracted = StringUtil::Format("struct_extract(%s, %s)", expression,
+				                                    SQLString::ToString(written_child->Name().GetIdentifierName()));
+				value = child->EvolveFieldExpression(extracted, *written_child, depth + 1);
+			} else {
+				value = child->MissingFieldExpression();
+			}
+			entries.push_back(
+			    StringUtil::Format("%s: %s", SQLString::ToString(child->Name().GetIdentifierName()), value));
+		}
+		return StringUtil::Format("CASE WHEN %s IS NULL THEN NULL ELSE {%s} END", expression,
+		                          StringUtil::Join(entries, ", "));
+	}
+	case LogicalTypeId::LIST:
+		if (written.Type().id() != LogicalTypeId::LIST || written_children.size() != 1 || children.size() != 1) {
+			break;
+		}
+		return StringUtil::Format("list_transform(%s, lambda %s: %s)", expression, variable,
+		                          children[0]->EvolveFieldExpression(variable, *written_children[0], depth + 1));
+	case LogicalTypeId::MAP:
+		if (written.Type().id() != LogicalTypeId::MAP || written_children.size() != 2 || children.size() != 2) {
+			break;
+		}
+		return StringUtil::Format(
+		    "map_from_entries(list_transform(map_entries(%s), lambda %s: {'key': %s, 'value': %s}))", expression,
+		    variable,
+		    children[0]->EvolveFieldExpression(StringUtil::Format("struct_extract(%s, 'key')", variable),
+		                                       *written_children[0], depth + 1),
+		    children[1]->EvolveFieldExpression(StringUtil::Format("struct_extract(%s, 'value')", variable),
+		                                       *written_children[1], depth + 1));
+	default:
+		break;
+	}
+	return StringUtil::Format("CAST(%s AS %s)", expression, type.ToString());
 }
 
 unique_ptr<DuckLakeFieldId> DuckLakeFieldId::FieldIdFromColumn(const ColumnDefinition &col, idx_t &column_id,

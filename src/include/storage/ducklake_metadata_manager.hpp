@@ -338,7 +338,13 @@ public:
 	virtual string GetColumnTypeInternal(const LogicalType &column_type);
 	//! Whether an inlined column of this type is stored as a blob that a read decodes
 	bool DecodesInlinedColumn(const LogicalType &type);
-	string CastColumnToTarget(const string &column, const LogicalType &type);
+	//! Reads an inlined column as its type. A flush only takes text as a blob, a read also as older versions stored it
+	string CastColumnToTarget(const string &column, const LogicalType &type, bool flush = false);
+	//! The columns of an inlined table that are not stored as the storage type of their type, empty without any
+	virtual vector<bool> InlinedColumnsStoredAsValues(const Identifier &inlined_table_name,
+	                                                  const vector<LogicalType> &types) {
+		return vector<bool>();
+	}
 	//! The inlined rows to flush with typed columns, without those this transaction deleted
 	string InlinedFlushSource(const Identifier &inlined_table_name, const DuckLakeTableEntry &table);
 	//! The filter of the inlined rows to flush, empty when this transaction deleted none
@@ -1004,6 +1010,7 @@ protected:
 	bool CanInlineColumn(const Identifier &name, const LogicalType &type);
 	string GetInliningObstacle(const Identifier &name, const LogicalType &type);
 	string GetColumnType(const DuckLakeColumnInfo &col);
+	string GetColumnType(const LogicalType &column_type);
 	string GetColumnDefinitions(const vector<DuckLakeColumnInfo> &columns);
 	string GetKnownFilesForCleanupQuery() const;
 

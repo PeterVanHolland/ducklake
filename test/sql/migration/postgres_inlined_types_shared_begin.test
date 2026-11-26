@@ -276,10 +276,10 @@ SELECT table_name, data_type FROM postgres_query('__ducklake_metadata_dl',
 ducklake_inlined_data_3_6	character varying
 ducklake_inlined_data_3_8	character varying
 
-query I
-SELECT a FROM dl.z
+query II
+SELECT a, s FROM dl.z
 ----
-1
+1	x
 
 # the struct of g is not taken for the text column that the table had at that begin
 query III

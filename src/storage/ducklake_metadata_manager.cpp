@@ -1940,12 +1940,8 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 					    field.Name().GetIdentifierName() != created_field->Name().GetIdentifierName()) {
 						return false;
 					}
-				} else if (of_schema_version) {
-					// an older version stored text as text, which is not decoded
-					if (DecodesInlinedColumn(column.Type()) && stored_type != LogicalType::BLOB) {
-						return false;
-					}
-				} else if (!TypeIsNativelySupported(column.Type()) || stored_type != column.Type()) {
+				} else if (!of_schema_version &&
+				           (!TypeIsNativelySupported(column.Type()) || stored_type != column.Type())) {
 					// a later column of the table of a row is only known where it is stored as its type
 					return false;
 				}
@@ -4759,7 +4755,7 @@ bool DuckLakeMetadataManager::DecodesInlinedColumn(const LogicalType &type) {
 	return type.id() == LogicalTypeId::VARCHAR && !TypeIsNativelySupported(type);
 }
 
-string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const LogicalType &type) {
+string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const LogicalType &type, bool flush) {
 	auto &metadata_type = transaction.GetCatalog().MetadataType();
 	// a column created with an overridden type is cast back like on any other database
 	auto storage_type = DuckLakeUtil::GetInlinedStorageType(*this, type);
@@ -4769,8 +4765,13 @@ string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const L
 		return DuckLakeTypes::IsNested(type) ? "CAST(" + column + " AS " + type.ToString() + ")" : column;
 	}
 	auto expression = column;
-	if (DecodesInlinedColumn(type)) {
+	if (DecodesInlinedColumn(type) && flush) {
 		expression = "decode(" + expression + ")";
+	} else if (DecodesInlinedColumn(type)) {
+		// an older version stored the text itself, the plan keeps the branch of the stored type
+		expression = StringUtil::Format("CASE WHEN typeof(%s) = 'BLOB' THEN decode(CAST(%s AS BLOB)) ELSE CAST(%s AS "
+		                                "VARCHAR) END",
+		                                column, column, column);
 	}
 	expression = "CAST(" + expression + " AS " + storage_type.ToString() + ")";
 	if (storage_type != type) {
@@ -4788,7 +4789,7 @@ string DuckLakeMetadataManager::InlinedFlushSource(const Identifier &inlined_tab
 	bool has_casts = false;
 	for (auto &col : table.GetColumns().Physical()) {
 		auto name = SQLIdentifier::ToString(col.Name());
-		auto typed_column = CastColumnToTarget(name, col.Type());
+		auto typed_column = CastColumnToTarget(name, col.Type(), true);
 		if (typed_column != name) {
 			has_casts = true;
 			typed_column += " AS " + name;
@@ -4827,7 +4828,10 @@ string DuckLakeMetadataManager::InlinedFlushOrder(const string &sort_order_sql) 
 }
 
 string DuckLakeMetadataManager::GetColumnType(const DuckLakeColumnInfo &col) {
-	auto column_type = DuckLakeTypes::FromColumnInfo(col);
+	return GetColumnType(DuckLakeTypes::FromColumnInfo(col));
+}
+
+string DuckLakeMetadataManager::GetColumnType(const LogicalType &column_type) {
 	if (!TypeIsNativelySupported(column_type)) {
 		// scalars including VARIANT get a backend type, nested types are stored as text
 		auto storage_type = DuckLakeUtil::GetInlinedStorageType(*this, column_type);
@@ -5228,7 +5232,8 @@ string DuckLakeMetadataManager::WriteNewViews(const vector<DuckLakeViewInfo> &ne
 }
 
 static unique_ptr<SQLStatement> InlinedDataInsert(DuckLakeTransaction &transaction, const DuckLakeSnapshot &snapshot,
-                                                  const DuckLakeInlinedDataInfo &entry, const Identifier &table_name) {
+                                                  const DuckLakeInlinedDataInfo &entry, const Identifier &table_name,
+                                                  const vector<bool> &stored_as_values) {
 	auto &metadata_manager = transaction.GetMetadataManager();
 	auto &catalog = transaction.GetCatalog();
 	auto context = transaction.context.lock();
@@ -5261,8 +5266,13 @@ static unique_ptr<SQLStatement> InlinedDataInsert(DuckLakeTransaction &transacti
 
 	vector<string> projections {"col" + to_string(types.size()), to_string(snapshot.snapshot_id), "NULL"};
 	for (idx_t c = 0; c < data.ColumnCount(); c++) {
-		projections.push_back(
-		    DuckLakeUtil::InlinedStorageExpression(metadata_manager, "col" + to_string(c + 1), data.Types()[c]));
+		auto column = "col" + to_string(c + 1);
+		if (c < stored_as_values.size() && stored_as_values[c]) {
+			// the insert casts the value to the type that the column is stored with
+			projections.push_back(std::move(column));
+			continue;
+		}
+		projections.push_back(DuckLakeUtil::InlinedStorageExpression(metadata_manager, column, data.Types()[c]));
 	}
 	auto select = make_uniq<SelectNode>();
 	select->select_list = Parser::GetBuiltinParser().ParseExpressionList(StringUtil::Join(projections, ", "));
@@ -5311,6 +5321,7 @@ string DuckLakeMetadataManager::WriteNewInlinedData(DuckLakeSnapshot &commit_sna
 		if (!new_inlined_table) {
 			schema_versions = transaction.GetCatalog().GetTableSchemaVersions(transaction, entry.table_id);
 		}
+		vector<bool> stored_as_values;
 		if (inlined_table_name.empty() && !new_inlined_table) {
 			auto query = LatestInlinedTableQuery(entry.table_id.index) + ";";
 			auto result = Query(commit_snapshot, query);
@@ -5321,6 +5332,10 @@ string DuckLakeMetadataManager::WriteNewInlinedData(DuckLakeSnapshot &commit_sna
 				}
 				inlined_table_name = row.GetValue<Identifier>(0);
 				insert_inlined_table_name_cache[entry.table_id.index] = inlined_table_name;
+			}
+			if (!inlined_table_name.empty()) {
+				// an inlined table of an earlier commit can have the column types of an older version
+				stored_as_values = InlinedColumnsStoredAsValues(inlined_table_name, entry.data->data->Types());
 			}
 		}
 
@@ -5381,8 +5396,10 @@ string DuckLakeMetadataManager::WriteNewInlinedData(DuckLakeSnapshot &commit_sna
 		for (auto &type : entry.data->data->Types()) {
 			needs_encoding |= DuckLakeUtil::GetInlinedStorageType(*this, type) != type;
 		}
-		if (needs_encoding || InsertsInlinedRowsAfterBatch(entry.data->data->Count())) {
-			inlined_inserts.push_back(InlinedDataInsert(transaction, commit_snapshot, entry, inlined_table_name));
+		// the VALUES text of a batch only fits columns in the storage type of their type
+		if (needs_encoding || !stored_as_values.empty() || InsertsInlinedRowsAfterBatch(entry.data->data->Count())) {
+			inlined_inserts.push_back(
+			    InlinedDataInsert(transaction, commit_snapshot, entry, inlined_table_name, stored_as_values));
 			continue;
 		}
 		const bool has_preserved_row_ids = entry.data->HasPreservedRowIds();

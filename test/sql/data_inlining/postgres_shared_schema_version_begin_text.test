@@ -1,5 +1,5 @@
 # name: test/sql/data_inlining/postgres_shared_schema_version_begin_text.test
-# description: an inlined table that kept the text columns of DuckLake 0.3 is read without decoding them
+# description: an inlined table that kept the text columns of DuckLake 0.3 is read with its text
 # group: [data_inlining]
 
 require ducklake
@@ -49,11 +49,13 @@ statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
 	(DATA_PATH '{DATA_PATH}/postgres_shared_begin_text', DATA_INLINING_ROW_LIMIT 0)
 
-# a read of b would decode text, so the table is read as it was created
+# the text of b is read as it is stored
+query III
+SELECT * FROM dl.t
+----
+1	text	NULL
+
 query I
-SELECT a FROM dl.t
+SELECT a FROM dl.t WHERE b = 'text'
 ----
 1
-
-statement ok
-SELECT * FROM dl.t

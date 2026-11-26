@@ -1163,14 +1163,13 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 			}
 		}
 	}
-	auto &metadata_manager = transaction.GetMetadataManager();
-	bool shows_later_commits = metadata_manager.ShowsConcurrentCommits() && !metadata_manager.IsRemote();
-	bool verify_snapshot = is_reader && shows_later_commits;
+	bool reads_later_commits = transaction.ReadsLaterCommits();
+	bool verify_snapshot = is_reader && reads_later_commits;
 	if (verify_snapshot && transaction.NewerSnapshotCommitted(false)) {
 		return nullptr;
 	}
-	auto global_stats =
-	    metadata_manager.GetGlobalTableStats(snapshot, load_tables ? cache_tables : vector<TableIndex>());
+	auto global_stats = transaction.GetMetadataManager().GetGlobalTableStats(
+	    snapshot, load_tables ? cache_tables : vector<TableIndex>());
 	// no snapshot was committed while the statistics were read if none is there afterwards
 	if (verify_snapshot && transaction.NewerSnapshotCommitted()) {
 		return nullptr;
@@ -1191,7 +1190,7 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 			    make_shared_ptr<DuckLakeTableStatsCacheEntry>(snapshot.schema_version, std::move(*stats_entry->second));
 		}
 		// where reads show later commits, the statistics that a commit reads can be theirs
-		entry->snapshot_id = shows_later_commits && !is_reader ? DConstants::INVALID_INDEX : snapshot.snapshot_id;
+		entry->snapshot_id = reads_later_commits && !is_reader ? DConstants::INVALID_INDEX : snapshot.snapshot_id;
 		if (current_id == table_id) {
 			requested_entry = entry;
 		}

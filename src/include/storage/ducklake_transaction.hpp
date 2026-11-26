@@ -234,6 +234,8 @@ public:
 	                             SnapshotBound bound = SnapshotBound::TIME_TRAVEL);
 	//! The newest snapshot that the transaction sees, also when the catalog is opened at a fixed snapshot
 	idx_t GetNewestVisibleSnapshotId();
+	//! Whether the metadata reads of the transaction can show commits that are newer than its snapshot
+	bool ReadsLaterCommits() const;
 	//! Whether a snapshot was committed after the one that the transaction reads, which a metadata read finds out
 	bool NewerSnapshotCommitted(bool read_metadata = true);
 
@@ -490,6 +492,8 @@ private:
 	unique_ptr<DuckLakeMetadataManager> metadata_manager;
 	mutex connection_lock;
 	bool metadata_transaction_released = false;
+	//! Set once the metadata transaction was released, the one that follows it starts later
+	atomic<bool> metadata_transaction_replaced {false};
 	unique_ptr<Connection> connection;
 	//! Flushes of several tables finalize in parallel while scans check the flushed tables
 	mutex flushed_inlined_lock;

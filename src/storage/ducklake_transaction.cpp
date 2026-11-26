@@ -1031,6 +1031,7 @@ void DuckLakeTransaction::ReleaseMetadataTransaction() {
 	if (connection && connection->HasActiveTransaction()) {
 		connection->Commit();
 		metadata_transaction_released = true;
+		metadata_transaction_replaced = true;
 	}
 }
 
@@ -2503,6 +2504,11 @@ DuckLakeSnapshot DuckLakeTransaction::GetSnapshot() {
 
 idx_t DuckLakeTransaction::GetNewestVisibleSnapshotId() {
 	return GetLatestSnapshot().snapshot_id;
+}
+
+bool DuckLakeTransaction::ReadsLaterCommits() const {
+	return metadata_transaction_replaced ||
+	       (metadata_manager->ShowsConcurrentCommits() && !metadata_manager->IsRemote());
 }
 
 bool DuckLakeTransaction::NewerSnapshotCommitted(bool read_metadata) {

@@ -195,7 +195,7 @@ static void AddSnapshotData(DuckLakeRESTRequest &request, const RESTSnapshotIncl
 	if (include_stats && IsLatestSnapshot(request, snapshot)) {
 		auto stats = metadata_manager.GetGlobalTableStats(snapshot);
 		// a catalog that shows later commits can have read their statistics
-		if (!metadata_manager.ShowsConcurrentCommits() || !request.transaction->NewerSnapshotCommitted()) {
+		if (!request.transaction->ReadsLaterCommits() || !request.transaction->NewerSnapshotCommitted()) {
 			result.stats = std::move(stats);
 		}
 	}

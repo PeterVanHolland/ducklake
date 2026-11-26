@@ -63,6 +63,8 @@ struct DuckLakeTableStatsCacheEntry : public ObjectCacheEntry {
 	idx_t schema_version;
 	DuckLakeTableStats stats;
 	bool has_stats;
+	//! Whether a commit read the stats where a later commit shows, so they can be newer than the snapshot
+	bool read_by_commit = false;
 
 	static string ObjectType() {
 		return "ducklake_table_stats";
@@ -297,7 +299,8 @@ public:
 	                                              unique_ptr<AlterTableInfo> alter_info) override;
 	DatabaseSize GetDatabaseSize(ClientContext &context) override;
 	shared_ptr<DuckLakeTableStats> GetTableStats(DuckLakeTransaction &transaction, TableIndex table_id);
-	//! With load_tables, caches the stats of table_id and load_tables from one query instead of every table
+	//! With load_tables, which a commit passes, caches the stats of table_id and load_tables from one query instead
+	//! of every table
 	shared_ptr<DuckLakeTableStats> GetTableStats(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
 	                                             TableIndex table_id,
 	                                             optional_ptr<const vector<TableIndex>> load_tables = nullptr);

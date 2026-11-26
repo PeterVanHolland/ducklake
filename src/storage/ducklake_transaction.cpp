@@ -2505,10 +2505,11 @@ idx_t DuckLakeTransaction::GetNewestVisibleSnapshotId() {
 	return GetLatestSnapshot().snapshot_id;
 }
 
-bool DuckLakeTransaction::NewerSnapshotCommitted() {
-	if (!newer_snapshot_committed) {
-		// snapshot ids only grow, so a newer snapshot stays one
-		newer_snapshot_committed = metadata_manager->GetSnapshot()->snapshot_id > GetSnapshot().snapshot_id;
+bool DuckLakeTransaction::NewerSnapshotCommitted(bool read_metadata) {
+	// snapshot ids only grow, so a newer snapshot stays one
+	if (read_metadata && !newer_snapshot_committed &&
+	    metadata_manager->GetSnapshot()->snapshot_id > GetSnapshot().snapshot_id) {
+		newer_snapshot_committed = true;
 	}
 	return newer_snapshot_committed;
 }

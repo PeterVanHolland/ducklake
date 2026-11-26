@@ -1129,7 +1129,11 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 	auto &cache = GetObjectCacheInstance();
 	auto key = StatsCacheKey(snapshot.next_file_id, table_id);
 	auto cached = cache.Get<DuckLakeTableStatsCacheEntry>(key);
-	if (cached && cached->schema_version == snapshot.schema_version) {
+	// a read that shows later commits returns their statistics, which only a commit can use
+	auto &metadata_manager = transaction.GetMetadataManager();
+	bool shows_later_commits = metadata_manager.ShowsConcurrentCommits() && !metadata_manager.IsRemote();
+	bool is_reader = !load_tables;
+	if (cached && cached->schema_version == snapshot.schema_version && !(is_reader && cached->read_by_commit)) {
 		if (!cached->has_stats) {
 			// cached negative result
 			return nullptr;
@@ -1160,12 +1164,14 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 			}
 		}
 	}
-	auto &metadata_manager = transaction.GetMetadataManager();
+	bool verify_snapshot = is_reader && shows_later_commits;
+	if (verify_snapshot && transaction.NewerSnapshotCommitted(false)) {
+		return nullptr;
+	}
 	auto global_stats =
 	    metadata_manager.GetGlobalTableStats(snapshot, load_tables ? cache_tables : vector<TableIndex>());
-	// a read that shows later commits returns their statistics, which a reader of an older snapshot cannot use
-	if (!load_tables && metadata_manager.ShowsConcurrentCommits() && !metadata_manager.IsRemote() &&
-	    transaction.NewerSnapshotCommitted()) {
+	// no snapshot was committed while the statistics were read if none is there afterwards
+	if (verify_snapshot && transaction.NewerSnapshotCommitted()) {
 		return nullptr;
 	}
 	auto lake_stats = ConstructStatsMap(global_stats, schema_entry->catalog_set);
@@ -1183,6 +1189,7 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 			entry =
 			    make_shared_ptr<DuckLakeTableStatsCacheEntry>(snapshot.schema_version, std::move(*stats_entry->second));
 		}
+		entry->read_by_commit = shows_later_commits && !is_reader;
 		if (current_id == table_id) {
 			requested_entry = entry;
 		}

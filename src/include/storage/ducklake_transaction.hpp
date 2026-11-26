@@ -234,8 +234,8 @@ public:
 	                             SnapshotBound bound = SnapshotBound::TIME_TRAVEL);
 	//! The newest snapshot that the transaction sees, also when the catalog is opened at a fixed snapshot
 	idx_t GetNewestVisibleSnapshotId();
-	//! Whether a snapshot was committed after the one that the transaction reads
-	bool NewerSnapshotCommitted();
+	//! Whether a snapshot was committed after the one that the transaction reads, which a metadata read finds out
+	bool NewerSnapshotCommitted(bool read_metadata = true);
 
 	static DuckLakeTransaction &Get(ClientContext &context, Catalog &catalog);
 

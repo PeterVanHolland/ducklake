@@ -231,11 +231,13 @@ PostgresMetadataManager::PostgresMetadataManager(DuckLakeTransaction &transactio
 }
 
 bool PostgresMetadataManager::ShowsConcurrentCommits() const {
-	// READ COMMITTED metadata reads see the commits of other transactions
-	auto &parameters = transaction.GetCatalog().MetadataParameters();
-	auto isolation_level = parameters.find("isolation_level");
-	return isolation_level != parameters.end() &&
-	       StringUtil::CIEquals(isolation_level->second.ToString(), "READ COMMITTED");
+	// a shared metadata database keeps the isolation level it was attached with
+	for (auto &option : transaction.GetMetadataCatalog().GetAttached().GetAttachOptions()) {
+		if (StringUtil::CIEquals(option.first, "isolation_level")) {
+			return StringUtil::CIEquals(option.second.ToString(), "READ COMMITTED");
+		}
+	}
+	return false;
 }
 
 bool PostgresMetadataManager::InsertsInlinedRowsAfterBatch(idx_t row_count) const {

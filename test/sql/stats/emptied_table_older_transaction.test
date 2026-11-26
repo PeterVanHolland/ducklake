@@ -19,6 +19,12 @@ CREATE TABLE dl.t (g GEOMETRY)
 statement ok
 INSERT INTO dl.t SELECT ('POINT(' || range || ' 2)')::GEOMETRY FROM range(20)
 
+# with the statistics cached, a transaction starts without reading them again
+query I
+SELECT count(*) FROM dl.t
+----
+20
+
 statement ok con1
 BEGIN
 

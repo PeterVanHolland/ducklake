@@ -92,7 +92,7 @@ structure SnapshotIncludes {
     @httpQuery("include_catalog")
     include_catalog: Boolean = false
 
-    /// Return the table statistics of the snapshot.
+    /// Return the table statistics of the snapshot, which only the latest snapshot has.
     @httpQuery("include_stats")
     include_stats: Boolean = false
 

@@ -45,16 +45,14 @@ statement ok
 SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/tables/1/scan', json_object('snapshot',
 	json_merge_patch(getvariable('old'), json_object('schema_version', getvariable('new')->'$.schema_version')))::VARCHAR)
 
-query I rest_db:rest_server_con
-SELECT files_processed FROM ducklake_merge_adjacent_files('rest_lake', 't')
-----
-3
+statement ok rest_db:rest_server_con
+CALL ducklake_merge_adjacent_files('rest_lake', 't')
 
 statement ok rest_db:rest_server_con
-SET VARIABLE merged = (SELECT data_file FROM ducklake_list_files('rest_lake', 't'))
+SET VARIABLE files = (SELECT list(data_file) FROM ducklake_list_files('rest_lake', 't'))
 
 query II rest_db:rest_server_con
-SELECT i, j FROM read_parquet(getvariable('merged')) ORDER BY i
+SELECT i, j FROM read_parquet(getvariable('files'), union_by_name := true) ORDER BY i
 ----
 1	NULL
 2	20

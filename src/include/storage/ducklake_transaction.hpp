@@ -492,8 +492,8 @@ private:
 	unique_ptr<DuckLakeMetadataManager> metadata_manager;
 	mutex connection_lock;
 	bool metadata_transaction_released = false;
-	//! Set once the metadata transaction was released, the one that follows it starts later
-	atomic<bool> metadata_transaction_replaced {false};
+	//! Set once the metadata transaction can be newer than the snapshot, which a release or a set snapshot leaves
+	atomic<bool> metadata_newer_than_snapshot {false};
 	unique_ptr<Connection> connection;
 	//! Flushes of several tables finalize in parallel while scans check the flushed tables
 	mutex flushed_inlined_lock;

@@ -101,8 +101,8 @@ structure SnapshotIncludes {
     @httpQuery("cached_metadata_version")
     cached_metadata_version: UInt64
 
-    /// The next file id of the snapshot of the latest statistics the client has loaded. If the snapshot has a
-    /// different next file id, its statistics are returned.
+    /// The next file id of the snapshot of the latest statistics the client has loaded. If the snapshot is the latest
+    /// one and has a different next file id, its statistics are returned.
     @httpQuery("cached_data_version")
     cached_data_version: UInt64
 }

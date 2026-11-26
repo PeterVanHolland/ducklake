@@ -166,7 +166,7 @@ DuckLakeMetadata DuckLakeRESTEndpoints::GetMetadata(DuckLakeRESTRequest &request
 
 //! Whether the snapshot is the latest one, which the statistics of the tables describe
 static bool IsLatestSnapshot(DuckLakeRESTRequest &request, DuckLakeSnapshot snapshot) {
-	return snapshot.snapshot_id == request.transaction->GetSnapshot().snapshot_id;
+	return snapshot.snapshot_id == request.transaction->GetNewestVisibleSnapshotId();
 }
 
 //! Adds the catalog and statistics of the snapshot that the request asks for
@@ -191,7 +191,11 @@ static void AddSnapshotData(DuckLakeRESTRequest &request, const RESTSnapshotIncl
 		}
 	}
 	if (include_stats && IsLatestSnapshot(request, snapshot)) {
-		result.stats = metadata_manager.GetGlobalTableStats(snapshot);
+		auto stats = metadata_manager.GetGlobalTableStats(snapshot);
+		// a catalog that shows later commits can have read their statistics
+		if (!metadata_manager.ShowsConcurrentCommits() || !request.transaction->NewerSnapshotCommitted()) {
+			result.stats = std::move(stats);
+		}
 	}
 }
 

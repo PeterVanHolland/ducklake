@@ -2220,9 +2220,9 @@ ORDER BY table_id ASC, parent_column ASC NULLS FIRST, column_order ASC
 				column_info.default_value = Value(value);
 			}
 		}
-		if (!row.IsNull(COLUMN_INDEX_START + 8)) {
-			column_info.default_value_type = row.GetValue<string>(COLUMN_INDEX_START + 8);
-		}
+		// rows that predate the type hold literal defaults
+		column_info.default_value_type =
+		    row.IsNull(COLUMN_INDEX_START + 8) ? "literal" : row.GetValue<string>(COLUMN_INDEX_START + 8);
 		column_info.nulls_allowed = row.GetValue<bool>(COLUMN_INDEX_START + 5);
 		if (!row.IsNull(COLUMN_INDEX_START + 7)) {
 			auto tags = row.GetValue<Value>(COLUMN_INDEX_START + 7);

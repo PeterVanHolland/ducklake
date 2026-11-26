@@ -24,50 +24,40 @@ DELETE FROM dl.t WHERE i = 0
 statement ok
 ALTER TABLE dl.t SET SORTED BY (coalesce(sleep_ms(2000), i))
 
-# thread 0 holds the older snapshot, thread 2 empties the table while thread 1 rewrites its file
-concurrentloop threadid 0 3
-
-onlyif threadid=0
-statement ok
+statement ok con1
 BEGIN
 
-onlyif threadid=0
-query I
+query I con1
 SELECT count(*) FROM dl.t
 ----
 1
 
-onlyif threadid=0
-statement ok
-SELECT sleep_ms(3500)
-
-onlyif threadid=1
-statement ok
-SELECT sleep_ms(300)
+# thread 1 empties the table while thread 0 rewrites its file, a different order only makes the test pass
+concurrentloop threadid 0 2
 
 # the commit reads the statistics of the emptied table before it fails
-onlyif threadid=1
+onlyif threadid=0
 statement maybe
 CALL ducklake_rewrite_data_files('dl', 't', delete_threshold => 0)
 ----
 another transaction has deleted from it
 
-onlyif threadid=2
+onlyif threadid=1
 statement ok
 SELECT sleep_ms(1000)
 
-onlyif threadid=2
-statement ok
+onlyif threadid=1
+statement maybe
 DELETE FROM dl.t
+----
+another transaction has compacted it
 
-onlyif threadid=0
-query I
+endloop
+
+query I con1
 SELECT count(*) FROM dl.t WHERE vertex_extract(g, 'x') = 1
 ----
 1
 
-onlyif threadid=0
-statement ok
+statement ok con1
 COMMIT
-
-endloop

@@ -96,6 +96,8 @@ public:
 	DuckLakeSnapshot GetSnapshot(const DuckLakeSnapshot &snapshot, optional_idx snapshot_id);
 	DuckLakeSnapshot GetSnapshot(const RESTSnapshotReference &reference);
 	DuckLakeSnapshot GetSnapshotById(idx_t snapshot_id);
+	//! Fails for a snapshot that the catalog neither has nor remembers, as the fields of a snapshot key its caches
+	void CheckSentSnapshot(const DuckLakeSnapshot &snapshot);
 
 	Connection connection;
 	DuckLakeCatalog *catalog;

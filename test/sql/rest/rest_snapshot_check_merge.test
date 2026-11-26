@@ -1,0 +1,68 @@
+# name: test/sql/rest/rest_snapshot_check_merge.test
+# description: A merge on the server keeps every column after a request sent a snapshot with another schema version
+# group: [rest]
+
+require json
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t (i INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1)
+
+statement ok
+SET VARIABLE old = (
+	SELECT response->'$.snapshot' FROM ducklake_rest_request('{rest_server}', 'GET', '/v1/snapshots/latest', ''))
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN j INTEGER
+
+statement ok
+INSERT INTO dl.t VALUES (2, 20)
+
+statement ok
+INSERT INTO dl.t VALUES (3, 30)
+
+statement ok
+SET VARIABLE new = (
+	SELECT response->'$.snapshot' FROM ducklake_rest_request('{rest_server}', 'GET', '/v1/snapshots/latest', ''))
+
+# the server starts again without a loaded catalog
+statement ok rest_db:rest_server_con
+DETACH rest_lake
+
+statement ok rest_db:rest_server_con
+ATTACH 'ducklake:{TEST_DIR}/{BASE_TEST_NAME}_rest_server.db' AS rest_lake
+	(DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_rest_files')
+
+# the snapshot before the new column with the schema version after it
+statement ok
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/tables/1/scan', json_object('snapshot',
+	json_merge_patch(getvariable('old'), json_object('schema_version', getvariable('new')->'$.schema_version')))::VARCHAR)
+
+query I rest_db:rest_server_con
+SELECT files_processed FROM ducklake_merge_adjacent_files('rest_lake', 't')
+----
+3
+
+statement ok rest_db:rest_server_con
+SET VARIABLE merged = (SELECT data_file FROM ducklake_list_files('rest_lake', 't'))
+
+query II rest_db:rest_server_con
+SELECT i, j FROM read_parquet(getvariable('merged')) ORDER BY i
+----
+1	NULL
+2	20
+3	30
+
+query II
+FROM dl.t ORDER BY i
+----
+1	NULL
+2	20
+3	30

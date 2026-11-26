@@ -482,8 +482,10 @@ bool DuckLakeMultiFileReader::GetInlinedTableColumns(DuckLakeFunctionInfo &read_
 		// read the table at the specified version
 		auto transaction = read_info.GetTransaction();
 		auto &catalog = transaction->GetCatalog();
-		auto entry =
-		    catalog.GetTableAtSchemaVersion(*transaction, read_info.table.GetTableId(), schema_version.GetIndex());
+		// a flush reads its rows with the columns that its plan was allowed to use
+		bool flush = read_info.scan_type == DuckLakeScanType::SCAN_FOR_FLUSH;
+		auto entry = catalog.GetTableAtSchemaVersion(*transaction, read_info.table.GetTableId(),
+		                                             schema_version.GetIndex(), flush);
 		if (!entry) {
 			// LCOV_EXCL_START
 			return false;

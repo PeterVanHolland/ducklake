@@ -557,8 +557,10 @@ string DuckLakeCatalog::GetLoadedTableDataPath(DuckLakeSnapshot snapshot, TableI
 }
 
 optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLakeTransaction &transaction,
-                                                                          TableIndex table_id, idx_t schema_version) {
-	auto snapshot = transaction.GetMetadataManager().GetSnapshotForSchemaVersion(table_id, schema_version);
+                                                                          TableIndex table_id, idx_t schema_version,
+                                                                          bool require_columns) {
+	auto snapshot =
+	    transaction.GetMetadataManager().GetSnapshotForSchemaVersion(table_id, schema_version, require_columns);
 	auto entry = GetEntryById(transaction, snapshot, table_id);
 	if (!entry) {
 		// LCOV_EXCL_START

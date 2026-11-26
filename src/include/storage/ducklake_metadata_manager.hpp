@@ -341,6 +341,8 @@ public:
 	string CastColumnToTarget(const string &column, const LogicalType &type);
 	//! The inlined rows to flush with typed columns, without those this transaction deleted
 	string InlinedFlushSource(const Identifier &inlined_table_name, const DuckLakeTableEntry &table);
+	//! The filter of the inlined rows to flush, empty when this transaction deleted none
+	string InlinedFlushFilter(TableIndex table_id, const Identifier &inlined_table_name);
 	//! The order of the rows in a flushed file
 	string InlinedFlushOrder(const string &sort_order_sql) const;
 
@@ -500,12 +502,15 @@ public:
 	                                                                  DuckLakeFileSizeOptions options);
 	virtual idx_t GetBeginSnapshotForTable(TableIndex table_id);
 	//! The snapshot a schema version of a table is read at, with an invalid schema version when it is unknown
-	virtual DuckLakeSnapshot GetSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version);
+	virtual DuckLakeSnapshot GetSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version,
+	                                                     bool require_columns = false);
 	//! The snapshots that ended columns of the table, in order
 	vector<idx_t> GetColumnEndSnapshots(TableIndex table_id);
 	//! The snapshot whose table has the columns of the inlined table of a schema version, the one that created the
-	//! table, else the one of its first row, else the first of that schema version, invalid when none has them
-	DuckLakeSnapshot GetInlinedTableSnapshot(TableIndex table_id, idx_t schema_version, DuckLakeSnapshot created);
+	//! table, else the one of its first row, else the first of that schema version, invalid when none has them,
+	//! with require_columns that throws when the inlined table has rows to flush
+	DuckLakeSnapshot GetInlinedTableSnapshot(TableIndex table_id, idx_t schema_version, DuckLakeSnapshot created,
+	                                         bool require_columns);
 	//! The newest snapshot the transaction sees the table at, invalid when there is none
 	DuckLakeSnapshot GetNewestTableSnapshot(TableIndex table_id);
 	virtual DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);

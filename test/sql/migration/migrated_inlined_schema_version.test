@@ -129,8 +129,18 @@ SELECT a, b FROM between.w ORDER BY ALL
 1	10
 2	20
 
-statement ok
+# the inlined table of k has other columns than any table that its rows could confirm, so its rows are not flushed
+statement error
 CALL ducklake_flush_inlined_data('between')
+----
+the columns of its rows cannot be told
+
+foreach flushed r w d e
+
+statement ok
+CALL ducklake_flush_inlined_data('between', table_name => '{flushed}')
+
+endloop
 
 query III
 SELECT s.x, s.y, b FROM between.r ORDER BY b
@@ -189,8 +199,23 @@ SELECT a, b FROM between_expired.w ORDER BY ALL
 1	10
 2	20
 
+# the first rows of d and e do not confirm their tables, a flush with the tables as created would lose their b
+statement error
+CALL ducklake_flush_inlined_data('between_expired', table_name => 'd')
+----
+the columns of its rows cannot be told
+
+statement error
+CALL ducklake_flush_inlined_data('between_expired', table_name => 'e')
+----
+the columns of its rows cannot be told
+
+foreach flushed t n s r w
+
 statement ok
-CALL ducklake_flush_inlined_data('between_expired')
+CALL ducklake_flush_inlined_data('between_expired', table_name => '{flushed}')
+
+endloop
 
 query II
 SELECT a, b FROM between_expired.t ORDER BY ALL

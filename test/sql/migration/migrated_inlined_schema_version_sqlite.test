@@ -55,8 +55,18 @@ SELECT x FROM between.k ORDER BY ALL
 20
 NULL
 
+# the inlined table of k has other columns than any table that its rows could confirm, so its rows are not flushed
+statement error
+CALL ducklake_flush_inlined_data('between', table_name => 'k')
+----
+the columns of its rows cannot be told
+
+foreach flushed t m j
+
 statement ok
-CALL ducklake_flush_inlined_data('between')
+CALL ducklake_flush_inlined_data('between', table_name => '{flushed}')
+
+endloop
 
 query II
 SELECT a, b FROM between.t ORDER BY ALL
@@ -79,3 +89,54 @@ SELECT x FROM between.k ORDER BY ALL
 ----
 20
 NULL
+
+statement ok
+DETACH between
+
+# once the snapshots of those schema versions are expired SQLite has nothing to tell the columns of t by
+unzip data/old_ducklake/migrated_inlined_schema_version_sqlite.db.gz {TEST_DIR}/migrated_inlined_sqlite_expired.db
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite_expired.db' AS between_expired
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite_expired', OVERRIDE_DATA_PATH TRUE,
+	METADATA_CATALOG 'between_expired_meta', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CALL ducklake_expire_snapshots('between_expired', older_than => now())
+
+statement ok
+DETACH between_expired
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite_expired.db' AS between_expired
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite_expired', OVERRIDE_DATA_PATH TRUE,
+	METADATA_CATALOG 'between_expired_meta', DATA_INLINING_ROW_LIMIT 10)
+
+# a flush with the table as created would lose the values of b, so it is refused and the rows stay
+statement error
+CALL ducklake_flush_inlined_data('between_expired', table_name => 't')
+----
+the columns of its rows cannot be told
+
+query II
+SELECT a, b FROM between_expired_meta.ducklake_inlined_data_1_2 ORDER BY ALL
+----
+1	10
+2	20
+
+# rows that the transaction deleted are not flushed, so they do not refuse it
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM between_expired.t
+
+statement ok
+CALL ducklake_flush_inlined_data('between_expired', table_name => 't')
+
+statement ok
+ROLLBACK
+
+# u has no such rows and is flushed
+statement ok
+CALL ducklake_flush_inlined_data('between_expired', table_name => 'u')

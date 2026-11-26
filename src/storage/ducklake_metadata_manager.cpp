@@ -1816,7 +1816,8 @@ DuckLakeTableSchemaVersions DuckLakeMetadataManager::GetTableSchemaVersions(Tabl
 	return schema_versions;
 }
 
-DuckLakeSnapshot DuckLakeMetadataManager::GetSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version) {
+DuckLakeSnapshot DuckLakeMetadataManager::GetSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version,
+                                                                      bool require_columns) {
 	auto &catalog = transaction.GetCatalog();
 	auto cached_snapshot = catalog.TryGetSchemaVersionSnapshot(table_id, schema_version);
 	if (cached_snapshot.snapshot_id != DConstants::INVALID_INDEX) {
@@ -1861,7 +1862,7 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetSnapshotForSchemaVersion(TableIndex
 	} else if (earlier_version) {
 		// one between the first and the last only has inlined rows, the begin is not a snapshot of it either
 		snapshot = DuckLakeSnapshot(begin_snapshot.GetIndex(), DConstants::INVALID_INDEX, 0, 0);
-		auto inlined_snapshot = GetInlinedTableSnapshot(table_id, schema_version, snapshot);
+		auto inlined_snapshot = GetInlinedTableSnapshot(table_id, schema_version, snapshot, require_columns);
 		if (inlined_snapshot.snapshot_id == DConstants::INVALID_INDEX) {
 			// the first row that an older release still inlines there can tell the columns later
 			return snapshot;
@@ -1877,7 +1878,7 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetSnapshotForSchemaVersion(TableIndex
 }
 
 DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex table_id, idx_t schema_version,
-                                                                  DuckLakeSnapshot created) {
+                                                                  DuckLakeSnapshot created, bool require_columns) {
 	auto tables =
 	    Query(GetInlinedTableNamesSql(table_id) + StringUtil::Format(" AND schema_version = %d", schema_version));
 	tables->ThrowIfError("Failed to get inlined data tables from DuckLake: ");
@@ -1968,6 +1969,25 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 			if (reads_as_created(snapshot, true)) {
 				return snapshot;
 			}
+		}
+		if (!require_columns) {
+			continue;
+		}
+		// the table as created is used then, a flush through it does not keep what the rows hold
+		auto inlined_table_name = table.GetValue<Identifier>(0);
+		auto filter = InlinedFlushFilter(table_id, inlined_table_name);
+		auto flushed =
+		    Query(transaction.GetSnapshot(),
+		          StringUtil::Format("SELECT 1 FROM {METADATA_CATALOG}.%s%s {SNAPSHOT_ID} >= %s LIMIT 1",
+		                             SQLIdentifier(inlined_table_name), filter.empty() ? " WHERE" : filter + " AND",
+		                             SQLIdentifier(InlinedColNames().begin_snapshot)));
+		flushed->ThrowIfError("Failed to get the rows of inlined data from DuckLake: ");
+		for (auto &row : *flushed) {
+			(void)row;
+			throw InvalidInputException(
+			    "Cannot flush inlined data table \"%s\": schema version %d of its table has no begin snapshot of its "
+			    "own and the columns of its rows cannot be told",
+			    inlined_table_name.GetIdentifierName(), schema_version);
 		}
 	}
 	return DuckLakeSnapshot();
@@ -4771,24 +4791,29 @@ string DuckLakeMetadataManager::InlinedFlushSource(const Identifier &inlined_tab
 		}
 		projection.push_back(typed_column);
 	}
-	string filter;
-	auto local_deletes = transaction.GetInlinedDeletes(table.GetTableId(), inlined_table_name);
-	if (local_deletes && !local_deletes->rows.empty()) {
-		vector<string> row_ids;
-		for (auto &row_id : local_deletes->rows) {
-			row_ids.push_back(to_string(row_id));
-		}
-		// rows deleted by this transaction are not flushed, passing the ids as one string keeps planning cheap
-		filter = StringUtil::Format(" WHERE NOT (%s IN (SELECT CAST(unnest(string_split(ids, ',')) AS BIGINT) FROM "
-		                            "(SELECT %s AS ids)) AND (%s IS NULL OR %s > {SNAPSHOT_ID}))",
-		                            col_names.row_id, SQLString(StringUtil::Join(row_ids, ",")), col_names.end_snapshot,
-		                            col_names.end_snapshot);
-	}
+	auto filter = InlinedFlushFilter(table.GetTableId(), inlined_table_name);
 	auto source = "{METADATA_CATALOG}." + inlined_table_name;
 	if (!has_casts && filter.empty()) {
 		return source;
 	}
 	return StringUtil::Format("(SELECT %s FROM %s%s)", StringUtil::Join(projection, ", "), source, filter);
+}
+
+string DuckLakeMetadataManager::InlinedFlushFilter(TableIndex table_id, const Identifier &inlined_table_name) {
+	auto local_deletes = transaction.GetInlinedDeletes(table_id, inlined_table_name);
+	if (!local_deletes || local_deletes->rows.empty()) {
+		return string();
+	}
+	vector<string> row_ids;
+	for (auto &row_id : local_deletes->rows) {
+		row_ids.push_back(to_string(row_id));
+	}
+	auto col_names = InlinedColNames();
+	// rows deleted by this transaction are not flushed, passing the ids as one string keeps planning cheap
+	return StringUtil::Format(" WHERE NOT (%s IN (SELECT CAST(unnest(string_split(ids, ',')) AS BIGINT) FROM "
+	                          "(SELECT %s AS ids)) AND (%s IS NULL OR %s > {SNAPSHOT_ID}))",
+	                          col_names.row_id, SQLString(StringUtil::Join(row_ids, ",")), col_names.end_snapshot,
+	                          col_names.end_snapshot);
 }
 
 string DuckLakeMetadataManager::InlinedFlushOrder(const string &sort_order_sql) const {

@@ -4951,6 +4951,11 @@ string DuckLakeMetadataManager::InlinedTableHasRowsQuery(const Identifier &table
 	return StringUtil::Format("SELECT 1 FROM {METADATA_CATALOG}.%s LIMIT 1;", table_name);
 }
 
+bool DuckLakeMetadataManager::InlinedTableIsEmpty(const Identifier &table_name) {
+	auto result = Query(InlinedTableHasRowsQuery(table_name));
+	return !result->HasError() && result->begin() == result->end();
+}
+
 string DuckLakeMetadataManager::DropInlinedTableSql(idx_t table_id, idx_t schema_version,
                                                     const Identifier &table_name) {
 	return StringUtil::Format(
@@ -5654,10 +5659,15 @@ void DuckLakeMetadataManager::CheckInlinedDataReadError(QueryResult &result, con
 shared_ptr<DuckLakeInlinedData> DuckLakeMetadataManager::TransformInlinedData(QueryResult &result,
                                                                               const vector<LogicalType> &expected_types,
                                                                               const Identifier &inlined_table_name) {
-	CheckInlinedDataReadError(result, inlined_table_name);
-
 	auto context = transaction.context.lock();
+	auto inlined_data = make_shared_ptr<DuckLakeInlinedData>();
+	inlined_data->data = make_uniq<ColumnDataCollection>(*context, expected_types);
 	auto &result_types = result.GetTypes();
+	if ((result.HasError() || result_types != expected_types) && InlinedTableIsEmpty(inlined_table_name)) {
+		// a migrated catalog can leave the columns of an inlined table without rows unknown
+		return inlined_data;
+	}
+	CheckInlinedDataReadError(result, inlined_table_name);
 	if (result_types.size() != expected_types.size()) {
 		// LCOV_EXCL_START
 		throw InvalidInputException("Failed to read inlined data from DuckLake table %s: expected %llu columns "
@@ -5672,12 +5682,9 @@ shared_ptr<DuckLakeInlinedData> DuckLakeMetadataManager::TransformInlinedData(Qu
 			                            inlined_table_name, expected_types[i], i + 1, result_types[i]);
 		}
 	}
-	auto data = make_uniq<ColumnDataCollection>(*context, expected_types);
 	while (auto chunk = result.Fetch()) {
-		data->Append(*chunk);
+		inlined_data->data->Append(*chunk);
 	}
-	auto inlined_data = make_shared_ptr<DuckLakeInlinedData>();
-	inlined_data->data = std::move(data);
 	return inlined_data;
 }
 

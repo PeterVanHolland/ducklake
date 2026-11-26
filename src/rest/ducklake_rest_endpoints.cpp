@@ -386,6 +386,10 @@ ReadInlinedRows(DuckLakeRESTRequest &request, DuckLakeTableEntry &table, DuckLak
 			columns.push_back(EvolveFieldExpression(read, *written, field.get(), 0));
 		}
 		auto query_result = read_rows(inlined_table.table_name, columns);
+		if (query_result->HasError() && metadata_manager.InlinedTableIsEmpty(inlined_table.table_name)) {
+			// a migrated catalog can leave the columns of an inlined table without rows unknown
+			continue;
+		}
 		query_result->ThrowIfError("Failed to read inlined data: ");
 		if (!collection) {
 			for (idx_t col_idx = 0; col_idx < query_result->ColumnCount(); col_idx++) {
@@ -412,7 +416,7 @@ ReadInlinedRows(DuckLakeRESTRequest &request, DuckLakeTableEntry &table, DuckLak
 		}
 	}
 	if (!collection) {
-		return nullptr; // LCOV_EXCL_LINE: the first inlined table creates the collection
+		return nullptr;
 	}
 	result->rows = RESTRows(std::move(collection));
 	return result;

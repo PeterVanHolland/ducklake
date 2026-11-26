@@ -1160,8 +1160,14 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 			}
 		}
 	}
-	auto global_stats = transaction.GetMetadataManager().GetGlobalTableStats(
-	    snapshot, load_tables ? cache_tables : vector<TableIndex>());
+	auto &metadata_manager = transaction.GetMetadataManager();
+	auto global_stats =
+	    metadata_manager.GetGlobalTableStats(snapshot, load_tables ? cache_tables : vector<TableIndex>());
+	// a read that shows later commits returns their statistics, which a reader of an older snapshot cannot use
+	if (!load_tables && metadata_manager.ShowsConcurrentCommits() && !metadata_manager.IsRemote() &&
+	    transaction.NewerSnapshotCommitted()) {
+		return nullptr;
+	}
 	auto lake_stats = ConstructStatsMap(global_stats, schema_entry->catalog_set);
 
 	shared_ptr<DuckLakeTableStatsCacheEntry> requested_entry;

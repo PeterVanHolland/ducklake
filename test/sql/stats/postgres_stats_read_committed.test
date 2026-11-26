@@ -1,0 +1,64 @@
+# name: test/sql/stats/postgres_stats_read_committed.test
+# description: A Postgres transaction at READ COMMITTED does not filter with the statistics of a later commit
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require-env DUCKLAKE_CI
+
+require-env DUCKLAKE_CONNECTION
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS writer
+(DATA_PATH '{DATA_PATH}/stats_read_committed', METADATA_CATALOG 'stats_read_committed_meta',
+ META_ISOLATION_LEVEL 'READ COMMITTED', DATA_INLINING_ROW_LIMIT 0)
+
+# a second attach caches statistics of its own
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS reader
+(DATA_PATH '{DATA_PATH}/stats_read_committed', METADATA_CATALOG 'stats_read_committed_meta',
+ META_ISOLATION_LEVEL 'READ COMMITTED', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE writer.t (x INTEGER)
+
+statement ok
+INSERT INTO writer.t SELECT range FROM range(10)
+
+statement ok
+INSERT INTO writer.t SELECT range FROM range(100, 110)
+
+statement ok con1
+BEGIN
+
+# fixes the snapshot of the transaction before it reads the statistics
+query I con1
+SELECT count(*) FROM duckdb_columns() WHERE database_name = 'reader' AND table_name = 't'
+----
+1
+
+# drops the second file, which narrows the statistics of the table
+query I
+DELETE FROM writer.t WHERE x >= 100
+----
+10
+
+query I con1
+SELECT count(*) FROM reader.t WHERE x > 50
+----
+10
+
+statement ok con1
+COMMIT
+
+# a new transaction reads the narrowed statistics
+query I
+SELECT stats(x) FROM reader.t LIMIT 1
+----
+{'has_no_null': true, 'has_null': false, 'max': 9, 'min': 0}

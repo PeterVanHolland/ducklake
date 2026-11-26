@@ -234,6 +234,8 @@ public:
 	                             SnapshotBound bound = SnapshotBound::TIME_TRAVEL);
 	//! The newest snapshot that the transaction sees, also when the catalog is opened at a fixed snapshot
 	idx_t GetNewestVisibleSnapshotId();
+	//! Whether a snapshot was committed after the one that the transaction reads
+	bool NewerSnapshotCommitted();
 
 	static DuckLakeTransaction &Get(ClientContext &context, Catalog &catalog);
 
@@ -517,6 +519,8 @@ private:
 	idx_t local_catalog_id;
 	//! Set when this transaction inlines into a table that does not yet have an inlined-data table
 	atomic<bool> requires_new_inlined_table {false};
+	//! Set once a snapshot newer than the one of the transaction was seen
+	atomic<bool> newer_snapshot_committed {false};
 	//! Schema cache entries referenced by this transaction's catalog entries. These pins keep transaction-local
 	//! parent references valid even if another transaction invalidates the global object-cache entry.
 	unique_ptr<DuckLakeSchemaPinState> schema_pins;

@@ -1,0 +1,57 @@
+# name: test/sql/migration/migrated_inlined_changed_columns.test
+# description: rows inlined after a rename or a type change of a column, before DuckDB 1.5.1 migrated the catalog
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.4.4 and migrated by DuckDB 1.5.1, the rows were inlined after the column b of their table changed
+unzip data/old_ducklake/migrated_inlined_changed_columns.db.gz {TEST_DIR}/migrated_inlined_changed_columns.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_changed_columns.db' AS lake
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_changed_columns', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+# the rows are in the inlined tables of the schema versions of the changes, between the first and the last of a table
+query II
+SELECT (SELECT count(*) FROM meta.ducklake_inlined_data_1_2), (SELECT count(*) FROM meta.ducklake_inlined_data_2_4)
+----
+1	2
+
+query II
+FROM lake.renamed
+----
+1	2
+
+query III
+SELECT *, typeof(b) FROM lake.retyped ORDER BY ALL
+----
+1	2	BIGINT
+3	5000000000	BIGINT
+
+query II
+SELECT a, c FROM lake.renamed AT (VERSION => 3)
+----
+1	2
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('lake') ORDER BY ALL
+----
+main	renamed	1
+main	retyped	2
+
+query II
+FROM lake.renamed
+----
+1	2
+
+query II
+FROM lake.retyped ORDER BY ALL
+----
+1	2
+3	5000000000
+
+statement ok
+CHECKPOINT lake

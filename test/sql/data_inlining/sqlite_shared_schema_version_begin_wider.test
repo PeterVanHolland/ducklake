@@ -1,0 +1,130 @@
+# name: test/sql/data_inlining/sqlite_shared_schema_version_begin_wider.test
+# description: a later table that reads an inlined table wider, with a NOT NULL a row breaks or a column of its own
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+require sqlite_scanner
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/{BASE_TEST_NAME}_not_null.db' AS dl
+	(DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_not_null_files', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t (a INTEGER, b INTEGER)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 't')
+
+statement ok
+ALTER TABLE dl.t ALTER COLUMN a TYPE BIGINT
+
+statement ok
+ALTER TABLE dl.t ALTER COLUMN a SET NOT NULL
+
+statement ok
+INSERT INTO dl.t VALUES (5000000000, 10)
+
+statement ok
+ALTER TABLE dl.t ALTER COLUMN a DROP NOT NULL
+
+statement ok
+INSERT INTO dl.t VALUES (NULL, 20)
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN c INTEGER
+
+# a released writer put the later row into the inlined table of the first one, by position
+statement ok
+INSERT INTO __ducklake_metadata_dl.ducklake_inlined_data_1_3 FROM __ducklake_metadata_dl.ducklake_inlined_data_1_5
+
+statement ok
+DELETE FROM __ducklake_metadata_dl.ducklake_inlined_data_tables WHERE schema_version = 5
+
+# as the migration of DuckDB 1.5.1 left the schema versions of a table
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 1
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/{BASE_TEST_NAME}_not_null.db' AS dl
+	(DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_not_null_files', DATA_INLINING_ROW_LIMIT 0)
+
+query III
+SELECT * FROM dl.t ORDER BY b
+----
+5000000000	10	NULL
+NULL	20	NULL
+
+# the table of the first row reads a as a BIGINT, and its NOT NULL does not stop the flush
+statement ok
+CALL ducklake_flush_inlined_data('dl')
+
+query III
+SELECT * FROM dl.t ORDER BY b
+----
+5000000000	10	NULL
+NULL	20	NULL
+
+statement ok
+DETACH dl
+
+# b was dropped and added again after a got wider
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/{BASE_TEST_NAME}_readded.db' AS dl
+	(DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_readded_files', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t (a INTEGER, b BIGINT)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 't')
+
+statement ok
+ALTER TABLE dl.t ALTER COLUMN b SET NOT NULL
+
+statement ok
+ALTER TABLE dl.t ALTER COLUMN a TYPE BIGINT
+
+statement ok
+ALTER TABLE dl.t DROP COLUMN b
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN b BIGINT
+
+statement ok
+INSERT INTO dl.t VALUES (1, 20)
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN c INTEGER
+
+# the row is in an inlined table of the schema version that still had the first b
+statement ok
+CREATE TABLE __ducklake_metadata_dl.ducklake_inlined_data_1_2 AS
+FROM __ducklake_metadata_dl.ducklake_inlined_data_1_5
+
+statement ok
+INSERT INTO __ducklake_metadata_dl.ducklake_inlined_data_tables VALUES (1, 'ducklake_inlined_data_1_2', 2)
+
+statement ok
+DELETE FROM __ducklake_metadata_dl.ducklake_inlined_data_tables WHERE schema_version = 5
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 1
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/{BASE_TEST_NAME}_readded.db' AS dl
+	(DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_readded_files', DATA_INLINING_ROW_LIMIT 0)
+
+# the value belongs to the first b, which the table no longer has
+query III
+SELECT a, b, c FROM dl.t
+----
+1	NULL	NULL

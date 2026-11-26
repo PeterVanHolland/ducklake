@@ -1896,6 +1896,8 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 		first_row->ThrowIfError("Failed to get the first row of inlined data from DuckLake: ");
 		auto &names = first_row->GetNames();
 		auto &stored_types = first_row->GetTypes();
+		// a cast hides the stored type of a scalar column
+		bool casts_scalar = false;
 		auto has_columns = [&](const DuckLakeTableEntry &entry) {
 			auto &columns = entry.GetColumns();
 			if (columns.PhysicalColumnCount() + DuckLakeInlinedColNames::COLUMN_COUNT != names.size()) {
@@ -1906,36 +1908,78 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 				if (column.Name().GetIdentifierName() != names[column_idx].GetIdentifierName()) {
 					return false;
 				}
-				// a column that is read without a cast has the type of its values
 				auto name = SQLIdentifier::ToString(column.Name());
-				if (CastColumnToTarget(name, column.Type()) == name && stored_types[column_idx] != column.Type()) {
+				if (CastColumnToTarget(name, column.Type()) != name) {
+					casts_scalar = casts_scalar || !DuckLakeTypes::IsNested(column.Type());
+				} else if (stored_types[column_idx] != column.Type()) {
+					// a column that is read without a cast has the type of its values
 					return false;
 				}
 			}
 			return true;
 		};
 		auto &created_table = created_entry->Cast<DuckLakeTableEntry>();
-		if (has_columns(created_table)) {
+		bool as_created = has_columns(created_table);
+		// a column that the newest table has as created was never read wider
+		auto keeps_created_columns = [&]() {
+			auto newest = GetNewestTableSnapshot(table_id);
+			auto newest_entry = newest.snapshot_id == DConstants::INVALID_INDEX
+			                        ? nullptr
+			                        : catalog.GetEntryById(transaction, newest, table_id);
+			if (!newest_entry) {
+				// LCOV_EXCL_START
+				return false;
+				// LCOV_EXCL_STOP
+			}
+			auto &newest_fields = newest_entry->Cast<DuckLakeTableEntry>().GetFieldData();
+			for (auto &field : created_table.GetFieldData().GetFieldIds()) {
+				auto newest_field = newest_fields.GetByFieldIndex(field->GetFieldIndex());
+				if (!newest_field || !newest_field->SameFields(*field)) {
+					return false;
+				}
+			}
+			return true;
+		};
+		if (as_created && (!casts_scalar || keeps_created_columns())) {
 			return created;
 		}
-		// whether the table of a snapshot has those columns and reads the ones of the creation as the creation does
-		auto reads_as_created = [&](DuckLakeSnapshot snapshot, bool of_schema_version) {
+		auto has_name = [&](const Identifier &name) {
+			for (idx_t i = DuckLakeInlinedColNames::COLUMN_COUNT; i < names.size(); i++) {
+				if (names[i].GetIdentifierName() == name.GetIdentifierName()) {
+					return true;
+				}
+			}
+			return false;
+		};
+		auto reads_columns = [&](DuckLakeSnapshot snapshot, bool of_schema_version) {
 			auto entry = catalog.GetEntryById(transaction, snapshot, table_id);
 			if (!entry || !has_columns(entry->Cast<DuckLakeTableEntry>())) {
 				return false;
 			}
 			auto &candidate = entry->Cast<DuckLakeTableEntry>();
+			bool retyped = false;
 			for (auto &column : candidate.GetColumns().Physical()) {
 				auto &field = candidate.GetFieldId(column.Physical());
 				auto created_field = created_table.GetFieldData().GetByFieldIndex(field.GetFieldIndex());
 				auto &stored_type = stored_types[column.Physical().index + DuckLakeInlinedColNames::COLUMN_COUNT];
 				if (created_field) {
-					// a column of the creation is read as before, from the inlined column of its name
-					if (!field.SameFields(*created_field) ||
-					    field.Name().GetIdentifierName() != created_field->Name().GetIdentifierName()) {
+					bool renamed = field.Name().GetIdentifierName() != created_field->Name().GetIdentifierName();
+					if (renamed && has_name(created_field->Name())) {
+						// a renamed column is read from the inlined column of its first name
 						return false;
 					}
-				} else if (of_schema_version) {
+					if (field.SameFields(*created_field)) {
+						continue;
+					}
+					if (DuckLakeTypes::IsNested(column.Type()) || DuckLakeTypes::IsNested(created_field->Type())) {
+						return false;
+					}
+					retyped = true;
+				} else if (as_created) {
+					// only a column of the creation can be read wider
+					return false;
+				}
+				if (of_schema_version) {
 					// an older version stored text as text, which is not decoded
 					if (DecodesInlinedColumn(column.Type()) && stored_type != LogicalType::BLOB) {
 						return false;
@@ -1945,13 +1989,14 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 					return false;
 				}
 			}
-			return true;
+			// the table as created stays unless the later one reads a column wider
+			return !as_created || retyped;
 		};
 		// its first row was written to the table of that commit, unless a column changed without a new inlined table
 		for (auto &row : *first_row) {
 			// the begin snapshot of a row follows its row id
 			DuckLakeSnapshot written(row.GetValue<idx_t>(1), DConstants::INVALID_INDEX, 0, 0);
-			if (reads_as_created(written, false)) {
+			if (reads_columns(written, false)) {
 				return written;
 			}
 		}
@@ -1965,9 +2010,12 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 				continue;
 			}
 			DuckLakeSnapshot snapshot(row.GetValue<idx_t>(0), DConstants::INVALID_INDEX, 0, 0);
-			if (reads_as_created(snapshot, true)) {
+			if (reads_columns(snapshot, true)) {
 				return snapshot;
 			}
+		}
+		if (as_created) {
+			return created;
 		}
 	}
 	return DuckLakeSnapshot();

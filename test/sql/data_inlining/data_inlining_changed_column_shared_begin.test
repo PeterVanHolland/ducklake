@@ -1,0 +1,200 @@
+# name: test/sql/data_inlining/data_inlining_changed_column_shared_begin.test
+# description: rows inlined after a rename or a type change, at a schema version that shares its begin with others
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.renamed (a INTEGER, b INTEGER)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'renamed')
+
+statement ok
+ALTER TABLE dl.renamed RENAME COLUMN b TO c
+
+statement ok
+INSERT INTO dl.renamed VALUES (1, 2)
+
+statement ok
+ALTER TABLE dl.renamed ADD COLUMN d INTEGER
+
+statement ok
+CREATE TABLE dl.retyped (a INTEGER, b INTEGER)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'retyped')
+
+statement ok
+ALTER TABLE dl.retyped ALTER COLUMN b TYPE BIGINT
+
+statement ok
+INSERT INTO dl.retyped VALUES (1, 5000000000)
+
+statement ok
+ALTER TABLE dl.retyped ADD COLUMN d INTEGER
+
+statement ok
+CREATE TABLE dl.widened (a INTEGER, f FLOAT)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'widened')
+
+statement ok
+ALTER TABLE dl.widened ALTER COLUMN f TYPE DOUBLE
+
+statement ok
+INSERT INTO dl.widened VALUES (1, 1.23456789012345)
+
+statement ok
+ALTER TABLE dl.widened ADD COLUMN d INTEGER
+
+statement ok
+CREATE TABLE dl.kept (a INTEGER, b INTEGER)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'kept')
+
+statement ok
+ALTER TABLE dl.kept ALTER COLUMN b SET DEFAULT 5
+
+statement ok
+INSERT INTO dl.kept VALUES (1, 2)
+
+statement ok
+ALTER TABLE dl.kept ADD COLUMN d INTEGER
+
+statement ok
+CREATE TABLE dl.constrained (a INTEGER, b INTEGER)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'constrained')
+
+statement ok
+ALTER TABLE dl.constrained ALTER COLUMN b TYPE BIGINT
+
+statement ok
+ALTER TABLE dl.constrained ALTER COLUMN b SET NOT NULL
+
+statement ok
+INSERT INTO dl.constrained VALUES (1, 5000000000)
+
+statement ok
+ALTER TABLE dl.constrained ADD COLUMN d INTEGER
+
+query III
+SELECT table_id, begin_snapshot, schema_version FROM __ducklake_metadata_dl.ducklake_schema_versions ORDER BY ALL
+----
+1	1	1
+1	2	2
+1	4	3
+2	5	4
+2	6	5
+2	8	6
+3	9	7
+3	10	8
+3	12	9
+4	13	10
+4	14	11
+4	16	13
+5	17	14
+5	18	15
+5	19	16
+5	21	18
+
+# the rows of test/sql/migration/migrated_inlined_changed_columns.test on every catalog
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 1 WHERE schema_version IN (2, 3)
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 5 WHERE schema_version IN (5, 6)
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 9 WHERE schema_version IN (8, 9)
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 13 WHERE schema_version IN (11, 13)
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 17 WHERE schema_version IN (15, 16, 18)
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 0)
+
+# the table as created has no column c
+query III
+SELECT a, c, d FROM dl.renamed
+----
+1	2	NULL
+
+# the table as created reads b as an INTEGER
+query IIII
+SELECT a, b, d, typeof(b) FROM dl.retyped
+----
+1	5000000000	NULL	BIGINT
+
+# the table as created reads f as a FLOAT, which cannot hold the value
+query IIII
+SELECT a, f = 1.23456789012345, d, typeof(f) FROM dl.widened
+----
+1	true	NULL	DOUBLE
+
+# the table as created reads the columns that did not change
+query III
+SELECT a, b, d FROM dl.kept
+----
+1	2	NULL
+
+# the NOT NULL that came with the wider type holds for the row
+query IIII
+SELECT a, b, d, typeof(b) FROM dl.constrained
+----
+1	5000000000	NULL	BIGINT
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('dl') ORDER BY ALL
+----
+main	constrained	1
+main	kept	1
+main	renamed	1
+main	retyped	1
+main	widened	1
+
+query III
+SELECT a, c, d FROM dl.renamed
+----
+1	2	NULL
+
+query III
+SELECT a, b, d FROM dl.retyped
+----
+1	5000000000	NULL
+
+query III
+SELECT a, f = 1.23456789012345, d FROM dl.widened
+----
+1	true	NULL
+
+query III
+SELECT a, b, d FROM dl.kept
+----
+1	2	NULL
+
+query III
+SELECT a, b, d FROM dl.constrained
+----
+1	5000000000	NULL

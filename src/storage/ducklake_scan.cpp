@@ -273,6 +273,7 @@ DuckLakeFunctionInfo::DuckLakeFunctionInfo(DuckLakeTableEntry &table, DuckLakeTr
 
 shared_ptr<DuckLakeFunctionInfo>
 DuckLakeFunctionInfo::Create(DuckLakeTableEntry &table, DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot) {
+	table.VerifyLoaded();
 	auto result = make_shared_ptr<DuckLakeFunctionInfo>(table, transaction, snapshot);
 	result->table_name = table.name;
 	result->column_names = table.GetColumns().GetColumnNames();

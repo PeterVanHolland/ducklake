@@ -1,0 +1,100 @@
+# name: test/sql/migration/v10_broken_nested_columns.test
+# description: tables whose nested columns DuckDB 1.5.6 left without child rows or with two rows for one child
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.6, which added the nested columns and renamed or retyped them in one transaction
+unzip data/old_ducklake/v10_broken_nested_columns.db.gz {TEST_DIR}/v10_broken_nested_columns.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_broken_nested_columns.db' AS lake
+	(DATA_PATH '{TEST_DIR}/v10_broken_nested_columns', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+# the table next to them is not affected
+query I
+SELECT * FROM lake.u
+----
+7
+
+statement ok
+INSERT INTO lake.u VALUES (8)
+
+# the broken tables are listed without columns
+query II
+SELECT table_name, column_count FROM duckdb_tables() WHERE database_name = 'lake' ORDER BY ALL
+----
+listed	0
+renamed	0
+u	1
+widened	0
+
+statement error
+SELECT * FROM lake.renamed
+----
+Table entry "renamed": Column "s2" has the nested type "struct" but no child columns
+
+statement error
+SELECT * FROM lake.listed
+----
+Table entry "listed": Column "l2" has the nested type "list" but no child columns
+
+statement error
+SELECT * FROM lake.widened
+----
+Table entry "widened": Duplicate child name "a" found in column "s"
+
+# the snapshot before the transaction still has its rows
+query I
+SELECT * FROM lake.renamed AT (VERSION => 8)
+----
+1
+
+statement error
+INSERT INTO lake.renamed DEFAULT VALUES
+----
+Table entry "renamed": Column "s2" has the nested type "struct" but no child columns
+
+statement error
+ALTER TABLE lake.renamed DROP COLUMN s2
+----
+Table entry "renamed": Column "s2" has the nested type "struct" but no child columns
+
+statement error
+COMMENT ON TABLE lake.renamed IS 'broken'
+----
+Table entry "renamed": Column "s2" has the nested type "struct" but no child columns
+
+statement error
+COMMENT ON COLUMN lake.renamed.k IS 'broken'
+----
+Table entry "renamed": Column "s2" has the nested type "struct" but no child columns
+
+# maintenance of every table leaves them out
+statement ok
+CHECKPOINT lake
+
+statement error
+CALL ducklake_flush_inlined_data('lake', table_name => 'renamed')
+----
+Table entry "renamed": Column "s2" has the nested type "struct" but no child columns
+
+statement ok
+DROP TABLE lake.renamed
+
+statement ok
+DROP TABLE lake.listed
+
+query I
+SELECT table_name FROM ducklake_table_info('lake') ORDER BY ALL
+----
+u
+widened
+
+query I
+SELECT * FROM lake.u ORDER BY ALL
+----
+7
+8

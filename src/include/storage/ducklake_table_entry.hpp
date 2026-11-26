@@ -53,6 +53,13 @@ public:
 
 public:
 	const ColumnList &GetColumns() const override;
+	//! Leaves a table whose columns could not be loaded in the catalog, where it can only be dropped
+	void SetLoadError(ErrorData error);
+	bool HasLoadError() const {
+		return load_error.HasError();
+	}
+	//! Throws the error that kept the columns of the table from loading
+	void VerifyLoaded() const;
 
 	TableIndex GetTableId() const {
 		return table_id;
@@ -87,9 +94,11 @@ public:
 		return sort_data.get();
 	}
 	DuckLakeFieldData &GetFieldData() {
+		VerifyLoaded();
 		return *field_data;
 	}
 	const DuckLakeFieldData &GetFieldData() const {
+		VerifyLoaded();
 		return *field_data;
 	}
 	//! Field indexes whose min/max bounds are not recorded, including children of a skipped field
@@ -275,6 +284,7 @@ private:
 	optional_idx next_column_id;
 	vector<DuckLakeInlinedTableInfo> inlined_data_tables;
 	LocalChange local_change;
+	ErrorData load_error;
 	unique_ptr<DuckLakePartition> partition_data;
 	bool starts_partition_spec = false;
 	unique_ptr<DuckLakeSort> sort_data;

@@ -596,7 +596,8 @@
         "test/sql/data_inlining/data_inlining_variant_stats.test",
         "test/sql/compaction/merge_adjacent_migrated_schema_versions.test",
         "test/sql/compaction/merge_adjacent_migrated_altered_table.test",
-        "test/sql/data_inlining/inlined_read_migrated_schema_versions.test"
+        "test/sql/data_inlining/inlined_read_migrated_schema_versions.test",
+        "test/sql/data_inlining/checkpoint_after_inlined_read_migrated_schema_versions.test"
       ]
     },
     {

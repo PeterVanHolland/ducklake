@@ -423,6 +423,8 @@ public:
 
 private:
 	void FlushChanges();
+	//! Commits the metadata of a transaction that has nothing for the commit loop, such as option changes alone
+	void CommitWithoutChanges();
 	void BeginMetadataTransaction();
 	void ReportMetadataQuery(const string &query, std::chrono::steady_clock::duration elapsed);
 	void FlushNameMapCacheInvalidations();

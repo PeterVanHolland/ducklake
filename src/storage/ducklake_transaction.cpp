@@ -893,6 +893,31 @@ void DuckLakeTransaction::UndoConfigOptions() {
 	config_option_undo.clear();
 }
 
+void DuckLakeTransaction::CommitWithoutChanges() {
+	DuckLakeCommitContext context;
+	context.commit_connection = [&]() {
+		GetConnection().Commit();
+	};
+	context.report_commit_outcome = [&](DuckLakeCommitOutcome reported) {
+		ReportCommitOutcome(reported);
+	};
+	ErrorData error_after_commit;
+	bool commit_sent = false;
+	try {
+		DuckLakeTransactionState::CommitMetadata(context, error_after_commit, commit_sent);
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		error.Throw(GetMetadataManager().CommitErrorHint(error.Message()));
+	}
+	if (!state->flushed_inlined_tables.empty()) {
+		// flushes of only empty inlined tables drop the superseded tables
+		DropEmptySupersededInlinedTablesClientSide();
+	}
+	if (error_after_commit.HasError()) {
+		error_after_commit.Throw();
+	}
+}
+
 void DuckLakeTransaction::Commit() {
 	if (connection) {
 		GetConnection();
@@ -912,17 +937,8 @@ void DuckLakeTransaction::Commit() {
 	try {
 		if (ChangesMade() || !ConfigOptionLockSql().empty()) {
 			FlushChanges();
-		} else if (!state->flushed_inlined_tables.empty()) {
-			// flushes of only empty inlined tables drop the superseded tables
-			GetConnection().Commit();
-			DropEmptySupersededInlinedTablesClientSide();
-		} else if (connection) {
-			try {
-				connection->Commit();
-			} catch (std::exception &ex) {
-				ErrorData error(ex);
-				error.Throw(GetMetadataManager().CommitErrorHint(error.Message()));
-			}
+		} else if (!state->flushed_inlined_tables.empty() || connection) {
+			CommitWithoutChanges();
 		}
 	} catch (...) {
 		// a failed commit never reaches Rollback - the transaction manager only reports the error

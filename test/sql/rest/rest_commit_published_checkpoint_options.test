@@ -1,0 +1,49 @@
+# name: test/sql/rest/rest_commit_published_checkpoint_options.test
+# description: A server answers a durable commit of options alone with an IO error when its checkpoint fails
+# group: [rest]
+
+require json
+
+include test/template/rest_setup.test_template
+
+# the commit of the metadata of the server is durable, the checkpoint that follows it fails
+statement ok rest_db:rest_server_con
+SET auto_checkpoint_skip_wal_threshold = 9999999999
+
+statement ok rest_db:rest_server_con
+SET wal_autocheckpoint_entries = 1
+
+statement ok rest_db:rest_server_con
+PRAGMA debug_checkpoint_abort = 'before_header_non_fatal'
+
+# the option is in the metadata, so the server does not answer as for a commit it rejected
+query ITII
+SELECT status, response->>'$.error.type',
+       contains(response->>'$.error.message', 'The transaction was committed')::INTEGER,
+       contains(response->>'$.error.message', 'Transaction COMMIT succeeded')::INTEGER
+FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"set_option": {"option": {"key": "data_inlining_row_limit", "value": "20"}}}]}')
+----
+500	IO	1	1
+
+statement ok rest_db:rest_server_con
+PRAGMA debug_checkpoint_abort = 'none'
+
+statement ok rest_db:rest_server_con
+SET wal_autocheckpoint_entries = 0
+
+include test/template/rest_teardown.test_template
+
+# the failed checkpoint invalidated the metadata database, it is attached again
+statement ok rest_db:rest_server_con
+DETACH rest_lake
+
+statement ok rest_db:rest_server_con
+ATTACH 'ducklake:{TEST_DIR}/{BASE_TEST_NAME}_rest_server.db' AS reopened (
+	DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_rest_files'
+)
+
+query I rest_db:rest_server_con
+SELECT value FROM ducklake_options('reopened') WHERE option_name = 'data_inlining_row_limit' AND scope = 'GLOBAL'
+----
+20

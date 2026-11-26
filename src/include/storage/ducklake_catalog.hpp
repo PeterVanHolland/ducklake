@@ -460,7 +460,7 @@ public:
 	static unique_ptr<DuckLakeStats> ConstructStatsMap(vector<DuckLakeGlobalStatsInfo> &global_stats,
 	                                                   DuckLakeCatalogSet &schema);
 	//! Return the schema for the given snapshot - loading it if it is not yet loaded
-	//! The schema of a snapshot; at_snapshot keys it by the snapshot too, when its schema version is not its own
+	//! With at_snapshot the id of the snapshot is part of the cache key
 	DuckLakeCatalogSet &GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot,
 	                                         bool at_snapshot = false);
 

@@ -50,7 +50,8 @@
         "test/sql/transaction/commit_retry_skips_catalog_load.test",
         "test/sql/transaction/commit_table_paths_from_catalog.test",
         "test/sql/stats/stats_reads_filter_table.test",
-        "test/sql/stats/null_first_bounds_unrelated_commits.test"
+        "test/sql/stats/null_first_bounds_unrelated_commits.test",
+        "test/sql/data_inlining/data_inlining_flush_loads_catalog_once.test"
       ]
     },
     {
@@ -593,7 +594,8 @@
         "test/sql/compaction/user_columns_named_like_internal_columns.test",
         "test/sql/data_inlining/data_inlining_transaction_local_field_readd_rejected.test",
         "test/sql/data_inlining/data_inlining_variant_stats.test",
-        "test/sql/compaction/merge_adjacent_migrated_schema_versions.test"
+        "test/sql/compaction/merge_adjacent_migrated_schema_versions.test",
+        "test/sql/compaction/merge_adjacent_migrated_altered_table.test"
       ]
     },
     {

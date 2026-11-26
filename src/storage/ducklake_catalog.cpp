@@ -564,11 +564,17 @@ idx_t DuckLakeCatalog::GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx
 
 optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLakeTransaction &transaction,
                                                                           TableIndex table_id, idx_t schema_version) {
-	DuckLakeSnapshot snapshot(GetBeginSnapshotForSchemaVersion(table_id, schema_version, transaction), schema_version,
-	                          0, 0);
-	// in catalogs migrated by DuckDB 1.5.0 and 1.5.1 the begin snapshot of a table's schema version lies before the
-	// version, so the schema loaded there is not shared with the snapshots of the version
-	auto entry = GetSchemaForSnapshot(transaction, snapshot, true).GetEntryById(table_id);
+	// a schema that is cached for the version saves the load at the begin snapshot
+	auto cached = GetObjectCacheInstance().Get<DuckLakeSchemaCacheEntry>(SchemaCacheKey(schema_version));
+	auto entry = cached ? cached->catalog_set.GetEntryById(table_id) : nullptr;
+	if (entry) {
+		transaction.PinSchemaCacheEntry(std::move(cached));
+	} else {
+		DuckLakeSnapshot snapshot(GetBeginSnapshotForSchemaVersion(table_id, schema_version, transaction),
+		                          schema_version, 0, 0);
+		// the begin snapshot may belong to another schema version
+		entry = GetSchemaForSnapshot(transaction, snapshot, true).GetEntryById(table_id);
+	}
 	if (!entry) {
 		// LCOV_EXCL_START
 		return nullptr;

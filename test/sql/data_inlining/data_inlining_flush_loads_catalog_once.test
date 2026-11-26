@@ -1,0 +1,60 @@
+# name: test/sql/data_inlining/data_inlining_flush_loads_catalog_once.test
+# description: A flush of inlined data finds its table in the catalog that is loaded for its schema version
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t (id INTEGER)
+
+# the first inlined rows of t raise the schema version without a schema change of t
+statement ok
+CALL lake.set_option('data_inlining_row_limit', 10, table_name => 't')
+
+statement ok
+INSERT INTO lake.t VALUES (1), (2), (3)
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files')
+
+statement ok
+CALL enable_logging('DuckLakeMetadata')
+
+query I
+SELECT rows_flushed FROM ducklake_flush_inlined_data('lake', table_name => 't')
+----
+3
+
+statement ok
+CALL disable_logging()
+
+# catalog loads, which read the macros, and lookups of the begin snapshot of a schema version
+query II
+SELECT count(*) FILTER (WHERE query LIKE '%ducklake_macro%'),
+       count(*) FILTER (WHERE query LIKE '%ducklake_schema_versions%')
+FROM duckdb_logs_parsed('DuckLakeMetadata')
+----
+1	0
+
+query II
+SELECT count(*), sum(id) FROM lake.t
+----
+3	6
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 't')
+----
+1

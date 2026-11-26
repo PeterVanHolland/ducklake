@@ -114,6 +114,8 @@ public:
 	                unique_ptr<LogicalCopyToFile> &copy);
 
 private:
+	//! The table at a schema snapshot of a file, or else at its schema version
+	optional_ptr<DuckLakeTableEntry> GetSchemaTable(idx_t schema_version, optional_idx schema_snapshot);
 	optional_ptr<DuckLakeTableEntry> ResolvePartitionSpecTable(DuckLakeTableEntry &table,
 	                                                           const DuckLakeCompactionFileEntry &source_file,
 	                                                           idx_t partition_id);

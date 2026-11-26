@@ -218,6 +218,8 @@ struct DuckLakeCompactionGroup {
 	//! Unset when the file can be rewritten under the latest schema (compatible files then share one bucket);
 	//! otherwise the file's own schema_version, keeping incompatible files isolated.
 	optional_idx schema_version;
+	//! The schema snapshot of the file, for a file that has one
+	optional_idx schema_snapshot;
 	optional_idx partition_id;
 	vector<Value> partition_values;
 };
@@ -227,6 +229,9 @@ struct DuckLakeCompactionGroupHash {
 		uint64_t hash = 0;
 		if (group.schema_version.IsValid()) {
 			hash ^= std::hash<idx_t>()(group.schema_version.GetIndex());
+		}
+		if (group.schema_snapshot.IsValid()) {
+			hash ^= std::hash<idx_t>()(group.schema_snapshot.GetIndex());
 		}
 		if (group.partition_id.IsValid()) {
 			hash ^= std::hash<idx_t>()(group.partition_id.GetIndex());
@@ -244,7 +249,8 @@ struct DuckLakeCompactionGroupHash {
 
 struct DuckLakeCompactionGroupEquality {
 	bool operator()(const DuckLakeCompactionGroup &a, const DuckLakeCompactionGroup &b) const {
-		return a.schema_version == b.schema_version && a.partition_id == b.partition_id &&
+		return a.schema_version == b.schema_version && a.schema_snapshot == b.schema_snapshot &&
+		       a.partition_id == b.partition_id &&
 		       std::equal(a.partition_values.begin(), a.partition_values.end(), b.partition_values.begin(),
 		                  b.partition_values.end(), ValueEquality());
 	}
@@ -275,6 +281,12 @@ static bool FieldsPreservedInLatest(const vector<unique_ptr<DuckLakeFieldId>> &o
 		}
 	}
 	return true;
+}
+
+//! The schema version of a file and its schema snapshot, invalid without one
+static pair<idx_t, idx_t> SchemaKey(const DuckLakeCompactionFileEntry &file) {
+	auto schema_snapshot = file.schema_snapshot.IsValid() ? file.schema_snapshot.GetIndex() : DConstants::INVALID_INDEX;
+	return make_pair(file.schema_version, schema_snapshot);
 }
 
 static bool TimestampRetypedInLatest(const vector<unique_ptr<DuckLakeFieldId>> &older_fields,
@@ -310,43 +322,45 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 	auto &latest_table = latest_entry ? latest_entry->Cast<DuckLakeTableEntry>() : table;
 	auto &latest_field_data = latest_table.GetFieldData();
 	const idx_t latest_schema_version = snapshot.schema_version;
-	unordered_map<idx_t, bool> merges_into_latest_schema;
-	auto can_merge_into_latest = [&](idx_t schema_version) -> bool {
+	map<pair<idx_t, idx_t>, bool> merges_into_latest_schema;
+	auto can_merge_into_latest = [&](const DuckLakeCompactionFileEntry &file) -> bool {
 		if (type != CompactionType::MERGE_ADJACENT_TABLES) {
 			// REWRITE_DELETES assumes the source and target schemas match - never merge across schemas
 			return false;
 		}
-		if (schema_version == latest_schema_version) {
+		if (file.schema_version == latest_schema_version && !file.schema_snapshot.IsValid()) {
 			return true;
 		}
 		if (!catalog.SupportsV1_1Metadata()) {
 			// DuckLake 1.0 compaction derives the schema of a file from its begin snapshot
 			return false;
 		}
-		auto cached = merges_into_latest_schema.find(schema_version);
+		auto key = SchemaKey(file);
+		auto cached = merges_into_latest_schema.find(key);
 		if (cached != merges_into_latest_schema.end()) {
 			return cached->second;
 		}
-		auto version_table = catalog.GetTableAtSchemaVersion(transaction, table_id, schema_version);
+		auto version_table = GetSchemaTable(file.schema_version, file.schema_snapshot);
 		bool result =
 		    version_table && FieldsPreservedInLatest(version_table->GetFieldData().GetFieldIds(), latest_field_data);
-		merges_into_latest_schema[schema_version] = result;
+		merges_into_latest_schema[key] = result;
 		return result;
 	};
 	// an added file can hold timestamps finer than its schema version, which reading at that version rounds
-	unordered_map<idx_t, bool> rounds_added_timestamps;
-	auto rounds_added_file = [&](idx_t schema_version) -> bool {
-		if (schema_version == latest_schema_version) {
+	map<pair<idx_t, idx_t>, bool> rounds_added_timestamps;
+	auto rounds_added_file = [&](const DuckLakeCompactionFileEntry &file) -> bool {
+		if (file.schema_version == latest_schema_version && !file.schema_snapshot.IsValid()) {
 			return false;
 		}
-		auto cached = rounds_added_timestamps.find(schema_version);
+		auto key = SchemaKey(file);
+		auto cached = rounds_added_timestamps.find(key);
 		if (cached != rounds_added_timestamps.end()) {
 			return cached->second;
 		}
-		auto version_table = catalog.GetTableAtSchemaVersion(transaction, table_id, schema_version);
+		auto version_table = GetSchemaTable(file.schema_version, file.schema_snapshot);
 		bool result =
 		    version_table && TimestampRetypedInLatest(version_table->GetFieldData().GetFieldIds(), latest_field_data);
-		rounds_added_timestamps[schema_version] = result;
+		rounds_added_timestamps[key] = result;
 		return result;
 	};
 
@@ -369,14 +383,15 @@ void DuckLakeCompactor::GenerateCompactions(DuckLakeTableEntry &table,
 			continue;
 		}
 		// only added files have a name mapping
-		if (candidate.file.mapping_id.IsValid() && rounds_added_file(candidate.schema_version)) {
+		if (candidate.file.mapping_id.IsValid() && rounds_added_file(candidate)) {
 			continue;
 		}
 		// construct the compaction group for this file - i.e. the set of candidate files we can compact it with
 		DuckLakeCompactionGroup group;
-		if (!can_merge_into_latest(candidate.schema_version)) {
+		if (!can_merge_into_latest(candidate)) {
 			// incompatible with the latest schema - keep this file isolated in its own schema_version group
 			group.schema_version = candidate.schema_version;
+			group.schema_snapshot = candidate.schema_snapshot;
 		}
 		group.partition_id = candidate.file.partition_id;
 		group.partition_values = candidate.file.partition_values;
@@ -555,6 +570,20 @@ unique_ptr<LogicalOperator> DuckLakeCompactor::InsertSort(Binder &binder, unique
 	return LogicalProjection::CreateIdentity(binder.GenerateTableIndex(), std::move(order));
 }
 
+optional_ptr<DuckLakeTableEntry> DuckLakeCompactor::GetSchemaTable(idx_t schema_version, optional_idx schema_snapshot) {
+	if (!schema_snapshot.IsValid()) {
+		return catalog.GetTableAtSchemaVersion(transaction, table_id, schema_version);
+	}
+	DuckLakeSnapshot snapshot(schema_snapshot.GetIndex(), DConstants::INVALID_INDEX, 0, 0);
+	auto entry = catalog.GetEntryById(transaction, snapshot, table_id);
+	if (!entry) {
+		// LCOV_EXCL_START
+		return nullptr;
+		// LCOV_EXCL_STOP
+	}
+	return &entry->Cast<DuckLakeTableEntry>();
+}
+
 optional_ptr<DuckLakeTableEntry>
 DuckLakeCompactor::ResolvePartitionSpecTable(DuckLakeTableEntry &table, const DuckLakeCompactionFileEntry &source_file,
                                              idx_t partition_id) {
@@ -566,7 +595,7 @@ DuckLakeCompactor::ResolvePartitionSpecTable(DuckLakeTableEntry &table, const Du
 		return nullptr;
 	}
 	auto partition_table =
-	    catalog.GetTableAtSchemaVersion(transaction, table_id, source_file.partition_schema_version.GetIndex());
+	    GetSchemaTable(source_file.partition_schema_version.GetIndex(), source_file.partition_schema_snapshot);
 	if (!partition_table) {
 		throw InternalException("DuckLakeCompactor: failed to find table entry for partition schema");
 	}
@@ -646,7 +675,7 @@ DuckLakeCompactor::GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry>
 			entry = &latest_entry->Cast<DuckLakeTableEntry>();
 		}
 	} else {
-		entry = catalog.GetTableAtSchemaVersion(transaction, table_id, source_files[0].schema_version);
+		entry = GetSchemaTable(source_files[0].schema_version, source_files[0].schema_snapshot);
 	}
 	if (!entry) {
 		throw InternalException("DuckLakeCompactor: failed to find table entry for given snapshot id");

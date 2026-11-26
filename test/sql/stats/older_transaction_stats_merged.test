@@ -1,0 +1,87 @@
+# name: test/sql/stats/older_transaction_stats_merged.test
+# description: A commit must not merge its files into the statistics that an older transaction cached
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/older_transaction_stats_merged.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+(DATA_PATH '{DATA_PATH}/older_transaction_stats_merged', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.emptied (x INTEGER)
+
+statement ok
+INSERT INTO dl.emptied SELECT range FROM range(10)
+
+statement ok
+CREATE TABLE dl.shrunk (x INTEGER)
+
+statement ok
+INSERT INTO dl.shrunk SELECT range FROM range(10)
+
+statement ok
+INSERT INTO dl.shrunk SELECT range FROM range(100, 110)
+
+# the delete file keeps the statistics of the first file from being recomputed later
+statement ok
+DELETE FROM dl.shrunk WHERE x = 5
+
+statement ok con1
+BEGIN
+
+query II con1
+SELECT (SELECT count(*) FROM dl.emptied WHERE x >= 0), (SELECT count(*) FROM dl.shrunk WHERE x >= 0)
+----
+10	19
+
+# both deletes only drop files, the first resets the statistics and the second drops the bounds
+query I con2
+DELETE FROM dl.emptied
+----
+10
+
+query I con2
+DELETE FROM dl.shrunk WHERE x >= 100
+----
+10
+
+# the older transaction loads the statistics of its own snapshot again
+query II con1
+SELECT (SELECT count(*) FROM dl.emptied WHERE x >= 0), (SELECT count(*) FROM dl.shrunk WHERE x >= 0)
+----
+10	19
+
+# one commit, so that both inserts start from the snapshot of the deletes
+statement ok con2
+BEGIN
+
+statement ok con2
+INSERT INTO dl.emptied VALUES (1000)
+
+statement ok con2
+INSERT INTO dl.shrunk VALUES (1000)
+
+statement ok con2
+COMMIT
+
+# the record count of the second table keeps the row of its delete file
+query I
+SELECT record_count FROM __ducklake_metadata_dl.ducklake_table_stats ORDER BY table_id
+----
+1
+11
+
+query III
+SELECT table_id, min_value, max_value FROM __ducklake_metadata_dl.ducklake_table_column_stats
+----
+1	1000	1000
+
+statement ok con1
+COMMIT

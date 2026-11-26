@@ -482,6 +482,8 @@
         "test/sql/stats/null_first_bounds_concurrent_flush.test",
         "test/sql/stats/null_first_bounds_other_catalog.test",
         "test/sql/stats/numeric_stats_one_bound.test",
+        "test/sql/stats/older_transaction_stats_merged.test",
+        "test/sql/stats/other_catalog_stats_merged.test",
         "test/sql/stats/prefix_range_file_pruning.test",
         "test/sql/stats/skip_stats_columns.test",
         "test/sql/stats/skip_stats_columns_add_files.test",

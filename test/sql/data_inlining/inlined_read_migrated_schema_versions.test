@@ -1,0 +1,80 @@
+# name: test/sql/data_inlining/inlined_read_migrated_schema_versions.test
+# description: reads of inlined tables after DuckDB 1.5.0 or 1.5.1 migrated their schema versions
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.t1 (id INTEGER, v VARCHAR)
+
+statement ok
+INSERT INTO dl.t1 VALUES (6, 'a')
+
+statement ok
+CREATE TABLE dl.t2 (id INTEGER, c1 INTEGER)
+
+statement ok
+INSERT INTO dl.t2 VALUES (7, 70)
+
+# DuckDB 1.5.0 and 1.5.1 gave every table a row for every later schema version with the snapshot of its creation
+statement ok
+INSERT INTO __ducklake_metadata_dl.ducklake_schema_versions (table_id, begin_snapshot, schema_version)
+SELECT t.table_id, t.begin_snapshot, v.schema_version
+FROM __ducklake_metadata_dl.ducklake_table t
+JOIN (SELECT DISTINCT schema_version FROM __ducklake_metadata_dl.ducklake_snapshot) v
+	ON v.schema_version > (SELECT MAX(sv.schema_version) FROM __ducklake_metadata_dl.ducklake_schema_versions sv
+	                       WHERE sv.table_id = t.table_id)
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 10)
+
+# a schema change, so that the schema version of the inlined tables is no longer the latest
+statement ok
+CREATE VIEW dl.v AS SELECT 1 AS one
+
+statement ok
+INSERT INTO dl.t1 VALUES (8, 'b')
+
+# the schema version of the new rows of t1 begins at the creation of t1, before t2 exists
+query II
+SELECT * FROM dl.t1 ORDER BY id
+----
+6	a
+8	b
+
+query II
+SELECT * FROM dl.t2
+----
+7	70
+
+query II
+SELECT * FROM dl.t2 AT (VERSION => 4)
+----
+7	70
+
+query I
+SELECT count(*) FROM ducklake_table_changes('dl', 'main', 't2', 4, 6)
+----
+1
+
+statement ok
+CALL ducklake_flush_inlined_data('dl', table_name => 't2')
+
+query II
+SELECT * FROM dl.t2
+----
+7	70

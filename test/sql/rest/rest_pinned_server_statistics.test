@@ -1,12 +1,14 @@
 # name: test/sql/rest/rest_pinned_server_statistics.test
-# description: A REST server of a DuckLake attached at a snapshot does not return the statistics of later commits
+# description: A REST server of a DuckLake attached at a snapshot does not answer with the statistics of other snapshots
 # group: [rest]
+
+require json
 
 include test/template/rest_setup.test_template
 
 statement ok rest_db:rest_server_con
 ATTACH 'ducklake:{TEST_DIR}/{BASE_TEST_NAME}_history.db' AS history
-(DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_history_files', DATA_INLINING_ROW_LIMIT 0)
+(DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_history_files', METADATA_CATALOG 'history_meta', DATA_INLINING_ROW_LIMIT 0)
 
 statement ok rest_db:rest_server_con
 CREATE TABLE history.t (x INTEGER)
@@ -14,24 +16,37 @@ CREATE TABLE history.t (x INTEGER)
 statement ok rest_db:rest_server_con
 INSERT INTO history.t VALUES (100)
 
+# attached at the latest snapshot, which the commits below leave behind
 statement ok rest_db:rest_server_con
-DELETE FROM history.t
-
-statement ok rest_db:rest_server_con
-INSERT INTO history.t VALUES (1)
-
-statement ok rest_db:rest_server_con
-DETACH history
-
-# the snapshot of the first insert, while the statistics of the table are the ones of the second
-statement ok rest_db:rest_server_con
-ATTACH 'ducklake:{TEST_DIR}/{BASE_TEST_NAME}_history.db' AS pinned (SNAPSHOT_VERSION 2)
+ATTACH 'ducklake:{TEST_DIR}/{BASE_TEST_NAME}_history.db' AS pinned (METADATA_CATALOG 'history_meta', SNAPSHOT_VERSION 2)
 
 statement ok rest_db:rest_server_con
 SET VARIABLE pinned_listen_uri = (SELECT listen_uri FROM ducklake_rest_serve('pinned', port := regexp_extract(getvariable('rest_listen_uri'), ':([0-9]+)/', 1)::UBIGINT))
 
 set variable pinned_server <variable:rest_server_con:pinned_listen_uri>
 
+query II
+SELECT response->>'$.aggregate_results[0].answered', response->>'$.aggregate_results[0].value'
+FROM ducklake_rest_request('{pinned_server}', 'POST', '/v1/pinned/tables/1/scan',
+'{"aggregates": [{"function": "min", "column_id": 1}]}')
+----
+true	100
+
+statement ok rest_db:rest_server_con
+DELETE FROM history.t
+
+statement ok rest_db:rest_server_con
+INSERT INTO history.t VALUES (1)
+
+# the statistics that the server cached are not the ones of the latest snapshot
+query I
+SELECT response->>'$.aggregate_results[0].answered'
+FROM ducklake_rest_request('{pinned_server}', 'POST', '/v1/pinned/tables/1/scan',
+'{"snapshot_id": 4, "aggregates": [{"function": "min", "column_id": 1}]}')
+----
+false
+
+# and the latest statistics are not the ones of the snapshot of the server
 statement ok
 ATTACH 'ducklake:rest:{pinned_server}' AS dl
 
@@ -39,3 +54,8 @@ query I
 SELECT count(*) FROM dl.t WHERE x = 100
 ----
 1
+
+statement ok
+DETACH dl
+
+include test/template/rest_teardown.test_template

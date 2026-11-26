@@ -164,9 +164,11 @@ DuckLakeMetadata DuckLakeRESTEndpoints::GetMetadata(DuckLakeRESTRequest &request
 	return metadata;
 }
 
-//! Whether the snapshot is the latest one, which the statistics of the tables describe
+//! Whether the snapshot is the latest one and the one of the transaction, which the statistics of the tables describe
 static bool IsLatestSnapshot(DuckLakeRESTRequest &request, DuckLakeSnapshot snapshot) {
-	return snapshot.snapshot_id == request.transaction->GetNewestVisibleSnapshotId();
+	auto &transaction = *request.transaction;
+	return snapshot.snapshot_id == transaction.GetNewestVisibleSnapshotId() &&
+	       snapshot.snapshot_id == transaction.GetSnapshot().snapshot_id;
 }
 
 //! Adds the catalog and statistics of the snapshot that the request asks for

@@ -1129,11 +1129,10 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 	auto &cache = GetObjectCacheInstance();
 	auto key = StatsCacheKey(snapshot.next_file_id, table_id);
 	auto cached = cache.Get<DuckLakeTableStatsCacheEntry>(key);
-	// a read that shows later commits returns their statistics, which only a commit can use
-	auto &metadata_manager = transaction.GetMetadataManager();
-	bool shows_later_commits = metadata_manager.ShowsConcurrentCommits() && !metadata_manager.IsRemote();
+	// statistics that were read for a newer snapshot do not describe the snapshot of an older reader
 	bool is_reader = !load_tables;
-	if (cached && cached->schema_version == snapshot.schema_version && !(is_reader && cached->read_by_commit)) {
+	if (cached && cached->schema_version == snapshot.schema_version &&
+	    !(is_reader && cached->snapshot_id > snapshot.snapshot_id)) {
 		if (!cached->has_stats) {
 			// cached negative result
 			return nullptr;
@@ -1164,6 +1163,8 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 			}
 		}
 	}
+	auto &metadata_manager = transaction.GetMetadataManager();
+	bool shows_later_commits = metadata_manager.ShowsConcurrentCommits() && !metadata_manager.IsRemote();
 	bool verify_snapshot = is_reader && shows_later_commits;
 	if (verify_snapshot && transaction.NewerSnapshotCommitted(false)) {
 		return nullptr;
@@ -1189,7 +1190,8 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 			entry =
 			    make_shared_ptr<DuckLakeTableStatsCacheEntry>(snapshot.schema_version, std::move(*stats_entry->second));
 		}
-		entry->read_by_commit = shows_later_commits && !is_reader;
+		// where reads show later commits, the statistics that a commit reads can be theirs
+		entry->snapshot_id = shows_later_commits && !is_reader ? DConstants::INVALID_INDEX : snapshot.snapshot_id;
 		if (current_id == table_id) {
 			requested_entry = entry;
 		}

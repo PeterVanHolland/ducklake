@@ -2506,7 +2506,6 @@ idx_t DuckLakeTransaction::GetNewestVisibleSnapshotId() {
 }
 
 bool DuckLakeTransaction::NewerSnapshotCommitted(bool read_metadata) {
-	// snapshot ids only grow, so a newer snapshot stays one
 	if (read_metadata && !newer_snapshot_committed &&
 	    metadata_manager->GetSnapshot()->snapshot_id > GetSnapshot().snapshot_id) {
 		newer_snapshot_committed = true;

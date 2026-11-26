@@ -2005,30 +2005,47 @@ WHERE table_id = %d AND schema_version < (
 string DuckLakeMetadataManager::GetInlinedTableColumnsSql(optional_idx table_id, bool row_visibility) {
 	string table_filter;
 	string column_filter;
+	string version_filter;
+	string last_column_filter = "c.table_id = v.table_id";
 	if (table_id.IsValid()) {
 		table_filter = StringUtil::Format("\n\tWHERE idt.table_id = %d", table_id.GetIndex());
 		column_filter = StringUtil::Format(" AND col.table_id = %d", table_id.GetIndex());
+		version_filter = StringUtil::Format("\n\t\tWHERE v.table_id = %d", table_id.GetIndex());
+		last_column_filter = StringUtil::Format("c.table_id = %d", table_id.GetIndex());
 	}
-	// each inlined table supplies the read snapshot of its columns, the begin of its schema version
-	return StringUtil::Format(R"(
+	if (row_visibility) {
+		last_column_filter += " AND c.branch_id = 0";
+	}
+	// the last schema version sharing a begin snapshot is read at the end of its range, other versions at their begin
+	return StringUtil::Format(
+	    R"(
 WITH inlined AS (
-	SELECT idt.table_id, idt.table_name, COALESCE(sv.begin_snapshot, (
+	SELECT idt.table_id, idt.table_name, COALESCE(sv.read_snapshot, (
 		SELECT MIN(t.begin_snapshot) FROM {METADATA_CATALOG}.ducklake_table t WHERE t.table_id = idt.table_id%s
 	)) AS snapshot_id
 	FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
-	LEFT JOIN {METADATA_CATALOG}.ducklake_schema_versions sv
-		ON sv.table_id = idt.table_id AND sv.schema_version = idt.schema_version%s
+	LEFT JOIN (
+		SELECT v.table_id, v.schema_version, CASE
+			WHEN LAG(v.begin_snapshot) OVER versions = v.begin_snapshot
+				AND LEAD(v.begin_snapshot) OVER versions IS DISTINCT FROM v.begin_snapshot
+			THEN COALESCE(
+				LEAD(v.begin_snapshot) OVER versions - 1,
+				(SELECT MAX(c.begin_snapshot) FROM {METADATA_CATALOG}.ducklake_column c WHERE %s)
+			)
+			ELSE v.begin_snapshot END AS read_snapshot
+		FROM {METADATA_CATALOG}.ducklake_schema_versions v%s
+		WINDOW versions AS (PARTITION BY v.table_id ORDER BY v.schema_version ASC)
+	) sv ON sv.table_id = idt.table_id AND sv.schema_version = idt.schema_version%s
 )
 SELECT inlined.table_name, col.column_name, col.column_type, col.column_id
 FROM inlined
 JOIN {METADATA_CATALOG}.ducklake_column col ON col.table_id = inlined.table_id AND col.parent_column IS NULL%s
 WHERE %s
 )",
-	                          row_visibility ? " AND t.branch_id = 0" : "", table_filter, column_filter,
-	                          row_visibility
-	                              ? RowVisibility("col", RowKind("column"), "inlined.snapshot_id")
-	                              : "col.begin_snapshot <= inlined.snapshot_id AND (col.end_snapshot IS NULL "
-	                                "OR col.end_snapshot > inlined.snapshot_id)");
+	    row_visibility ? " AND t.branch_id = 0" : "", last_column_filter, version_filter, table_filter, column_filter,
+	    row_visibility ? RowVisibility("col", RowKind("column"), "inlined.snapshot_id")
+	                   : "col.begin_snapshot <= inlined.snapshot_id AND (col.end_snapshot IS NULL "
+	                     "OR col.end_snapshot > inlined.snapshot_id)");
 }
 
 vector<DuckLakeInlinedTableInfo> DuckLakeMetadataManager::GetInlinedDataTables(const DuckLakeTableEntry &table,

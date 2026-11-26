@@ -408,16 +408,72 @@ unordered_set<string> PostgresMetadataManager::ListInlinedDeletionTables() {
 	return ReadTableNames(*DuckLakeMetadataManager::Query(query));
 }
 
-void PostgresMetadataManager::MigrateInlinedDataTypes() {
-	// a 2.0 catalog whose version string was rewound reaches this step with the column rows already converted
-	auto columns = DuckLakeMetadataManager::Query(
-	    GetInlinedTableColumnsSql(optional_idx(), HasMetadataColumn("ducklake_column", "branch_id")));
-	columns->ThrowIfError("Failed to read the columns of inlined-data tables while migrating: ");
+void PostgresMetadataManager::MigrateInlinedDataTypes(bool schema_version_columns) {
 	map<Identifier, identifier_map_t<string>> inlined_tables;
-	for (auto &row : *columns) {
-		inlined_tables[row.GetValue<Identifier>(0)][row.GetValue<Identifier>(1)] = row.GetValue<string>(2);
+	if (schema_version_columns) {
+		// a 2.0 catalog whose version string was rewound reaches this step with the column rows already converted
+		auto columns = DuckLakeMetadataManager::Query(
+		    GetInlinedTableColumnsSql(optional_idx(), HasMetadataColumn("ducklake_column", "branch_id")));
+		columns->ThrowIfError("Failed to read the columns of inlined-data tables while migrating: ");
+		for (auto &row : *columns) {
+			inlined_tables[row.GetValue<Identifier>(0)][row.GetValue<Identifier>(1)] = row.GetValue<string>(2);
+		}
 	}
-	for (auto &inlined_table : inlined_tables) {
+	// without a begin of its own a schema version has the columns of an earlier version of its table there
+	auto shared = DuckLakeMetadataManager::Query(R"(
+SELECT DISTINCT idt.table_name, sv.begin_snapshot IS NULL
+FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
+LEFT JOIN {METADATA_CATALOG}.ducklake_schema_versions sv
+	ON sv.table_id = idt.table_id AND sv.schema_version = idt.schema_version
+WHERE sv.begin_snapshot IS NULL OR EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_schema_versions earlier
+	WHERE earlier.table_id = sv.table_id AND earlier.begin_snapshot = sv.begin_snapshot
+	AND earlier.schema_version < sv.schema_version))");
+	shared->ThrowIfError("Failed to read the schema versions of inlined-data tables while migrating: ");
+	identifier_set_t without_schema_version;
+	identifier_set_t shared_begin;
+	for (auto &row : *shared) {
+		if (row.GetValue<bool>(1)) {
+			without_schema_version.insert(row.GetValue<Identifier>(0));
+		} else {
+			shared_begin.insert(row.GetValue<Identifier>(0));
+			inlined_tables.erase(row.GetValue<Identifier>(0));
+		}
+	}
+	// such an inlined table is converted by the types that the columns of its names ever had
+	auto history = DuckLakeMetadataManager::Query(R"(
+SELECT DISTINCT idt.table_name, col.column_name, col.column_type
+FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
+JOIN {METADATA_CATALOG}.ducklake_column col ON col.table_id = idt.table_id AND col.parent_column IS NULL
+ORDER BY ALL)");
+	history->ThrowIfError("Failed to read the column history of inlined-data tables while migrating: ");
+	map<Identifier, identifier_map_t<vector<string>>> column_history;
+	for (auto &row : *history) {
+		column_history[row.GetValue<Identifier>(0)][row.GetValue<Identifier>(1)].push_back(row.GetValue<string>(2));
+	}
+	// whether a column of the type is stored as the stored type, and the storage type it is converted to if it is not
+	auto stored_as = [&](const string &type_name, const LogicalType &stored_type, string &storage_type_name) {
+		auto type = DuckLakeTypes::FromString(type_name);
+		storage_type_name = string();
+		if (DuckLakeTypes::IsNested(type)) {
+			// nested columns are stored as VARCHAR in every version
+			return stored_type == LogicalType::VARCHAR;
+		}
+		DuckLakeColumnInfo column;
+		column.type = type_name;
+		auto current_storage = GetColumnType(column);
+		if (stored_type == UnboundType::TryParseAndDefaultBind(current_storage)) {
+			return true;
+		}
+		// DuckLake 0.3 stored values with the native type of their DuckLake type
+		auto native_type = type.HasAlias() ? LogicalType(type.id()) : type;
+		if (stored_type != native_type) {
+			return false;
+		}
+		storage_type_name = current_storage;
+		return true;
+	};
+	for (auto &inlined_table : column_history) {
 		auto &table_name = inlined_table.first;
 		auto probe = DuckLakeMetadataManager::Query(
 		    StringUtil::Format("SELECT * FROM {METADATA_CATALOG}.%s LIMIT 0", table_name));
@@ -434,32 +490,55 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 		for (idx_t i = 0; i < 3; i++) {
 			select_list.push_back(SQLQuotedIdentifier::ToString(names[i]));
 		}
+		// any other schema version is read and flushed with the table at its begin, or as created without a row, so
+		// an inlined table with a column that this table lacks stays as it is
+		bool by_history = shared_begin.count(table_name) > 0;
+		bool created_only = without_schema_version.count(table_name) > 0;
+		if (!by_history && !schema_version_columns) {
+			continue;
+		}
+		auto &version_columns = inlined_tables[table_name];
 		string column_defs;
 		bool rewrite = false;
 		for (idx_t i = 3; i < names.size(); i++) {
-			auto column_type = inlined_table.second.find(names[i]);
-			if (column_type == inlined_table.second.end()) {
+			auto &stored_type = probe->GetTypes()[i];
+			// the type of the column at its schema version, when the column is stored as that type
+			string type_name;
+			string storage_type_name;
+			auto version_column = version_columns.find(names[i]);
+			auto candidates = inlined_table.second.find(names[i]);
+			bool known = version_column != version_columns.end();
+			if (!known && (!by_history || candidates == inlined_table.second.end())) {
+				// no table that the rows can be read with has a column of that name
 				rewrite = false;
 				break;
 			}
-			auto type = DuckLakeTypes::FromString(column_type->second);
-			auto native_type = type.HasAlias() ? LogicalType(type.id()) : type;
-			// DuckLake 0.3 stored values with the native type of their DuckLake type, other columns are kept
-			auto &stored_type = probe->GetTypes()[i];
-			string storage_type_name;
-			bool convert = false;
-			// nested columns are stored as VARCHAR in every version
-			if (!DuckLakeTypes::IsNested(type)) {
-				DuckLakeColumnInfo column;
-				column.type = column_type->second;
-				storage_type_name = GetColumnType(column);
-				auto storage_type = UnboundType::TryParseAndDefaultBind(storage_type_name);
-				convert = stored_type != storage_type && stored_type == native_type;
+			if (known && !created_only && stored_as(version_column->second, stored_type, storage_type_name)) {
+				type_name = version_column->second;
+			} else if (candidates != inlined_table.second.end()) {
+				// otherwise the types the column had that are stored this way, when they agree on the conversion
+				bool agree = true;
+				for (auto &candidate : candidates->second) {
+					string candidate_storage;
+					if (!stored_as(candidate, stored_type, candidate_storage)) {
+						continue;
+					}
+					agree = agree && (type_name.empty() || candidate_storage == storage_type_name);
+					type_name = candidate;
+					storage_type_name = candidate_storage;
+				}
+				if (!agree) {
+					// such a column is kept as it is
+					type_name = string();
+					storage_type_name = string();
+				}
 			}
+			bool convert = !storage_type_name.empty();
 			auto column_name = SQLQuotedIdentifier::ToString(names[i]);
 			column_defs += StringUtil::Format("%s%s %s", column_defs.empty() ? "" : ", ", column_name,
 			                                  convert ? storage_type_name : stored_type.ToString());
-			select_list.push_back(convert ? DuckLakeUtil::InlinedStorageExpression(*this, column_name, type)
+			select_list.push_back(convert ? DuckLakeUtil::InlinedStorageExpression(*this, column_name,
+			                                                                       DuckLakeTypes::FromString(type_name))
 			                              : column_name);
 			rewrite = rewrite || convert;
 		}

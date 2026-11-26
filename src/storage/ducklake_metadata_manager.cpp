@@ -1861,12 +1861,12 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetSnapshotForSchemaVersion(TableIndex
 	} else if (earlier_version) {
 		// one between the first and the last only has inlined rows, the begin is not a snapshot of it either
 		snapshot = DuckLakeSnapshot(begin_snapshot.GetIndex(), DConstants::INVALID_INDEX, 0, 0);
-		auto rows_snapshot = GetInlinedRowsSnapshot(table_id, schema_version, snapshot);
-		if (rows_snapshot.snapshot_id == DConstants::INVALID_INDEX) {
+		auto inlined_snapshot = GetInlinedTableSnapshot(table_id, schema_version, snapshot);
+		if (inlined_snapshot.snapshot_id == DConstants::INVALID_INDEX) {
 			// the first row that an older release still inlines there can tell the columns later
 			return snapshot;
 		}
-		snapshot = rows_snapshot;
+		snapshot = inlined_snapshot;
 	}
 	// only rows that are already committed are cached, a schema version written by this transaction can still be
 	// rolled back, and the fallback above is not stable either
@@ -1876,8 +1876,8 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetSnapshotForSchemaVersion(TableIndex
 	return snapshot;
 }
 
-DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedRowsSnapshot(TableIndex table_id, idx_t schema_version,
-                                                                 DuckLakeSnapshot created) {
+DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex table_id, idx_t schema_version,
+                                                                  DuckLakeSnapshot created) {
 	auto tables =
 	    Query(GetInlinedTableNamesSql(table_id) + StringUtil::Format(" AND schema_version = %d", schema_version));
 	tables->ThrowIfError("Failed to get inlined data tables from DuckLake: ");
@@ -1918,32 +1918,55 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedRowsSnapshot(TableIndex tabl
 		if (has_columns(created_table)) {
 			return created;
 		}
+		// whether the table of a snapshot has those columns and reads the ones of the creation as the creation does
+		auto reads_as_created = [&](DuckLakeSnapshot snapshot, bool of_schema_version) {
+			auto entry = catalog.GetEntryById(transaction, snapshot, table_id);
+			if (!entry || !has_columns(entry->Cast<DuckLakeTableEntry>())) {
+				return false;
+			}
+			auto &candidate = entry->Cast<DuckLakeTableEntry>();
+			for (auto &column : candidate.GetColumns().Physical()) {
+				auto &field = candidate.GetFieldId(column.Physical());
+				auto created_field = created_table.GetFieldData().GetByFieldIndex(field.GetFieldIndex());
+				auto &stored_type = stored_types[column.Physical().index + DuckLakeInlinedColNames::COLUMN_COUNT];
+				if (created_field) {
+					// a column of the creation is read as before, from the inlined column of its name
+					if (!field.SameFields(*created_field) ||
+					    field.Name().GetIdentifierName() != created_field->Name().GetIdentifierName()) {
+						return false;
+					}
+				} else if (of_schema_version) {
+					// an older version stored text as text, which is not decoded
+					if (DecodesInlinedColumn(column.Type()) && stored_type != LogicalType::BLOB) {
+						return false;
+					}
+				} else if (!TypeIsNativelySupported(column.Type()) || stored_type != column.Type()) {
+					// a later column of the table of a row is only known where it is stored as its type
+					return false;
+				}
+			}
+			return true;
+		};
 		// its first row was written to the table of that commit, unless a column changed without a new inlined table
 		for (auto &row : *first_row) {
 			// the begin snapshot of a row follows its row id
 			DuckLakeSnapshot written(row.GetValue<idx_t>(1), DConstants::INVALID_INDEX, 0, 0);
-			auto written_entry = catalog.GetEntryById(transaction, written, table_id);
-			if (!written_entry || !has_columns(written_entry->Cast<DuckLakeTableEntry>())) {
+			if (reads_as_created(written, false)) {
+				return written;
+			}
+		}
+		// the inlined table was created for the table of its schema version, which the snapshots of that version have
+		auto version_snapshot = Query(StringUtil::Format(
+		    "SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot WHERE schema_version = %d%s",
+		    schema_version, MainSnapshotFilter()));
+		version_snapshot->ThrowIfError("Failed to get the first snapshot of a schema version from DuckLake: ");
+		for (auto &row : *version_snapshot) {
+			if (row.IsNull(0)) {
 				continue;
 			}
-			auto &written_table = written_entry->Cast<DuckLakeTableEntry>();
-			bool same_columns = true;
-			for (auto &column : written_table.GetColumns().Physical()) {
-				auto &field = written_table.GetFieldId(column.Physical());
-				auto created_field = created_table.GetFieldData().GetByFieldIndex(field.GetFieldIndex());
-				if (created_field) {
-					// a column of the creation is read as before, from the inlined column of its name
-					same_columns = same_columns && field.SameFields(*created_field) &&
-					               field.Name().GetIdentifierName() == created_field->Name().GetIdentifierName();
-				} else {
-					// a later column is only known where it is stored as its type
-					auto column_idx = column.Physical().index + DuckLakeInlinedColNames::COLUMN_COUNT;
-					same_columns = same_columns && TypeIsNativelySupported(column.Type()) &&
-					               stored_types[column_idx] == column.Type();
-				}
-			}
-			if (same_columns) {
-				return written;
+			DuckLakeSnapshot snapshot(row.GetValue<idx_t>(0), DConstants::INVALID_INDEX, 0, 0);
+			if (reads_as_created(snapshot, true)) {
+				return snapshot;
 			}
 		}
 	}
@@ -4707,6 +4730,11 @@ bool DuckLakeMetadataManager::IsDuckDBMetadataType(const string &metadata_type) 
 	return type.empty() || type == "duckdb" || type == "quack" || type == "quack_scanner";
 }
 
+bool DuckLakeMetadataManager::DecodesInlinedColumn(const LogicalType &type) {
+	// Postgres stores VARCHAR and JSON as BYTEA.
+	return type.id() == LogicalTypeId::VARCHAR && !TypeIsNativelySupported(type);
+}
+
 string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const LogicalType &type) {
 	auto &metadata_type = transaction.GetCatalog().MetadataType();
 	// a column created with an overridden type is cast back like on any other database
@@ -4717,8 +4745,7 @@ string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const L
 		return DuckLakeTypes::IsNested(type) ? "CAST(" + column + " AS " + type.ToString() + ")" : column;
 	}
 	auto expression = column;
-	if (type.id() == LogicalTypeId::VARCHAR && !TypeIsNativelySupported(type)) {
-		// Postgres stores VARCHAR and JSON as BYTEA.
+	if (DecodesInlinedColumn(type)) {
 		expression = "decode(" + expression + ")";
 	}
 	expression = "CAST(" + expression + " AS " + storage_type.ToString() + ")";

@@ -336,6 +336,8 @@ public:
 	bool CanInlineColumns(const vector<DuckLakeColumnInfo> &columns);
 
 	virtual string GetColumnTypeInternal(const LogicalType &column_type);
+	//! Whether an inlined column of this type is stored as a blob that a read decodes
+	bool DecodesInlinedColumn(const LogicalType &type);
 	string CastColumnToTarget(const string &column, const LogicalType &type);
 	//! The inlined rows to flush with typed columns, without those this transaction deleted
 	string InlinedFlushSource(const Identifier &inlined_table_name, const DuckLakeTableEntry &table);
@@ -502,8 +504,8 @@ public:
 	//! The snapshots that ended columns of the table, in order
 	vector<idx_t> GetColumnEndSnapshots(TableIndex table_id);
 	//! The snapshot whose table has the columns of the inlined table of a schema version, the one that created the
-	//! table or else the one of its first row, invalid when neither has them
-	DuckLakeSnapshot GetInlinedRowsSnapshot(TableIndex table_id, idx_t schema_version, DuckLakeSnapshot created);
+	//! table, else the one of its first row, else the first of that schema version, invalid when none has them
+	DuckLakeSnapshot GetInlinedTableSnapshot(TableIndex table_id, idx_t schema_version, DuckLakeSnapshot created);
 	//! The newest snapshot the transaction sees the table at, invalid when there is none
 	DuckLakeSnapshot GetNewestTableSnapshot(TableIndex table_id);
 	virtual DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);

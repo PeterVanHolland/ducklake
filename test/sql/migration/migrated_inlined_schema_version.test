@@ -95,20 +95,21 @@ SELECT a, b FROM between.s ORDER BY ALL
 10	1
 20	2
 
-# the fields of d.s, the type of e.b and the names of the columns of k changed before the first rows of their inlined
-# tables, which the tables as created still read as far as they have the columns
-query I
-SELECT s.y FROM between.d ORDER BY ALL
+# the fields of d.s and the type of e.b changed before the first rows of their inlined tables, the snapshots of the
+# schema versions of those tables still have the columns they were created with
+query II
+SELECT s.y, b FROM between.d ORDER BY ALL
 ----
-20
-NULL
+20	200
+NULL	100
 
-query I
-SELECT a FROM between.e WHERE b IS NULL OR b > -1 ORDER BY ALL
+query II
+SELECT a, b FROM between.e ORDER BY ALL
 ----
-1
-2
+1	NULL
+2	20
 
+# the columns of k were renamed before that schema version, the table as created still reads its rows as before
 query I
 SELECT x FROM between.k ORDER BY ALL
 ----
@@ -143,17 +144,17 @@ SELECT a, b FROM between.w ORDER BY ALL
 1	10
 2	20
 
-query I
-SELECT s.y FROM between.d ORDER BY ALL
+query II
+SELECT s.y, b FROM between.d ORDER BY ALL
 ----
-20
-NULL
+20	200
+NULL	100
 
-query I
-SELECT a FROM between.e WHERE b IS NULL OR b > -1 ORDER BY ALL
+query II
+SELECT a, b FROM between.e ORDER BY ALL
 ----
-1
-2
+1	NULL
+2	20
 
 query I
 SELECT x FROM between.k ORDER BY ALL
@@ -161,7 +162,7 @@ SELECT x FROM between.k ORDER BY ALL
 20
 NULL
 
-# the same once the snapshots of those schema versions are expired
+# once the snapshots of those schema versions are expired, the first row of an inlined table tells its table
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_schema_version_expired.db' AS between_expired
 	(DATA_PATH '{TEST_DIR}/migrated_inlined_schema_version_expired', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,

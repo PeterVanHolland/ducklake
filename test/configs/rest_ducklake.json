@@ -336,6 +336,7 @@
         "test/sql/create_table_inline_partition_sort/create_table_inline_transactions.test",
         "test/sql/create_table_inline_partition_sort/create_table_inline_with_inlining.test",
         "test/sql/data_inlining/data_inlining_alter_geometry.test",
+        "test/sql/data_inlining/data_inlining_flush_dropped_not_null.test",
         "test/sql/data_inlining/data_inlining_per_schema_alter.test",
         "test/sql/data_inlining/data_inlining_update_inline_verification.test",
         "test/sql/data_inlining/empty_inlined_tables_alter_cleanup.test",

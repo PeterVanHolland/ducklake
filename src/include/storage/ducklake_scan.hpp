@@ -63,6 +63,8 @@ struct DuckLakeFunctionInfo : public TableFunctionInfo {
 
 	shared_ptr<DuckLakeTransaction> GetTransaction();
 	bool CanUseGlobalStats();
+	//! Whether a file of the scan can hold NaN values that its bounds do not show
+	bool CanHaveNaN();
 };
 
 } // namespace duckdb

@@ -488,6 +488,10 @@ void DuckLakeCatalog::DropSchema(ClientContext &context, DropInfo &info) {
 	if (!schema) {
 		return;
 	}
+	if (!schema->GetParentSchema() && GetDefaultSchema() == schema->name) {
+		// unqualified names and USE resolve to the default schema
+		throw CatalogException("Cannot drop entry %s because it is the default schema", schema->name);
+	}
 	auto &ducklake_schema = schema->Cast<DuckLakeSchemaEntry>();
 	ducklake_schema.TryDropSchema(transaction, info.cascade);
 	transaction.transaction->Cast<DuckLakeTransaction>().DropEntry(*schema);

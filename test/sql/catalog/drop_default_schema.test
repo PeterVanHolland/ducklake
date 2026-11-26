@@ -1,0 +1,87 @@
+# name: test/sql/catalog/drop_default_schema.test
+# description: The default schema of a DuckLake cannot be dropped or replaced
+# group: [catalog]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/ducklake_drop_default_schema')
+
+statement ok
+CREATE TABLE ducklake.t (i INTEGER)
+
+statement ok
+INSERT INTO ducklake.t VALUES (1)
+
+statement error
+DROP SCHEMA ducklake.main CASCADE
+----
+Cannot drop entry "main" because it is the default schema
+
+statement error
+DROP SCHEMA ducklake.main
+----
+Cannot drop entry "main" because it is the default schema
+
+statement error
+DROP SCHEMA IF EXISTS ducklake.main CASCADE
+----
+Cannot drop entry "main" because it is the default schema
+
+statement error
+CREATE OR REPLACE SCHEMA ducklake.main
+----
+Cannot drop entry "main" because it is the default schema
+
+# with the lake as the current catalog
+statement ok
+USE ducklake
+
+statement error
+DROP SCHEMA main CASCADE
+----
+Cannot drop entry "main" because it is the default schema
+
+# nothing was dropped and unqualified names still resolve
+query I
+SELECT schema_name FROM duckdb_schemas() WHERE database_name = 'ducklake'
+----
+main
+
+query I
+SELECT i FROM t
+----
+1
+
+query I
+SELECT count(*) FROM ducklake_snapshots('ducklake')
+----
+3
+
+# an empty default schema stays as well
+statement ok
+DROP TABLE t
+
+statement error
+DROP SCHEMA main
+----
+Cannot drop entry "main" because it is the default schema
+
+statement error
+CREATE OR REPLACE SCHEMA main
+----
+Cannot drop entry "main" because it is the default schema
+
+statement ok
+CREATE TABLE t2 (j INTEGER)
+
+query I
+SELECT count(*) FROM ducklake_snapshots('ducklake') WHERE changes::VARCHAR LIKE '%schemas_dropped%'
+----
+0

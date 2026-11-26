@@ -86,7 +86,10 @@ SourceResultType DuckLakeFlushData::GetDataInternal(ExecutionContext &context, D
 // Sink
 //===--------------------------------------------------------------------===//
 unique_ptr<GlobalSinkState> DuckLakeFlushData::GetGlobalSinkState(ClientContext &context) const {
-	return make_uniq<DuckLakeInsertGlobalState>(table);
+	auto state = make_uniq<DuckLakeInsertGlobalState>(table);
+	// inlined rows passed the constraints of the table they were inserted into
+	state->not_null_fields.clear();
+	return std::move(state);
 }
 
 SinkResultType DuckLakeFlushData::Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const {

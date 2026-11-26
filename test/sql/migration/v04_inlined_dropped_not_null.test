@@ -1,0 +1,56 @@
+# name: test/sql/migration/v04_inlined_dropped_not_null.test
+# description: flush a row with a NULL that DuckDB 1.5.1 inlined after the NOT NULL of its column was dropped
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.1, which dropped the NOT NULL of a with inlining off and inlined the second row afterwards
+unzip data/old_ducklake/v04_inlined_dropped_not_null.db.gz {TEST_DIR}/v04_inlined_dropped_not_null.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v04_inlined_dropped_not_null.db' AS lake
+	(DATA_PATH '{TEST_DIR}/v04_inlined_dropped_not_null', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+# both rows are in the inlined table of the schema version that has the NOT NULL
+query II
+SELECT table_name, schema_version FROM meta.ducklake_inlined_data_tables
+----
+ducklake_inlined_data_1_1	1
+
+query II
+SELECT * FROM lake.t ORDER BY b
+----
+1	10
+NULL	20
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('lake')
+----
+main	t	2
+
+query II
+SELECT * FROM lake.t ORDER BY b
+----
+1	10
+NULL	20
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 't')
+----
+1
+
+statement ok
+INSERT INTO lake.t VALUES (NULL, 30)
+
+statement ok
+CHECKPOINT lake
+
+query II
+SELECT * FROM lake.t ORDER BY b
+----
+1	10
+NULL	20
+NULL	30

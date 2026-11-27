@@ -20,6 +20,8 @@
 #include "httplib.hpp"
 #include "re2/re2.h"
 
+#include <condition_variable>
+
 namespace duckdb {
 
 //! The number of commits that share a snapshot at most
@@ -531,7 +533,28 @@ idx_t DuckLakeRESTServer::Start(const string &host, idx_t port) {
 		throw IOException("Failed to start DuckLake REST server on %s:%llu", host, port);
 	}
 	listen_uri = StringUtil::Format("http://%s:%d", host, bound_port);
-	server_thread = std::thread([this]() { server->listen_after_bind(); });
+	{
+		lock_guard<mutex> guard(start_lock);
+		workers_created = false;
+		listen_ended = false;
+	}
+	// the caller continues once the worker threads exist
+	auto create_workers = server->new_task_queue;
+	server->new_task_queue = [this, create_workers]() {
+		auto workers = create_workers();
+		lock_guard<mutex> guard(start_lock);
+		workers_created = true;
+		start_signal.notify_all();
+		return workers;
+	};
+	server_thread = std::thread([this]() {
+		server->listen_after_bind();
+		lock_guard<mutex> guard(start_lock);
+		listen_ended = true;
+		start_signal.notify_all();
+	});
+	unique_lock<mutex> guard(start_lock);
+	start_signal.wait(guard, [this]() { return workers_created || listen_ended; });
 	return NumericCast<idx_t>(bound_port);
 }
 

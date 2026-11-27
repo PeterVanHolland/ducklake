@@ -337,6 +337,7 @@ INSERT INTO {METADATA_CATALOG}.ducklake_schema (schema_id, schema_uuid, begin_sn
 	}
 	auto result = Execute(initialize_query);
 	result->ThrowIfError("Failed to initialize DuckLake: ");
+	CompleteMetadataTables();
 }
 
 string DuckLakeMetadataManager::GetSnapshotTableStatement() {
@@ -1282,7 +1283,10 @@ string DuckLakeMetadataManager::V2_0RowCompanionsSql(const V2_0RowCompanions &ro
 		auto &kind = RowKind(row.kind);
 		auto table = RowTableName(kind.kind);
 		auto pending = PendingRowVisibilityTableName(kind.kind);
-		query += BranchColumnSql(table, "branch_id", row.has_branch_column);
+		if (!row.created_by_migration) {
+			// a table this batch creates has its birth branch and no row to fill
+			query += BranchColumnSql(table, "branch_id", row.has_branch_column);
+		}
 		if (row.has_companion && !row.has_pending) {
 			// the final companion stands, the kind lacked its birth branch alone
 			continue;
@@ -5068,7 +5072,8 @@ string DuckLakeMetadataManager::GetInlinedTableQuery(const DuckLakeTableInfo &ta
 	// We created a table here, flag we need to clear our cache at commit
 	MarkPendingCacheClear();
 	return InlinedTableDdlSql(table_name, column_defs, InlinedColNames(),
-	                          transaction.GetCatalog().SupportsRowVisibility());
+	                          transaction.GetCatalog().SupportsRowVisibility()) +
+	       AfterCreateTableSql(table_name);
 }
 
 static constexpr idx_t MAX_VALUES_LIST_LENGTH = 65536;
@@ -5681,7 +5686,8 @@ Identifier DuckLakeMetadataManager::InlinedFileDeletionTableName(TableIndex tabl
 
 string
 DuckLakeMetadataManager::WriteNewInlinedFileDeletesSql(const vector<DuckLakeInlinedFileDeletionInfo> &new_deletes,
-                                                       bool &created_new_table, bool row_visibility) {
+                                                       bool &created_new_table, bool row_visibility,
+                                                       optional_ptr<const DuckLakeMetadataManager> manager) {
 	created_new_table = false;
 	string batch_queries;
 	if (new_deletes.empty()) {
@@ -5696,6 +5702,9 @@ DuckLakeMetadataManager::WriteNewInlinedFileDeletesSql(const vector<DuckLakeInli
 			batch_queries += StringUtil::Format("CREATE TABLE IF NOT EXISTS {METADATA_CATALOG}.%s"
 			                                    "(file_id BIGINT, row_id BIGINT, begin_snapshot BIGINT%s);\n",
 			                                    table_name, branch_column);
+			if (manager) {
+				batch_queries += manager->AfterCreateTableSql(table_name);
+			}
 			created_new_table = true;
 		}
 		vector<string> tuples;
@@ -5713,8 +5722,8 @@ DuckLakeMetadataManager::WriteNewInlinedFileDeletesSql(const vector<DuckLakeInli
 string DuckLakeMetadataManager::WriteNewInlinedFileDeletesSqlBatch(
     const vector<DuckLakeInlinedFileDeletionInfo> &new_deletes) {
 	bool created_new_table = false;
-	auto batch_queries =
-	    WriteNewInlinedFileDeletesSql(new_deletes, created_new_table, transaction.GetCatalog().SupportsRowVisibility());
+	auto batch_queries = WriteNewInlinedFileDeletesSql(new_deletes, created_new_table,
+	                                                   transaction.GetCatalog().SupportsRowVisibility(), this);
 	if (created_new_table) {
 		// We create a table here, flag we need to clear our cache at commit
 		MarkPendingCacheClear();

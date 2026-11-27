@@ -37,6 +37,10 @@ SET VARIABLE t4 = (SELECT snapshot_time FROM lake.snapshots() WHERE snapshot_id 
 statement ok
 CALL ducklake_expire_snapshots('lake', versions => [3])
 
+# the migration to 2.0 converts no inlined rows, the flush writes them to files first
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
 statement ok
 DETACH lake
 

@@ -11,12 +11,23 @@ unzip data/old_ducklake/expired_snapshot_gap.db.gz {TEST_DIR}/v10_expired_snapsh
 
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/v10_expired_snapshot_gap.db' AS lake (DATA_PATH '{TEST_DIR}/v10_expired_snapshot_gap',
+    OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.0')
+
+# the migration to 2.0 converts no inlined rows, the flush writes them to files first
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_expired_snapshot_gap.db' AS lake (DATA_PATH '{TEST_DIR}/v10_expired_snapshot_gap',
     OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
 
 query I
 SELECT list(snapshot_id ORDER BY snapshot_id) FROM lake.snapshots()
 ----
-[0, 1, 2, 4, 5]
+[0, 1, 2, 4, 5, 6]
 
 # the time of snapshot 3 lies in the gap
 statement error

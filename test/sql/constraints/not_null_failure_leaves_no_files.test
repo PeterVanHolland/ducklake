@@ -1,0 +1,72 @@
+# name: test/sql/constraints/not_null_failure_leaves_no_files.test
+# description: A statement that fails a NOT NULL check leaves none of the data files it would have written
+# group: [constraints]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake
+(DATA_PATH '{DATA_PATH}/not_null_failure_leaves_no_files', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE ducklake.t (id BIGINT, a INTEGER NOT NULL)
+
+statement ok
+INSERT INTO ducklake.t SELECT range, range FROM range(20)
+
+statement error
+INSERT INTO ducklake.t VALUES (100, 1), (101, NULL)
+----
+NOT NULL constraint failed: t.a
+
+statement error
+UPDATE ducklake.t SET a = NULL WHERE id = 3
+----
+NOT NULL constraint failed: t.a
+
+statement error
+MERGE INTO ducklake.t USING (SELECT 900 AS id, NULL::INTEGER AS a) s ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET a = s.a WHEN NOT MATCHED THEN INSERT VALUES (s.id, s.a)
+----
+NOT NULL constraint failed: t.a
+
+# a statement that fails after another one of its transaction wrote a file
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.t VALUES (500, 1)
+
+statement error
+INSERT INTO ducklake.t VALUES (501, NULL)
+----
+NOT NULL constraint failed: t.a
+
+statement ok
+ROLLBACK
+
+# the files that are complete before the row with the NULL go as well
+statement ok
+CALL ducklake.set_option('target_file_size', '20KB')
+
+statement error
+INSERT INTO ducklake.t SELECT 1000 + range, CASE WHEN range = 299999 THEN NULL ELSE range END FROM range(300000)
+----
+NOT NULL constraint failed: t.a
+
+# the data path holds the file of the first insert alone
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/not_null_failure_leaves_no_files/**/*.parquet')
+----
+1
+
+query II
+SELECT count(*), sum(a) FROM ducklake.t
+----
+20	190

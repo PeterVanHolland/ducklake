@@ -844,7 +844,7 @@ PhysicalOperator &DuckLakeVerifyNotNull::Plan(PhysicalPlanGenerator &planner, Du
 	auto not_null_fields = table.GetNotNullFields();
 	vector<pair<idx_t, Identifier>> columns;
 	for (auto &col : table.GetColumns().Physical()) {
-		if (!FileStatsShowNulls(col.Type()) && not_null_fields.count(col.Name())) {
+		if (not_null_fields.count(col.Name())) {
 			columns.emplace_back(col.Physical().index, col.Name());
 		}
 	}

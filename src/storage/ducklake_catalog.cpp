@@ -191,9 +191,11 @@ idx_t EstimateTableEntryMemory(const DuckLakeTableEntry &table) {
 		estimate += EstimateColumnMemory(column);
 	}
 	estimate += table.GetConstraints().size() * sizeof(Constraint);
-	for (const auto &field_id : table.GetFieldData().GetFieldIds()) {
-		// the column type shares its type info with the field id
-		estimate += EstimateFieldIdMemory(*field_id) + EstimateTypeInfoMemory(field_id->Type());
+	if (!table.HasLoadError()) {
+		for (const auto &field_id : table.GetFieldData().GetFieldIds()) {
+			// the column type shares its type info with the field id
+			estimate += EstimateFieldIdMemory(*field_id) + EstimateTypeInfoMemory(field_id->Type());
+		}
 	}
 	estimate += table.GetInlinedDataTables().size() * sizeof(DuckLakeInlinedTableInfo);
 	for (const auto &inlined_table : table.GetInlinedDataTables()) {
@@ -629,6 +631,19 @@ static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo 
 	return make_uniq<DuckLakeFieldId>(std::move(col_data), col.name, std::move(type), std::move(child_fields));
 }
 
+//! Whether a failure to read the column rows of a table stays with that table
+static bool IsColumnLoadError(const ErrorData &error) {
+	switch (error.Type()) {
+	case ExceptionType::INVALID_INPUT:
+	case ExceptionType::PARSER:
+	case ExceptionType::NOT_IMPLEMENTED:
+	case ExceptionType::CATALOG:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static LogicalType ParseMacroParameterType(const string &type) {
 	LogicalType result;
 	try {
@@ -897,23 +912,39 @@ unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTr
 		// parse the columns
 		auto field_data = make_shared_ptr<DuckLakeFieldData>();
 		identifier_set_t not_null_columns;
-		for (auto &col_info : table.columns) {
-			auto field_id = TransformColumnType(col_info);
-			if (!col_info.nulls_allowed) {
-				not_null_columns.insert(col_info.name);
+		ErrorData load_error;
+		try {
+			for (auto &col_info : table.columns) {
+				auto field_id = TransformColumnType(col_info);
+				if (!col_info.nulls_allowed) {
+					not_null_columns.insert(col_info.name);
+				}
+				ColumnDefinition column(std::move(col_info.name), field_id->Type());
+				Value comment;
+				InsertionOrderPreservingMap<string> column_tags;
+				SplitTags(col_info.tags, comment, column_tags);
+				column.SetComment(comment);
+				column.SetTags(std::move(column_tags));
+				auto default_val = field_id->GetDefault();
+				if (default_val) {
+					column.SetDefaultValue(std::move(default_val));
+				}
+				create_table_info->columns.AddColumn(std::move(column));
+				field_data->Add(std::move(field_id));
 			}
-			ColumnDefinition column(std::move(col_info.name), field_id->Type());
-			Value comment;
-			InsertionOrderPreservingMap<string> column_tags;
-			SplitTags(col_info.tags, comment, column_tags);
-			column.SetComment(comment);
-			column.SetTags(std::move(column_tags));
-			auto default_val = field_id->GetDefault();
-			if (default_val) {
-				column.SetDefaultValue(std::move(default_val));
+		} catch (std::exception &ex) {
+			load_error = ErrorData(ex);
+			if (!IsColumnLoadError(load_error)) {
+				// LCOV_EXCL_START
+				throw;
+				// LCOV_EXCL_STOP
 			}
-			create_table_info->columns.AddColumn(std::move(column));
-			field_data->Add(std::move(field_id));
+		}
+		if (load_error.HasError()) {
+			// the other tables stay usable, and this one can still be dropped
+			create_table_info->columns = ColumnList();
+			field_data = make_shared_ptr<DuckLakeFieldData>();
+			not_null_columns.clear();
 		}
 		// create the NOT NULL constraints
 		for (auto &not_null_col : not_null_columns) {
@@ -925,6 +956,7 @@ unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTr
 		    *this, schema_entry, *create_table_info, table.id, std::move(table.uuid), std::move(table.path),
 		    std::move(field_data), table.next_column_id, std::move(table.inlined_data_tables), LocalChangeType::NONE);
 		AssignStableOid(*table_entry, table.id.index);
+		table_entry->SetLoadError(std::move(load_error));
 		schema_set->AddEntry(schema_entry, table.id, std::move(table_entry));
 	}
 

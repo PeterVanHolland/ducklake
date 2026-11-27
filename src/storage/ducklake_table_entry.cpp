@@ -141,6 +141,16 @@ const ColumnList &DuckLakeTableEntry::GetColumns() const {
 	return columns;
 }
 
+void DuckLakeTableEntry::SetLoadError(ErrorData error) {
+	load_error = std::move(error);
+}
+
+void DuckLakeTableEntry::VerifyLoaded() const {
+	if (HasLoadError()) {
+		load_error.Throw(StringUtil::Format("Failed to load DuckLake - Table entry %s: ", name));
+	}
+}
+
 bool DuckLakeTableEntry::IsCurrentInlinedDataTable(idx_t schema_version, optional_idx last_schema_change) {
 	return !last_schema_change.IsValid() || schema_version >= last_schema_change.GetIndex();
 }
@@ -1508,6 +1518,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(ClientContext &context, DuckLakeTransaction &transaction,
                                                    AlterTableInfo &info) {
+	VerifyLoaded();
 	auto result = AlterEntry(context, transaction, info);
 	if (!result || !transaction.HasTransactionInlinedData(GetTableId())) {
 		return result;
@@ -1577,6 +1588,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterEntry(ClientContext &context, 
 }
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(DuckLakeTransaction &transaction, SetCommentInfo &info) {
+	VerifyLoaded();
 	auto create_info = GetInfo();
 	create_info->comment = info.comment_value;
 	auto &table_info = create_info->Cast<CreateTableInfo>();
@@ -1585,6 +1597,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(DuckLakeTransaction &transact
 }
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(DuckLakeTransaction &transaction, SetColumnCommentInfo &info) {
+	VerifyLoaded();
 	auto create_info = GetInfo();
 	auto &table_info = create_info->Cast<CreateTableInfo>();
 	auto &col = table_info.columns.GetColumnMutable(GetColumnIndex(info.column_name));

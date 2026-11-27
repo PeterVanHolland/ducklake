@@ -426,6 +426,7 @@
         "test/sql/metadata/appender_partition_values.test",
         "test/sql/metadata/appender_variant_stats.test",
         "test/sql/metadata/hide_metadata_catalog.test",
+        "test/sql/metadata/load_broken_table_keeps_others.test",
         "test/sql/metadata/row_group_count.test",
         "test/sql/migration/inlined_column_rename.test",
         "test/sql/migration/inlined_column_rename_conflict.test",

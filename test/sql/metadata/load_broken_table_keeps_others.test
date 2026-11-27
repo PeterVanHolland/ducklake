@@ -1,0 +1,160 @@
+# name: test/sql/metadata/load_broken_table_keeps_others.test
+# description: a table whose columns cannot be loaded leaves the other tables usable and can be dropped
+# group: [metadata]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files')
+
+statement ok
+CREATE TABLE dl.u AS SELECT 7 AS i
+
+statement ok
+CREATE TABLE dl.t (k INTEGER, s STRUCT(a INTEGER))
+
+statement ok
+INSERT INTO dl.t VALUES (1, {'a': 2})
+
+statement ok
+CREATE TABLE dl.p (k INTEGER DEFAULT 1)
+
+statement ok
+CREATE TABLE dl.d (k INTEGER)
+
+statement ok
+CREATE TABLE dl.h (a INTEGER, b INTEGER)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'h')
+
+statement ok
+INSERT INTO dl.h VALUES (1, 10)
+
+statement ok
+ALTER TABLE dl.h ALTER COLUMN b TYPE BIGINT
+
+statement ok
+CREATE TABLE dl.c (x INTEGER, y INTEGER)
+
+# as DuckDB 1.5.6 leaves a struct that is added and renamed in one transaction
+statement ok
+DELETE FROM __ducklake_metadata_dl.ducklake_column WHERE parent_column IS NOT NULL
+
+# a default that does not parse, and a type that is not known
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_column SET default_value = '(', default_value_type = 'expression'
+WHERE table_id = 3
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_column SET column_type = 'decimal(10)' WHERE table_id = 4
+
+# the same for the column of an older schema version, which the inlined row is read with
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_column SET column_type = 'decimal(10)'
+WHERE table_id = 5 AND column_type = 'int32' AND column_name = 'b'
+
+# and two columns of one name
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_column SET column_name = 'x' WHERE table_id = 6
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files')
+
+query I
+SELECT * FROM dl.u
+----
+7
+
+statement error
+SELECT * FROM dl.t
+----
+Table entry "t": Column "s" has the nested type "struct" but no child columns
+
+statement error
+SELECT * FROM dl.p
+----
+Table entry "p": syntax error at or near "("
+
+statement error
+SELECT * FROM dl.d
+----
+Table entry "d": Invalid DECIMAL type
+
+statement error
+SELECT * FROM dl.c
+----
+Table entry "c": Column with name "x" already exists
+
+# the columns of today load, the row needs the older ones
+statement error
+SELECT * FROM dl.h
+----
+Table entry "h": Invalid DECIMAL type
+
+# its inlined row cannot be flushed either
+statement error
+CHECKPOINT dl
+----
+Table entry "h": Invalid DECIMAL type
+
+statement ok
+DROP TABLE dl.h
+
+query II
+SELECT table_name, column_count FROM duckdb_tables() WHERE database_name = 'dl' ORDER BY ALL
+----
+c	0
+d	0
+p	0
+t	0
+u	1
+
+statement ok
+INSERT INTO dl.u VALUES (8)
+
+statement ok
+CHECKPOINT dl
+
+statement ok
+DROP TABLE dl.t
+
+statement ok
+DROP TABLE dl.p
+
+statement ok
+DROP TABLE dl.d
+
+statement ok
+DROP TABLE dl.c
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'dl'
+----
+u
+
+statement ok
+CREATE TABLE dl.t (k INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (3)
+
+query I
+SELECT * FROM dl.t
+----
+3
+
+query I
+SELECT * FROM dl.u ORDER BY ALL
+----
+7
+8

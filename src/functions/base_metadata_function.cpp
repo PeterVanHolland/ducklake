@@ -144,7 +144,9 @@ DuckLakeTableEntry &DuckLakeBaseMetadataFunction::GetTableEntry(ClientContext &c
 		}
 		throw CatalogException(error);
 	}
-	return entry->Cast<DuckLakeTableEntry>();
+	auto &table = entry->Cast<DuckLakeTableEntry>();
+	table.VerifyLoaded();
+	return table;
 }
 
 DuckLakeTableEntry &DuckLakeBaseMetadataFunction::GetTableEntry(ClientContext &context, DuckLakeCatalog &catalog,
@@ -157,7 +159,8 @@ vector<reference<DuckLakeTableEntry>> DuckLakeBaseMetadataFunction::GetTablesInS
                                                                                       SchemaCatalogEntry &schema) {
 	vector<reference<DuckLakeTableEntry>> result;
 	schema.Scan(context, CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
-		if (entry.type == CatalogType::TABLE_ENTRY) {
+		// a table whose columns could not be loaded is left to the statements that name it
+		if (entry.type == CatalogType::TABLE_ENTRY && !entry.Cast<DuckLakeTableEntry>().HasLoadError()) {
 			result.push_back(entry.Cast<DuckLakeTableEntry>());
 		}
 	});

@@ -500,7 +500,11 @@ bool DuckLakeMultiFileReader::GetInlinedTableColumns(DuckLakeFunctionInfo &read_
 			schema_table = entry->Cast<DuckLakeTableEntry>();
 		}
 	}
-	columns = DuckLakeMultiFileReader::ColumnsFromFieldData(schema_table.get().GetFieldData(), true);
+	bool later_version = schema_version.IsValid() && schema_version.GetIndex() > read_info.snapshot.schema_version;
+	if (!later_version || !schema_table.get().HasLoadError()) {
+		// a table of a later schema version that cannot be loaded has no rows at the snapshot of the scan
+		columns = DuckLakeMultiFileReader::ColumnsFromFieldData(schema_table.get().GetFieldData(), true);
+	}
 	columns.insert(columns.begin(), SnapshotIdColumn());
 	columns.insert(columns.begin(), RowIdColumn());
 	return true;

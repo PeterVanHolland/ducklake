@@ -884,6 +884,7 @@ PhysicalOperator &DuckLakeCatalog::PlanInsert(ClientContext &context, PhysicalPl
 		// LCOV_EXCL_STOP
 	}
 	auto &ducklake_table = op.table.Cast<DuckLakeTableEntry>();
+	ducklake_table.VerifyLoaded();
 	auto &verified_plan = DuckLakeVerifyNotNull::Plan(planner, ducklake_table, *plan);
 	auto pipeline = DuckLakeInsert::PlanInsertPipeline(
 	    context, planner, verified_plan, ducklake_table.schema, ducklake_table.GetColumns(), ducklake_table.name,

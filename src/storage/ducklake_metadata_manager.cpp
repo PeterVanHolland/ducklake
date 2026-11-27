@@ -2235,6 +2235,7 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedRowsSnapshot(TableIndex tabl
 	    Query(GetInlinedTableNamesSql(table_id) + StringUtil::Format(" AND schema_version = %d", schema_version));
 	tables->ThrowIfError("Failed to get inlined data tables from DuckLake: ");
 	auto &catalog = transaction.GetCatalog();
+	auto col_names = InlinedColNames();
 	auto created_entry = catalog.GetEntryById(transaction, created, table_id);
 	for (auto &table : *tables) {
 		if (!created_entry) {
@@ -2242,20 +2243,31 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedRowsSnapshot(TableIndex tabl
 			break;
 			// LCOV_EXCL_STOP
 		}
+		auto inlined_table_name = table.GetValue<Identifier>(0);
+		if (catalog.SupportsRowVisibility()) {
+			VerifyInlinedTableName(inlined_table_name, table_id);
+		}
 		// the inlined table keeps the columns of the table at the commit of its schema version
-		auto first_row = Query(StringUtil::Format("SELECT * FROM {METADATA_CATALOG}.%s ORDER BY %s ASC LIMIT 1",
-		                                          SQLIdentifier(table.GetValue<Identifier>(0)),
-		                                          SQLIdentifier(InlinedColNames().begin_snapshot)));
+		auto first_row =
+		    Query(StringUtil::Format("SELECT * FROM %s ORDER BY %s ASC LIMIT 1", InlinedRowSource(inlined_table_name),
+		                             SQLIdentifier(col_names.begin_snapshot)));
 		first_row->ThrowIfError("Failed to get the first row of inlined data from DuckLake: ");
 		auto &names = first_row->GetNames();
 		auto &stored_types = first_row->GetTypes();
+		// the columns of the table, without the ones of the layout
+		vector<idx_t> stored_columns;
+		for (idx_t column_idx = 0; column_idx < names.size(); column_idx++) {
+			if (!col_names.ConflictsWith(names[column_idx])) {
+				stored_columns.push_back(column_idx);
+			}
+		}
 		auto has_columns = [&](const DuckLakeTableEntry &entry) {
 			auto &columns = entry.GetColumns();
-			if (columns.PhysicalColumnCount() + DuckLakeInlinedColNames::COLUMN_COUNT != names.size()) {
+			if (columns.PhysicalColumnCount() != stored_columns.size()) {
 				return false;
 			}
 			for (auto &column : columns.Physical()) {
-				auto column_idx = column.Physical().index + DuckLakeInlinedColNames::COLUMN_COUNT;
+				auto column_idx = stored_columns[column.Physical().index];
 				if (column.Name().GetIdentifierName() != names[column_idx].GetIdentifierName()) {
 					return false;
 				}
@@ -2290,7 +2302,7 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedRowsSnapshot(TableIndex tabl
 					               field.Name().GetIdentifierName() == created_field->Name().GetIdentifierName();
 				} else {
 					// a later column is only known where it is stored as its type
-					auto column_idx = column.Physical().index + DuckLakeInlinedColNames::COLUMN_COUNT;
+					auto column_idx = stored_columns[column.Physical().index];
 					same_columns = same_columns && TypeIsNativelySupported(column.Type()) &&
 					               stored_types[column_idx] == column.Type();
 				}

@@ -129,6 +129,8 @@ public:
 	static shared_ptr<DuckLakeFieldData> RenameColumn(const DuckLakeFieldData &field_data, FieldIndex rename_index,
 	                                                  const Identifier &new_name);
 	static shared_ptr<DuckLakeFieldData> DropColumn(const DuckLakeFieldData &field_data, FieldIndex drop_index);
+	//! Drops the root field of one column, which can share its field id with another one
+	static shared_ptr<DuckLakeFieldData> DropRootField(const DuckLakeFieldData &field_data, PhysicalIndex root_index);
 	static shared_ptr<DuckLakeFieldData> AddColumn(const DuckLakeFieldData &field_data, const ColumnDefinition &new_col,
 	                                               idx_t &next_column_id, ClientContext &context,
 	                                               const Value &initial_default = Value());

@@ -292,6 +292,7 @@
         "test/sql/comments/comment_duplicate_same_transaction.test",
         "test/sql/comments/comment_mixed_operations.test",
         "test/sql/comments/comment_on_view_column.test",
+        "test/sql/comments/comment_on_view_column_collation.test",
         "test/sql/comments/comment_on_view_column_conflict.test",
         "test/sql/comments/comment_on_view_column_update.test",
         "test/sql/comments/comment_on_view_column_v10.test",

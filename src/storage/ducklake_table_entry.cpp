@@ -893,6 +893,8 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 	return std::move(new_entry);
 }
 
+static void ExtractDefaultValue(const DuckLakeColumnData &col_data, DuckLakeColumnInfo &info);
+
 void ColumnChangeInfo::DropField(const DuckLakeFieldId &field_id) {
 	dropped_fields.push_back(field_id.GetFieldIndex());
 	for (auto &child_id : field_id.Children()) {
@@ -912,6 +914,22 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	if (columns.LogicalColumnCount() == 1) {
 		throw CatalogException("Cannot drop column: table only has one column remaining!");
 	}
+	// columns that share a field id are names of one column, which stays under the last of the other names
+	vector<LogicalIndex> removed_indexes {removed_index};
+	optional_idx kept_index;
+	for (auto &other : columns.Logical()) {
+		if (other.Logical() == removed_index ||
+		    GetFieldId(other.Physical()).GetFieldIndex() != field_id.GetFieldIndex()) {
+			continue;
+		}
+		if (kept_index.IsValid()) {
+			removed_indexes.push_back(LogicalIndex(kept_index.GetIndex()));
+		}
+		kept_index = other.Logical().index;
+	}
+	// the last column goes first, so the indexes of the columns before it stay
+	std::sort(removed_indexes.begin(), removed_indexes.end(),
+	          [](const LogicalIndex &left, const LogicalIndex &right) { return left.index > right.index; });
 	// check if we are partitioning on this column
 	if (partition_data) {
 		for (auto &partition_field : partition_data->fields) {
@@ -928,7 +946,10 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 		for (auto &order : orders) {
 			ParsedExpressionIterator::VisitExpression<ColumnRefExpression>(
 			    *order.expression, [&](const ColumnRefExpression &colref) {
-				    if (colref.GetColumnName() == col.Name()) {
+				    for (auto &index : removed_indexes) {
+					    if (colref.GetColumnName() != columns.GetColumn(index).Name()) {
+						    continue;
+					    }
 					    throw CatalogException("Cannot drop column %s - the table is sorted by this column. Reset or "
 					                           "change the sort order on this table in order to drop this column",
 					                           col.Name());
@@ -936,40 +957,56 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 			    });
 		}
 	}
-	if (transaction.HasTransactionInlinedData(GetTableId())) {
-		transaction.RemoveColumnFromLocalInlinedData(GetTableId(), removed_index, field_id);
-	}
-
-	for (idx_t c_idx = 0; c_idx < table_info.constraints.size(); c_idx++) {
-		auto &constraint = table_info.constraints[c_idx];
-		if (constraint->type == ConstraintType::NOT_NULL) {
-			auto &not_null = constraint->Cast<NotNullConstraint>();
-			if (not_null.index == removed_index) {
-				// this index belongs to the removed column - remove it
-				table_info.constraints.erase_at(c_idx);
-				c_idx--;
-				continue;
-			}
-			if (not_null.index.index > removed_index.index) {
-				// this index belongs to a column after the removed column - shift the index
-				not_null.index.index--;
+	auto kept_field_data = field_data;
+	for (auto &index : removed_indexes) {
+		if (transaction.HasTransactionInlinedData(GetTableId())) {
+			transaction.RemoveColumnFromLocalInlinedData(GetTableId(), index, field_id);
+		}
+		kept_field_data = DuckLakeFieldData::DropRootField(*kept_field_data, columns.GetColumn(index).Physical());
+		for (idx_t c_idx = 0; c_idx < table_info.constraints.size(); c_idx++) {
+			auto &constraint = table_info.constraints[c_idx];
+			if (constraint->type == ConstraintType::NOT_NULL) {
+				auto &not_null = constraint->Cast<NotNullConstraint>();
+				if (not_null.index == index) {
+					// the constraint of the removed column goes with it
+					table_info.constraints.erase_at(c_idx);
+					c_idx--;
+					continue;
+				}
+				if (not_null.index.index > index.index) {
+					// the columns after the removed one move up
+					not_null.index.index--;
+				}
 			}
 		}
 	}
-	// remove the column from the column list
+	auto change_info = make_uniq<ColumnChangeInfo>();
+	if (kept_index.IsValid()) {
+		// the rows of the field id are replaced by one row for the name that is left
+		auto &kept = columns.GetColumn(LogicalIndex(kept_index.GetIndex()));
+		DuckLakeNewColumn kept_column;
+		kept_column.column_info.id = field_id.GetFieldIndex();
+		kept_column.column_info.name = kept.Name();
+		kept_column.column_info.type = DuckLakeTypes::ToString(kept.Type());
+		ExtractDefaultValue(GetFieldId(kept.Physical()).GetColumnData(), kept_column.column_info);
+		kept_column.column_info.nulls_allowed = GetNotNullFields().count(kept.Name()) == 0;
+		change_info->dropped_fields.push_back(field_id.GetFieldIndex());
+		change_info->new_fields.push_back(std::move(kept_column));
+	} else {
+		change_info->DropField(field_id);
+	}
+	// remove the columns from the column list
 	ColumnList new_columns;
-	for (auto &col : columns.Logical()) {
-		auto copy = col.Copy();
-		if (copy.Name() == info.removed_column) {
-			continue;
+	for (auto &existing : columns.Logical()) {
+		if (std::find(removed_indexes.begin(), removed_indexes.end(), existing.Logical()) == removed_indexes.end()) {
+			new_columns.AddColumn(existing.Copy());
 		}
-		new_columns.AddColumn(std::move(copy));
 	}
 	table_info.columns = std::move(new_columns);
 
-	auto change_info = make_uniq<ColumnChangeInfo>();
-	change_info->DropField(field_id);
-
+	if (kept_index.IsValid()) {
+		return AlterColumnType(transaction, table_info, std::move(change_info), std::move(kept_field_data));
+	}
 	return make_uniq<DuckLakeTableEntry>(*this, table_info, LocalChange::RemoveColumn(field_id.GetFieldIndex()),
 	                                     std::move(change_info));
 }
@@ -1267,6 +1304,9 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	return AlterColumnType(transaction, table_info, std::move(change_info), std::move(new_field_ids));
 }
 
+void RenameField(const DuckLakeFieldId &field_id, const DuckLakeFieldId &parent_id, Identifier new_name,
+                 ColumnChangeInfo &change_info);
+
 unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &transaction, RemoveFieldInfo &info) {
 	auto create_info = GetInfo();
 	auto &table_info = create_info->Cast<CreateTableInfo>();
@@ -1296,10 +1336,33 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 
 	// generate the removed column info
 	auto change_info = make_uniq<ColumnChangeInfo>();
-	change_info->DropField(removed_id);
+	// fields that share a field id are names of one field, which stays under the last of the other names
+	auto parent_path = info.column_path;
+	parent_path.pop_back();
+	auto &parent_id = GetFieldId(parent_path);
+	vector<vector<Identifier>> removed_paths {info.column_path};
+	optional_ptr<const DuckLakeFieldId> kept_sibling;
+	for (auto &sibling : parent_id.Children()) {
+		if (sibling->GetFieldIndex() != removed_id.GetFieldIndex() || sibling->Name() == removed_id.Name()) {
+			continue;
+		}
+		if (kept_sibling) {
+			removed_paths.push_back(parent_path);
+			removed_paths.back().push_back(kept_sibling->Name());
+		}
+		kept_sibling = sibling.get();
+	}
+	if (kept_sibling) {
+		RenameField(*kept_sibling, parent_id, kept_sibling->Name(), *change_info);
+	} else {
+		change_info->DropField(removed_id);
+	}
 
 	auto &col = table_info.columns.GetColumnMutable(info.column_path[0]);
-	auto new_root_id = GetFieldId(col.Physical()).RemoveField(info.column_path);
+	auto new_root_id = GetFieldId(col.Physical()).Copy();
+	for (auto &removed_path : removed_paths) {
+		new_root_id = new_root_id->RemoveField(removed_path);
+	}
 	col.SetType(new_root_id->Type());
 	auto new_field_ids = DuckLakeFieldData::ReplaceRootField(*field_data, col.Physical(), std::move(new_root_id));
 	return AlterColumnType(transaction, table_info, std::move(change_info), std::move(new_field_ids));
@@ -1523,6 +1586,38 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(ClientContext &context, DuckL
 	return result;
 }
 
+//! Columns that share a field id are names of one column, a change of one of them cannot say what becomes of the rest
+static void VerifyColumnHasOneName(const DuckLakeTableEntry &table, const Identifier &column_name) {
+	if (!table.ColumnExists(column_name)) {
+		return;
+	}
+	auto &column = table.GetColumn(column_name);
+	for (auto &other : table.GetColumns().Logical()) {
+		if (other.Logical() != column.Logical() &&
+		    table.GetFieldId(other.Physical()).GetFieldIndex() == table.GetFieldId(column.Physical()).GetFieldIndex()) {
+			throw InvalidInputException("Cannot alter column %s - an older release left the table with this column "
+			                            "under the names %s and %s. Drop one of the two columns first",
+			                            column.Name(), column.Name(), other.Name());
+		}
+	}
+}
+
+//! The column that an ALTER TABLE statement changes, empty if it names none
+static Identifier AlteredColumnName(const AlterTableInfo &info) {
+	switch (info.alter_table_type) {
+	case AlterTableType::RENAME_COLUMN:
+		return info.Cast<RenameColumnInfo>().old_name;
+	case AlterTableType::SET_DEFAULT:
+		return info.Cast<SetDefaultInfo>().column_path[0];
+	case AlterTableType::SET_NOT_NULL:
+		return info.Cast<SetNotNullInfo>().column_path[0];
+	case AlterTableType::DROP_NOT_NULL:
+		return info.Cast<DropNotNullInfo>().column_path[0];
+	default:
+		return info.GetColumnName();
+	}
+}
+
 unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterEntry(ClientContext &context, DuckLakeTransaction &transaction,
                                                         AlterTableInfo &info) {
 	if (transaction.HasTransactionInlinedData(GetTableId())) {
@@ -1539,6 +1634,9 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterEntry(ClientContext &context, 
 			throw NotImplementedException("ALTER on a table with transaction-local inlined data is not supported %s",
 			                              EnumUtil::ToString(info.alter_table_type));
 		}
+	}
+	if (info.alter_table_type != AlterTableType::REMOVE_COLUMN) {
+		VerifyColumnHasOneName(*this, AlteredColumnName(info));
 	}
 	switch (info.alter_table_type) {
 	case AlterTableType::RENAME_TABLE:
@@ -1585,6 +1683,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(DuckLakeTransaction &transact
 }
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::Alter(DuckLakeTransaction &transaction, SetColumnCommentInfo &info) {
+	VerifyColumnHasOneName(*this, info.column_name);
 	auto create_info = GetInfo();
 	auto &table_info = create_info->Cast<CreateTableInfo>();
 	auto &col = table_info.columns.GetColumnMutable(GetColumnIndex(info.column_name));

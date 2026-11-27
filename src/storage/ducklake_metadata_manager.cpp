@@ -519,11 +519,11 @@ string DuckLakeMetadataManager::EndRows(const string &kind_name, const string &f
 	auto &kind = RowKind(kind_name);
 	vector<string> keys;
 	for (auto &key : kind.key_columns) {
-		keys.push_back("t." + key);
+		keys.push_back(KeyColumn("t", key));
 	}
 	return StringUtil::Format(R"(INSERT INTO {METADATA_CATALOG}.ducklake_%s_visibility
     (branch_id, %s, row_branch_id, row_snapshot, end_snapshot)
-SELECT 0, %s, t.branch_id, t.begin_snapshot, {SNAPSHOT_ID}
+SELECT DISTINCT 0, %s, t.branch_id, t.begin_snapshot, {SNAPSHOT_ID}
 FROM {METADATA_CATALOG}.%s t
 WHERE %s AND %s;
 )",

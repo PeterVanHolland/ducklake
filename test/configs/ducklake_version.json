@@ -121,6 +121,7 @@
       "reason": "View column comments (ducklake_view_column_tag) were added in 1.1 and are not available when ducklake_default_version is pinned to 1.0",
       "paths": [
         "test/sql/comments/comment_on_view_column.test",
+        "test/sql/comments/comment_on_view_column_collation.test",
         "test/sql/comments/comment_on_view_column_conflict.test",
         "test/sql/comments/comment_on_view_column_invalid.test",
         "test/sql/comments/comment_on_view_column_update.test",

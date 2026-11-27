@@ -1,0 +1,182 @@
+# name: test/sql/migration/v10_typed_macro_defaults.test
+# description: macro defaults that DuckDB 1.5.2 stored as the text of a cast read as the value of the macro
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.2, which stored the default DATE '2026-01-01' as 2026-01-01'::DAT
+unzip data/old_ducklake/v10_typed_macro_defaults.db.gz {TEST_DIR}/v10_typed_macro_defaults.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_typed_macro_defaults.db' AS lake
+	(DATA_PATH '{TEST_DIR}/v10_typed_macro_defaults_data', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT * FROM lake.keep
+----
+1
+
+query III
+SELECT * FROM lake.m_date(1)
+----
+1	2026-01-01	DATE
+
+query I
+SELECT lake.s_date(1)
+----
+1 2026-01-01 DATE
+
+query III
+SELECT v, p_default = TIMESTAMPTZ '2026-01-01 10:00:00+00', p_type FROM lake.m_tstz(1)
+----
+1	true	TIMESTAMP WITH TIME ZONE
+
+query III
+SELECT * FROM lake.m_ts(1)
+----
+1	2026-01-01 10:00:00	TIMESTAMP
+
+query III
+SELECT * FROM lake.m_interval(1)
+----
+1	1 day	INTERVAL
+
+query III
+SELECT * FROM lake.m_uuid(1)
+----
+1	00000000-0000-0000-0000-000000000001	UUID
+
+query III
+SELECT * FROM lake.m_time(1)
+----
+1	10:00:00	TIME
+
+query III
+SELECT * FROM lake.m_blob(1)
+----
+1	ab	BLOB
+
+query III
+SELECT * FROM lake.m_timetz(1)
+----
+1	10:00:00+02	TIME WITH TIME ZONE
+
+query III
+SELECT * FROM lake.m_ts_s(1)
+----
+1	2026-01-01 10:00:00	TIMESTAMP_S
+
+query III
+SELECT * FROM lake.m_ts_ms(1)
+----
+1	2026-01-01 10:00:00.123	TIMESTAMP_MS
+
+query III
+SELECT * FROM lake.m_ts_ns(1)
+----
+1	2026-01-01 10:00:00.123456789	TIMESTAMP_NS
+
+# NaN and the infinities of a FLOAT and NaN of a DOUBLE were stored in the same way
+query III
+SELECT v, isnan(p_default), p_type FROM lake.f_nan(1)
+----
+1	true	FLOAT
+
+query III
+SELECT v, p_default = 'inf'::FLOAT, p_type FROM lake.f_inf(1)
+----
+1	true	FLOAT
+
+query III
+SELECT v, p_default = '-inf'::FLOAT, p_type FROM lake.f_ninf(1)
+----
+1	true	FLOAT
+
+query III
+SELECT v, isnan(p_default), p_type FROM lake.d_nan(1)
+----
+1	true	DOUBLE
+
+query III
+SELECT v, p_default = 'inf'::DOUBLE, p_type FROM lake.d_inf(1)
+----
+1	true	DOUBLE
+
+query III
+SELECT v, p_default = '-inf'::DOUBLE, p_type FROM lake.d_ninf(1)
+----
+1	true	DOUBLE
+
+query III
+SELECT * FROM lake.f_plain(1)
+----
+1	1.5	FLOAT
+
+# a string default was stored with its quote doubled, which cannot be told from a string with two quotes
+query III
+SELECT * FROM lake.m_quote(1)
+----
+1	it''s	VARCHAR
+
+query IIII
+SELECT * FROM lake.m_plain(1)
+----
+1	5	abc	1.50
+
+query III
+SELECT * FROM lake.m_date(1, p := DATE '2027-02-02')
+----
+1	2027-02-02	DATE
+
+statement ok
+DROP MACRO TABLE lake.m_ts
+
+statement ok
+CREATE OR REPLACE MACRO lake.m_date(x, p := DATE '2028-03-03') AS TABLE
+SELECT x AS v, p AS p_default, typeof(p) AS p_type
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_typed_macro_defaults.db' AS lake
+	(DATA_PATH '{TEST_DIR}/v10_typed_macro_defaults_data', OVERRIDE_DATA_PATH TRUE)
+
+query III
+SELECT * FROM lake.m_date(1)
+----
+1	2028-03-03	DATE
+
+query III
+SELECT * FROM lake.m_interval(1)
+----
+1	1 day	INTERVAL
+
+statement error
+SELECT * FROM lake.m_ts(1)
+----
+m_ts
+
+# the catalog also loads without the migration
+unzip data/old_ducklake/v10_typed_macro_defaults.db.gz {TEST_DIR}/v10_typed_macro_defaults_unmigrated.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_typed_macro_defaults_unmigrated.db' AS v10
+	(DATA_PATH '{TEST_DIR}/v10_typed_macro_defaults_data', OVERRIDE_DATA_PATH TRUE)
+
+query I
+SELECT * FROM v10.keep
+----
+1
+
+query III
+SELECT * FROM v10.m_uuid(1)
+----
+1	00000000-0000-0000-0000-000000000001	UUID
+
+query I
+SELECT v10.s_date(1)
+----
+1 2026-01-01 DATE

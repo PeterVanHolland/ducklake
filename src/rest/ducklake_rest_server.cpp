@@ -288,6 +288,55 @@ static idx_t CommitHold(DatabaseInstance &db) {
 	return hold.IsNull() ? 0 : hold.GetValue<idx_t>();
 }
 
+//! Splits a header at a delimiter outside of its quoted strings
+static vector<string> SplitOutsideQuotes(const string &header, char delimiter) {
+	vector<string> result;
+	string current;
+	bool quoted = false;
+	for (auto c : header) {
+		if (c == '"') {
+			quoted = !quoted;
+		}
+		if (c == delimiter && !quoted) {
+			result.push_back(current);
+			current.clear();
+		} else {
+			current += c;
+		}
+	}
+	result.push_back(current);
+	return result;
+}
+
+//! Whether a multipart media range of the Accept header has the parameter that asks for variant bytes
+static bool AcceptsVariantBytes(const string &accept) {
+	for (auto &range : SplitOutsideQuotes(accept, ',')) {
+		auto parts = SplitOutsideQuotes(range, ';');
+		auto type = StringUtil::Lower(parts[0]);
+		StringUtil::Trim(type);
+		if (type != "multipart/mixed" && type != "*/*") {
+			continue;
+		}
+		bool variant_bytes = false;
+		bool excluded = false;
+		for (idx_t i = 1; i < parts.size(); i++) {
+			auto parameter = StringUtil::Replace(StringUtil::Lower(parts[i]), "\"", "");
+			StringUtil::Trim(parameter);
+			if (parameter == REST_ACCEPT_VARIANT_BYTES) {
+				variant_bytes = true;
+			} else if (StringUtil::StartsWith(parameter, "q=") &&
+			           parameter.find_first_not_of("0.", 2) == string::npos) {
+				// a quality of zero excludes the range
+				excluded = true;
+			}
+		}
+		if (variant_bytes && !excluded) {
+			return true;
+		}
+	}
+	return false;
+}
+
 int32_t DuckLakeRESTServer::HandleRequest(const RESTRoute &route, optional_ptr<const string> prefix,
                                           const vector<string> &path_values, const vector<pair<string, string>> &query,
                                           const string &body, const string &request_content_type, const string &accept,
@@ -359,6 +408,7 @@ int32_t DuckLakeRESTServer::HandleRequest(const RESTRoute &route, optional_ptr<c
 		request.server = this;
 		request.prefix = served.prefix;
 		request.accepts_arrow = accepts_arrow;
+		request.accepts_variant_bytes = AcceptsVariantBytes(accept);
 		try {
 			response = entry->second(request, request_json);
 			content_type = request.content_type;

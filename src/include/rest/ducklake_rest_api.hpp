@@ -203,6 +203,8 @@ struct RESTHttpResponse {
 };
 
 //! Conversion of the structures of the REST API to and from JSON
+class DuckLakeRESTClientAPI;
+
 struct DuckLakeRESTSerializer {
 	template <class T>
 	static T Read(RESTJsonIn in);
@@ -222,7 +224,7 @@ struct DuckLakeRESTSerializer {
 	}
 	//! The parts of the HTTP request of a client besides its JSON document
 	template <class T>
-	static void AddParts(ClientContext &context, const T &value, vector<RESTBodyPart> &parts) {
+	static void AddParts(DuckLakeRESTClientAPI &client, const T &value, vector<RESTBodyPart> &parts) {
 	}
 	//! The body of the response to a request: JSON, or another format that the request accepts
 	template <class T>
@@ -1082,6 +1084,8 @@ struct RESTConfigResponse {
 	map<string, string> overrides;
 	//! The requests that the server supports.
 	vector<string> endpoints;
+	//! The optional parts of the API that the server supports, see the Arrow section for `variant_bytes`.
+	vector<string> features;
 };
 
 struct RESTGetLatestSnapshotRequest : public RESTSnapshotIncludes {};
@@ -1540,6 +1544,8 @@ public:
 	                              const vector<RESTBodyPart> &parts) = 0;
 	//! The context for the conversion of the tables of the requests and responses
 	virtual shared_ptr<ClientContext> GetContext() = 0;
+	//! Whether the server supports an optional part of the API, by its name in the `features` of its config
+	virtual bool HasFeature(const string &name) const = 0;
 };
 
 } // namespace duckdb

@@ -1,4 +1,5 @@
 #include "rest/ducklake_rest_server.hpp"
+#include "rest/ducklake_rest_arrow.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "rest/ducklake_rest_arrow_responses.hpp"
 #include "rest/ducklake_rest_catalog_changes.hpp"
@@ -149,6 +150,7 @@ RESTConfigResponse DuckLakeRESTEndpoints::Config(DuckLakeRESTRequest &request, c
 	for (auto &route : DuckLakeRESTAPI::GetRoutes()) {
 		result.endpoints.push_back(route.method + " " + route.path);
 	}
+	result.features.push_back(REST_FEATURE_VARIANT_BYTES);
 	return result;
 }
 

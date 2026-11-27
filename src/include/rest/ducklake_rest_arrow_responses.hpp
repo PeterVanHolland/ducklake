@@ -27,7 +27,7 @@ RESTTableChangesResponse DuckLakeRESTSerializer::ReadResponse<RESTTableChangesRe
 //! The requests with tables: the JSON document of the commit of a transaction and the rows to insert as parts of a
 //! multipart request
 template <>
-void DuckLakeRESTSerializer::AddParts<RESTCommitTransactionRequest>(ClientContext &context,
+void DuckLakeRESTSerializer::AddParts<RESTCommitTransactionRequest>(DuckLakeRESTClientAPI &client,
                                                                     const RESTCommitTransactionRequest &value,
                                                                     vector<RESTBodyPart> &parts);
 template <>

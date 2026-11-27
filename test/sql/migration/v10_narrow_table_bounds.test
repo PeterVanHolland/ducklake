@@ -1,0 +1,39 @@
+# name: test/sql/migration/v10_narrow_table_bounds.test
+# description: table bounds that a release left narrower than the bounds of a live file are cleared by the migration
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.5, whose rewrite of the files of t after a MERGE left 20 as the lowest v of the table,
+# while a live file has a row with v = 0
+unzip data/old_ducklake/narrow_table_bounds.db.gz {TEST_DIR}/v10_narrow_table_bounds.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_narrow_table_bounds.db' AS narrow
+	(DATA_PATH 'data/old_ducklake/narrow_table_bounds/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DUCKLAKE_VERSION '1.1')
+
+# the bounds of v are unknown now, those of id are kept
+query III
+SELECT column_id, min_value, max_value FROM __ducklake_metadata_narrow.ducklake_table_column_stats ORDER BY column_id
+----
+1	0	13
+2	NULL	NULL
+
+query II
+SELECT id, v FROM narrow.t WHERE v < 20 ORDER BY id
+----
+0	0
+1	10
+
+query I
+SELECT count_if(v > 5) FROM narrow.t
+----
+5
+
+query II
+SELECT min(v), max(v) FROM narrow.t
+----
+0	1050

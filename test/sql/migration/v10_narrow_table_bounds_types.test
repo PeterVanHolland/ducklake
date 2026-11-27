@@ -1,0 +1,95 @@
+# name: test/sql/migration/v10_narrow_table_bounds_types.test
+# description: the migration compares the bounds of a table and of its files in the type of the column
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+require icu
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/v10_narrow_table_bounds_types', DUCKLAKE_VERSION '1.0', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+SET TimeZone = 'UTC'
+
+statement ok
+CREATE TABLE dl.t (i INTEGER, h HUGEINT, d DOUBLE, n DECIMAL(38, 10), s VARCHAR, dt DATE, ts TIMESTAMP,
+	tz TIMESTAMPTZ, tm TIME, b BOOLEAN, u UUID, bl BLOB, tt TIMETZ, tn TIMESTAMP_NS, healthy INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES
+	(9, 9, 9.5, 9.5, 'b', DATE '2020-01-09', TIMESTAMP '2020-01-09 00:00:00', TIMESTAMPTZ '2020-01-09 00:00:00+00',
+	TIME '09:00:00', false, '00000000-0000-0000-0000-000000000009', 'a'::BLOB, TIMETZ '09:00:00+00',
+	TIMESTAMP_NS '2020-01-09 00:00:00.123456789', 1),
+	(10, 10, 10.5, 10.5, 'a', DATE '2020-01-10', TIMESTAMP '2020-01-10 00:00:00',
+	TIMESTAMPTZ '2020-01-10 00:00:00+00', TIME '10:00:00', true, '00000000-0000-0000-0000-000000000010',
+	'b'::BLOB, TIMETZ '10:00:00+00', TIMESTAMP_NS '2020-01-10 00:00:00.123456789', 2)
+
+# the upper bound becomes the lower one too, as text 10 sorts before 9
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET min_value = max_value WHERE column_id <= 4
+
+# and the lower bound the upper one for the strings
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET max_value = min_value WHERE column_id = 5
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET min_value = max_value WHERE column_id BETWEEN 6 AND 14
+
+# the file of the first row of u is dropped with the row, its bounds no longer count
+statement ok
+CREATE TABLE dl.u (i INTEGER)
+
+statement ok
+INSERT INTO dl.u VALUES (1)
+
+statement ok
+INSERT INTO dl.u VALUES (5), (6)
+
+statement ok
+DELETE FROM dl.u WHERE i = 1
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_column_stats SET min_value = '5' WHERE table_id = 2
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/v10_narrow_table_bounds_types', AUTOMATIC_MIGRATION TRUE, DUCKLAKE_VERSION '1.1')
+
+# every bound of a compared type that the file exceeds is unknown now
+query II
+SELECT count(*), count(*) FILTER (WHERE min_value IS NULL AND max_value IS NULL)
+FROM __ducklake_metadata_dl.ducklake_table_column_stats WHERE table_id = 1 AND (column_id <= 11 OR column_id = 14)
+----
+12	12
+
+# the bounds of a BLOB and a TIMETZ are not compared, and those of the healthy column are kept
+query III
+SELECT column_id, min_value, max_value FROM __ducklake_metadata_dl.ducklake_table_column_stats
+WHERE table_id = 1 AND column_id IN (12, 13, 15) ORDER BY column_id
+----
+12	62	62
+13	10:00:00+00	10:00:00+00
+15	1	2
+
+query I
+SELECT count(*) FROM dl.t WHERE i < 10 AND h < 10 AND d < 10 AND n < 10 AND s > 'a' AND dt < DATE '2020-01-10'
+	AND ts < TIMESTAMP '2020-01-10 00:00:00' AND tz < TIMESTAMPTZ '2020-01-10 00:00:00+00' AND tm < TIME '10:00:00'
+	AND NOT b AND u < '00000000-0000-0000-0000-000000000010' AND tn < TIMESTAMP_NS '2020-01-10 00:00:00'
+----
+1
+
+query II
+SELECT min_value, max_value FROM __ducklake_metadata_dl.ducklake_table_column_stats WHERE table_id = 2
+----
+5	6

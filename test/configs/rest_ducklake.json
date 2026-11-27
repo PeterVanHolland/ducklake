@@ -527,6 +527,7 @@
         "test/sql/metadata/default_order.test",
         "test/sql/migration/inlined_column_rename_remigrate.test",
         "test/sql/migration/v10_renamed_field_defaults.test",
+        "test/sql/migration/v10_narrow_table_bounds_types.test",
         "test/sql/migration/v10_retyped_bounds.test",
         "test/sql/migration/v11_dev1_to_v11.test",
         "test/sql/partitioning/bucket_long_values.test",

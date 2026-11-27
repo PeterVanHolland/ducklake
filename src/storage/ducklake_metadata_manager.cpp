@@ -994,12 +994,57 @@ AND ((%s AND (%s OR %s)) OR ((%s OR %s) AND %s));)",
 	result->ThrowIfError("Failed to clear the bounds of retyped columns while migrating to v1.1: ");
 }
 
+//! Whether a bound of a column is below another one, unknown for the types that are not compared
+static string BoundBelowSql(const string &bound, const string &other) {
+	auto compare_as = [&](const string &type) {
+		return StringUtil::Format("TRY_CAST(%s AS %s) < TRY_CAST(%s AS %s)", bound, type, other, type);
+	};
+	// a cast that keeps the order of the bounds is enough to tell that one is below the other
+	return StringUtil::Format(R"(CASE
+	WHEN col.column_type LIKE 'int%%' OR col.column_type LIKE 'uint%%' OR col.column_type LIKE 'float%%'
+		OR col.column_type LIKE 'decimal%%' THEN %s
+	WHEN col.column_type = 'varchar' THEN %s < %s
+	WHEN col.column_type = 'boolean' THEN %s
+	WHEN col.column_type = 'uuid' THEN %s
+	WHEN col.column_type = 'date' THEN %s
+	WHEN col.column_type IN ('time', 'time_ns') THEN %s
+	WHEN col.column_type IN ('timestamp', 'timestamp_us', 'timestamp_ms', 'timestamp_s', 'timestamp_ns') THEN %s
+	WHEN col.column_type IN ('timestamptz', 'timestamptz_ns') THEN %s
+END)",
+	                          compare_as("DOUBLE PRECISION"), DuckLakeUtil::WithBinaryCollation(bound),
+	                          DuckLakeUtil::WithBinaryCollation(other), compare_as("BOOLEAN"), compare_as("UUID"),
+	                          compare_as("DATE"), compare_as("TIME"), compare_as("TIMESTAMP"),
+	                          compare_as("TIMESTAMPTZ"));
+}
+
+void DuckLakeMetadataManager::MigrateNarrowTableBounds() {
+	// a table bound that the bound of a live file exceeds can leave rows of that file out, so it becomes unknown
+	auto result = Execute(StringUtil::Format(R"(
+UPDATE {METADATA_CATALOG}.ducklake_table_column_stats AS stats SET min_value = NULL, max_value = NULL
+WHERE (stats.min_value IS NOT NULL OR stats.max_value IS NOT NULL) AND EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_file_column_stats AS file_stats
+	JOIN {METADATA_CATALOG}.ducklake_data_file AS file ON file.data_file_id = file_stats.data_file_id
+	JOIN {METADATA_CATALOG}.ducklake_column AS col
+		ON col.table_id = file_stats.table_id AND col.column_id = file_stats.column_id
+	WHERE file_stats.table_id = stats.table_id AND file_stats.column_id = stats.column_id
+	AND file.end_snapshot IS NULL AND col.end_snapshot IS NULL
+	AND (%s OR %s)
+);)",
+	                                         BoundBelowSql("file_stats.min_value", "stats.min_value"),
+	                                         BoundBelowSql("stats.max_value", "file_stats.max_value")));
+	result->ThrowIfError("Failed to clear the table bounds that a file exceeds while migrating to v1.1: ");
+}
+
 void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	// rename first so a conflict aborts before the version is updated, dev catalogs may already be renamed
 	MigrateInlinedColumnNames(from_dev1);
 	MigrateInlinedSchemaVersions();
 	MigrateRenamedFieldDefaults();
 	MigrateRetypedBounds();
+	if (!from_dev1) {
+		// a dev catalog can already keep the ends of its rows as a later version does
+		MigrateNarrowTableBounds();
+	}
 	MigrateInlinedDataTypes();
 	// DDL locks the metadata tables exclusively on Postgres, skip it when a dev catalog has every addition
 	auto has_additions = from_dev1 && HasV1_1Additions();

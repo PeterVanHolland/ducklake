@@ -154,7 +154,7 @@ statement ok
 DETACH old
 
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS old (DATA_PATH '{DATA_PATH}/pub_identity_old', METADATA_SCHEMA 'pub_identity_old', AUTOMATIC_MIGRATION TRUE)
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS old (DATA_PATH '{DATA_PATH}/pub_identity_old', METADATA_SCHEMA 'pub_identity_old', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
 
 query II
 SELECT i, s FROM old.t
@@ -177,6 +177,36 @@ query II
 SELECT i, s FROM old.t
 ----
 2	two
+
+# the migration to 2.0 converts no inlined rows, the flush writes them to files first
+statement ok
+CALL ducklake_flush_inlined_data('old')
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS old (DATA_PATH '{DATA_PATH}/pub_identity_old', METADATA_SCHEMA 'pub_identity_old', AUTOMATIC_MIGRATION TRUE)
+
+# the tables of the migrated catalog take an inlined row, a deletion of a file row and their flush
+statement ok
+INSERT INTO old.t VALUES (3, 'three')
+
+statement ok
+DELETE FROM old.t WHERE i = 2
+
+statement ok
+CALL ducklake_flush_inlined_data('old')
+
+query II
+SELECT i, s FROM old.t
+----
+3	three
+
+query I
+SELECT count(*) FROM postgres_query('__ducklake_metadata_old', 'SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ''pub_identity_old'' AND c.relkind = ''r'' AND c.relreplident = ''d'' AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)')
+----
+0
 
 statement ok
 CALL postgres_execute('__ducklake_metadata_lake', 'DROP PUBLICATION ducklake_pub_identity')

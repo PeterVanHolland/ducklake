@@ -124,17 +124,17 @@ SELECT min_value, max_value, min_is_exact::BOOLEAN, max_is_exact::BOOLEAN FROM d
 10	39	true	true
 b10	d39	true	true
 
-# the remaining files are not delete-free, so the removal cannot prove new bounds and clears the column stats
+# the remaining files are not delete-free, so the removal cannot prove new bounds and leaves them unknown
 statement ok
 SET VARIABLE f3 = (SELECT filename FROM ducklake.t WHERE i = 35)
 
 statement ok
 CALL ducklake_remove_data_files('ducklake', 't', getvariable('f3'))
 
-query I
-SELECT count(*) FROM dl.ducklake_table_column_stats
+query III
+SELECT count(*), count(min_value), count(max_value) FROM dl.ducklake_table_column_stats
 ----
-0
+2	0	0
 
 query III
 SELECT min(i), max(i), count(*) FROM ducklake.t
@@ -200,10 +200,12 @@ CALL ducklake_remove_data_files('ducklake', 't2', getvariable('t2_file'))
 statement ok
 COMMIT
 
-# (the column stats of t were cleared above and are not recreated by later inserts)
+# (t was emptied above, so the later inserts set its bounds again)
 query IIIII
 SELECT table_id, min_value, max_value, min_is_exact::BOOLEAN, max_is_exact::BOOLEAN FROM dl.ducklake_table_column_stats ORDER BY table_id, column_id
 ----
+1	50	59	true	true
+1	e50	e59	true	true
 2	1000	1009	true	true
 
 query III
@@ -377,7 +379,7 @@ SELECT min_value, max_value, min_is_exact::BOOLEAN, max_is_exact::BOOLEAN FROM d
 ----
 0	9	true	true
 
-# a flushed deletion of a remaining file leaves deleted rows, so the stats are cleared
+# a flushed deletion of a remaining file leaves deleted rows, so the bounds are unknown
 statement ok
 INSERT INTO ducklake.t6 FROM range(20, 30);
 
@@ -404,7 +406,7 @@ SELECT min(i), max(i), count(*) FROM ducklake.t6
 ----
 0	9	9
 
-query I
-SELECT count(*) FROM dl.ducklake_table_column_stats WHERE table_id = 6
+query III
+SELECT count(*), count(min_value), count(max_value) FROM dl.ducklake_table_column_stats WHERE table_id = 6
 ----
-0
+1	0	0

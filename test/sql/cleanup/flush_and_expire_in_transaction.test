@@ -1,0 +1,91 @@
+# name: test/sql/cleanup/flush_and_expire_in_transaction.test
+# description: A flush and an expiry in one transaction leave no delete file whose data file the expiry removed
+# group: [cleanup]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake
+(DATA_PATH '{DATA_PATH}/flush_and_expire_in_transaction', DATA_INLINING_ROW_LIMIT 10, METADATA_CATALOG 'ducklake_meta')
+
+statement ok
+CREATE TABLE ducklake.t (id BIGINT, c DOUBLE)
+
+statement ok
+INSERT INTO ducklake.t SELECT range, range * 1.5 FROM range(15)
+
+# the deletions of the file are inlined, and the rewrite retires the file
+statement ok
+DELETE FROM ducklake.t WHERE id < 5
+
+statement ok
+CALL ducklake_rewrite_data_files('ducklake', delete_threshold => 0.3)
+
+query I
+SELECT count(*) FROM ducklake_meta.ducklake_inlined_delete_1
+----
+5
+
+# the flush writes the deletions of the retired file to a delete file, which the expiry of the statement cannot see
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake')
+
+statement ok
+CALL ducklake_expire_snapshots('ducklake', older_than => now())
+
+statement ok
+COMMIT
+
+query II
+SELECT count(*), sum(id) FROM ducklake.t
+----
+10	95
+
+# every delete file has its data file
+statement ok
+CREATE TEMP TABLE data_files AS SELECT data_file_id FROM ducklake_meta.ducklake_data_file
+
+query I
+SELECT count(*) FROM ducklake_meta.ducklake_delete_file WHERE data_file_id NOT IN (SELECT data_file_id FROM data_files)
+----
+0
+
+# the next expiry removes what is left of the retired file
+statement ok
+INSERT INTO ducklake.t VALUES (100, 0)
+
+statement ok
+CALL ducklake_expire_snapshots('ducklake', older_than => now())
+
+query I
+SELECT count(*) FROM ducklake_meta.ducklake_delete_file
+----
+0
+
+query I
+SELECT count(*) FROM ducklake_meta.ducklake_data_file WHERE data_file_id = 0
+----
+0
+
+statement ok
+CALL ducklake_cleanup_old_files('ducklake', cleanup_all => true)
+
+query II
+SELECT count(*), count(*) FILTER (WHERE file LIKE '%-delete.%')
+FROM glob('{DATA_PATH}/flush_and_expire_in_transaction/main/t/*')
+----
+1	0
+
+query II
+SELECT count(*), sum(id) FROM ducklake.t
+----
+11	195

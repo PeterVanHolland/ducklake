@@ -7743,7 +7743,8 @@ string DuckLakeMetadataManager::DeleteSnapshotsSql(const vector<DuckLakeSnapshot
 void DuckLakeMetadataManager::DeleteSnapshots(const vector<DuckLakeSnapshotInfo> &snapshots) {
 	auto result = Execute(DeleteSnapshotsSql(snapshots, BranchKeyedLookups()));
 	result->ThrowIfError("Failed to delete snapshots in DuckLake: ");
-	CleanupExpiredSnapshots(snapshots);
+	// the transaction registers its delete files at its commit, their data files stay until then
+	CleanupExpiredSnapshots(snapshots, transaction.GetLocalChanges().GetFilesWithLocalDeletes());
 }
 
 //! The version rows of main ended on main with no snapshot of main left between birth and end
@@ -7784,7 +7785,8 @@ static optional_ptr<const DuckLakeMetadataManager::RowVisibilityKind> V2_0RowCom
 	return nullptr;
 }
 
-void DuckLakeMetadataManager::CleanupExpiredSnapshots(const vector<DuckLakeSnapshotInfo> &snapshots) {
+void DuckLakeMetadataManager::CleanupExpiredSnapshots(const vector<DuckLakeSnapshotInfo> &snapshots,
+                                                      const set<DataFileIndex> &kept_data_files) {
 	unique_ptr<QueryResult> result;
 	bool row_visibility = transaction.GetCatalog().SupportsRowVisibility();
 	auto main_filter = MainSnapshotFilter();
@@ -7860,7 +7862,12 @@ AND NOT EXISTS (
 	}
 
 	auto file_events = WritesFileVisibilityEvents();
-	result = Query(UnusedFilesQuery(DataFiles(), "data_file_id", table_id_filter));
+	auto data_file_filter = table_id_filter;
+	if (!kept_data_files.empty()) {
+		// a kept file only goes with its table
+		data_file_filter += StringUtil::Format("f.data_file_id NOT IN (%s) AND ", GenerateIDList(kept_data_files));
+	}
+	result = Query(UnusedFilesQuery(DataFiles(), "data_file_id", data_file_filter));
 	auto cleanup_files = read_cleanup_files(*result);
 	auto deleted_file_ids = CleanupFileIdList(cleanup_files);
 	vector<string> tables_to_delete_from;

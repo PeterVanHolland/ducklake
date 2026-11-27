@@ -783,8 +783,10 @@ public:
 	static string DeleteSnapshotsSql(const vector<DuckLakeSnapshotInfo> &snapshots, bool branch_keyed);
 	//! Deletes the snapshots once the caller checked the catalog version
 	virtual void DeleteSnapshots(const vector<DuckLakeSnapshotInfo> &snapshots);
-	//! Deletes the metadata that only the deleted snapshots referenced, once the caller checked the catalog version
-	virtual void CleanupExpiredSnapshots(const vector<DuckLakeSnapshotInfo> &snapshots);
+	//! Deletes the metadata that only the deleted snapshots referenced, once the caller checked the catalog version.
+	//! The kept data files stay, a later expiry removes them
+	virtual void CleanupExpiredSnapshots(const vector<DuckLakeSnapshotInfo> &snapshots,
+	                                     const set<DataFileIndex> &kept_data_files);
 	//! Deletes the ends of a kind whose version row is gone
 	void DeleteOrphanRowEnds(const RowVisibilityKind &kind);
 	virtual vector<DuckLakeTableSizeInfo> GetTableSizes(DuckLakeSnapshot snapshot);

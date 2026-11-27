@@ -234,6 +234,10 @@ public:
 	                             SnapshotBound bound = SnapshotBound::TIME_TRAVEL);
 	//! The newest snapshot that the transaction sees, also when the catalog is opened at a fixed snapshot
 	idx_t GetNewestVisibleSnapshotId();
+	//! Whether the metadata reads of the transaction can show commits that are newer than its snapshot
+	bool ReadsLaterCommits() const;
+	//! Whether a snapshot was committed after the one that the transaction reads, which a metadata read finds out
+	bool NewerSnapshotCommitted(bool read_metadata = true);
 
 	static DuckLakeTransaction &Get(ClientContext &context, Catalog &catalog);
 
@@ -488,6 +492,8 @@ private:
 	unique_ptr<DuckLakeMetadataManager> metadata_manager;
 	mutex connection_lock;
 	bool metadata_transaction_released = false;
+	//! Set once the metadata transaction can be newer than the snapshot, which a release or a set snapshot leaves
+	atomic<bool> metadata_newer_than_snapshot {false};
 	unique_ptr<Connection> connection;
 	//! Flushes of several tables finalize in parallel while scans check the flushed tables
 	mutex flushed_inlined_lock;
@@ -517,6 +523,8 @@ private:
 	idx_t local_catalog_id;
 	//! Set when this transaction inlines into a table that does not yet have an inlined-data table
 	atomic<bool> requires_new_inlined_table {false};
+	//! Set once a snapshot newer than the one of the transaction was seen
+	atomic<bool> newer_snapshot_committed {false};
 	//! Schema cache entries referenced by this transaction's catalog entries. These pins keep transaction-local
 	//! parent references valid even if another transaction invalidates the global object-cache entry.
 	unique_ptr<DuckLakeSchemaPinState> schema_pins;

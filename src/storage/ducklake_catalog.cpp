@@ -1129,7 +1129,10 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 	auto &cache = GetObjectCacheInstance();
 	auto key = StatsCacheKey(snapshot.next_file_id, table_id);
 	auto cached = cache.Get<DuckLakeTableStatsCacheEntry>(key);
-	if (cached && cached->schema_version == snapshot.schema_version) {
+	// statistics that were read for a newer snapshot do not describe the snapshot of an older reader
+	bool is_reader = !load_tables;
+	if (cached && cached->schema_version == snapshot.schema_version &&
+	    !(is_reader && cached->snapshot_id > snapshot.snapshot_id)) {
 		if (!cached->has_stats) {
 			// cached negative result
 			return nullptr;
@@ -1160,8 +1163,17 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 			}
 		}
 	}
+	bool reads_later_commits = transaction.ReadsLaterCommits();
+	bool verify_snapshot = is_reader && reads_later_commits;
+	if (verify_snapshot && transaction.NewerSnapshotCommitted(false)) {
+		return nullptr;
+	}
 	auto global_stats = transaction.GetMetadataManager().GetGlobalTableStats(
 	    snapshot, load_tables ? cache_tables : vector<TableIndex>());
+	// no snapshot was committed while the statistics were read if none is there afterwards
+	if (verify_snapshot && transaction.NewerSnapshotCommitted()) {
+		return nullptr;
+	}
 	auto lake_stats = ConstructStatsMap(global_stats, schema_entry->catalog_set);
 
 	shared_ptr<DuckLakeTableStatsCacheEntry> requested_entry;
@@ -1177,6 +1189,8 @@ shared_ptr<DuckLakeTableStats> DuckLakeCatalog::GetTableStats(DuckLakeTransactio
 			entry =
 			    make_shared_ptr<DuckLakeTableStatsCacheEntry>(snapshot.schema_version, std::move(*stats_entry->second));
 		}
+		// where reads show later commits, the statistics that a commit reads can be theirs
+		entry->snapshot_id = reads_later_commits && !is_reader ? DConstants::INVALID_INDEX : snapshot.snapshot_id;
 		if (current_id == table_id) {
 			requested_entry = entry;
 		}

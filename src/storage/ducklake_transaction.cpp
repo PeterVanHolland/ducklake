@@ -1031,6 +1031,7 @@ void DuckLakeTransaction::ReleaseMetadataTransaction() {
 	if (connection && connection->HasActiveTransaction()) {
 		connection->Commit();
 		metadata_transaction_released = true;
+		metadata_newer_than_snapshot = true;
 	}
 }
 
@@ -2478,6 +2479,7 @@ DuckLakeSnapshot DuckLakeTransaction::GetLatestSnapshot() {
 void DuckLakeTransaction::SetSnapshot(DuckLakeSnapshot new_snapshot) {
 	lock_guard<mutex> guard(snapshot_lock);
 	snapshot = make_uniq<DuckLakeSnapshot>(new_snapshot);
+	metadata_newer_than_snapshot = true;
 }
 
 DuckLakeSnapshot DuckLakeTransaction::GetCommittedSnapshot() const {
@@ -2503,6 +2505,19 @@ DuckLakeSnapshot DuckLakeTransaction::GetSnapshot() {
 
 idx_t DuckLakeTransaction::GetNewestVisibleSnapshotId() {
 	return GetLatestSnapshot().snapshot_id;
+}
+
+bool DuckLakeTransaction::ReadsLaterCommits() const {
+	return metadata_newer_than_snapshot ||
+	       (metadata_manager->ShowsConcurrentCommits() && !metadata_manager->IsRemote());
+}
+
+bool DuckLakeTransaction::NewerSnapshotCommitted(bool read_metadata) {
+	if (read_metadata && !newer_snapshot_committed &&
+	    metadata_manager->GetSnapshot()->snapshot_id > GetSnapshot().snapshot_id) {
+		newer_snapshot_committed = true;
+	}
+	return newer_snapshot_committed;
 }
 
 DuckLakeSnapshot DuckLakeTransaction::GetSnapshot(optional_ptr<BoundAtClause> at_clause, SnapshotBound bound) {

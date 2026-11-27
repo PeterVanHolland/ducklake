@@ -1,0 +1,50 @@
+# name: test/sql/rest/rest_commit_older_snapshot_statistics.test
+# description: A commit that a REST server replays at an older snapshot leaves no newer statistics to a reader of that snapshot
+# group: [rest]
+
+require json
+
+include test/template/rest_setup.test_template
+
+statement ok rest_db:rest_server_con
+CALL rest_lake.set_option('data_inlining_row_limit', 0)
+
+statement ok rest_db:rest_server_con
+CREATE TABLE rest_lake.t (i INTEGER, g GEOMETRY)
+
+statement ok rest_db:rest_server_con
+INSERT INTO rest_lake.t VALUES (1, 'POINT(1 2)'::GEOMETRY)
+
+statement ok rest_db:reader
+BEGIN
+
+query I rest_db:reader
+SELECT count(*) FROM rest_lake.t
+----
+1
+
+statement ok rest_db:rest_server_con
+SET VARIABLE commit_request = (SELECT '{"snapshot_id": ' || max(snapshot_id) || ', "requests": [{"alter": {"entry_id": ' ||
+(SELECT table_id FROM ducklake_table_info('rest_lake') WHERE table_name = 't') ||
+', "alter": {"set_not_null": {"column_path": ["i"]}}}}]}' FROM rest_lake.snapshots())
+
+set variable commit_request <variable:rest_server_con:commit_request>
+
+statement ok rest_db:rest_server_con
+DELETE FROM rest_lake.t
+
+# the replayed SET NOT NULL reads the statistics, which are the ones of the emptied table by now
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit', '{commit_request}')
+----
+200
+
+query I rest_db:reader
+SELECT count(*) FROM rest_lake.t WHERE vertex_extract(g, 'x') = 1
+----
+1
+
+statement ok rest_db:reader
+COMMIT
+
+include test/template/rest_teardown.test_template

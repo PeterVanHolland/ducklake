@@ -92,7 +92,7 @@ structure SnapshotIncludes {
     @httpQuery("include_catalog")
     include_catalog: Boolean = false
 
-    /// Return the table statistics of the snapshot.
+    /// Return the table statistics of the snapshot, which only the latest snapshot has.
     @httpQuery("include_stats")
     include_stats: Boolean = false
 
@@ -101,8 +101,8 @@ structure SnapshotIncludes {
     @httpQuery("cached_metadata_version")
     cached_metadata_version: UInt64
 
-    /// The next file id of the snapshot of the latest statistics the client has loaded. If the snapshot has a
-    /// different next file id, its statistics are returned.
+    /// The next file id of the snapshot of the latest statistics the client has loaded. If the snapshot is the latest
+    /// one and has a different next file id, its statistics are returned.
     @httpQuery("cached_data_version")
     cached_data_version: UInt64
 }

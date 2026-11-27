@@ -1,0 +1,63 @@
+# name: test/sql/compaction/rewrite_commit_stats_older_transaction.test
+# description: An older transaction does not filter with the statistics that the commit of a concurrent rewrite read
+# group: [compaction]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+(DATA_PATH '{DATA_PATH}/rewrite_commit_stats_older_transaction', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t AS SELECT i, ('POINT(' || i || ' 2)')::GEOMETRY g FROM range(2) r(i)
+
+statement ok
+DELETE FROM dl.t WHERE i = 0
+
+# the row of a rewrite sleeps for two seconds
+statement ok
+ALTER TABLE dl.t SET SORTED BY (coalesce(sleep_ms(2000), i))
+
+statement ok con1
+BEGIN
+
+query I con1
+SELECT count(*) FROM dl.t
+----
+1
+
+# thread 1 empties the table while thread 0 rewrites its file, a different order only makes the test pass
+concurrentloop threadid 0 2
+
+# the commit reads the statistics of the emptied table before it fails
+onlyif threadid=0
+statement maybe
+CALL ducklake_rewrite_data_files('dl', 't', delete_threshold => 0)
+----
+another transaction has deleted from it
+
+onlyif threadid=1
+statement ok
+SELECT sleep_ms(1000)
+
+onlyif threadid=1
+statement maybe
+DELETE FROM dl.t
+----
+another transaction has compacted it
+
+endloop
+
+query I con1
+SELECT count(*) FROM dl.t WHERE vertex_extract(g, 'x') = 1
+----
+1
+
+statement ok con1
+COMMIT

@@ -164,6 +164,13 @@ DuckLakeMetadata DuckLakeRESTEndpoints::GetMetadata(DuckLakeRESTRequest &request
 	return metadata;
 }
 
+//! Whether the snapshot is the latest one and the one of the transaction, which the statistics of the tables describe
+static bool IsLatestSnapshot(DuckLakeRESTRequest &request, DuckLakeSnapshot snapshot) {
+	auto &transaction = *request.transaction;
+	return snapshot.snapshot_id == transaction.GetNewestVisibleSnapshotId() &&
+	       snapshot.snapshot_id == transaction.GetSnapshot().snapshot_id;
+}
+
 //! Adds the catalog and statistics of the snapshot that the request asks for
 static void AddSnapshotData(DuckLakeRESTRequest &request, const RESTSnapshotIncludes &includes,
                             RESTSnapshotData &result) {
@@ -185,8 +192,12 @@ static void AddSnapshotData(DuckLakeRESTRequest &request, const RESTSnapshotIncl
 			}
 		}
 	}
-	if (include_stats) {
-		result.stats = metadata_manager.GetGlobalTableStats(snapshot);
+	if (include_stats && IsLatestSnapshot(request, snapshot)) {
+		auto stats = metadata_manager.GetGlobalTableStats(snapshot);
+		// a catalog that shows later commits can have read their statistics
+		if (!request.transaction->ReadsLaterCommits() || !request.transaction->NewerSnapshotCommitted()) {
+			result.stats = std::move(stats);
+		}
 	}
 }
 
@@ -509,10 +520,8 @@ static bool TryGetMinMax(const DuckLakeColumnStats &column_stats, bool is_min, V
 static bool AnswerAggregates(DuckLakeRESTRequest &request, DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
                              const vector<RESTAggregate> &aggregates, vector<RESTAggregateResult> &results) {
 	auto net_count = request.GetMetadataManager().GetNetRowCount(table, snapshot);
-	// the statistics of the table are the ones of the latest snapshot
-	bool is_latest = snapshot.snapshot_id == request.transaction->GetSnapshot().snapshot_id;
 	shared_ptr<DuckLakeTableStats> table_stats;
-	if (is_latest) {
+	if (IsLatestSnapshot(request, snapshot)) {
 		table_stats = table.GetTableStats(*request.transaction);
 	}
 	// the bounds of the statistics only widen, they are exact if no row was ever deleted

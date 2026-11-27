@@ -1062,11 +1062,11 @@ struct RESTSnapshotData {
 struct RESTSnapshotIncludes {
 	//! Return the catalog of the snapshot.
 	bool include_catalog = false;
-	//! Return the table statistics of the snapshot.
+	//! Return the table statistics of the snapshot, which only the latest snapshot has.
 	bool include_stats = false;
 	//! The schema version of the latest catalog the client has loaded. If the snapshot has a different schema
 	optional_idx cached_metadata_version;
-	//! The next file id of the snapshot of the latest statistics the client has loaded. If the snapshot has a
+	//! The next file id of the snapshot of the latest statistics the client has loaded. If the snapshot is the latest
 	optional_idx cached_data_version;
 };
 

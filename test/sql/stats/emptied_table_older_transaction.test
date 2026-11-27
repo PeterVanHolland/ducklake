@@ -1,0 +1,54 @@
+# name: test/sql/stats/emptied_table_older_transaction.test
+# description: An older transaction does not filter with the statistics of a table that a later commit emptied
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/emptied_table_older_transaction')
+
+statement ok
+CREATE TABLE dl.t (g GEOMETRY)
+
+statement ok
+INSERT INTO dl.t SELECT ('POINT(' || range || ' 2)')::GEOMETRY FROM range(20)
+
+# with the statistics cached, a transaction starts without reading them again
+query I
+SELECT count(*) FROM dl.t
+----
+20
+
+statement ok con1
+BEGIN
+
+# fixes the snapshot of the transaction before it reads the statistics
+query I con1
+SELECT count(*) FROM duckdb_columns() WHERE database_name = 'dl' AND table_name = 't'
+----
+1
+
+query I con2
+DELETE FROM dl.t
+----
+20
+
+# caches the statistics of the emptied table, which hold no points
+query I con2
+SELECT count(*) FROM dl.t
+----
+0
+
+query I con1
+SELECT count(*) FROM dl.t WHERE vertex_extract(g, 'x') = 1
+----
+1
+
+statement ok con1
+COMMIT

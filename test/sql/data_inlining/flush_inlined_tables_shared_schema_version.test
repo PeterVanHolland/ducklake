@@ -1,0 +1,151 @@
+# name: test/sql/data_inlining/flush_inlined_tables_shared_schema_version.test
+# description: flushing the tables of one schema version one call at a time in a transaction loads the version once
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/flush_inlined_tables_shared_schema_version', DATA_INLINING_ROW_LIMIT 10)
+
+# two schema versions create four tables each
+loop v 1 3
+
+statement ok
+BEGIN
+
+loop i 1 5
+
+statement ok
+CREATE TABLE lake.t${v}_${i}(a INT)
+
+endloop
+
+statement ok
+COMMIT
+
+endloop
+
+# a third schema version creates two tables
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE lake.s1(a INT)
+
+statement ok
+CREATE TABLE lake.s2(a INT)
+
+statement ok
+COMMIT
+
+loop v 1 3
+
+loop i 1 5
+
+statement ok
+INSERT INTO lake.t${v}_${i} VALUES (${v} * 10 + ${i})
+
+endloop
+
+endloop
+
+statement ok
+INSERT INTO lake.s1 VALUES (1)
+
+statement ok
+INSERT INTO lake.s2 VALUES (2)
+
+# a later schema version makes the three versions historical
+statement ok
+CREATE TABLE lake.current(a INT)
+
+# attach again so that no catalog of an old schema version is cached
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/flush_inlined_tables_shared_schema_version', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CALL enable_logging('DuckLakeMetadata')
+
+statement ok
+BEGIN
+
+loop v 1 3
+
+loop i 1 5
+
+query I
+SELECT rows_flushed FROM ducklake_flush_inlined_data('lake', table_name => 't${v}_${i}')
+----
+1
+
+endloop
+
+endloop
+
+query I
+SELECT rows_flushed FROM ducklake_flush_inlined_data('lake', table_name => 's1')
+----
+1
+
+query I
+SELECT rows_flushed FROM ducklake_flush_inlined_data('lake', table_name => 's2')
+----
+1
+
+statement ok
+COMMIT
+
+# the first call of a version that created four tables loads the version whole, so the later calls find their table,
+# the current version is loaded whole once, and the two tables of the small version load alone
+query II
+SELECT count(*) FILTER (WHERE query NOT LIKE '%tbl.table_id IN (%'),
+	count(*) FILTER (WHERE query LIKE '%tbl.table_id IN (%')
+FROM duckdb_logs_parsed('DuckLakeMetadata')
+WHERE query LIKE '%ducklake_table tbl%'
+----
+3	2
+
+# every version is counted once, at the first call that loads it
+query I
+SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE '%COUNT(DISTINCT table_id)%'
+----
+3
+
+statement ok
+CALL disable_logging()
+
+query I
+SELECT * FROM lake.t1_1
+----
+11
+
+query I
+SELECT * FROM lake.t2_4
+----
+24
+
+query I
+SELECT * FROM lake.s1 UNION ALL SELECT * FROM lake.s2 ORDER BY ALL
+----
+1
+2
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 't2_4')
+----
+1
+
+# every inlined row was flushed
+query I
+SELECT count(*) FROM ducklake_flush_inlined_data('lake')
+----
+0

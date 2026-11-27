@@ -585,6 +585,44 @@ static void SetDeleteBeginSnapshot(DuckLakeFileListExtendedEntry &entry, optiona
 	entry.delete_file_begin_snapshot = begin_snapshot;
 }
 
+static void MergeDeleteFile(DuckLakeFileListEntry &entry, DuckLakeFileListEntry &other) {
+	if (entry.delete_file.path < other.delete_file.path) {
+		std::swap(entry.delete_file, other.delete_file);
+	}
+	entry.other_delete_files.push_back(std::move(other.delete_file));
+	entry.inlined_file_deletions.insert(other.inlined_file_deletions.begin(), other.inlined_file_deletions.end());
+}
+
+static void MergeDeleteFile(DuckLakeFileListExtendedEntry &entry, DuckLakeFileListExtendedEntry &other) {
+	if (entry.delete_file.path < other.delete_file.path) {
+		entry = std::move(other);
+	}
+}
+
+//! Keeps one entry per data file, an older release could leave a data file with several visible delete files.
+//! Every list keeps the delete file with the highest path, which is the one a new delete file replaces
+template <class ENTRY>
+static void MergeDeleteFiles(vector<ENTRY> &entries) {
+	unordered_map<idx_t, idx_t> file_positions;
+	idx_t entry_count = 0;
+	for (idx_t entry_idx = 0; entry_idx < entries.size(); entry_idx++) {
+		auto &entry = entries[entry_idx];
+		// only a data file with a delete file can be listed more than once
+		if (!entry.delete_file.path.empty()) {
+			auto position = file_positions.emplace(entry.file_id.index, entry_count);
+			if (!position.second) {
+				MergeDeleteFile(entries[position.first->second], entry);
+				continue;
+			}
+		}
+		if (entry_count != entry_idx) {
+			entries[entry_count] = std::move(entry);
+		}
+		entry_count++;
+	}
+	entries.resize(entry_count);
+}
+
 template <class ENTRY>
 static void ApplyLocalFileChanges(DuckLakeTransaction &transaction, TableIndex table_id, vector<ENTRY> &entries) {
 	if (transaction.HasDroppedFiles()) {
@@ -623,6 +661,7 @@ vector<DuckLakeFileListExtendedEntry> DuckLakeMultiFileList::GetFilesExtended() 
 		result = metadata_manager.GetExtendedFilesForTable(
 		    read_info.table, read_info.snapshot, filter_info.get(),
 		    has_projection ? optional_ptr<const vector<DuckLakeProjectedColumn>>(projection) : nullptr);
+		MergeDeleteFiles(result);
 	}
 	ApplyLocalFileChanges(transaction, read_info.table_id, result);
 	idx_t transaction_row_start = DuckLakeConstants::TRANSACTION_LOCAL_ROW_ID_START;
@@ -753,6 +792,7 @@ void DuckLakeMultiFileList::GetFilesForTable() const {
 	identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>> inlined_rows;
 	if (!IsTransactionLocal(read_info.table_id)) {
 		files = ReadCommittedFiles(transaction, inlined_rows);
+		MergeDeleteFiles(files);
 	}
 	if (read_info.include_local_changes) {
 		ApplyLocalChanges(transaction);

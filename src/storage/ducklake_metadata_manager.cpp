@@ -3818,6 +3818,7 @@ FROM main_results
 
 	// Build entries from the unified query result
 	vector<DuckLakeDeleteScanEntry> files;
+	unordered_set<idx_t> files_with_inlined_deletions;
 	for (auto &row : *result) {
 		DuckLakeDeleteScanEntry entry;
 		idx_t col_idx = 0;
@@ -3840,7 +3841,8 @@ FROM main_results
 		entry.end_snapshot = end_snapshot.snapshot_id;
 
 		// Parse inlined file deletions from the LIST column (last column)
-		if (!row.IsNull(col_idx)) {
+		// a data file has an entry for each of its delete files, only one of them scans the inlined deletions
+		if (!row.IsNull(col_idx) && (entry.file_deleted || files_with_inlined_deletions.insert(file_id).second)) {
 			auto deletions_list = row.GetValue<Value>(col_idx);
 			auto &list_children = ListValue::GetChildren(deletions_list);
 			for (auto &child : list_children) {
@@ -4084,7 +4086,7 @@ vector<DuckLakeCompactionFileEntry> DuckLakeMetadataManager::GetFilesForCompacti
 		candidate_files_cte = StringUtil::Format(
 		    R"(
 				candidate_files AS (
-					SELECT data_file_id
+					SELECT DISTINCT data_file_id
 					FROM %s
 					WHERE table_id=%d AND end_snapshot IS NULL%s
 				),
@@ -4202,11 +4204,7 @@ ORDER BY data.begin_snapshot ASC, data.row_id_start ASC, data.data_file_id ASC, 
 		vector<DuckLakeCompactionFileEntry> rewrite_candidates;
 		rewrite_candidates.reserve(files.size());
 		for (auto &file : files) {
-			idx_t active_delete_count = 0;
-			if (!file.delete_files.empty() && !file.delete_files.back().end_snapshot.IsValid()) {
-				active_delete_count = file.delete_files.back().row_count;
-			}
-			auto total_delete_count = active_delete_count + file.inlined_file_deletions.size();
+			auto total_delete_count = file.LiveDeleteCount() + file.inlined_file_deletions.size();
 			if (file.file.row_count > 0) {
 				file.delete_ratio = static_cast<double>(total_delete_count) / static_cast<double>(file.file.row_count);
 			}
@@ -5296,7 +5294,12 @@ WHERE del.table_id=%d AND del.data_file_id IN (%s) AND {SNAPSHOT_ID} >= del.begi
 		DuckLakeOverwrittenDeleteFile delete_file;
 		delete_file.delete_file_id = DataFileIndex(row.GetValue<idx_t>(1));
 		delete_file.path = ReadDeleteFile(table, row, col_idx, IsEncrypted()).path;
-		result[row.GetValue<idx_t>(0)] = std::move(delete_file);
+		auto data_file_id = row.GetValue<idx_t>(0);
+		auto entry = result.find(data_file_id);
+		// of several delete files the one with the highest path is replaced, the one the file lists keep
+		if (entry == result.end() || entry->second.path < delete_file.path) {
+			result[data_file_id] = std::move(delete_file);
+		}
 	}
 	return result;
 }

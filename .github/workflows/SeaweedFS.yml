@@ -28,6 +28,7 @@ jobs:
       BUILD_EXTENSION_TEST_DEPS: full
       S3_TEST_SERVER_AVAILABLE: 1
       DUCKLAKE_CI: 1
+      CORE_EXTENSIONS: azure
 
     steps:
       - name: Install required ubuntu packages
@@ -79,4 +80,14 @@ jobs:
         run: |
           ./scripts/start-docker.sh
           build/release/test/unittest --test-config test/configs/seaweedfs.json "test/sql/*"
+
+      - name: Test Azurite
+        env:
+          AZURE_STORAGE_CONNECTION_STRING: 'DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;'
+          DUCKLAKE_AZURE_CONTAINER: ducklake
+        run: |
+          npm install -g azurite
+          azurite-blob --silent --skipApiVersionCheck &
+          az storage container create --name "$DUCKLAKE_AZURE_CONTAINER" --connection-string "$AZURE_STORAGE_CONNECTION_STRING"
+          build/release/test/unittest --require azure --select-tag 'env[DUCKLAKE_AZURE_CONTAINER]' "test/sql/*"
 

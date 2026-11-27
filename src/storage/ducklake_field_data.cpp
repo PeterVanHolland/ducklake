@@ -237,10 +237,10 @@ unique_ptr<DuckLakeFieldId> DuckLakeFieldId::AddField(const vector<Identifier> &
 
 unique_ptr<DuckLakeFieldId> DuckLakeFieldId::RemoveField(const vector<Identifier> &column_path, idx_t depth) const {
 	auto remove_child = [&](const DuckLakeFieldId &child) -> unique_ptr<DuckLakeFieldId> {
-		if (column_path.size() == 2 && (type.id() == LogicalTypeId::MAP || type.id() == LogicalTypeId::LIST)) {
-			throw CatalogException("Cannot drop field %s from column %s - it's not a struct", child.Name(), name);
-		}
 		if (depth + 1 >= column_path.size()) {
+			if (type.id() == LogicalTypeId::MAP || type.id() == LogicalTypeId::LIST) {
+				throw CatalogException("Cannot drop field %s from column %s - it's not a struct", child.Name(), name);
+			}
 			if (type.id() == LogicalTypeId::STRUCT && children.size() == 1) {
 				throw CatalogException("Cannot drop field %s from column %s - it is the last field of the struct",
 				                       column_path.back(), column_path.front());

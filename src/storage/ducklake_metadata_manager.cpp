@@ -1283,7 +1283,10 @@ string DuckLakeMetadataManager::V2_0RowCompanionsSql(const V2_0RowCompanions &ro
 		auto &kind = RowKind(row.kind);
 		auto table = RowTableName(kind.kind);
 		auto pending = PendingRowVisibilityTableName(kind.kind);
-		query += BranchColumnSql(table, "branch_id", row.has_branch_column);
+		if (!row.created_by_migration) {
+			// a table this batch creates has its birth branch and no row to fill
+			query += BranchColumnSql(table, "branch_id", row.has_branch_column);
+		}
 		if (row.has_companion && !row.has_pending) {
 			// the final companion stands, the kind lacked its birth branch alone
 			continue;

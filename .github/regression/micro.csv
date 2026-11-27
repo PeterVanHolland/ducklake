@@ -82,6 +82,7 @@ benchmark/micro/read/snapshots_listing_changes.benchmark
 benchmark/micro/read/count_star_cached.benchmark
 benchmark/micro/read/catalog_load_schema_history.benchmark
 benchmark/micro/maintenance/migrate_v10_inlined_tables.benchmark
+benchmark/micro/maintenance/migrate_v10_table_bounds.benchmark
 benchmark/micro/write/add_column_many_files.benchmark
 benchmark/micro/time_travel/table_changes_unchanged_window.benchmark
 benchmark/micro/read/multi_column_pruning_many_files.benchmark

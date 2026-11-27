@@ -915,6 +915,8 @@ public:
 	void MigrateRenamedFieldDefaults();
 	//! Clears the bounds that older versions may have stored in the type of a file or of an earlier column type
 	void MigrateRetypedBounds();
+	//! Clears the table bounds that older versions left narrower than the bounds of a live file
+	void MigrateNarrowTableBounds();
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
 	virtual void MigrateInlinedDataTypes() {
 	}

@@ -99,6 +99,8 @@ private:
 	const string schema_id;
 	const int64_t schema_version;
 	Connection fresh_conn;
+	//! Whether the COMMIT of fresh_conn invalidated its database, so the commit may have taken effect
+	bool commit_invalidated = false;
 	DuckLakeRetryConfig retry_config;
 	bool files_owned_by_client = false;
 	DuckLakeCommitOutcome commit_outcome = DuckLakeCommitOutcome::NOT_PUBLISHED;

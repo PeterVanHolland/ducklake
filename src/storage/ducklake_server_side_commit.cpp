@@ -706,7 +706,10 @@ DuckLakeCommitContext DuckLakeServerSideCommit::BuildContext(idx_t &committed_sn
 		return fresh_conn.Query(query);
 	};
 	ctx.commit_connection = [this]() {
-		fresh_conn.Commit();
+		DuckLakeMetadataManager::CommitConnection(fresh_conn, commit_invalidated);
+	};
+	ctx.commit_outcome_unknown = [this](const ErrorData &) {
+		return commit_invalidated;
 	};
 	// the outcome only moves forward: PUBLISHED is final
 	ctx.report_commit_outcome = [this](DuckLakeCommitOutcome reported) {

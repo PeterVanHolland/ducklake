@@ -1740,6 +1740,10 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	context.commit_error_without_query = [&](const string &message) {
 		return metadata_manager->CommitErrorWithoutQuery(message);
 	};
+	bool commit_invalidated = false;
+	context.commit_outcome_unknown = [&](const ErrorData &error) {
+		return commit_invalidated || metadata_manager->CommitOutcomeUnknown(error);
+	};
 	context.commit_error_hint = [&](const string &message) {
 		if (context.skip_retry()) {
 			return string("Another transaction changed options at the same time, and a retry would undo what the "
@@ -1754,7 +1758,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		}
 	};
 	context.commit_connection = [&]() {
-		connection->Commit();
+		DuckLakeMetadataManager::CommitConnection(*connection, commit_invalidated);
 	};
 	context.report_commit_outcome = [&](DuckLakeCommitOutcome reported) {
 		ReportCommitOutcome(reported);

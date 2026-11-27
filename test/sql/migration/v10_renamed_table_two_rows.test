@@ -1,0 +1,101 @@
+# name: test/sql/migration/v10_renamed_table_two_rows.test
+# description: a table and a view that DuckDB 1.5.6 left with two live rows when it changed and renamed them
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.6 with ADD COLUMN, an insert and RENAME TO in one transaction, and a comment and a rename of v
+unzip data/old_ducklake/v10_renamed_table_two_rows.db.gz {TEST_DIR}/v10_renamed_table_two_rows.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_renamed_table_two_rows.db' AS lake
+	(DATA_PATH '{TEST_DIR}/v10_renamed_table_two_rows', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT * FROM lake.u
+----
+7
+
+# the newest row has the name of the table
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'lake' ORDER BY ALL
+----
+t2
+u
+
+query II
+SELECT * FROM lake.t2 ORDER BY ALL
+----
+1	10
+2	20
+
+query I
+SELECT table_name FROM ducklake_table_info('lake') ORDER BY ALL
+----
+t2
+u
+
+statement error
+SELECT * FROM lake.t
+----
+Table with name t does not exist
+
+# before the transaction the table had its first name
+query II
+SELECT * FROM lake.t AT (VERSION => 6)
+----
+1	10
+
+query I
+SELECT view_name FROM duckdb_views() WHERE database_name = 'lake'
+----
+v2
+
+query I
+SELECT * FROM lake.v2
+----
+42
+
+# the column that the transaction added is not in the catalog, so it is added again
+statement ok
+ALTER TABLE lake.t2 ADD COLUMN c INTEGER
+
+statement ok
+INSERT INTO lake.t2 VALUES (3, 30, 300)
+
+statement ok
+CHECKPOINT lake
+
+query III
+SELECT * FROM lake.t2 ORDER BY ALL
+----
+1	10	NULL
+2	20	NULL
+3	30	300
+
+statement ok
+ALTER TABLE lake.t2 RENAME TO t3
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'lake' ORDER BY ALL
+----
+t3
+u
+
+statement ok
+DROP VIEW lake.v2
+
+statement ok
+DROP TABLE lake.t3
+
+query I
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'lake'
+----
+u
+
+query I
+SELECT count(*) FROM duckdb_views() WHERE database_name = 'lake'
+----
+0

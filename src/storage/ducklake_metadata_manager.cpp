@@ -2505,7 +2505,7 @@ SELECT schema_id, tbl.table_id, table_uuid::VARCHAR, table_name,
 		FROM {METADATA_CATALOG}.ducklake_column_tag col_tag
 		WHERE col_tag.table_id=tbl.table_id AND col_tag.column_id=col.column_id AND
 		      %s
-	) AS column_tags, default_value_type
+	) AS column_tags, default_value_type, tbl.begin_snapshot
 FROM {METADATA_CATALOG}.ducklake_table tbl
 LEFT JOIN (
 	SELECT *
@@ -2535,12 +2535,23 @@ ORDER BY table_id ASC, parent_column ASC NULLS FIRST, column_order ASC
 	auto &tables = catalog.tables;
 	// child indexes from the root column to each column, stable since children are only appended
 	unordered_map<idx_t, vector<idx_t>> column_paths;
+	idx_t table_begin = 0;
 	for (auto &row : *result) {
 		auto table_id = TableIndex(row.GetValue<uint64_t>(1));
+		auto row_begin = row.GetValue<idx_t>(COLUMN_INDEX_START + 9);
 
+		bool same_table = !tables.empty() && tables.back().id == table_id;
+		if (same_table && row_begin < table_begin) {
+			// only the newest live row of a table is loaded
+			continue;
+		}
 		// check if this column belongs to the current table or not
-		if (tables.empty() || tables.back().id != table_id) {
+		if (!same_table || row_begin > table_begin) {
+			if (same_table) {
+				tables.pop_back();
+			}
 			// new table
+			table_begin = row_begin;
 			DuckLakeTableInfo table_info;
 			table_info.id = table_id;
 			table_info.schema_id = SchemaIndex(row.GetValue<uint64_t>(0));
@@ -2639,6 +2650,7 @@ SELECT view_id, view_uuid, schema_id, view_name, dialect, sql, column_aliases,
 	) AS tag%s
 FROM {METADATA_CATALOG}.ducklake_view view
 WHERE %s
+ORDER BY view_id ASC, view.begin_snapshot DESC
 )",
 	                                                     ListAggregation(TAG_FIELDS),
 	                                                     LiveRowFilter(row_visibility, "tag", "tag",
@@ -2655,6 +2667,10 @@ WHERE %s
 	for (auto &row : *result) {
 		DuckLakeViewInfo view_info;
 		view_info.id = TableIndex(row.GetValue<uint64_t>(0));
+		if (!views.empty() && views.back().id == view_info.id) {
+			// only the newest live row of a view is loaded
+			continue;
+		}
 		view_info.uuid = row.GetValue<string>(1);
 		view_info.schema_id = SchemaIndex(row.GetValue<uint64_t>(2));
 		view_info.name = row.GetValue<Identifier>(3);
@@ -8709,6 +8725,7 @@ FROM {METADATA_CATALOG}.ducklake_table tbl, LATERAL (
 	WHERE df.table_id = tbl.table_id AND {SNAPSHOT_ID} >= begin_snapshot AND ({SNAPSHOT_ID} < end_snapshot OR end_snapshot IS NULL)
 ) delete_file_info
 WHERE %s
+ORDER BY tbl.table_id ASC, tbl.begin_snapshot DESC
 )",
 	                                       DataFiles(), DeleteFiles(),
 	                                       LiveRowFilter(row_visibility, "tbl", "table",
@@ -8718,6 +8735,10 @@ WHERE %s
 		DuckLakeTableSizeInfo table_size;
 		table_size.schema_id = SchemaIndex(row.GetValue<idx_t>(0));
 		table_size.table_id = TableIndex(row.GetValue<idx_t>(1));
+		if (!table_sizes.empty() && table_sizes.back().table_id == table_size.table_id) {
+			// only the newest live row of a table counts
+			continue;
+		}
 		table_size.table_name = row.GetValue<string>(2);
 		table_size.table_uuid = row.GetValue<string>(3);
 		TryReadValue(row, 4, table_size.file_count);

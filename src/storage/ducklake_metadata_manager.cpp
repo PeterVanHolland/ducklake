@@ -2505,7 +2505,7 @@ SELECT schema_id, tbl.table_id, table_uuid::VARCHAR, table_name,
 		FROM {METADATA_CATALOG}.ducklake_column_tag col_tag
 		WHERE col_tag.table_id=tbl.table_id AND col_tag.column_id=col.column_id AND
 		      %s
-	) AS column_tags, default_value_type
+	) AS column_tags, default_value_type, default_value_dialect
 FROM {METADATA_CATALOG}.ducklake_table tbl
 LEFT JOIN (
 	SELECT *
@@ -2588,6 +2588,11 @@ ORDER BY table_id ASC, parent_column ASC NULLS FIRST, column_order ASC
 		}
 		if (!row.IsNull(COLUMN_INDEX_START + 8)) {
 			column_info.default_value_type = row.GetValue<string>(COLUMN_INDEX_START + 8);
+			column_info.stored_default_type = Value(column_info.default_value_type);
+		}
+		if (!row.IsNull(COLUMN_INDEX_START + 9)) {
+			column_info.default_value_dialect = row.GetValue<string>(COLUMN_INDEX_START + 9);
+			column_info.stored_default_dialect = Value(column_info.default_value_dialect);
 		}
 		column_info.nulls_allowed = row.GetValue<bool>(COLUMN_INDEX_START + 5);
 		if (!row.IsNull(COLUMN_INDEX_START + 7)) {
@@ -4818,6 +4823,19 @@ string DuckLakeMetadataManager::WriteNewSchemas(const vector<DuckLakeSchemaInfo>
 	return InsertValuesSql("ducklake_schema (" + columns + ")", schema_values);
 }
 
+bool DuckLakeMetadataManager::IsDuckDBDialect(const string &dialect) {
+	return dialect.empty() || StringUtil::CIEquals(dialect, "duckdb");
+}
+
+string DuckLakeMetadataManager::NormalizeDefaultExpression(const string &expression) {
+	try {
+		return Parser::GetBuiltinParser().ParseSingleExpression(expression)->ToString();
+	} catch (std::exception &) {
+		// the parser and the transformer reject the text, which stays as it is
+		return expression;
+	}
+}
+
 //! The insert target of the column rows, a 2.0 row carries its birth branch instead of an end
 static string ColumnInsertColumns(bool row_visibility) {
 	if (!row_visibility) {
@@ -4836,9 +4854,14 @@ static void ColumnToSQLRecursive(const DuckLakeColumnInfo &column, TableIndex ta
 
 	string default_val = "'NULL'";
 	string default_val_system = "'duckdb'";
-	string default_val_type = "'" + column.default_value_type + "'";
+	string default_val_type = SQLString::ToString(column.default_value_type);
 
-	if (!column.default_value.IsNull()) {
+	if (column.default_as_stored) {
+		// a default DuckDB cannot evaluate is written back exactly as it was read
+		default_val = DuckLakeUtil::TextLiteralOrNull(column.default_value);
+		default_val_type = DuckLakeUtil::TextLiteralOrNull(column.stored_default_type);
+		default_val_system = DuckLakeUtil::TextLiteralOrNull(column.stored_default_dialect);
+	} else if (!column.default_value.IsNull()) {
 		auto value = column.default_value.GetValue<string>();
 		if (column.default_value_type == "literal" && value == "NULL") {
 			// the text NULL marks a missing default, so this constant is stored as an expression
@@ -4852,7 +4875,7 @@ static void ColumnToSQLRecursive(const DuckLakeColumnInfo &column, TableIndex ta
 				default_val = "''";
 				// LCOV_EXCL_STOP
 			} else {
-				default_val = SQLString::ToString(Parser::GetBuiltinParser().ParseSingleExpression(value)->ToString());
+				default_val = SQLString::ToString(DuckLakeMetadataManager::NormalizeDefaultExpression(value));
 			}
 		} else {
 			// LCOV_EXCL_START

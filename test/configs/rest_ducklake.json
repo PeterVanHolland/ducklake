@@ -358,6 +358,7 @@
         "test/sql/default/add_column_with_default.test",
         "test/sql/default/all_types_column_default_stats.test",
         "test/sql/default/default_expressions.test",
+        "test/sql/default/foreign_default_dialect.test",
         "test/sql/delete/delete_add_files_creates_delete_dir.test",
         "test/sql/delete/delete_file_stats.test",
         "test/sql/delete/delete_legacy_missing_mapping_after_rename_add_files.test",

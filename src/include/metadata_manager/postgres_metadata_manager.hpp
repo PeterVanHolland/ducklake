@@ -49,6 +49,7 @@ public:
 	void MigrateInlinedDataTypes() override;
 	bool IsRetryableCommitError(const string &message) const override;
 	bool ProbeMetadataColumns() override;
+	bool CommitOutcomeUnknown(const string &message) const override;
 	string CommitErrorWithoutQuery(const string &message) const override;
 	string ConfigOptionLockSql() const override;
 	string RowCompanionRenameSql(const string &kind) const override;

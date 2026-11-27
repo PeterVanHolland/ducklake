@@ -371,6 +371,16 @@ optional_idx PostgresMetadataManager::BatchServerErrorStart(const string &messag
 	return batch_end;
 }
 
+bool PostgresMetadataManager::CommitOutcomeUnknown(const string &message) const {
+	// the server rejects a COMMIT with an error, a connection that ends during the COMMIT loses its response
+	const string commit_error = "\"COMMIT\": ";
+	auto error_start = message.find(commit_error);
+	if (error_start == string::npos || IsRetryableCommitError(message)) {
+		return false;
+	}
+	return !StringUtil::StartsWith(message.substr(error_start + commit_error.size()), "ERROR");
+}
+
 string PostgresMetadataManager::CommitErrorWithoutQuery(const string &message) const {
 	auto server_error_start = BatchServerErrorStart(message);
 	return server_error_start.IsValid() ? message.substr(server_error_start.GetIndex()) : message;

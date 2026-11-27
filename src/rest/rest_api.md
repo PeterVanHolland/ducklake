@@ -943,13 +943,18 @@ A delete file written by a client, which replaces the previous delete file of it
 
 ### `DeleteScanEntry`
 
-A data file whose rows were deleted between two snapshots.
+A data file whose rows were deleted between two snapshots, by one of its delete files or entirely.
+
+A data file has an entry for each of its delete files that can hold deletes of the range. An older release could
+leave delete files that hold the same row. Such a row is deleted once, at the earliest snapshot that one of the
+delete files gives it. The rows that `previous_delete_file` held before the range, or before the data file was
+deleted entirely, were deleted before. An entry is repeated with every delete file that was visible then.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `file` | [`FileData`](#filedata) | The data file. |
-| `delete_file` | [`FileData`](#filedata) (optional) | The delete file at the end of the range. |
-| `previous_delete_file` | [`FileData`](#filedata) (optional) | The delete file at the start of the range. |
+| `delete_file` | [`FileData`](#filedata) (optional) | The delete file with the deletes, absent if the data file was deleted entirely or all its deletes are inlined. |
+| `previous_delete_file` | [`FileData`](#filedata) (optional) | A delete file that was visible before the range, or before the data file was deleted entirely. |
 | `record_count` | `uint64` | The number of rows of the data file. |
 | `row_id_start` | `uint64` (optional) | The row id of the first row. |
 | `mapping_id` | `uint64` (optional) | The name map of the file. |
@@ -1050,6 +1055,9 @@ The format of a file.
 ### `FileListEntry`
 
 A data file of a table that is visible in a snapshot, together with its deletes.
+
+A data file that an older release left with several delete files has an entry for each of them. The entries are one
+file, and a row of it is deleted when the delete file of one of the entries deletes it.
 
 | Field | Type | Description |
 |-------|------|-------------|

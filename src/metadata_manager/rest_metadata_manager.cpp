@@ -725,10 +725,14 @@ vector<DuckLakeTableSizeInfo> RESTMetadataManager::GetTableSizes(DuckLakeSnapsho
 		size.table_id = table.id;
 		size.table_name = table.name.GetIdentifierName();
 		size.table_uuid = table.uuid;
+		// a data file with several delete files is listed once for each of them
+		unordered_set<idx_t> files_with_deletes;
 		auto add_files = [&](const vector<DuckLakeFileListExtendedEntry> &files) {
 			for (auto &file : files) {
-				size.file_count++;
-				size.file_size_bytes += file.file.file_size_bytes;
+				if (file.delete_file.path.empty() || files_with_deletes.insert(file.file_id.index).second) {
+					size.file_count++;
+					size.file_size_bytes += file.file.file_size_bytes;
+				}
 				if (!file.delete_file.path.empty()) {
 					size.delete_file_count++;
 					size.delete_file_size_bytes += file.delete_file.file_size_bytes;

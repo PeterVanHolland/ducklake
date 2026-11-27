@@ -1,0 +1,40 @@
+# name: test/sql/delete/several_delete_files_deleted_again_release.test
+# description: The change feed lists a deletion once that two visible delete files of DuckDB 1.5.6 both hold
+# group: [delete]
+
+require ducklake
+
+require parquet
+
+# DuckDB 1.5.6 left the data file with two visible delete files and deleted from it again, the new delete file holds
+# the rows of the one it did not replace
+unzip data/old_ducklake/deleted_again.db.gz {TEST_DIR}/deleted_again.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/deleted_again.db' AS again
+	(DATA_PATH 'data/old_ducklake/deleted_again/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT count(*), count(DISTINCT id) FROM again.t
+----
+75	75
+
+query IIIII
+SELECT snapshot_id, count(*), count(DISTINCT id), min(id), max(id)
+FROM ducklake_table_deletions('again', 'main', 't', 3, 5) GROUP BY ALL ORDER BY ALL
+----
+3	5	5	0	4
+5	20	20	20	39
+
+query IIIII
+SELECT snapshot_id, count(*), count(DISTINCT id), min(id), max(id)
+FROM ducklake_table_deletions('again', 'main', 't', 3, 3) GROUP BY ALL ORDER BY ALL
+----
+3	5	5	0	4
+
+query III
+SELECT snapshot_id, change_type, count(*) FROM ducklake_table_changes('again', 'main', 't', 3, 5)
+GROUP BY ALL ORDER BY ALL
+----
+3	delete	5
+5	delete	20

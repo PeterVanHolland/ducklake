@@ -1,0 +1,276 @@
+# name: test/sql/delete/several_delete_files.test
+# description: Deletes, updates, flushes and rewrites of a data file that has several visible delete files
+# group: [delete]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/several_delete_files', DATA_INLINING_ROW_LIMIT 10)
+
+# both tables get two data files
+foreach tbl t u
+
+statement ok
+CREATE TABLE lake.{tbl} (id INTEGER, v INTEGER)
+
+statement ok
+INSERT INTO lake.{tbl} SELECT i, i FROM range(200) t(i)
+
+statement ok
+INSERT INTO lake.{tbl} SELECT i, i FROM range(1000, 1200) t(i)
+
+endloop
+
+statement ok
+DELETE FROM lake.t WHERE id < 20
+
+statement ok
+DELETE FROM lake.t WHERE id >= 1100
+
+# an older release could leave a data file with two live delete files, here the delete file of the second data file
+# becomes one of the first
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_delete_file SET data_file_id = 0 WHERE data_file_id = 1
+
+query III
+SELECT count(*), count(DISTINCT id), sum(v) FROM lake.t WHERE id < 1000
+----
+80	80	4760
+
+query I
+SELECT count(*) FROM lake.t
+----
+280
+
+query I
+SELECT id FROM lake.t ORDER BY id LIMIT 2
+----
+20
+21
+
+query II
+SELECT count(*), count(DISTINCT id) FROM lake.t AT (VERSION => 7) WHERE id < 1000
+----
+180	180
+
+# a delete writes a delete file that replaces one of the two
+statement ok
+BEGIN
+
+query I
+DELETE FROM lake.t WHERE id BETWEEN 20 AND 34
+----
+15
+
+query I
+DELETE FROM lake.t WHERE id < 20 OR id BETWEEN 100 AND 199
+----
+0
+
+query III
+SELECT count(*), min(id), max(id) FROM lake.t WHERE id < 1000
+----
+65	35	99
+
+query I
+DELETE FROM lake.t WHERE id BETWEEN 35 AND 46
+----
+12
+
+statement ok
+COMMIT
+
+query III
+SELECT count(*), min(id), max(id) FROM lake.t WHERE id < 1000
+----
+53	47	99
+
+query I
+SELECT count(*) FROM lake.t
+----
+253
+
+query II
+SELECT (SELECT count(*) FROM lake.t AT (VERSION => 7) WHERE id < 1000), (SELECT count(*) FROM lake.t AT (VERSION => 8) WHERE id < 1000)
+----
+180	80
+
+query IIII
+SELECT snapshot_id, change_type, count(*), sum(id) FROM ducklake_table_changes('lake', 'main', 't', 9, 9) GROUP BY ALL
+----
+9	delete	27	891
+
+# the deletion of an update of one row is inlined, it is applied next to the delete files and listed once
+statement ok
+UPDATE lake.t SET v = v + 100 WHERE id = 48
+
+query II
+SELECT id, v FROM lake.t WHERE id < 50 ORDER BY id
+----
+47	47
+48	148
+49	49
+
+query III
+SELECT snapshot_id, change_type, v FROM ducklake_table_changes('lake', 'main', 't', 10, 10) ORDER BY ALL
+----
+10	update_postimage	148
+10	update_preimage	48
+
+# a flush in a transaction with a delete replaces the delete file that the delete replaced
+statement ok
+BEGIN
+
+query I
+DELETE FROM lake.t WHERE id BETWEEN 50 AND 69
+----
+20
+
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+statement ok
+COMMIT
+
+query IIII
+SELECT count(*), count(DISTINCT id), sum(v), min(id) FROM lake.t WHERE id < 1000
+----
+33	33	2779	47
+
+query I
+SELECT count(*) FROM lake.t
+----
+233
+
+query III
+SELECT snapshot_id, change_type, v FROM ducklake_table_changes('lake', 'main', 't', 10, 10) ORDER BY ALL
+----
+10	update_postimage	148
+10	update_preimage	48
+
+query IIII
+SELECT snapshot_id, change_type, count(*), sum(id) FROM ducklake_table_changes('lake', 'main', 't', 11, 11) GROUP BY ALL
+----
+11	delete	20	1190
+
+# the rewrite applies every delete file
+query III
+SELECT table_name, files_processed, files_created FROM ducklake_rewrite_data_files('lake', 't', delete_threshold => 0)
+----
+t	1	1
+
+query IIII
+SELECT count(*), count(DISTINCT id), sum(v), min(id) FROM lake.t WHERE id < 1000
+----
+33	33	2779	47
+
+query I
+SELECT count(*) FROM lake.t
+----
+233
+
+query III
+SELECT (SELECT count(*) FROM lake.t AT (VERSION => 7) WHERE id < 1000), (SELECT count(*) FROM lake.t AT (VERSION => 8) WHERE id < 1000), (SELECT count(*) FROM lake.t AT (VERSION => 10) WHERE id < 1000)
+----
+180	80	53
+
+# the delete files of both data files of the other table hold the deletes of two snapshots each
+statement ok
+DELETE FROM lake.u WHERE id >= 1100
+
+statement ok
+DELETE FROM lake.u WHERE id < 20
+
+statement ok
+DELETE FROM lake.u WHERE id BETWEEN 1020 AND 1034
+
+statement ok
+DELETE FROM lake.u WHERE id BETWEEN 35 AND 46
+
+# this time the moved delete file also becomes the last row of the delete files
+statement ok
+CREATE TEMP TABLE moved AS SELECT * REPLACE (2 AS data_file_id) FROM __ducklake_metadata_lake.ducklake_delete_file WHERE data_file_id = 3
+
+statement ok
+DELETE FROM __ducklake_metadata_lake.ducklake_delete_file WHERE data_file_id = 3
+
+statement ok
+INSERT INTO __ducklake_metadata_lake.ducklake_delete_file SELECT * FROM moved
+
+query II
+SELECT count(*), sum(id) FROM lake.u WHERE id < 1000
+----
+53	3869
+
+# each delete file deletes the rows that it had deleted at the version
+query IIII
+SELECT (SELECT count(*) FROM lake.u AT (VERSION => 13) WHERE id < 1000), (SELECT count(*) FROM lake.u AT (VERSION => 14) WHERE id < 1000), (SELECT count(*) FROM lake.u AT (VERSION => 15) WHERE id < 1000), (SELECT count(*) FROM lake.u AT (VERSION => 16) WHERE id < 1000)
+----
+100	80	65	53
+
+query III
+SELECT snapshot_id, change_type, count(*) FROM ducklake_table_changes('lake', 'main', 'u', 13, 16) WHERE id < 1000 GROUP BY ALL ORDER BY ALL
+----
+13	delete	100
+14	delete	20
+15	delete	15
+16	delete	12
+
+statement ok
+DELETE FROM lake.u WHERE id = 47
+
+statement ok
+BEGIN
+
+query I
+DELETE FROM lake.u WHERE id BETWEEN 50 AND 69
+----
+20
+
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+statement ok
+COMMIT
+
+query II
+SELECT count(*), sum(id) FROM lake.u WHERE id < 1000
+----
+32	2632
+
+query I
+SELECT count(*) FROM lake.u
+----
+232
+
+# a data file whose rows are all deleted is rewritten to nothing
+query I
+DELETE FROM lake.u WHERE id < 1000
+----
+32
+
+query I
+SELECT count(*) FROM lake.u
+----
+200
+
+query III
+SELECT table_name, files_processed, files_created FROM ducklake_rewrite_data_files('lake', 'u', delete_threshold => 0)
+----
+u	1	0
+
+query II
+SELECT count(*), min(id) FROM lake.u
+----
+200	1000
+
+query II
+SELECT (SELECT count(*) FROM lake.u AT (VERSION => 14) WHERE id < 1000), (SELECT count(*) FROM lake.u AT (VERSION => 16) WHERE id < 1000)
+----
+80	53

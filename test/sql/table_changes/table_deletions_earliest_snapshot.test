@@ -1,0 +1,68 @@
+# name: test/sql/table_changes/table_deletions_earliest_snapshot.test
+# description: The change feed lists a row at the earliest snapshot that a delete file of its data file gives it
+# group: [table_changes]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
+	(DATA_PATH '{DATA_PATH}/table_deletions_earliest_snapshot', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.t (id INTEGER)
+
+statement ok
+INSERT INTO lake.t SELECT k FROM range(200) t(k)
+
+statement ok
+INSERT INTO lake.t SELECT 1000 + k FROM range(200) t(k)
+
+# the delete file of the first data file gets the rows 20 to 39 at snapshot 6
+statement ok
+DELETE FROM lake.t WHERE id < 20
+
+statement ok
+DELETE FROM lake.t WHERE id BETWEEN 1020 AND 1024
+
+statement ok
+DELETE FROM lake.t WHERE id BETWEEN 20 AND 39
+
+# the flush writes a delete file for the second data file with the rows 20 to 24 at snapshot 5
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+# that delete file becomes one of the first data file, which then has two delete files with the rows 20 to 24
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_delete_file SET data_file_id = 0 WHERE data_file_id = 1
+
+query III
+SELECT count(*), min(id), max(id)
+FROM (SELECT id FROM lake.t AT (VERSION => 4) EXCEPT SELECT id FROM lake.t AT (VERSION => 5))
+----
+5	20	24
+
+query IIII
+SELECT snapshot_id, count(*), min(id), max(id) FROM ducklake_table_deletions('lake', 'main', 't', 5, 5)
+GROUP BY ALL ORDER BY ALL
+----
+5	5	20	24
+
+query IIII
+SELECT snapshot_id, count(*), min(id), max(id) FROM ducklake_table_deletions('lake', 'main', 't', 4, 6)
+GROUP BY ALL ORDER BY ALL
+----
+4	20	0	19
+5	5	20	24
+6	15	25	39
+
+query IIII
+SELECT snapshot_id, count(*), min(id), max(id) FROM ducklake_table_deletions('lake', 'main', 't', 6, 6)
+GROUP BY ALL ORDER BY ALL
+----
+6	15	25	39

@@ -1,0 +1,103 @@
+# name: test/sql/table_changes/table_deletions_shared_deletes.test
+# description: The change feed lists a deletion once that several delete files of a data file hold
+# group: [table_changes]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
+	(DATA_PATH '{DATA_PATH}/table_deletions_shared_deletes', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.t (id INTEGER, v INTEGER)
+
+# three data files with the same rows apart from their offset
+loop i 0 3
+
+statement ok
+INSERT INTO lake.t SELECT {i} * 1000 + k, k FROM range(200) t(k)
+
+endloop
+
+# an inlined deletion, and a delete file for each data file
+statement ok
+DELETE FROM lake.t WHERE id = 150
+
+statement ok
+DELETE FROM lake.t WHERE id < 20
+
+statement ok
+DELETE FROM lake.t WHERE id BETWEEN 1020 AND 1049
+
+statement ok
+DELETE FROM lake.t WHERE id BETWEEN 2000 AND 2059
+
+# an older release could leave delete files that hold the rows of other visible delete files, here the delete files
+# of the other two data files become delete files of the first, and the last one holds the rows of the other two
+statement ok
+UPDATE __ducklake_metadata_lake.ducklake_delete_file SET data_file_id = 0 WHERE data_file_id IN (1, 2)
+
+query II
+SELECT count(*), count(*) FILTER (id < 1000) FROM lake.t
+----
+539	139
+
+query IIII
+SELECT snapshot_id, count(*), min(id), max(id) FROM ducklake_table_deletions('lake', 'main', 't', 5, 8)
+GROUP BY ALL ORDER BY ALL
+----
+5	1	150	150
+6	20	0	19
+7	30	20	49
+8	10	50	59
+
+query IIII
+SELECT snapshot_id, count(*), min(id), max(id) FROM ducklake_table_deletions('lake', 'main', 't', 7, 8)
+GROUP BY ALL ORDER BY ALL
+----
+7	30	20	49
+8	10	50	59
+
+# a flush puts the inlined deletion into the delete file it replaces, which then begins before the other two
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+query IIII
+SELECT snapshot_id, count(*), min(id), max(id) FROM ducklake_table_deletions('lake', 'main', 't', 5, 8)
+GROUP BY ALL ORDER BY ALL
+----
+5	1	150	150
+6	20	0	19
+7	30	20	49
+8	10	50	59
+
+query IIII
+SELECT snapshot_id, count(*), min(id), max(id) FROM ducklake_table_deletions('lake', 'main', 't', 8, 8)
+GROUP BY ALL ORDER BY ALL
+----
+8	10	50	59
+
+# a new delete file holds the rows of the delete file it replaces with their snapshots
+statement ok
+DELETE FROM lake.t WHERE id BETWEEN 60 AND 79
+
+query III
+SELECT snapshot_id, change_type, count(*) FROM ducklake_table_changes('lake', 'main', 't', 5, 10)
+GROUP BY ALL ORDER BY ALL
+----
+5	delete	1
+6	delete	20
+7	delete	30
+8	delete	10
+10	delete	20
+
+query I
+SELECT count(*) FROM lake.t WHERE id < 1000
+----
+119

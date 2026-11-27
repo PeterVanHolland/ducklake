@@ -404,6 +404,9 @@ ReaderInitializeType DuckLakeMultiFileReader::InitializeReader(MultiFileReaderDa
 				// OW, we are guaranteed to be on the latest valid snapshot
 				delete_filter->SetSnapshotFilter(read_info.snapshot.snapshot_id);
 			}
+			if (!file_entry.other_delete_files.empty()) {
+				delete_filter->AddDeleteFiles(context, file_entry.other_delete_files);
+			}
 			reader.deletion_filter = std::move(delete_filter);
 		}
 	} else {

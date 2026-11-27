@@ -964,9 +964,7 @@ CompactionInformation DuckLakeTransactionState::GetCompactionChanges(DuckLakeCom
 			idx_t row_id_limit = 0;
 			for (auto &compacted_file : compaction.source_files) {
 				row_id_limit += compacted_file.file.row_count;
-				if (!compacted_file.delete_files.empty()) {
-					row_id_limit -= compacted_file.delete_files.back().row_count;
-				}
+				row_id_limit -= compacted_file.LiveDeleteCount();
 				row_id_limit -= compacted_file.inlined_file_deletions.size();
 				DuckLakeCompactedFileInfo file_info;
 				file_info.path = compacted_file.file.data.path;

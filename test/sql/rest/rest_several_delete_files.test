@@ -1,0 +1,133 @@
+# name: test/sql/rest/rest_several_delete_files.test
+# description: A REST client reads a data file with several visible delete files once and deletes from it
+# group: [rest]
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.t (id INTEGER, v INTEGER)
+
+statement ok
+INSERT INTO dl.t SELECT i, i FROM range(200) t(i)
+
+statement ok
+INSERT INTO dl.t SELECT i, i FROM range(1000, 1200) t(i)
+
+statement ok
+DELETE FROM dl.t WHERE id >= 1100
+
+statement ok
+DELETE FROM dl.t WHERE id < 20
+
+# an older release could leave a data file with two live delete files, here the delete file of the second data file
+# becomes one of the first, and the last row of the delete files
+statement ok rest_db:rest_server_con
+CREATE TEMP TABLE moved AS SELECT * REPLACE (0 AS data_file_id) FROM __ducklake_metadata_rest_lake.ducklake_delete_file WHERE data_file_id = 1
+
+statement ok rest_db:rest_server_con
+DELETE FROM __ducklake_metadata_rest_lake.ducklake_delete_file WHERE data_file_id = 1
+
+statement ok rest_db:rest_server_con
+INSERT INTO __ducklake_metadata_rest_lake.ducklake_delete_file SELECT * FROM moved
+
+query III
+SELECT count(*), count(DISTINCT id), sum(v) FROM dl.t WHERE id < 1000
+----
+80	80	4760
+
+query I
+SELECT count(*) FROM dl.t
+----
+280
+
+query II
+SELECT count(*), count(DISTINCT id) FROM dl.t AT (VERSION => 4) WHERE id < 1000
+----
+100	100
+
+# the table information counts the data file once
+query IIII
+SELECT file_count, delete_file_count, file_size_bytes = (SELECT sum(data_file_size_bytes) FROM (SELECT DISTINCT data_file, data_file_size_bytes FROM ducklake_list_files('dl', 't'))), delete_file_size_bytes = (SELECT sum(delete_file_size_bytes) FROM ducklake_list_files('dl', 't')) FROM ducklake_table_info('dl') WHERE table_name = 't'
+----
+2	2	true	true
+
+# the server replaces the delete file whose rows the client put into the new one
+statement ok
+BEGIN
+
+query I
+DELETE FROM dl.t WHERE id BETWEEN 20 AND 34
+----
+15
+
+query III
+SELECT count(*), min(id), max(id) FROM dl.t WHERE id < 1000
+----
+65	35	99
+
+query I
+DELETE FROM dl.t WHERE id BETWEEN 35 AND 46
+----
+12
+
+statement ok
+COMMIT
+
+query III
+SELECT count(*), min(id), max(id) FROM dl.t WHERE id < 1000
+----
+53	47	99
+
+query I
+SELECT count(*) FROM dl.t
+----
+253
+
+query II
+SELECT (SELECT count(*) FROM dl.t AT (VERSION => 4) WHERE id < 1000), (SELECT count(*) FROM dl.t AT (VERSION => 5) WHERE id < 1000)
+----
+100	80
+
+query IIII
+SELECT snapshot_id, change_type, count(*), sum(id) FROM ducklake_table_changes('dl', 'main', 't', 6, 6) GROUP BY ALL
+----
+6	delete	27	891
+
+# the deletion of an update of one row is inlined, it is applied next to the delete files and listed once
+statement ok
+UPDATE dl.t SET v = v + 100 WHERE id = 48
+
+query II
+SELECT id, v FROM dl.t WHERE id < 50 ORDER BY id
+----
+47	47
+48	148
+49	49
+
+query III
+SELECT snapshot_id, change_type, v FROM ducklake_table_changes('dl', 'main', 't', 7, 7) ORDER BY ALL
+----
+7	update_postimage	148
+7	update_preimage	48
+
+# the server applies every delete file in its rewrite
+statement ok
+CALL ducklake_rewrite_data_files('dl', 't', delete_threshold => 0)
+
+query IIII
+SELECT count(*), count(DISTINCT id), sum(v), min(id) FROM dl.t WHERE id < 1000
+----
+53	53	3969	47
+
+query I
+SELECT count(*) FROM dl.t
+----
+253
+
+statement ok
+DETACH dl
+
+include test/template/rest_teardown.test_template

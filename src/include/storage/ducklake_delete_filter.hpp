@@ -30,8 +30,6 @@ struct DuckLakeDeleteData {
 struct DeleteFileScanResult {
 	vector<idx_t> deleted_rows;
 	vector<idx_t> snapshot_ids;
-	//! Whether the delete file has embedded snapshot_id column
-	bool has_embedded_snapshots = false;
 };
 
 class DuckLakeDeleteFilter : public DeleteFilter {
@@ -45,6 +43,8 @@ public:
 	idx_t Filter(row_t start_row_index, idx_t count, SelectionVector &result_sel) override;
 	void Initialize(ClientContext &context, const DuckLakeFileData &delete_file);
 	void Initialize(const DuckLakeInlinedDataDeletes &inlined_deletes);
+	//! Adds the rows that further delete files of the data file delete at the snapshot filter
+	void AddDeleteFiles(ClientContext &context, const vector<DuckLakeFileData> &delete_files);
 	void Initialize(ClientContext &context, const DuckLakeDeleteScanEntry &delete_scan);
 	void SetSnapshotFilter(idx_t snapshot_filter);
 

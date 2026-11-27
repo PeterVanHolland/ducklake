@@ -1,0 +1,65 @@
+# name: test/sql/rest/rest_several_delete_files_partitioned.test
+# description: The scan of a partitioned table lists the partition values of a data file with each of its delete files
+# group: [rest]
+
+require json
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.p (part INTEGER, id INTEGER)
+
+statement ok
+ALTER TABLE dl.p SET PARTITIONED BY (part)
+
+statement ok
+INSERT INTO dl.p SELECT 1, i FROM range(200) t(i)
+
+statement ok
+INSERT INTO dl.p SELECT 2, i FROM range(1000, 1200) t(i)
+
+statement ok
+DELETE FROM dl.p WHERE id >= 1100
+
+statement ok
+DELETE FROM dl.p WHERE id < 20
+
+# an older release could leave a data file with two live delete files, here the delete file of the second data file
+# becomes one of the first
+statement ok rest_db:rest_server_con
+UPDATE __ducklake_metadata_rest_lake.ducklake_delete_file SET data_file_id = 0 WHERE data_file_id = 1
+
+# the first data file is listed once for each of its delete files
+query III
+SELECT count(*), count(DISTINCT file.path), count(*) FILTER (len(partition_values) = 1)
+FROM ducklake_rest_rows('{rest_server}', 'POST', '/v1/tables/1/scan', '{}', part := 'files')
+----
+3	2	3
+
+query II
+SELECT part, count(*) FROM dl.p GROUP BY ALL ORDER BY ALL
+----
+1	80
+2	200
+
+query I
+SELECT count(*) FROM dl.p WHERE part = 1 AND id BETWEEN 20 AND 99
+----
+80
+
+# a delete of every row ends the data files, the rows that the delete files had deleted before are not deleted again
+statement ok
+DELETE FROM dl.p
+
+query IIII
+SELECT change_type, count(*), min(id), max(id) FROM ducklake_table_changes('dl', 'main', 'p', 7, 7) GROUP BY ALL
+----
+delete	280	20	1199
+
+statement ok
+DETACH dl
+
+include test/template/rest_teardown.test_template

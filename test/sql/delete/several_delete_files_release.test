@@ -1,0 +1,163 @@
+# name: test/sql/delete/several_delete_files_release.test
+# description: A data file that DuckDB 1.5.6 left with several visible delete files is read once
+# group: [delete]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.6: two deletes, ducklake_rewrite_data_files and then ducklake_flush_inlined_data, which gave
+# the rewritten data file a second delete file that is visible at version 4
+unzip data/old_ducklake/flushed_after_rewrite.db.gz {TEST_DIR}/flushed_after_rewrite.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/flushed_after_rewrite.db' AS rewritten (DATA_PATH 'data/old_ducklake/flushed_after_rewrite/', OVERRIDE_DATA_PATH TRUE, READ_ONLY)
+
+query II
+SELECT count(*), count(DISTINCT id) FROM rewritten.t AT (VERSION => 4)
+----
+899	899
+
+query I
+SELECT count(*) FROM rewritten.t AT (VERSION => 4) WHERE id < 100 OR id = 500
+----
+0
+
+query II
+SELECT count(*), count(DISTINCT id) FROM rewritten.t AT (VERSION => 3)
+----
+900	900
+
+query II
+SELECT count(*), count(DISTINCT id) FROM rewritten.t
+----
+899	899
+
+statement ok
+DETACH rewritten
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/flushed_after_rewrite.db' AS rewritten (DATA_PATH 'data/old_ducklake/flushed_after_rewrite/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT count(*), count(DISTINCT id) FROM rewritten.t AT (VERSION => 4)
+----
+899	899
+
+query I
+SELECT count(*) FROM (SELECT id FROM rewritten.t AT (VERSION => 4) EXCEPT SELECT id FROM rewritten.t AT (VERSION => 3))
+----
+0
+
+query II
+SELECT count(*), count(DISTINCT id) FROM rewritten.t AT (VERSION => 3)
+----
+900	900
+
+query II
+SELECT count(*), count(DISTINCT id) FROM rewritten.t
+----
+899	899
+
+query III
+SELECT snapshot_id, change_type, id FROM ducklake_table_changes('rewritten', 'main', 't', 4, 5)
+----
+4	delete	500
+
+# written by DuckDB 1.5.6: a transaction with a DELETE and ducklake_flush_inlined_data left the live data file with
+# two live delete files
+unzip data/old_ducklake/deleted_and_flushed.db.gz {TEST_DIR}/deleted_and_flushed.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/deleted_and_flushed.db' AS flushed (DATA_PATH 'data/old_ducklake/deleted_and_flushed/', OVERRIDE_DATA_PATH TRUE, READ_ONLY)
+
+query III
+SELECT count(*), count(DISTINCT id), sum(v) FROM flushed.t
+----
+4	4	26
+
+query II
+SELECT count(*), count(DISTINCT id) FROM flushed.t AT (VERSION => 3)
+----
+15	15
+
+statement ok
+DETACH flushed
+
+# a delete of a few rows is inlined, so nothing is written next to the files of the fixture
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/deleted_and_flushed.db' AS flushed (DATA_PATH 'data/old_ducklake/deleted_and_flushed/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+query I
+SELECT id FROM flushed.t ORDER BY id
+----
+5
+6
+7
+8
+
+query I
+SELECT count(*) FROM flushed.t WHERE id = 0
+----
+0
+
+query I
+SELECT id FROM flushed.t ORDER BY id DESC LIMIT 2
+----
+8
+7
+
+query III
+SELECT (SELECT count(*) FROM flushed.t AT (VERSION => 2)), (SELECT count(*) FROM flushed.t AT (VERSION => 3)), sum(v) FROM flushed.t
+----
+20	15	26
+
+query III
+SELECT snapshot_id, change_type, count(*) FROM ducklake_table_changes('flushed', 'main', 't', 3, 4) GROUP BY ALL ORDER BY ALL
+----
+3	delete	5
+4	delete	11
+
+statement ok
+BEGIN
+
+query I
+DELETE FROM flushed.t WHERE id = 0
+----
+0
+
+query I
+DELETE FROM flushed.t WHERE id = 7
+----
+1
+
+query I
+SELECT id FROM flushed.t ORDER BY id
+----
+5
+6
+8
+
+statement ok
+COMMIT
+
+query III
+SELECT count(*), count(DISTINCT id), sum(v) FROM flushed.t
+----
+3	3	19
+
+query II
+SELECT count(*), count(DISTINCT id) FROM flushed.t AT (VERSION => 4)
+----
+4	4
+
+# the inlined deletion is listed once, not once for each delete file
+query III
+SELECT snapshot_id, change_type, id FROM ducklake_table_changes('flushed', 'main', 't', 5, 5)
+----
+5	delete	7
+
+query I
+SELECT count(*) FROM glob('data/old_ducklake/deleted_and_flushed/main/t/*')
+----
+3

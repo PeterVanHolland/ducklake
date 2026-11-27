@@ -257,6 +257,10 @@
     {
       "reason": "Reads the metadata catalog of the DuckLake or configures it with attach options, but the REST server (in a database of its own) attaches the catalog and creates the DuckLake",
       "paths": [
+        "test/sql/delete/several_delete_files.test",
+        "test/sql/delete/several_delete_files_removed.test",
+        "test/sql/table_changes/table_deletions_shared_deletes.test",
+        "test/sql/table_changes/table_deletions_earliest_snapshot.test",
         "test/sql/remove_files/remove_data_files_stats.test",
         "test/sql/data_inlining/inlined_companion_layout.test",
         "test/sql/data_inlining/inlined_shared_visibility_layout.test",

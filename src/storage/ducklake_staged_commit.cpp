@@ -416,7 +416,7 @@ string DuckLakeStagedCommit::EmitCompactions(const LocalTableChanges &local_chan
 					auto &last = source.delete_files.back();
 					last_id = std::to_string(last.delete_file_id.index);
 					last_path = SQLString::ToString(last.data.path);
-					last_row_count = std::to_string(last.row_count);
+					last_row_count = std::to_string(source.LiveDeleteCount());
 					last_end_snap = DuckLakeUtil::OptionalIdxOrNull(last.end_snapshot);
 				}
 				sql += StringUtil::Format(

@@ -585,6 +585,73 @@ static void SetDeleteBeginSnapshot(DuckLakeFileListExtendedEntry &entry, optiona
 	entry.delete_file_begin_snapshot = begin_snapshot;
 }
 
+static void MergeDeleteFile(DuckLakeFileListEntry &entry, DuckLakeFileListEntry &other) {
+	if (entry.delete_file.path < other.delete_file.path) {
+		std::swap(entry.delete_file, other.delete_file);
+	}
+	entry.other_delete_files.push_back(std::move(other.delete_file));
+	entry.inlined_file_deletions.insert(other.inlined_file_deletions.begin(), other.inlined_file_deletions.end());
+}
+
+static void MergeDeleteFile(DuckLakeFileListExtendedEntry &entry, DuckLakeFileListExtendedEntry &other) {
+	if (entry.delete_file.path < other.delete_file.path) {
+		entry = std::move(other);
+	}
+}
+
+template <class FILE_DATA>
+static bool HasFile(const vector<FILE_DATA> &files, const DuckLakeFileData &file) {
+	return std::any_of(files.begin(), files.end(), [&](const FILE_DATA &other) { return other.path == file.path; });
+}
+
+static void MergeDeleteFile(DuckLakeDeleteScanEntry &scan, DuckLakeDeleteScanEntry &other) {
+	if (other.delete_file.path != scan.delete_file.path && !HasFile(scan.other_delete_files, other.delete_file)) {
+		scan.other_delete_files.emplace_back(std::move(other.delete_file), other.snapshot_id.GetIndex());
+	}
+	auto &previous_delete_file = other.previous_delete_file;
+	if (previous_delete_file.path != scan.previous_delete_file.path &&
+	    !HasFile(scan.other_previous_delete_files, previous_delete_file)) {
+		scan.other_previous_delete_files.push_back(std::move(previous_delete_file));
+	}
+	scan.inlined_file_deletions.insert(other.inlined_file_deletions.begin(), other.inlined_file_deletions.end());
+}
+
+template <class ENTRY>
+static bool IsListedPerDeleteFile(const ENTRY &entry, idx_t &file_key) {
+	file_key = entry.file_id.index;
+	return !entry.delete_file.path.empty();
+}
+
+static bool IsListedPerDeleteFile(const DuckLakeDeleteScanEntry &scan, idx_t &file_key) {
+	// the end of a data file is a scan of its own
+	file_key = 2 * scan.file_id.index + scan.file_deleted;
+	return !scan.delete_file.path.empty() || !scan.previous_delete_file.path.empty();
+}
+
+//! Merges the entries of a data file, an older release could leave a data file with several visible delete files.
+//! A file list keeps the delete file with the highest path, which is the one a new delete file replaces
+template <class ENTRY>
+static void MergeDeleteFiles(vector<ENTRY> &entries) {
+	unordered_map<idx_t, idx_t> file_positions;
+	idx_t entry_count = 0;
+	for (idx_t entry_idx = 0; entry_idx < entries.size(); entry_idx++) {
+		auto &entry = entries[entry_idx];
+		idx_t file_key;
+		if (IsListedPerDeleteFile(entry, file_key)) {
+			auto position = file_positions.emplace(file_key, entry_count);
+			if (!position.second) {
+				MergeDeleteFile(entries[position.first->second], entry);
+				continue;
+			}
+		}
+		if (entry_count != entry_idx) {
+			entries[entry_count] = std::move(entry);
+		}
+		entry_count++;
+	}
+	entries.resize(entry_count);
+}
+
 template <class ENTRY>
 static void ApplyLocalFileChanges(DuckLakeTransaction &transaction, TableIndex table_id, vector<ENTRY> &entries) {
 	if (transaction.HasDroppedFiles()) {
@@ -623,6 +690,7 @@ vector<DuckLakeFileListExtendedEntry> DuckLakeMultiFileList::GetFilesExtended() 
 		result = metadata_manager.GetExtendedFilesForTable(
 		    read_info.table, read_info.snapshot, filter_info.get(),
 		    has_projection ? optional_ptr<const vector<DuckLakeProjectedColumn>>(projection) : nullptr);
+		MergeDeleteFiles(result);
 	}
 	ApplyLocalFileChanges(transaction, read_info.table_id, result);
 	idx_t transaction_row_start = DuckLakeConstants::TRANSACTION_LOCAL_ROW_ID_START;
@@ -753,6 +821,7 @@ void DuckLakeMultiFileList::GetFilesForTable() const {
 	identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>> inlined_rows;
 	if (!IsTransactionLocal(read_info.table_id)) {
 		files = ReadCommittedFiles(transaction, inlined_rows);
+		MergeDeleteFiles(files);
 	}
 	if (read_info.include_local_changes) {
 		ApplyLocalChanges(transaction);
@@ -808,6 +877,7 @@ void DuckLakeMultiFileList::GetTableDeletions() const {
 	delete_scans = metadata_manager.GetTableDeletions(
 	    read_info.table, *read_info.start_snapshot, read_info.snapshot, read_info.include_local_changes,
 	    has_projection ? optional_ptr<const vector<DuckLakeProjectedColumn>>(projection) : nullptr);
+	MergeDeleteFiles(delete_scans);
 	for (auto &file : delete_scans) {
 		DuckLakeFileListEntry file_entry;
 		file_entry.file = file.file;

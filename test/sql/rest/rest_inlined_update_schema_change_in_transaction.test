@@ -1,0 +1,102 @@
+# name: test/sql/rest/rest_inlined_update_schema_change_in_transaction.test
+# description: A REST transaction that adds a column and updates inlined rows of two schema versions reads each row once
+# group: [rest]
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.t(id INTEGER, s VARCHAR)
+
+# the sort order gives the rows row ids that do not follow their insertion order
+statement ok
+ALTER TABLE dl.t SET SORTED BY (id DESC)
+
+statement ok
+INSERT INTO dl.t VALUES (14, 'a'), (43, 'b')
+
+statement ok
+INSERT INTO dl.t VALUES (38, 'c')
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN a INTEGER DEFAULT 7
+
+statement ok
+INSERT INTO dl.t (id) VALUES (78)
+
+statement ok
+UPDATE dl.t SET a = a + 1 WHERE id > 33
+
+statement ok
+COMMIT
+
+query III
+SELECT id, s, a FROM dl.t ORDER BY id
+----
+14	a	7
+38	c	8
+43	b	8
+78	NULL	8
+
+statement ok
+INSERT INTO dl.t (id) VALUES (36)
+
+# the rows now sit in two inlined data tables, one per schema version
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN b INTEGER DEFAULT 2
+
+statement ok
+INSERT INTO dl.t (id) VALUES (88)
+
+statement ok
+UPDATE dl.t SET b = b + 1 WHERE id > 8
+
+query IIII
+SELECT id, s, a, b FROM dl.t ORDER BY id
+----
+14	a	7	3
+36	NULL	7	3
+38	c	8	3
+43	b	8	3
+78	NULL	8	3
+88	NULL	7	3
+
+statement ok
+CREATE TABLE dl.t4 AS SELECT * FROM dl.t
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM dl.t4
+----
+6
+
+query IIII
+SELECT id, s, a, b FROM dl.t ORDER BY id
+----
+14	a	7	3
+36	NULL	7	3
+38	c	8	3
+43	b	8	3
+78	NULL	8	3
+88	NULL	7	3
+
+# the server reads the same rows from its catalog
+query II rest_db:rest_server_con
+SELECT count(*), sum(b) FROM rest_lake.t4
+----
+6	18
+
+statement ok
+DETACH dl
+
+include test/template/rest_teardown.test_template

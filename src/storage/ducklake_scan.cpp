@@ -235,13 +235,25 @@ vector<PartitionStatistics> DuckLakeGetPartitionStats(ClientContext &context, Ge
 	return result;
 }
 
+//! The bind of a ducklake_scan constructed while the parquet extension was not loaded
+static unique_ptr<FunctionData> BindDuckLakeScanWithoutParquet(ClientContext &, TableFunctionBindInput &input,
+                                                               vector<LogicalType> &, vector<Identifier> &) {
+	if (!input.table_function.function_info) {
+		throw InvalidInputException("Cannot call function %s directly - it only scans DuckLake tables",
+		                            input.table_function.GetName());
+	}
+	throw MissingExtensionException(
+	    "Could not load the scan function for parquet. Try explicitly loading the parquet extension");
+}
+
 TableFunction DuckLakeFunctions::GetDuckLakeScanFunction(DatabaseInstance &instance) {
 	// The ducklake_scan function is constructed by grabbing the parquet scan from the Catalog, then injecting the
 	// DuckLakeMultiFileReader into it to create a DuckLake-based multi file read
+	// without parquet (LOAD ducklake may run before it is loaded) the bind reports the missing extension
 	ExtensionHelper::TryAutoLoadExtension(instance, "parquet");
 	ExtensionLoader loader(instance, "ducklake");
 
-	TableFunction function("ducklake_scan", {LogicalType::VARCHAR}, nullptr, nullptr);
+	TableFunction function("ducklake_scan", {LogicalType::VARCHAR}, nullptr, BindDuckLakeScanWithoutParquet);
 	auto parquet_entry = loader.TryGetTableFunction("parquet_scan");
 	if (parquet_entry) {
 		auto &parquet_scan = parquet_entry->Cast<TableFunctionCatalogEntry>();
@@ -343,12 +355,9 @@ unique_ptr<FunctionData> DuckLakeScanDeserialize(Deserializer &deserializer, Bou
 	}
 	auto include_local_changes = deserializer.ReadPropertyWithExplicitDefault<bool>(108, "include_local_changes", true);
 
-	// If ducklake_scan was registered before parquet was loaded, we set it now
-	if (!function.bind) {
+	// If ducklake_scan was registered before parquet was loaded, it has no scan and we set it now
+	if (!function.function) {
 		function = BoundTableFunction(DuckLakeFunctions::GetDuckLakeScanFunction(*context.db));
-		if (!function.bind) {
-			throw InvalidInputException("ducklake_scan requires the parquet extension to be loaded");
-		}
 	}
 
 	// Look up the DuckLake catalog and table

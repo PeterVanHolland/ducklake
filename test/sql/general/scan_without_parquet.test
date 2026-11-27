@@ -1,0 +1,58 @@
+# name: test/sql/general/scan_without_parquet.test
+# description: a scan of a DuckLake table without the parquet extension is an error, not a crash
+# group: [general]
+
+require parquet
+
+require ducklake
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/scan_without_parquet.db' AS lake (DATA_PATH '{TEST_DIR}/scan_without_parquet', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t AS SELECT range AS i FROM range(10)
+
+# the restart loads no extension, then only ducklake is loaded again
+restart no_extension_load
+
+require ducklake
+
+# an autoload would bring parquet back for the scan
+statement ok
+SET autoload_known_extensions = false
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/scan_without_parquet.db' AS lake (DATA_PATH '{TEST_DIR}/scan_without_parquet')
+
+statement error
+SELECT count(*) FROM lake.t
+----
+Missing Extension Error: Could not load the scan function for parquet. Try explicitly loading the parquet extension
+
+# the metadata is read without parquet
+query I
+SELECT count(*) FROM lake.snapshots()
+----
+2
+
+# ducklake_scan was registered without parquet, a direct call is still refused for what it is
+statement error
+SELECT * FROM ducklake_scan('x')
+----
+directly - it only scans DuckLake tables
+
+# with parquet loaded again the data file is read: the requirement loads a loadable build, LOAD an autoloaded one
+require parquet
+
+statement ok
+LOAD parquet
+
+query I
+SELECT sum(i) FROM lake.t
+----
+45
+
+statement error
+SELECT * FROM ducklake_scan('x')
+----
+directly - it only scans DuckLake tables

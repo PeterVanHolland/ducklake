@@ -1,0 +1,44 @@
+# name: test/sql/add_files/add_files_cached_path_reused.test
+# description: The scan of an added file does not return the cached blocks of another file that had its path
+# group: [add_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+# keeps local files in the external file cache, as remote files are by default
+statement ok
+SET cache_local_files = true
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/add_files_cached_path_reused')
+
+statement ok
+COPY (SELECT 2 AS id, 'new' AS v) TO '{DATA_PATH}/add_files_cached_path_reused.parquet'
+
+statement ok
+CREATE TABLE lake.t (id INTEGER, v VARCHAR)
+
+statement ok
+CALL ducklake_add_data_files('lake', 't', '{DATA_PATH}/add_files_cached_path_reused.parquet')
+
+# the path holds another file for a while, which this process reads and caches
+statement ok
+COPY (SELECT 1 AS id, 'old' AS v) TO '{DATA_PATH}/add_files_cached_path_reused.parquet'
+
+query IT
+FROM '{DATA_PATH}/add_files_cached_path_reused.parquet'
+----
+1	old
+
+statement ok
+COPY (SELECT 2 AS id, 'new' AS v) TO '{DATA_PATH}/add_files_cached_path_reused.parquet'
+
+query IT
+FROM lake.t
+----
+2	new

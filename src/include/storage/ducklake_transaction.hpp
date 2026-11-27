@@ -142,6 +142,8 @@ public:
 	set<TableIndex> GetCompactedTables() const;
 	bool HasLocalDeletes(TableIndex table_id) const;
 	bool HasLocalDeleteForFile(TableIndex table_id, const string &path) const;
+	//! The committed data files that the transaction wrote delete files for
+	set<DataFileIndex> GetFilesWithLocalDeletes() const;
 	bool HasAnyLocalChanges(TableIndex table_id) const;
 
 	//! The latest delete file the transaction wrote for a committed data file

@@ -64,12 +64,17 @@ bool LocalTableDataChanges::IsEmpty() const {
 }
 
 template <class TABLE_CHANGES, class FUNC>
-static void ForEachDeleteFile(TABLE_CHANGES &table_changes, FUNC &&callback) {
+static void ForEachCommittedFileDelete(TABLE_CHANGES &table_changes, FUNC &&callback) {
 	for (auto &file_entry : table_changes.new_delete_files) {
 		for (auto &file : file_entry.second) {
 			callback(file);
 		}
 	}
+}
+
+template <class TABLE_CHANGES, class FUNC>
+static void ForEachDeleteFile(TABLE_CHANGES &table_changes, FUNC &&callback) {
+	ForEachCommittedFileDelete(table_changes, callback);
 	for (auto &data_file : table_changes.new_data_files) {
 		for (auto &file : data_file.delete_files) {
 			callback(file);
@@ -625,6 +630,16 @@ bool LocalTableChanges::HasLocalDeletes(TableIndex table_id) const {
 	lock_guard<mutex> guard(lock);
 	auto table_changes = Find(table_id);
 	return table_changes && !table_changes->new_delete_files.empty();
+}
+
+set<DataFileIndex> LocalTableChanges::GetFilesWithLocalDeletes() const {
+	lock_guard<mutex> guard(lock);
+	set<DataFileIndex> result;
+	for (auto &entry : changes) {
+		ForEachCommittedFileDelete(entry.second,
+		                           [&](const DuckLakeDeleteFile &file) { result.insert(file.data_file_id); });
+	}
+	return result;
 }
 
 bool LocalTableChanges::HasAnyLocalChanges(TableIndex table_id) const {
@@ -1689,7 +1704,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 				committed_expiry = expired;
 				return;
 			}
-			metadata_manager->CleanupExpiredSnapshots(expired);
+			metadata_manager->CleanupExpiredSnapshots(expired, set<DataFileIndex>());
 		};
 		context.only_expires_snapshots = !ChangesMadeBesidesExpiry();
 	}
@@ -1942,7 +1957,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 	state->Commit(transaction_snapshot, transaction_changes, retry_config, context);
 	if (!committed_expiry.empty()) {
 		try {
-			metadata_manager->CleanupExpiredSnapshots(committed_expiry);
+			metadata_manager->CleanupExpiredSnapshots(committed_expiry, set<DataFileIndex>());
 		} catch (std::exception &ex) {
 			ReportPostCommitError(ErrorData(ex).Message());
 		}

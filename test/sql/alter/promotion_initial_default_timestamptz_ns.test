@@ -1,0 +1,42 @@
+# name: test/sql/alter/promotion_initial_default_timestamptz_ns.test
+# description: promoting an added DATE column to TIMESTAMPTZ_NS reads the stored dates and the initial default alike
+# group: [alter]
+
+require ducklake
+
+require parquet
+
+require icu
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS l (DATA_PATH '{DATA_PATH}/promotion_initial_default_timestamptz_ns')
+
+statement ok
+SET TimeZone = 'America/Los_Angeles'
+
+# the session has no cast from DATE to TIMESTAMPTZ_NS, so the stored dates and the default are both read in UTC
+statement ok
+CREATE TABLE l.n(id INTEGER)
+
+statement ok
+INSERT INTO l.n VALUES (1)
+
+statement ok
+ALTER TABLE l.n ADD COLUMN d DATE DEFAULT DATE '2024-01-01'
+
+statement ok
+INSERT INTO l.n(id) VALUES (2)
+
+statement ok
+ALTER TABLE l.n ALTER COLUMN d TYPE TIMESTAMPTZ_NS
+
+query II
+SELECT id, d = TIMESTAMPTZ_NS '2024-01-01 00:00:00+00' FROM l.n ORDER BY id
+----
+1	true
+2	true
+

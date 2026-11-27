@@ -301,6 +301,14 @@ bool DuckLakeFunctionInfo::CanUseGlobalStats() {
 	       !active_transaction->GetCatalog().CatalogSnapshot();
 }
 
+bool DuckLakeFunctionInfo::CanHaveNaN() {
+	// the statistics of the table only describe the files of its latest snapshot
+	if (!include_local_changes || !CanUseGlobalStats()) {
+		return true;
+	}
+	return table.CanHaveNaN(*GetTransaction());
+}
+
 void DuckLakeScanSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
                            const BoundTableFunction &function) {
 	auto &func_info = function.function_info->Cast<DuckLakeFunctionInfo>();

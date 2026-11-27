@@ -1,0 +1,137 @@
+# name: test/sql/add_files/add_files_nan_filter.test
+# description: Filters find the NaN values of a file of another writer, which its bounds leave out
+# group: [add_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/add_files_nan_filter.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/add_files_nan_filter')
+
+statement ok
+CREATE TABLE dl.t (f FLOAT, d DOUBLE)
+
+statement ok
+INSERT INTO dl.t VALUES (5, 5), (6, 6)
+
+statement ok
+BEGIN
+
+# written by Arrow with the bounds -1 and 1 and without a NaN count
+statement ok
+CALL ducklake_add_data_files('dl', 't', 'duckdb/data/parquet-testing/arrow_nan.parquet')
+
+query II
+SELECT f, d FROM dl.t WHERE d > 100
+----
+nan	nan
+
+statement ok
+COMMIT
+
+statement ok
+SET VARIABLE added = (SELECT max(snapshot_id) FROM ducklake_snapshots('dl'))
+
+query II
+SELECT f, d FROM dl.t WHERE d > 100
+----
+nan	nan
+
+query II
+SELECT f, d FROM dl.t WHERE f = 'nan'::FLOAT
+----
+nan	nan
+
+query II
+SELECT f, d FROM dl.t WHERE isnan(d)
+----
+nan	nan
+
+# without the added file the statistics of the table rule NaN out again
+query I
+DELETE FROM dl.t WHERE d < 2 OR d > 100
+----
+3
+
+query I
+SELECT stats(d) FROM dl.t LIMIT 1
+----
+{'has_no_null': true, 'has_null': false, 'max': 6.0, 'min': 5.0}
+
+statement ok
+SET VARIABLE dropped = (SELECT max(snapshot_id) FROM ducklake_snapshots('dl'))
+
+# older snapshots still read the added file
+query II
+SELECT f, d FROM dl.t AT (VERSION => getvariable('added')) WHERE d > 100
+----
+nan	nan
+
+query II
+SELECT f, d FROM ducklake_table_insertions('dl', 'main', 't', getvariable('added'), getvariable('dropped'))
+WHERE d > 100
+----
+nan	nan
+
+statement ok
+DETACH dl
+
+# so does a catalog that is pinned to the snapshot of the added file
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+(DATA_PATH '{DATA_PATH}/add_files_nan_filter', SNAPSHOT_VERSION getvariable('added'))
+
+query II
+SELECT f, d FROM dl.t WHERE d > 100
+----
+nan	nan
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/add_files_nan_filter')
+
+statement ok
+CALL ducklake_add_data_files('dl', 't', 'duckdb/data/parquet-testing/arrow_nan.parquet')
+
+query I
+UPDATE dl.t SET d = 7 WHERE d > 100
+----
+1
+
+query II
+SELECT f, d FROM dl.t ORDER BY ALL
+----
+-1.0	-1.0
+1.0	1.0
+5.0	5.0
+6.0	6.0
+nan	7.0
+
+# NaN values in nested columns
+statement ok
+CREATE TABLE dl.n (id INTEGER, s STRUCT(x DOUBLE), l FLOAT[])
+
+statement ok
+CALL ducklake_add_data_files('dl', 'n', 'data/parquet/nested_nan.parquet')
+
+query I
+SELECT id FROM dl.n WHERE s.x > 100
+----
+3
+
+query I
+SELECT id FROM dl.n WHERE l[1] > 100
+----
+3
+
+query I
+DELETE FROM dl.n WHERE s.x > 100
+----
+1

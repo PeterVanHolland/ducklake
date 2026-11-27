@@ -154,9 +154,7 @@ SinkFinalizeType DuckLakeCompaction::Finalize(Pipeline &pipeline, Event &event, 
 		idx_t rows_to_write = 0;
 		for (auto &source : source_files) {
 			rows_to_write += source.file.row_count;
-			if (!source.delete_files.empty()) {
-				rows_to_write -= source.delete_files.back().row_count;
-			}
+			rows_to_write -= source.LiveDeleteCount();
 			rows_to_write -= source.inlined_file_deletions.size();
 		}
 		if (rows_to_write != 0) {
@@ -678,6 +676,9 @@ DuckLakeCompactor::GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry>
 					// LCOV_EXCL_STOP
 				}
 				result.delete_file = source.delete_files.back().data;
+				for (idx_t delete_idx = 0; delete_idx + 1 < source.delete_files.size(); delete_idx++) {
+					result.other_delete_files.push_back(source.delete_files[delete_idx].data);
+				}
 			}
 			break;
 		}

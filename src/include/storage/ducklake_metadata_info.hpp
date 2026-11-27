@@ -437,6 +437,8 @@ struct DuckLakeFileListEntry {
 	optional_idx data_file_id;
 	DuckLakeFileData file;
 	DuckLakeFileData delete_file;
+	//! The other visible delete files of the data file, an older release could leave it with several
+	vector<DuckLakeFileData> other_delete_files;
 	optional_idx row_id_start;
 	optional_idx snapshot_id;
 	//! Upper bound filter, we only include rows where _ducklake_internal_snapshot_id <= snapshot_filter
@@ -551,6 +553,17 @@ struct DuckLakeCompactionFileEntry {
 	//! Whether this file has any inlined deletions (cheap flag; set for all compaction types).
 	bool has_inlined_deletions = false;
 	double delete_ratio = 0;
+
+	//! The number of rows that the live delete files of the file delete
+	idx_t LiveDeleteCount() const {
+		idx_t result = 0;
+		for (auto &delete_file : delete_files) {
+			if (!delete_file.end_snapshot.IsValid()) {
+				result += delete_file.row_count;
+			}
+		}
+		return result;
+	}
 };
 
 struct DuckLakeCompactionEntry {

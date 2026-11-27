@@ -55,10 +55,16 @@ string DuckLakeInitializer::GetAttachOptions() {
 	// every schema in the database on attach, which is very slow on large or multi-tenant catalogs.
 	// only done when the user explicitly set METADATA_SCHEMA - the default schema is not known until after attach.
 	// an explicit META_SCHEMA (or metadata_parameters 'schema') takes precedence over this.
-	bool is_postgres = metadata_type == "postgres" || metadata_type == "postgres_scanner";
+	bool is_postgres =
+	    StringUtil::CIEquals(metadata_type, "postgres") || StringUtil::CIEquals(metadata_type, "postgres_scanner");
 	bool user_set_schema = options.metadata_parameters.find("schema") != options.metadata_parameters.end();
 	if (is_postgres && !user_set_schema && !options.metadata_schema.empty()) {
 		attach_options.push_back("SCHEMA " + SQLString::ToString(options.metadata_schema.GetIdentifierName()));
+	}
+	// the scanner then introspects the metadata tables as they are used, not every table of the schema at once
+	bool user_set_lazy_load = options.metadata_parameters.find("lazy_load") != options.metadata_parameters.end();
+	if (is_postgres && !user_set_lazy_load && catalog.LazyMetadataLoad()) {
+		attach_options.push_back("lazy_load true");
 	}
 	if (options.hide_metadata_catalog) {
 		attach_options.push_back("HIDDEN true");
@@ -68,6 +74,10 @@ string DuckLakeInitializer::GetAttachOptions() {
 		return string();
 	}
 	return " (" + StringUtil::Join(attach_options, ", ") + ")";
+}
+
+string DuckLakeInitializer::GetAttachQuery() {
+	return "ATTACH OR REPLACE {METADATA_PATH} AS {METADATA_CATALOG_NAME_IDENTIFIER}" + GetAttachOptions();
 }
 
 void DuckLakeInitializer::Initialize() {
@@ -188,9 +198,14 @@ void DuckLakeInitializer::AttachMetadata(DuckLakeTransaction &transaction) {
 	if (DatabaseManager::Get(context).GetDatabase(catalog.MetadataDatabaseName())) {
 		metadata_cache_stale = true;
 	}
-	const string attach_query =
-	    "ATTACH OR REPLACE {METADATA_PATH} AS {METADATA_CATALOG_NAME_IDENTIFIER}" + GetAttachOptions();
-	auto result = transaction.GetMetadataManager().AttachMetadata(attach_query);
+	auto result = transaction.GetMetadataManager().AttachMetadata(GetAttachQuery());
+	if (result->HasError() && catalog.LazyMetadataLoad() &&
+	    StringUtil::Contains(StringUtil::Lower(result->GetError()),
+	                         "unrecognized option for postgres attach: lazy_load")) {
+		// a postgres scanner from before the option introspects every table of the schema
+		catalog.SetLazyMetadataLoad(false);
+		result = transaction.GetMetadataManager().AttachMetadata(GetAttachQuery());
+	}
 	result->ThrowIfError("Failed to attach DuckLake MetaData \"" + catalog.MetadataDatabaseName() + "\" at path + \"" +
 	                     catalog.MetadataPath() + "\"");
 	// the extension of the metadata database registers its profile when the ATTACH loads it

@@ -33,6 +33,7 @@ private:
 	bool DuckLakeIsInitialized(DuckLakeTransaction &transaction);
 	void InitializeDataPath();
 	string GetAttachOptions();
+	string GetAttachQuery();
 	void SetVersionedMetadataManager(DuckLakeTransaction &transaction, DuckLakeVersion version);
 	DuckLakeVersion ResolveTargetVersion(DuckLakeVersion catalog_version, const string &catalog_version_str);
 

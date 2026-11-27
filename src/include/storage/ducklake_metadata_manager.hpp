@@ -507,10 +507,12 @@ public:
 	//! Get the record count of every table that has global stats
 	virtual map<TableIndex, idx_t> GetTableRecordCounts(DuckLakeSnapshot snapshot);
 	//! The projection lists the top-level columns that the scan reads, all of them if it is not set
+	//! A remote catalog returns the inlined rows it read with the files, keyed by inlined table name
 	virtual vector<DuckLakeFileListEntry>
 	GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                 const FilterPushdownInfo *filter_info = nullptr, bool include_local_changes = true,
-	                 optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr);
+	                 optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr,
+	                 optional_ptr<identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>>> inlined_rows = nullptr);
 	virtual vector<DuckLakeFileListEntry>
 	GetTableInsertions(DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot, DuckLakeSnapshot snapshot,
 	                   optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr);

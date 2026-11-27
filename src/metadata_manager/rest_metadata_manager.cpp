@@ -4,6 +4,7 @@
 #include <thread>
 
 #include "duckdb/common/types/column/column_data_collection.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
@@ -347,6 +348,7 @@ static void SetProjection(REQUEST &request, const PLAN &plan) {
 	}
 	auto &projection = plan.projection;
 	if (projection.all) {
+		request.columns = RESTOptional<vector<RESTColumnIdentifier>>();
 		return;
 	}
 	vector<RESTColumnIdentifier> columns;
@@ -360,47 +362,82 @@ RESTMetadataManager::InlinedRowsPlan
 RESTMetadataManager::PlanInlinedRows(const RESTInlinedRowsKey &key,
                                      optional_ptr<const vector<DuckLakeProjectedColumn>> projection) {
 	auto wanted = RESTInlinedProjection::From(projection);
-	if (inlined_rows_cache.Covers(key, wanted)) {
-		return {false, wanted};
+	auto cached = inlined_rows_cache.FindResponse(key, wanted);
+	if (cached) {
+		return {false, wanted, std::move(cached)};
 	}
 	if (inlined_rows_cache.HasResponse(key)) {
 		// other scans of the table need other columns: get all of them, so that no scan has to ask again
 		wanted = RESTInlinedProjection();
 	}
-	return {true, wanted};
+	return {true, wanted, nullptr};
 }
 
-vector<DuckLakeFileListEntry>
-RESTMetadataManager::GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
-                                      const FilterPushdownInfo *filter_info, bool include_local_changes,
-                                      optional_ptr<const vector<DuckLakeProjectedColumn>> projection) {
+//! Whether a file list has a file that the response has not seen, which a flush of its rows wrote since
+static bool HasNewerFile(const RESTInlinedRowsResponse &response, optional_idx max_file_id) {
+	return max_file_id.IsValid() &&
+	       (!response.max_file_id.IsValid() || response.max_file_id.GetIndex() < max_file_id.GetIndex());
+}
+
+//! The largest data file id of a file list, a flush of the inlined rows writes a larger one
+template <class T>
+static optional_idx MaxFileId(const vector<T> &files) {
+	optional_idx result;
+	for (auto &file : files) {
+		if (file.file_id.IsValid() && (!result.IsValid() || file.file_id.index > result.GetIndex())) {
+			result = file.file_id.index;
+		}
+	}
+	return result;
+}
+
+vector<DuckLakeFileListEntry> RESTMetadataManager::GetFilesForTable(
+    DuckLakeTableEntry &table, DuckLakeSnapshot snapshot, const FilterPushdownInfo *filter_info,
+    bool include_local_changes, optional_ptr<const vector<DuckLakeProjectedColumn>> projection,
+    optional_ptr<identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>>> inlined_rows) {
 	if (IsTransactionLocal(table.GetTableId())) {
 		return {};
 	}
 	RESTSelectRequest request;
 	request.snapshot = snapshot;
 	request.table_id = table.GetTableId().index;
-	// the inlined rows of an earlier scan at this snapshot can have the columns already
-	RESTInlinedRowsKey inlined_key {RESTInlinedRowsKind::SCAN, 0, snapshot.snapshot_id, table.GetTableId().index};
-	auto plan = PlanInlinedRows(inlined_key, projection);
-	SetProjection(request, plan);
 	if (filter_info) {
 		request.filters = make_uniq<RESTScanFilters>(DuckLakeRESTFilters::Write(*filter_info, table));
 	}
-	request.known_column_mappings = transaction.GetCatalog().GetLoadedNameMapIds();
-	auto response = GetClient().Select(request);
-	transaction.GetCatalog().AddNameMaps(std::move(response.column_mappings));
-	AddPages<RESTSelectResponse>(
-	    transaction.GetCatalog(), response.page_tokens,
-	    [&](const string &page_token) {
-		    RESTSelectRequest page_request;
-		    page_request.table_id = table.GetTableId().index;
-		    page_request.page_token = page_token;
-		    return GetClient().Select(page_request);
-	    },
-	    [&](RESTSelectResponse &page) { AppendEntries(response.files, page.files); });
-	if (plan.fetch) {
-		inlined_rows_cache.Add(inlined_key, plan.projection, std::move(response.inlined_data));
+	// the inlined rows of an earlier scan at this snapshot can have the columns already
+	RESTInlinedRowsKey inlined_key {RESTInlinedRowsKind::SCAN, 0, snapshot.snapshot_id, table.GetTableId().index};
+	auto plan = PlanInlinedRows(inlined_key, projection);
+	RESTSelectResponse response;
+	shared_ptr<RESTInlinedRowsResponse> rows_response;
+	while (true) {
+		SetProjection(request, plan);
+		request.known_column_mappings = transaction.GetCatalog().GetLoadedNameMapIds();
+		response = GetClient().Select(request);
+		transaction.GetCatalog().AddNameMaps(std::move(response.column_mappings));
+		AddPages<RESTSelectResponse>(
+		    transaction.GetCatalog(), response.page_tokens,
+		    [&](const string &page_token) {
+			    RESTSelectRequest page_request;
+			    page_request.table_id = table.GetTableId().index;
+			    page_request.page_token = page_token;
+			    return GetClient().Select(page_request);
+		    },
+		    [&](RESTSelectResponse &page) { AppendEntries(response.files, page.files); });
+		auto max_file_id = MaxFileId(response.files);
+		if (plan.fetch) {
+			rows_response =
+			    inlined_rows_cache.Add(inlined_key, plan.projection, std::move(response.inlined_data), max_file_id);
+			break;
+		}
+		if (!HasNewerFile(*plan.cached, max_file_id)) {
+			rows_response = plan.cached;
+			break;
+		}
+		// a flush moved the cached rows into a file of this list, so the rows come with the files again
+		plan = InlinedRowsPlan {true, RESTInlinedProjection(), nullptr};
+	}
+	if (inlined_rows) {
+		(*inlined_rows)[InlinedTableName(table.GetTableId(), snapshot.schema_version)] = CommittedRows(*rows_response);
 	}
 	return std::move(response.files);
 }
@@ -414,26 +451,35 @@ RESTMetadataManager::GetExtendedFilesForTable(DuckLakeTableEntry &table, DuckLak
 	request.snapshot = snapshot;
 	request.table_id = table.GetTableId().index;
 	request.extended = true;
-	RESTInlinedRowsKey inlined_key {RESTInlinedRowsKind::SCAN, 0, snapshot.snapshot_id, table.GetTableId().index};
-	auto plan = PlanInlinedRows(inlined_key, projection);
-	SetProjection(request, plan);
 	if (filter_info) {
 		request.filters = make_uniq<RESTScanFilters>(DuckLakeRESTFilters::Write(*filter_info, table));
 	}
-	request.known_column_mappings = transaction.GetCatalog().GetLoadedNameMapIds();
-	auto response = GetClient().Select(request);
-	transaction.GetCatalog().AddNameMaps(std::move(response.column_mappings));
-	AddPages<RESTSelectResponse>(
-	    transaction.GetCatalog(), response.page_tokens,
-	    [&](const string &page_token) {
-		    RESTSelectRequest page_request;
-		    page_request.table_id = table.GetTableId().index;
-		    page_request.page_token = page_token;
-		    return GetClient().Select(page_request);
-	    },
-	    [&](RESTSelectResponse &page) { AppendEntries(response.extended_files, page.extended_files); });
-	if (plan.fetch) {
-		inlined_rows_cache.Add(inlined_key, plan.projection, std::move(response.inlined_data));
+	RESTInlinedRowsKey inlined_key {RESTInlinedRowsKind::SCAN, 0, snapshot.snapshot_id, table.GetTableId().index};
+	auto plan = PlanInlinedRows(inlined_key, projection);
+	RESTSelectResponse response;
+	while (true) {
+		SetProjection(request, plan);
+		request.known_column_mappings = transaction.GetCatalog().GetLoadedNameMapIds();
+		response = GetClient().Select(request);
+		transaction.GetCatalog().AddNameMaps(std::move(response.column_mappings));
+		AddPages<RESTSelectResponse>(
+		    transaction.GetCatalog(), response.page_tokens,
+		    [&](const string &page_token) {
+			    RESTSelectRequest page_request;
+			    page_request.table_id = table.GetTableId().index;
+			    page_request.page_token = page_token;
+			    return GetClient().Select(page_request);
+		    },
+		    [&](RESTSelectResponse &page) { AppendEntries(response.extended_files, page.extended_files); });
+		auto max_file_id = MaxFileId(response.extended_files);
+		if (plan.fetch) {
+			inlined_rows_cache.Add(inlined_key, plan.projection, std::move(response.inlined_data), max_file_id);
+			break;
+		}
+		if (!HasNewerFile(*plan.cached, max_file_id)) {
+			break;
+		}
+		plan = InlinedRowsPlan {true, RESTInlinedProjection(), nullptr};
 	}
 	return std::move(response.extended_files);
 }
@@ -452,11 +498,14 @@ shared_ptr<RESTInlinedRowsResponse> RESTMetadataManager::FetchInlinedRows(const 
                                                                           DuckLakeSnapshot start_snapshot,
                                                                           DuckLakeSnapshot snapshot) {
 	unique_ptr<RESTInlinedRows> inlined_data;
+	optional_idx max_file_id;
 	if (key.kind == RESTInlinedRowsKind::SCAN) {
 		RESTSelectRequest request;
 		request.snapshot = snapshot;
 		request.table_id = key.table_id;
-		inlined_data = std::move(GetClient().Select(request).inlined_data);
+		auto response = GetClient().Select(request);
+		max_file_id = MaxFileId(response.files);
+		inlined_data = std::move(response.inlined_data);
 	} else {
 		// LCOV_EXCL_START
 		// the change feed fetches the inlined rows that it reads
@@ -468,7 +517,40 @@ shared_ptr<RESTInlinedRowsResponse> RESTMetadataManager::FetchInlinedRows(const 
 		inlined_data = std::move(GetClient().TableChanges(request).inlined_data);
 		// LCOV_EXCL_STOP
 	}
-	return inlined_rows_cache.Add(key, RESTInlinedProjection(), std::move(inlined_data));
+	return inlined_rows_cache.Add(key, RESTInlinedProjection(), std::move(inlined_data), max_file_id);
+}
+
+shared_ptr<DuckLakeCommittedInlinedRows> RESTMetadataManager::CommittedRows(RESTInlinedRowsResponse &response) {
+	lock_guard<mutex> guard(response.committed_lock);
+	if (response.committed_rows) {
+		return response.committed_rows;
+	}
+	auto committed = make_shared_ptr<DuckLakeCommittedInlinedRows>();
+	if (response.rows) {
+		auto col_names = InlinedColNames();
+		auto &rows = response.rows->rows;
+		vector<LogicalType> types;
+		for (auto &column : rows.columns) {
+			Identifier name(column.name);
+			auto expression = SQLIdentifier::ToString(name);
+			if (!(name == col_names.row_id) && !(name == col_names.begin_snapshot) &&
+			    !(name == col_names.end_snapshot)) {
+				// the reader of a scan casts the columns of the table the same way
+				expression = CastColumnToTarget(expression, column.type);
+			}
+			committed->columns.push_back(std::move(expression));
+			types.push_back(column.type);
+		}
+		auto context = transaction.context.lock();
+		committed->rows = make_shared_ptr<DuckLakeInlinedData>();
+		committed->rows->data = make_uniq<ColumnDataCollection>(*context, types);
+		lock_guard<mutex> read_guard(response.rows->read_lock);
+		for (auto &chunk : rows.rows.rows->Chunks()) {
+			committed->rows->data->Append(chunk);
+		}
+	}
+	response.committed_rows = committed;
+	return committed;
 }
 
 unique_ptr<QueryResult> RESTMetadataManager::ReadCachedInlinedRows(RESTInlinedRowsKind kind,
@@ -788,7 +870,7 @@ RESTMetadataManager::GetTableChanges(DuckLakeTableEntry &table, DuckLakeSnapshot
 		    AppendEntries(response.deletions, page.deletions);
 	    });
 	if (plan.fetch) {
-		inlined_rows_cache.Add(inlined_key, plan.projection, std::move(response.inlined_data));
+		inlined_rows_cache.Add(inlined_key, plan.projection, std::move(response.inlined_data), optional_idx());
 	}
 	return response;
 }

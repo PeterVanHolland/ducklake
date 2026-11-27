@@ -171,7 +171,11 @@ bool DuckLakeInlinedDataReader::TryInitializeScan(ClientContext &context, Global
 				virtual_columns.push_back(InlinedVirtualColumn::NONE);
 			}
 		}
-		if (committed_rows) {
+		if (committed_rows && !committed_rows->rows) {
+			// the table had no inlined rows when the file list was read
+			data = make_shared_ptr<DuckLakeInlinedData>();
+			data->data = make_uniq<ColumnDataCollection>(context, expected_types);
+		} else if (committed_rows) {
 			data = ProjectCommittedRows(context, *committed_rows, columns_to_read);
 		}
 		if (!data) {

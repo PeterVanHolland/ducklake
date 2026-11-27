@@ -63,10 +63,10 @@ public:
 	vector<DuckLakeGlobalStatsInfo> GetGlobalTableStats(DuckLakeSnapshot snapshot,
 	                                                    const vector<TableIndex> &table_ids = {}) override;
 	map<TableIndex, idx_t> GetTableRecordCounts(DuckLakeSnapshot snapshot) override;
-	vector<DuckLakeFileListEntry>
-	GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
-	                 const FilterPushdownInfo *filter_info = nullptr, bool include_local_changes = true,
-	                 optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr) override;
+	vector<DuckLakeFileListEntry> GetFilesForTable(
+	    DuckLakeTableEntry &table, DuckLakeSnapshot snapshot, const FilterPushdownInfo *filter_info = nullptr,
+	    bool include_local_changes = true, optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr,
+	    optional_ptr<identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>>> inlined_rows = nullptr) override;
 	vector<DuckLakeFileListExtendedEntry>
 	GetExtendedFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                         const FilterPushdownInfo *filter_info = nullptr,
@@ -128,12 +128,16 @@ private:
 	struct InlinedRowsPlan {
 		bool fetch;
 		RESTInlinedProjection projection;
+		//! The cached response a scan reads when it fetches no rows, pinned before it requests its file list
+		shared_ptr<RESTInlinedRowsResponse> cached;
 	};
 	InlinedRowsPlan PlanInlinedRows(const RESTInlinedRowsKey &key,
 	                                optional_ptr<const vector<DuckLakeProjectedColumn>> projection);
 	//! Fetches the inlined rows of a table with all columns, if a scan needs rows that the cache does not have
 	shared_ptr<RESTInlinedRowsResponse> FetchInlinedRows(const RESTInlinedRowsKey &key, DuckLakeSnapshot start_snapshot,
 	                                                     DuckLakeSnapshot snapshot);
+	//! The rows of a response in the form the inlined data reader of a scan reads
+	shared_ptr<DuckLakeCommittedInlinedRows> CommittedRows(RESTInlinedRowsResponse &response);
 	//! Reads the columns from the cached rows of the inlined data, or fetches the rows from the server
 	unique_ptr<QueryResult> ReadCachedInlinedRows(RESTInlinedRowsKind kind, DuckLakeSnapshot start_snapshot,
 	                                              DuckLakeSnapshot snapshot, const string &inlined_table_name,

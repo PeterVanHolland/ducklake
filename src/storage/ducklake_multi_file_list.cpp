@@ -695,10 +695,10 @@ vector<DuckLakeFileListEntry> DuckLakeMultiFileList::ReadCommittedFiles(
 	static constexpr idx_t MAX_ATTEMPTS = 10;
 	auto &metadata_manager = transaction.GetMetadataManager();
 	auto scan_projection = has_projection ? optional_ptr<const vector<DuckLakeProjectedColumn>>(projection) : nullptr;
-	// a remote metadata manager reads the files and the inlined rows of the same snapshot
+	// a remote metadata manager reads the files and the inlined rows in one request
 	if (!metadata_manager.CommitsEachStatement() || metadata_manager.IsRemote() || inlined_data_tables.empty()) {
 		return metadata_manager.GetFilesForTable(read_info.table, read_info.snapshot, filter_info.get(),
-		                                         read_info.include_local_changes, scan_projection);
+		                                         read_info.include_local_changes, scan_projection, &inlined_rows);
 	}
 	// every query sees the latest commits, so the inlined rows are read first and again if a file was written since
 	for (idx_t attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {

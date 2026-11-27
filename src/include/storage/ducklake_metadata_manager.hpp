@@ -64,6 +64,12 @@ struct DuckLakeInlinedValueCheck {
 	Identifier column_name;
 };
 
+struct DuckLakeAddedColumn {
+	const char *table;
+	const char *column;
+	const char *type;
+};
+
 //! Metadata column names inside ducklake_inlined_data_<table_id>_<schema_version> tables.
 struct DuckLakeInlinedColNames {
 	//! Column name prefix reserved for DuckLake internal use
@@ -834,6 +840,13 @@ public:
 	virtual idx_t SetConfigOption(const DuckLakeConfigOption &option);
 	virtual bool ResetConfigOption(const DuckLakeConfigOption &option);
 	idx_t ConfigOptionRowCount(const DuckLakeConfigOption &option, optional_ptr<const string> value = nullptr);
+	//! Runs a migration batch in one metadata transaction on a catalog where each statement commits on its own
+	virtual void BeginMigration() {
+	}
+	virtual void CommitMigration() {
+	}
+	virtual void RollbackMigration() {
+	}
 	virtual void MigrateV01();
 	virtual void MigrateV02(bool allow_failures = false);
 	virtual void MigrateV03(bool allow_failures = false);
@@ -865,8 +878,10 @@ public:
 	static string GetBranchTableStatement();
 	//! Inserts the row of the main branch unless the table has it
 	static string GetMainBranchRowStatement();
+	//! The columns that v1.1 added to the metadata tables
+	static const vector<DuckLakeAddedColumn> &V1_1AddedColumns();
 	//! Whether the catalog already has every metadata table and column of v1.1
-	bool HasV1_1Additions();
+	virtual bool HasV1_1Additions();
 	//! Whether the catalog has the tables of 1.1 under their names in their shape, false once a migration to 2.0 began
 	bool HasV1_1Layout();
 	//! The snapshot additions of 2.0 a catalog is missing, probed so an interrupted migration resumes

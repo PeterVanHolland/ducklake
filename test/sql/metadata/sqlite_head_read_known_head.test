@@ -1,0 +1,78 @@
+# name: test/sql/metadata/sqlite_head_read_known_head.test
+# description: A SQLite catalog scans for its head from the head that it read last, not over every snapshot
+# group: [metadata]
+
+require ducklake
+
+require parquet
+
+require sqlite_scanner
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/{BASE_TEST_NAME}.db' AS dl (DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_files',
+    METADATA_CATALOG 'meta')
+
+statement ok
+CREATE TABLE dl.t (id INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1)
+
+statement ok
+INSERT INTO dl.t VALUES (2)
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/{BASE_TEST_NAME}.db' AS dl (DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_files',
+    METADATA_CATALOG 'meta')
+
+statement ok
+CALL enable_logging('DuckLakeMetadata', storage => 'memory')
+
+loop i 0 2
+
+query I
+SELECT list(id ORDER BY id) FROM dl.t
+----
+[1, 2]
+
+endloop
+
+# only the first transaction of the attach reads the head over all snapshots
+query II
+SELECT count(*) FILTER (query LIKE '%= (SELECT MAX(snapshot_id) FROM %ducklake_snapshot)%'),
+       count(*) FILTER (query LIKE '%WHERE snapshot_id >= 3%ORDER BY snapshot_id DESC LIMIT 1;%')
+FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE 'SELECT snapshot_id, schema_version, next_catalog_id,%'
+----
+1	1
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# a catalog that is put back to an older state under the attach has no snapshot from the known head on
+statement ok
+DELETE FROM meta.ducklake_snapshot_changes WHERE snapshot_id = 3
+
+statement ok
+DELETE FROM meta.ducklake_snapshot WHERE snapshot_id = 3
+
+query I
+SELECT id FROM dl.current_snapshot()
+----
+2
+
+query I
+SELECT list(id ORDER BY id) FROM dl.t
+----
+[1]
+
+# the head was looked up from snapshot 3 on, then over all snapshots, and from snapshot 2 on after that
+query III
+SELECT count(*) FILTER (query LIKE '%WHERE snapshot_id >= 3%ORDER BY snapshot_id DESC LIMIT 1;%'),
+       count(*) FILTER (query LIKE '%= (SELECT MAX(snapshot_id) FROM %ducklake_snapshot)%'),
+       count(*) FILTER (query LIKE '%WHERE snapshot_id >= 2%ORDER BY snapshot_id DESC LIMIT 1;%')
+FROM duckdb_logs_parsed('DuckLakeMetadata') WHERE query LIKE 'SELECT snapshot_id, schema_version, next_catalog_id,%'
+----
+1	1	1

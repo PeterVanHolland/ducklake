@@ -1,12 +1,14 @@
 # name: benchmark/micro/fixtures/snap20k.benchmark.in
-# description: Lake with an empty table t and 20001 snapshots written directly into the metadata, restored for every run
+# description: Lake with an empty table t and 20001 snapshots by default, written into the metadata, restored every run
 # group: [fixtures]
 
 argument lake snap20k
 
+argument snapshots 20000
+
 cache_file ${lake}_ready.marker
 
-# Snapshots 2 to 20000 copy snapshot 1 with a distinct time, and their changes insert, delete and compact other tables
+# Snapshots 2 and later copy snapshot 1 with a distinct time, and their changes insert, delete and compact other tables
 load
 @create ${lake}_pristine
 @attach ${lake}_pristine AS lake (DATA_PATH '${BENCHMARK_DIR}/${lake}_files')
@@ -15,7 +17,7 @@ CREATE TABLE lake.t (id BIGINT, v VARCHAR);
 INSERT INTO __ducklake_metadata_lake.ducklake_snapshot
 (snapshot_id, snapshot_time, schema_version, next_catalog_id, next_file_id)
 SELECT i, to_timestamp(i), schema_version, next_catalog_id, next_file_id
-FROM range(2, 20001) r(i), __ducklake_metadata_lake.ducklake_snapshot
+FROM range(2, ${snapshots} + 1) r(i), __ducklake_metadata_lake.ducklake_snapshot
 WHERE snapshot_id = 1;
 INSERT INTO __ducklake_metadata_lake.ducklake_snapshot_changes
 (snapshot_id, changes_made, author, commit_message, commit_extra_info)
@@ -27,9 +29,9 @@ WHEN 2 THEN 'merge_adjacent:' || ((i % 7) + 2)
 ELSE 'rewrite_delete:' || ((i % 7) + 2)
 END,
 NULL, NULL, NULL
-FROM range(2, 20001) r(i);
-SELECT CASE WHEN (SELECT count(*) <> 20001 FROM lake.snapshots())
-THEN error('snap20k: expected 20001 snapshots') END;
+FROM range(2, ${snapshots} + 1) r(i);
+SELECT CASE WHEN (SELECT count(*) <> ${snapshots} + 1 FROM lake.snapshots())
+THEN error('${lake}: expected ${snapshots} snapshots after the first') END;
 DETACH lake;
 COPY (SELECT count(*) FROM glob('${BENCHMARK_DIR}/${lake}_files/**'))
 TO '${BENCHMARK_DIR}/${lake}_filecount.csv' (FORMAT CSV, HEADER false);

@@ -64,6 +64,9 @@ public:
 
 protected:
 	string GetLatestSnapshotQuery() const override;
+	bool BoundsHeadLookups() const override {
+		return false;
+	}
 	string SnapshotTimeSql() const override {
 		// the server's clock, as NOW() is the start of the metadata transaction
 		return "clock_timestamp()";

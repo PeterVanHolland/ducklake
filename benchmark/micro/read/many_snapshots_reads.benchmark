@@ -1,0 +1,27 @@
+# name: benchmark/micro/read/many_snapshots_reads.benchmark
+# description: Fifty autocommit reads of a table in a lake with 100001 snapshots, each reads the head
+# group: [read]
+
+name Many Snapshots Reads
+group micro
+subgroup read
+
+require ducklake
+
+argument work many_snapshots_reads_work
+
+argument lake snap100k_table
+
+argument snapshots 100000
+
+include benchmark/micro/fixtures/snap20k.benchmark.in
+
+run
+@for k in range(50)
+SELECT count(*) FROM lake.t;
+@end
+
+result_query I
+SELECT * FROM __answer
+----
+0

@@ -1,0 +1,30 @@
+# name: benchmark/micro/write/many_snapshots_insert_commits.benchmark
+# description: Twenty single-row autocommit INSERTs into a lake with 100001 snapshots, each reads the head
+# group: [write]
+
+name Many Snapshots Insert Commits
+group micro
+subgroup write
+
+require ducklake
+
+argument work many_snapshots_commits_work
+
+argument lake snap100k_table
+
+argument snapshots 100000
+
+include benchmark/micro/fixtures/snap20k.benchmark.in
+
+run
+@for k in range(20)
+INSERT INTO lake.t VALUES (@{k}, 'v@{k}');
+@end
+
+include benchmark/micro/fixtures/restore_cleanup.benchmark.in
+
+# A missed reset doubles the rows, and an extra commit gives a snapshot after 100020
+result_query II
+SELECT count(*), (SELECT max(snapshot_id) FROM lake.snapshots()) FROM lake.t
+----
+20	100020

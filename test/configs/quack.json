@@ -265,6 +265,12 @@
       ]
     },
     {
+      "reason": "The migration of a quack catalog runs in the sidecar, so the client log holds no repair or version statement to order",
+      "paths": [
+        "test/sql/migration/v11_unrepaired_bounds_repair_order.test"
+      ]
+    },
+    {
       "reason": "A data-only commit of a quack catalog runs on the server, so the client log never shows the metadata reads it makes",
       "paths": [
         "test/sql/stats/stats_reads_filter_table.test",

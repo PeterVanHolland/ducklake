@@ -995,7 +995,12 @@ public:
 	//! Restores the defaults that older versions dropped when they renamed a struct field
 	void MigrateRenamedFieldDefaults();
 	//! Clears the bounds that older versions may have stored in the type of a file or of an earlier column type
-	void MigrateRetypedBounds();
+	void MigrateRetypedBounds(bool legacy_rows = false, const string &data_file_table = "ducklake_data_file",
+	                          bool file_events = false);
+	//! Clears the bounds a migration to v1.1 without MigrateRetypedBounds left
+	void RepairV10Bounds();
+	//! The live version row of a column, in the shape the row companions step left ducklake_column in
+	string LiveColumnSql(const string &alias);
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
 	virtual void MigrateInlinedDataTypes() {
 	}

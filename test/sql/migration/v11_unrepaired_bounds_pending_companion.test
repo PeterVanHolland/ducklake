@@ -1,0 +1,148 @@
+# name: test/sql/migration/v11_unrepaired_bounds_pending_companion.test
+# description: a resumed row companions step with the column end dropped and its companion pending repairs the bounds
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 0, DUCKLAKE_VERSION '1.1')
+
+statement ok
+CREATE TABLE dl.r (f FLOAT)
+
+statement ok
+INSERT INTO dl.r VALUES (0.1)
+
+statement ok
+ALTER TABLE dl.r ALTER COLUMN f TYPE DOUBLE
+
+# the rows that DuckDB 1.5.6 wrote and DuckDB v2.0.0 kept in its migration
+statement ok
+UPDATE meta.ducklake_file_column_stats SET min_value = '0.1', max_value = '0.1', min_is_exact = NULL, max_is_exact = NULL
+WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 'r')
+
+statement ok
+UPDATE meta.ducklake_table_column_stats SET min_value = '0.1', max_value = '0.1'
+WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 'r')
+
+# two files of stale bounds compacted into one, after which only the table bounds are stale
+statement ok
+COPY (SELECT TIMESTAMP_NS '2020-01-01 12:34:56.123456789' AS t) TO '{DATA_PATH}/{BASE_TEST_NAME}_c1.parquet'
+
+statement ok
+COPY (SELECT TIMESTAMP_NS '2020-01-01 12:34:56.123456789' AS t) TO '{DATA_PATH}/{BASE_TEST_NAME}_c2.parquet'
+
+statement ok
+CREATE TABLE dl.compacted (t TIMESTAMP)
+
+statement ok
+CALL ducklake_add_data_files('dl', 'compacted', '{DATA_PATH}/{BASE_TEST_NAME}_c*.parquet')
+
+statement ok
+UPDATE meta.ducklake_file_column_stats SET min_value = '2020-01-01 12:34:56.123456789', max_value = '2020-01-01 12:34:56.123456789', min_is_exact = NULL, max_is_exact = NULL
+WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 'compacted')
+
+statement ok
+UPDATE meta.ducklake_table_column_stats SET min_value = '2020-01-01 12:34:56.123456789', max_value = '2020-01-01 12:34:56.123456789'
+WHERE table_id = (SELECT table_id FROM meta.ducklake_table WHERE table_name = 'compacted')
+
+statement ok
+CALL ducklake_merge_adjacent_files('dl', 'compacted')
+
+statement ok
+CALL ducklake_expire_snapshots('dl', older_than => now())
+
+statement ok
+DETACH dl
+
+# the interrupted migration turned the file ranges into events before it reached the column kind
+statement ok
+ATTACH '{DUCKLAKE_CONNECTION}' AS meta
+
+statement ok
+CREATE TABLE meta.ducklake_file_visibility(branch_id BIGINT, table_id BIGINT, data_file_id BIGINT, snapshot_id BIGINT, is_delete BOOLEAN, PRIMARY KEY(branch_id, data_file_id, is_delete))
+
+statement ok
+CREATE TABLE meta.ducklake_delete_file_visibility(branch_id BIGINT, table_id BIGINT, delete_file_id BIGINT, snapshot_id BIGINT, is_delete BOOLEAN, PRIMARY KEY(branch_id, delete_file_id, is_delete))
+
+statement ok
+INSERT INTO meta.ducklake_file_visibility SELECT 0, table_id, data_file_id, begin_snapshot, false FROM meta.ducklake_data_file
+
+statement ok
+ALTER TABLE meta.ducklake_data_file DROP COLUMN begin_snapshot
+
+statement ok
+ALTER TABLE meta.ducklake_data_file DROP COLUMN end_snapshot
+
+statement ok
+ALTER TABLE meta.ducklake_delete_file DROP COLUMN begin_snapshot
+
+statement ok
+ALTER TABLE meta.ducklake_delete_file DROP COLUMN end_snapshot
+
+# the column kind got its backfilled pending companion and lost its end column, the rename did not run
+statement ok
+ALTER TABLE meta.ducklake_column ADD COLUMN branch_id BIGINT DEFAULT 0
+
+statement ok
+UPDATE meta.ducklake_column SET branch_id = 0 WHERE branch_id IS NULL
+
+statement ok
+CREATE TABLE meta.ducklake_column_visibility_pending(branch_id BIGINT, table_id BIGINT, column_id BIGINT, row_branch_id BIGINT,
+    row_snapshot BIGINT, end_snapshot BIGINT, PRIMARY KEY(branch_id, table_id, column_id, row_branch_id, row_snapshot))
+
+statement ok
+ALTER TABLE meta.ducklake_column RENAME COLUMN end_snapshot TO end_snapshot_old
+
+statement ok
+INSERT INTO meta.ducklake_column_visibility_pending
+SELECT DISTINCT 0, table_id, column_id, 0, begin_snapshot, end_snapshot_old FROM meta.ducklake_column
+WHERE end_snapshot_old IS NOT NULL
+
+statement ok
+ALTER TABLE meta.ducklake_column DROP COLUMN end_snapshot_old
+
+statement ok
+DETACH meta
+
+# the repair takes the type of a column from its latest version row, then the sequence resumes
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta', AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT value FROM meta.ducklake_metadata WHERE key = 'version'
+----
+2.0-dev1
+
+query IIII
+SELECT (SELECT count(*) FROM dl.r WHERE f = 0.10000000149011612), (SELECT min(f) FROM dl.r), (SELECT count(*) FROM dl.compacted WHERE t = TIMESTAMP '2020-01-01 12:34:56.123457'), (SELECT max(t) FROM dl.compacted)
+----
+1	0.10000000149011612	2	2020-01-01 12:34:56.123457
+
+# the stale file bounds are cleared, the live file of the compacted table keeps its own
+query III
+SELECT tbl.table_name, stats.min_value IS NULL, stats.min_is_exact IS NULL FROM meta.ducklake_file_column_stats stats
+JOIN meta.ducklake_table tbl USING (table_id) ORDER BY tbl.table_name
+----
+compacted	false	false
+r	true	true
+
+# and the table bounds of both, the compacted table's since they miss its live file
+query II
+SELECT tbl.table_name, stats.min_value IS NULL AND stats.max_value IS NULL FROM meta.ducklake_table_column_stats stats
+JOIN meta.ducklake_table tbl USING (table_id) ORDER BY tbl.table_name
+----
+compacted	true
+r	true
+
+# the resumed step renamed the pending companion into place with the end of the FLOAT version row
+query II
+SELECT row_snapshot, end_snapshot FROM meta.ducklake_column_visibility ORDER BY row_snapshot
+----
+1	3

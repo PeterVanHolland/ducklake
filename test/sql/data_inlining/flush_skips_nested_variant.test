@@ -1,0 +1,223 @@
+# name: test/sql/data_inlining/flush_skips_nested_variant.test
+# description: Inlined rows with a VARIANT inside a LIST, STRUCT or MAP stay inlined, and the other tables still flush
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/flush_skips_nested_variant', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.t (c VARIANT[])
+
+statement ok
+CREATE TABLE lake.other (i INTEGER)
+
+statement ok
+INSERT INTO lake.t VALUES ([1::VARIANT, 'x'::VARIANT])
+
+statement ok
+INSERT INTO lake.other VALUES (1)
+
+# the Parquet writer cannot write a VARIANT below the root yet
+query III
+SELECT * FROM ducklake_flush_inlined_data('lake')
+----
+main	other	1
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 'other')
+----
+1
+
+query I
+SELECT c FROM lake.t
+----
+[1, x]
+
+statement ok
+INSERT INTO lake.other VALUES (2)
+
+statement ok
+CHECKPOINT lake
+
+statement ok
+SET VARIABLE other_files = (SELECT list(data_file) FROM ducklake_list_files('lake', 'other'))
+
+query I
+SELECT count(*) FROM read_parquet(getvariable('other_files'))
+----
+2
+
+statement error
+CALL ducklake_flush_inlined_data('lake', table_name => 't')
+----
+Not implemented Error: Cannot flush the inlined data of table "t": column "c" of type VARIANT[] has a VARIANT inside
+
+# an inlined table of an earlier schema version still flushes
+statement ok
+CREATE TABLE lake.s (i INTEGER)
+
+statement ok
+INSERT INTO lake.s VALUES (1)
+
+statement ok
+ALTER TABLE lake.s ADD COLUMN v STRUCT(x VARIANT)
+
+statement ok
+INSERT INTO lake.s VALUES (2, {'x': 1::VARIANT})
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('lake')
+----
+main	s	1
+
+query II
+SELECT i, v FROM lake.s ORDER BY i
+----
+1	NULL
+2	{'x': 1}
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 's')
+----
+1
+
+# a checkpoint leaves the files of the earlier schema versions in their own schema when merging them
+statement ok
+CREATE TABLE lake.c (i INTEGER)
+
+statement ok
+INSERT INTO lake.c VALUES (1)
+
+statement ok
+ALTER TABLE lake.c ADD COLUMN j INTEGER
+
+statement ok
+INSERT INTO lake.c VALUES (2, 20)
+
+statement ok
+ALTER TABLE lake.c ADD COLUMN v VARIANT[]
+
+statement ok
+INSERT INTO lake.c VALUES (3, 30, [3::VARIANT])
+
+statement ok
+CHECKPOINT lake
+
+query III
+SELECT i, j, v FROM lake.c ORDER BY i
+----
+1	NULL	NULL
+2	20	NULL
+3	30	[3]
+
+# an empty inlined table of a schema with a nested VARIANT does not stop the flush of a table
+statement ok
+CREATE TABLE lake.e (i INTEGER)
+
+statement ok
+INSERT INTO lake.e VALUES (1)
+
+statement ok
+ALTER TABLE lake.e ADD COLUMN v VARIANT[]
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('lake', table_name => 'e')
+----
+main	e	1
+
+# a merge or rewrite of such a table by name fails, a catalog-wide one skips it
+statement ok
+CREATE TABLE lake.b (i INTEGER, v VARIANT[])
+
+statement ok
+COPY (SELECT range::INTEGER AS i FROM range(1, 3)) TO '{DATA_PATH}/flush_skips_nested_variant_a1.parquet'
+
+statement ok
+COPY (SELECT 3 AS i) TO '{DATA_PATH}/flush_skips_nested_variant_a2.parquet'
+
+statement ok
+CALL ducklake_add_data_files('lake', 'b', '{DATA_PATH}/flush_skips_nested_variant_a1.parquet', allow_missing => true)
+
+statement ok
+CALL ducklake_add_data_files('lake', 'b', '{DATA_PATH}/flush_skips_nested_variant_a2.parquet', allow_missing => true)
+
+statement ok
+ALTER TABLE lake.b RENAME TO a
+
+statement error
+CALL ducklake_merge_adjacent_files('lake', 'a')
+----
+Not implemented Error: Cannot merge the files of table "a": column "v" of type VARIANT[] has a VARIANT inside
+
+query I
+SELECT count(*) FROM ducklake_merge_adjacent_files('lake') WHERE table_name = 'a'
+----
+0
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 'a')
+----
+2
+
+statement ok
+DELETE FROM lake.a WHERE i = 1
+
+statement error
+CALL ducklake_rewrite_data_files('lake', 'a', delete_threshold => 0)
+----
+Not implemented Error: Cannot rewrite the files of table "a": column "v" of type VARIANT[] has a VARIANT inside
+
+query I
+SELECT count(*) FROM ducklake_rewrite_data_files('lake', delete_threshold => 0) WHERE table_name = 'a'
+----
+0
+
+query II
+SELECT i, v FROM lake.a ORDER BY i
+----
+2	NULL
+3	NULL
+
+# a skipped group does not use up the limit of a catalog-wide merge
+statement ok
+CREATE TABLE lake.m (i INTEGER)
+
+statement ok
+INSERT INTO lake.m SELECT range::INTEGER FROM range(20)
+
+statement ok
+INSERT INTO lake.m SELECT range::INTEGER FROM range(20)
+
+statement ok
+ALTER TABLE lake.m ADD COLUMN v VARIANT[]
+
+statement ok
+COPY (SELECT 1 AS i) TO '{DATA_PATH}/flush_skips_nested_variant_m1.parquet'
+
+statement ok
+COPY (SELECT 2 AS i) TO '{DATA_PATH}/flush_skips_nested_variant_m2.parquet'
+
+statement ok
+CALL ducklake_add_data_files('lake', 'm', '{DATA_PATH}/flush_skips_nested_variant_m1.parquet', allow_missing => true)
+
+statement ok
+CALL ducklake_add_data_files('lake', 'm', '{DATA_PATH}/flush_skips_nested_variant_m2.parquet', allow_missing => true)
+
+query II
+SELECT files_processed, files_created
+FROM ducklake_merge_adjacent_files('lake', max_compacted_files => 1) WHERE table_name = 'm'
+----
+2	1
+
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 'm')
+----
+3

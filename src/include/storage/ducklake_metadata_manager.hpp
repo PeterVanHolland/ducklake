@@ -294,6 +294,10 @@ public:
 	//! Whether the client can skip the snapshot fetch and let the server read it.
 	virtual bool CanSkipSnapshotFetch(const TransactionChangeInformation &changes) const;
 	virtual bool IsRetryableCommitError(const string &message) const;
+	//! Whether the commit error names one of these inlined tables after another attach dropped it
+	virtual bool IsDroppedInlinedTableError(const string &, const map<TableIndex, vector<Identifier>> &) {
+		return false;
+	}
 	//! Whether the catalog rejected the commit with the error: it rolled back, so the commit is not in it
 	bool IsCatalogRejection(const string &message) const;
 	//! The error of a failed commit without the text of the failed query that it repeats

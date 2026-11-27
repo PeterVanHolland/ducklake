@@ -94,6 +94,9 @@ public:
 	                                           bool table_has_rows);
 	//! The statistics of count values that are all the given value
 	static DuckLakeColumnStats FromConstant(const LogicalType &type, const Value &value, idx_t count);
+	static string BoundToString(const Value &value);
+	//! Older versions stored the bounds of inlined BLOB values as display text, which cannot merge with hexadecimal
+	void DropTextBlobBounds();
 	//! Discards the min/max bounds, leaving the counts intact
 	void ClearBounds();
 	//! Rewrite FLOAT bounds as the DOUBLE values they widen to

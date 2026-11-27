@@ -667,7 +667,7 @@ unique_ptr<LogicalOperator> DuckLakeCompactor::PlanRewriteScan(
 unique_ptr<LogicalOperator>
 DuckLakeCompactor::GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry> source_files,
                                              bool bind_to_latest_schema) {
-	// cross-schema groups bind to the latest snapshot and others to the start of their schema version
+	// cross-schema groups bind to the latest snapshot and others to the table of their schema version
 	optional_ptr<DuckLakeTableEntry> entry;
 	if (bind_to_latest_schema) {
 		auto latest_entry = catalog.GetEntryById(transaction, transaction.GetSnapshot(), table_id);

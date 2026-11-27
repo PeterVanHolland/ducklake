@@ -27,6 +27,8 @@ struct DuckLakeInlinedData {
 
 	//! Row count of the inlined collection.
 	idx_t Count() const;
+	//! Cast the rows to the given types
+	void CastTo(ClientContext &context, const vector<LogicalType> &new_types);
 	bool HasPreservedRowIds() const;
 	//! Get the output row_id for a surviving (non-deleted) row
 	int64_t GetOutputRowId(idx_t position) const;

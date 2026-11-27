@@ -315,8 +315,14 @@ void DuckLakeServerSideCommit::ReadStagedInlinedData() {
 	map<TableIndex, bool> has_preserved_row_ids;
 
 	auto meta_result = ScanStagedTable(DuckLakeStagedTableType::INLINED_DATA);
+	// staged tables from older clients lack the column names
+	bool has_column_names = DuckLakeMetadataManager::ResultHasColumn(*meta_result, "column_names");
 	for (auto &row : *meta_result) {
-		has_preserved_row_ids[TableIndex(AsIdx(row, 0))] = row.GetValue<bool>(1);
+		TableIndex table_id(AsIdx(row, 0));
+		has_preserved_row_ids[table_id] = row.GetValue<bool>(1);
+		if (has_column_names) {
+			TryReadValue(row, 2, staged_inlined_column_names[table_id]);
+		}
 	}
 	if (has_preserved_row_ids.empty()) {
 		return;
@@ -666,9 +672,9 @@ string DuckLakeServerSideCommit::BuildInlinedDataInserts(const vector<DuckLakeIn
 		for (auto &tuple : tuples) {
 			cells_per_row.push_back(tuple.size() >= 2 ? tuple.substr(1, tuple.size() - 2) : tuple);
 		}
-		batch += DuckLakeMetadataManager::FormatInlinedDataInsert(inlined_table_name, entry.row_id_start, has_preserved,
-		                                                          has_preserved ? &row_ids_it->second : nullptr,
-		                                                          cells_per_row);
+		batch += DuckLakeMetadataManager::FormatInlinedDataInsert(
+		    inlined_table_name, entry.row_id_start, has_preserved, has_preserved ? &row_ids_it->second : nullptr,
+		    cells_per_row, staged_inlined_column_names[entry.table_id]);
 	}
 	return batch;
 }

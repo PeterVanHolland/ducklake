@@ -597,17 +597,21 @@ public:
 	bool TryAppendDataFiles(DuckLakeSnapshot &commit_snapshot, const vector<DuckLakeFileInfo> &new_files,
 	                        const vector<DuckLakeTableInfo> &new_tables,
 	                        vector<DuckLakeSchemaInfo> &new_schemas_result);
-	virtual string WriteNewInlinedData(DuckLakeSnapshot &commit_snapshot,
+	virtual string WriteNewInlinedData(DuckLakeSnapshot &commit_snapshot, const DuckLakeSnapshot &transaction_snapshot,
 	                                   const vector<DuckLakeInlinedDataInfo> &new_data,
 	                                   const vector<DuckLakeTableInfo> &new_tables,
 	                                   const vector<DuckLakeTableInfo> &new_inlined_data_tables_result,
 	                                   vector<unique_ptr<SQLStatement>> &inlined_inserts);
 	static string WriteNewInlinedDeletes(const vector<DuckLakeDeletedInlinedDataInfo> &new_deletes,
 	                                     const DuckLakeInlinedColNames &col_names);
-	//! Creates the INSERT INTO {METADATA_CATALOG}.<inlined_table_name> VALUES (...) batch.
+	//! The column names of an inlined row of the table in the order of its values
+	vector<Identifier> InlinedRowColumnNames(TableIndex table_id, DuckLakeSnapshot snapshot,
+	                                         optional_ptr<const DuckLakeTableInfo> new_table = nullptr,
+	                                         const vector<DuckLakeTableInfo> &new_tables = {});
+	//! Creates the INSERT INTO {METADATA_CATALOG}.<inlined_table_name> [(columns)] VALUES (...) batch.
 	static string FormatInlinedDataInsert(const Identifier &inlined_table_name, idx_t row_id_start,
 	                                      bool has_preserved_row_ids, const vector<int64_t> *row_ids,
-	                                      const vector<string> &cells_per_row);
+	                                      const vector<string> &cells_per_row, const string &column_list = string());
 	//! Static deterministic name of the per-table inlined deletion table.
 	static Identifier InlinedFileDeletionTableName(TableIndex table_id);
 	//! Pure SQL builder for inlined file deletions (CREATE TABLE IF NOT EXISTS + INSERT). Sets

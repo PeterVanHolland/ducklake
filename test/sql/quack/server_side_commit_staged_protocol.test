@@ -27,7 +27,8 @@ CREATE TEMPORARY TABLE IF NOT EXISTS ducklake_staged_data_file(data_file_id BIGI
 CREATE TEMPORARY TABLE IF NOT EXISTS ducklake_staged_data_file_column_stats(data_file_id BIGINT, table_id BIGINT, column_id BIGINT, column_size_bytes BIGINT, has_num_values BOOLEAN, num_values BIGINT, has_null_count BOOLEAN, null_count BIGINT, has_min BOOLEAN, min_value VARCHAR, has_max BOOLEAN, max_value VARCHAR, has_contains_nan BOOLEAN, contains_nan BOOLEAN, any_valid BOOLEAN, extra_stats VARCHAR, min_is_exact BOOLEAN, max_is_exact BOOLEAN);
 CREATE TEMPORARY TABLE IF NOT EXISTS ducklake_staged_data_file_partition(local_file_id BIGINT, partition_column_idx BIGINT, partition_value VARCHAR);
 CREATE TEMPORARY TABLE IF NOT EXISTS ducklake_staged_delete_file(table_id BIGINT, data_file_path VARCHAR, data_file_id BIGINT, file_name VARCHAR, format VARCHAR, delete_count BIGINT, file_size_bytes BIGINT, footer_size BIGINT, encryption_key VARCHAR, begin_snapshot BIGINT, max_snapshot BIGINT, source VARCHAR, overwrites_existing_delete BOOLEAN, overwrite_delete_file_id BIGINT, overwrite_delete_file_path VARCHAR, attached_local_file_id BIGINT, row_group_count BIGINT);
-CREATE TEMPORARY TABLE IF NOT EXISTS ducklake_staged_inlined_data(table_id BIGINT, has_preserved_row_ids BOOLEAN);
+CREATE TEMPORARY TABLE IF NOT EXISTS ducklake_staged_inlined_data(table_id BIGINT, has_preserved_row_ids BOOLEAN,
+column_names VARCHAR);
 CREATE TEMPORARY TABLE IF NOT EXISTS ducklake_staged_inlined_row(table_id BIGINT, row_order BIGINT, preserved_row_id BIGINT, value_literals VARCHAR);
 CREATE TEMPORARY TABLE IF NOT EXISTS ducklake_staged_inlined_column_stats(table_id BIGINT, column_id BIGINT, column_size_bytes BIGINT, has_num_values BOOLEAN, num_values BIGINT, has_null_count BOOLEAN, null_count BIGINT, has_min BOOLEAN, min_value VARCHAR, has_max BOOLEAN, max_value VARCHAR, has_contains_nan BOOLEAN, contains_nan BOOLEAN, any_valid BOOLEAN, extra_stats VARCHAR, min_is_exact BOOLEAN, max_is_exact BOOLEAN);
 CREATE TEMPORARY TABLE IF NOT EXISTS ducklake_staged_inlined_delete(table_id BIGINT, inlined_table_name VARCHAR, deleted_row_id BIGINT);
@@ -89,7 +90,7 @@ TRUNCATE ducklake_staged_commit;
 TRUNCATE ducklake_staged_flushed_inlined;
 INSERT INTO ducklake_staged_commit SELECT NULL, NULL, NULL, snapshot_id, NULL, NULL, next_catalog_id, next_file_id
 FROM main.ducklake_snapshot ORDER BY snapshot_id DESC LIMIT 1;
-INSERT INTO ducklake_staged_inlined_data VALUES (1, false);
+INSERT INTO ducklake_staged_inlined_data VALUES (1, false, NULL);
 INSERT INTO ducklake_staged_inlined_row VALUES (2, 0, NULL, ''(42)'');
 SELECT * FROM ducklake_commit(''main'', 2)')
 ----
@@ -190,3 +191,63 @@ query I
 SELECT count(*) FROM lake.d
 ----
 5
+
+# staged rows without column names are inserted by position
+query III
+CALL quack_query_by_name('__ducklake_metadata_lake', '
+TRUNCATE ducklake_staged_commit;
+TRUNCATE ducklake_staged_delete_file;
+INSERT INTO ducklake_staged_commit SELECT NULL, NULL, NULL, snapshot_id, NULL, NULL, next_catalog_id, next_file_id
+FROM main.ducklake_snapshot ORDER BY snapshot_id DESC LIMIT 1;
+INSERT INTO ducklake_staged_inlined_data VALUES (1, false, NULL);
+INSERT INTO ducklake_staged_inlined_row VALUES (1, 0, NULL, ''(5)'');
+SELECT * FROM ducklake_commit(''main'', 3)')
+----
+13	3	false
+
+# staged column names that the inlined table does not have reject the rows
+statement error
+CALL quack_query_by_name('__ducklake_metadata_lake', '
+TRUNCATE ducklake_staged_commit;
+TRUNCATE ducklake_staged_inlined_data;
+TRUNCATE ducklake_staged_inlined_row;
+INSERT INTO ducklake_staged_commit SELECT NULL, NULL, NULL, snapshot_id, NULL, NULL, next_catalog_id, next_file_id
+FROM main.ducklake_snapshot ORDER BY snapshot_id DESC LIMIT 1;
+INSERT INTO ducklake_staged_inlined_data VALUES
+(1, false, ''"_ducklake_row_id","_ducklake_begin_snapshot","_ducklake_end_snapshot","other"'');
+INSERT INTO ducklake_staged_inlined_row VALUES (1, 0, NULL, ''(6)'');
+SELECT * FROM ducklake_commit(''main'', 3)')
+----
+other
+
+# the staging table of an older client has no column for the names
+query III
+CALL quack_query_by_name('__ducklake_metadata_lake', '
+TRUNCATE ducklake_staged_commit;
+TRUNCATE ducklake_staged_inlined_row;
+DROP TABLE ducklake_staged_inlined_data;
+CREATE TEMPORARY TABLE ducklake_staged_inlined_data(table_id BIGINT, has_preserved_row_ids BOOLEAN);
+INSERT INTO ducklake_staged_commit SELECT NULL, NULL, NULL, snapshot_id, NULL, NULL, next_catalog_id, next_file_id
+FROM main.ducklake_snapshot ORDER BY snapshot_id DESC LIMIT 1;
+INSERT INTO ducklake_staged_inlined_data VALUES (1, false);
+INSERT INTO ducklake_staged_inlined_row VALUES (1, 0, NULL, ''(7)'');
+SELECT * FROM ducklake_commit(''main'', 3)')
+----
+14	3	false
+
+query I
+SELECT list(i ORDER BY i) FROM lake.t
+----
+[1, 2, 3, 5, 7]
+
+# the client stages the next commit with its own table
+statement ok
+CALL quack_query_by_name('__ducklake_metadata_lake', 'DROP TABLE ducklake_staged_inlined_data')
+
+statement ok
+INSERT INTO lake.t VALUES (8)
+
+query I
+SELECT list(i ORDER BY i) FROM lake.t
+----
+[1, 2, 3, 5, 7, 8]

@@ -1,0 +1,103 @@
+# name: test/sql/macros/macro_default_cast_text.test
+# description: a macro default stored as the text of a cast reads as its value, one that cannot be read fails when used
+# group: [macros]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files')
+
+statement ok
+CREATE TABLE dl.keep AS SELECT 1 AS i
+
+statement ok
+CREATE MACRO dl.m_date(x, d := DATE '2026-01-01') AS TABLE SELECT x AS v, d AS d_default, typeof(d) AS d_type
+
+statement ok
+CREATE MACRO dl.m_blob(x, b := 'ab'::BLOB) AS TABLE SELECT x AS v, b AS b_default, typeof(b) AS b_type
+
+statement ok
+CREATE MACRO dl.m_float(x, f := 1.5::FLOAT) AS TABLE SELECT x AS v, isnan(f) AS f_is_nan, typeof(f) AS f_type
+
+statement ok
+CREATE MACRO dl.s_text(x, t := 'ab') AS x || ' ' || t
+
+statement ok
+CREATE MACRO dl.s_date(x, bad := DATE '2026-01-01') AS x || ' ' || bad::VARCHAR
+
+# as DuckDB 1.5.2 stored a typed constant, the text of its cast without the first and the last character
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_macro_parameters SET default_value = '2026-01-01''::DAT'
+WHERE parameter_name = 'd'
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_macro_parameters SET default_value = 'ab''::BLO' WHERE parameter_name = 'b'
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_macro_parameters SET default_value = 'nan''::FLOA' WHERE parameter_name = 'f'
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_macro_parameters SET default_value = 'ab''::VARCHA'
+WHERE parameter_name = 't'
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_macro_parameters SET default_value = 'tomorrow' WHERE parameter_name = 'bad'
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files')
+
+query I
+SELECT * FROM dl.keep
+----
+1
+
+query III
+SELECT * FROM dl.m_date(1)
+----
+1	2026-01-01	DATE
+
+query III
+SELECT * FROM dl.m_blob(1)
+----
+1	ab	BLOB
+
+query III
+SELECT * FROM dl.m_float(1)
+----
+1	true	FLOAT
+
+query I
+SELECT dl.s_text(1)
+----
+1 ab'::VARCHA
+
+statement error
+SELECT dl.s_date(1)
+----
+The default of parameter "bad" of macro "s_date" was stored by DuckLake 1.0 in a form that cannot be read back
+
+query I
+SELECT dl.s_date(1, bad := DATE '2026-01-02')
+----
+1 2026-01-02
+
+statement ok
+DROP MACRO dl.s_date
+
+statement ok
+CREATE OR REPLACE MACRO dl.m_date(x, d := DATE '2028-03-03') AS TABLE
+SELECT x AS v, d AS d_default, typeof(d) AS d_type
+
+query III
+SELECT * FROM dl.m_date(1)
+----
+1	2028-03-03	DATE

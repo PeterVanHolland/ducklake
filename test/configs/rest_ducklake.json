@@ -412,6 +412,7 @@
         "test/sql/issues/issue_1573_rewritten_delete_snapshot.test",
         "test/sql/issues/issue_1665_interval_null_counts.test",
         "test/sql/issues/issue_852_cache_growth.test",
+        "test/sql/macros/macro_default_cast_text.test",
         "test/sql/macros/test_default_parameter.test",
         "test/sql/macros/test_defined_types.test",
         "test/sql/macros/test_macro_tables.test",

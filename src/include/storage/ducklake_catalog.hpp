@@ -160,9 +160,10 @@ private:
 
 enum class InlinedDeletionCacheResult { EXISTS, DOES_NOT_EXIST, UNKNOWN };
 
-//! The CREATE MACRO info of a macro stored in DuckLake
+//! The CREATE MACRO info of a DuckLake macro, a stored one can have defaults in the forms of older versions
 unique_ptr<CreateMacroInfo> CreateMacroInfoFromDucklake(ClientContext &context, DuckLakeMacroInfo &macro,
-                                                        const Identifier &schema_name);
+                                                        const Identifier &schema_name,
+                                                        bool read_legacy_defaults = false);
 
 class DuckLakeCatalog : public Catalog {
 public:

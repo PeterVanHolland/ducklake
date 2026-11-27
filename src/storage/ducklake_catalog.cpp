@@ -674,6 +674,17 @@ static bool TryGetNestedLiteralType(ClientContext &context, const ParsedExpressi
 	return true;
 }
 
+//! The macro stays usable when the parameter is passed
+static unique_ptr<ParsedExpression> UnreadableMacroDefault(const Identifier &macro_name,
+                                                           const DuckLakeMacroParameters &param) {
+	vector<unique_ptr<ParsedExpression>> children;
+	children.push_back(ConstantExpression::FromValue(Value(macro_name)));
+	children.push_back(ConstantExpression::FromValue(Value(param.parameter_name)));
+	QualifiedName function_name(Identifier(SYSTEM_CATALOG), Identifier(DEFAULT_SCHEMA),
+	                            Identifier("ducklake_unreadable_macro_default"));
+	return make_uniq<FunctionExpression>(function_name, std::move(children));
+}
+
 //! DuckLake 1.0 stored a nested default as the text of its value, which does not quote most strings
 static unique_ptr<ParsedExpression> LegacyNestedDefault(ClientContext &context, const Identifier &macro_name,
                                                         const DuckLakeMacroParameters &param) {
@@ -687,17 +698,48 @@ static unique_ptr<ParsedExpression> LegacyNestedDefault(ClientContext &context, 
 		}
 	} catch (std::exception &) {
 	}
-	// the macro stays usable when the parameter is passed
-	vector<unique_ptr<ParsedExpression>> children;
-	children.push_back(ConstantExpression::FromValue(Value(macro_name)));
-	children.push_back(ConstantExpression::FromValue(Value(param.parameter_name)));
-	QualifiedName function_name(Identifier(SYSTEM_CATALOG), Identifier(DEFAULT_SCHEMA),
-	                            Identifier("ducklake_unreadable_macro_default"));
-	return make_uniq<FunctionExpression>(function_name, std::move(children));
+	return UnreadableMacroDefault(macro_name, param);
+}
+
+//! The types whose constants DuckDB 1.5.2 stored as a cast without the opening quote and the last character
+static bool HasLegacyCastText(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::UUID:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIME:
+	case LogicalTypeId::TIME_NS:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIME_TZ:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::INTERVAL:
+	case LogicalTypeId::BLOB:
+	case LogicalTypeId::FLOAT:
+	case LogicalTypeId::DOUBLE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static optional<Value> ReadLegacyScalarDefault(ClientContext &context, const Value &default_value,
+                                               const LogicalType &type) {
+	auto text = default_value;
+	if (!text.IsNull() && HasLegacyCastText(type)) {
+		auto type_name = type.ToString();
+		auto cast_suffix = "'::" + type_name.substr(0, type_name.size() - 1);
+		auto &cast_text = StringValue::Get(default_value);
+		if (StringUtil::EndsWith(cast_text, cast_suffix)) {
+			text = Value(cast_text.substr(0, cast_text.size() - cast_suffix.size()));
+		}
+	}
+	return text.TryCastAs(context, type);
 }
 
 unique_ptr<CreateMacroInfo> CreateMacroInfoFromDucklake(ClientContext &context, DuckLakeMacroInfo &macro,
-                                                        const Identifier &schema_name) {
+                                                        const Identifier &schema_name, bool read_legacy_defaults) {
 	CatalogType type;
 	if (macro.implementations.front().type == "scalar") {
 		type = CatalogType::MACRO_ENTRY;
@@ -743,6 +785,14 @@ unique_ptr<CreateMacroInfo> CreateMacroInfoFromDucklake(ClientContext &context, 
 				if (null_default && !DuckLakeTypes::IsStringType(expr_type)) {
 					// nested types are stored without their child types
 					casted_value = expr_type.IsNested() ? Value() : Value(expr_type);
+				} else if (read_legacy_defaults) {
+					auto read_value = ReadLegacyScalarDefault(context, param.default_value, expr_type);
+					if (!read_value) {
+						macro_function->default_parameters.insert(param.parameter_name,
+						                                          UnreadableMacroDefault(macro.macro_name, param));
+						continue;
+					}
+					casted_value = std::move(*read_value);
 				} else {
 					casted_value = param.default_value.CastAs(context, expr_type);
 				}
@@ -957,7 +1007,7 @@ unique_ptr<DuckLakeCatalogSet> DuckLakeCatalog::LoadSchemaForSnapshot(DuckLakeTr
 			continue;
 		}
 		auto &schema_entry = *schema;
-		auto create_macro = CreateMacroInfoFromDucklake(*transaction.context.lock(), macro, schema_entry.name);
+		auto create_macro = CreateMacroInfoFromDucklake(*transaction.context.lock(), macro, schema_entry.name, true);
 		unique_ptr<CatalogEntry> macro_catalog_entry;
 		if (create_macro->type == CatalogType::MACRO_ENTRY) {
 			macro_catalog_entry =

@@ -591,6 +591,9 @@ structure FileColumnStats {
 }
 
 /// A data file of a table that is visible in a snapshot, together with its deletes.
+///
+/// A data file that an older release left with several delete files has an entry for each of them. The entries are one
+/// file, and a row of it is deleted when the delete file of one of the entries deletes it.
 @cppClass("DuckLakeFileListEntry")
 structure FileListEntry {
     /// The id of the data file.
@@ -786,6 +789,10 @@ enum CompactionType {
 }
 
 /// A data file whose rows were deleted between two snapshots.
+///
+/// A data file that an older release left with several delete files and that was deleted entirely has an entry for
+/// each of them, as its `previous_delete_file`. The entries are one deletion, whose rows are the rows that none of the
+/// delete files had deleted before.
 @cppClass("DuckLakeDeleteScanEntry")
 structure DeleteScanEntry {
     /// The data file.

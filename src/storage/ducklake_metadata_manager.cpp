@@ -3666,6 +3666,7 @@ DuckLakeMetadataManager::GetTableDeletions(DuckLakeTableEntry &table, DuckLakeSn
 	// 2. Data files being deleted entirely through setting end_snapshot (full file deletes)
 	// 3. Inlined file deletions stored in the metadata database
 	// For all deletes, we need to obtain any PREVIOUS deletes as well to exclude rows already deleted
+	// the end of a data file is listed once for each delete file that was visible before it
 	string query;
 
 	// Add CTE for aggregated inlined deletions if the table exists
@@ -3731,7 +3732,7 @@ SELECT %s, data.end_snapshot, true FROM (
 	WHERE table_id = %d AND end_snapshot >= %d AND end_snapshot <= {SNAPSHOT_ID}%s
 ) AS data
 LEFT JOIN LATERAL (
-	SELECT DISTINCT ON (data_file_id)
+	SELECT
 		data_file_id,
 		path,
 		path_is_relative,
@@ -3741,7 +3742,7 @@ LEFT JOIN LATERAL (
 		format{FILE_COUNTS}
 	FROM {DELETE_FILES}
 	WHERE table_id = %d AND begin_snapshot <= data.end_snapshot
-	ORDER BY data_file_id ASC, begin_snapshot DESC
+		AND (end_snapshot IS NULL OR end_snapshot >= data.end_snapshot)
 ) AS previous_delete
 USING (data_file_id), (
 	SELECT CAST(NULL AS VARCHAR) AS path,
@@ -5309,9 +5310,10 @@ void DuckLakeMetadataManager::ReadFilePartitions(TableIndex table_id, DuckLakeSn
 	if (files.empty()) {
 		return;
 	}
-	unordered_map<idx_t, idx_t> file_positions;
+	// a data file with several delete files is listed once for each of them
+	unordered_map<idx_t, vector<idx_t>> file_positions;
 	for (idx_t i = 0; i < files.size(); i++) {
-		file_positions[files[i].file_id.index] = i;
+		file_positions[files[i].file_id.index].push_back(i);
 	}
 	auto query = StringUtil::Format(R"(
 SELECT data.data_file_id, data.partition_id, value.partition_key_index, value.partition_value
@@ -5329,14 +5331,16 @@ ORDER BY data.data_file_id, value.partition_key_index)",
 		if (position == file_positions.end()) {
 			continue;
 		}
-		auto &file = files[position->second];
-		if (!row.IsNull(1)) {
-			file.partition_id = row.GetValue<idx_t>(1);
-		}
 		DuckLakeFilePartition partition_value;
 		partition_value.partition_column_idx = row.GetValue<idx_t>(2);
 		partition_value.partition_value = row.IsNull(3) ? Value(LogicalType::VARCHAR) : Value(row.GetValue<string>(3));
-		file.partition_values.push_back(std::move(partition_value));
+		for (auto file_position : position->second) {
+			auto &file = files[file_position];
+			if (!row.IsNull(1)) {
+				file.partition_id = row.GetValue<idx_t>(1);
+			}
+			file.partition_values.push_back(partition_value);
+		}
 	}
 }
 

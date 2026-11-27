@@ -467,6 +467,8 @@ struct DuckLakeDeleteScanEntry {
 	DuckLakeFileData file;
 	DuckLakeFileData delete_file;
 	DuckLakeFileData previous_delete_file;
+	//! The other delete files that were visible before the data file ended
+	vector<DuckLakeFileData> other_previous_delete_files;
 	idx_t row_count;
 	optional_idx row_id_start;
 	MappingIndex mapping_id;

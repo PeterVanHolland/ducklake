@@ -599,16 +599,29 @@ static void MergeDeleteFile(DuckLakeFileListExtendedEntry &entry, DuckLakeFileLi
 	}
 }
 
+static void MergeDeleteFile(DuckLakeDeleteScanEntry &scan, DuckLakeDeleteScanEntry &other) {
+	scan.other_previous_delete_files.push_back(std::move(other.previous_delete_file));
+	scan.inlined_file_deletions.insert(other.inlined_file_deletions.begin(), other.inlined_file_deletions.end());
+}
+
+template <class ENTRY>
+static bool IsListedPerDeleteFile(const ENTRY &entry) {
+	return !entry.delete_file.path.empty();
+}
+
+static bool IsListedPerDeleteFile(const DuckLakeDeleteScanEntry &scan) {
+	return scan.file_deleted && !scan.previous_delete_file.path.empty();
+}
+
 //! Keeps one entry per data file, an older release could leave a data file with several visible delete files.
-//! Every list keeps the delete file with the highest path, which is the one a new delete file replaces
+//! Every file list keeps the delete file with the highest path, which is the one a new delete file replaces
 template <class ENTRY>
 static void MergeDeleteFiles(vector<ENTRY> &entries) {
 	unordered_map<idx_t, idx_t> file_positions;
 	idx_t entry_count = 0;
 	for (idx_t entry_idx = 0; entry_idx < entries.size(); entry_idx++) {
 		auto &entry = entries[entry_idx];
-		// only a data file with a delete file can be listed more than once
-		if (!entry.delete_file.path.empty()) {
+		if (IsListedPerDeleteFile(entry)) {
 			auto position = file_positions.emplace(entry.file_id.index, entry_count);
 			if (!position.second) {
 				MergeDeleteFile(entries[position.first->second], entry);
@@ -848,6 +861,7 @@ void DuckLakeMultiFileList::GetTableDeletions() const {
 	delete_scans = metadata_manager.GetTableDeletions(
 	    read_info.table, *read_info.start_snapshot, read_info.snapshot, read_info.include_local_changes,
 	    has_projection ? optional_ptr<const vector<DuckLakeProjectedColumn>>(projection) : nullptr);
+	MergeDeleteFiles(delete_scans);
 	for (auto &file : delete_scans) {
 		DuckLakeFileListEntry file_entry;
 		file_entry.file = file.file;

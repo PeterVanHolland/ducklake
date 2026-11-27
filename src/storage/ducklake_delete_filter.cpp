@@ -360,19 +360,24 @@ void DuckLakeDeleteFilter::Initialize(ClientContext &context, const DuckLakeDele
 		}
 	}
 
-	if (!delete_scan.previous_delete_file.path.empty() && !has_embedded_snapshots) {
-		// if we have a previous delete file - scan that set of deletes
-		// This only matters if we do not have a partial deletion file, since thes have all deletes
-		auto previous_deletes =
-		    ScanDeleteFile(context, delete_scan.previous_delete_file, optional_idx(), optional_idx());
-		// these deletes are not new - we should not scan them
-		for (auto delete_idx : previous_deletes.deleted_rows) {
-			if (delete_idx >= delete_scan.row_count) {
-				throw InvalidInputException(
-				    "Invalid delete data - delete index read from file %s is out of range for data file %s",
-				    delete_scan.previous_delete_file.path, delete_scan.file.path);
+	if (!has_embedded_snapshots) {
+		// exclude earlier deletes when the current delete file has no snapshot ids
+		auto skip_previous_deletes = [&](const DuckLakeFileData &previous_delete_file) {
+			auto previous_deletes = ScanDeleteFile(context, previous_delete_file, optional_idx(), optional_idx());
+			for (auto delete_idx : previous_deletes.deleted_rows) {
+				if (delete_idx >= delete_scan.row_count) {
+					throw InvalidInputException(
+					    "Invalid delete data - delete index read from file %s is out of range for data file %s",
+					    previous_delete_file.path, delete_scan.file.path);
+				}
+				rows_to_scan[delete_idx] = false;
 			}
-			rows_to_scan[delete_idx] = false;
+		};
+		if (!delete_scan.previous_delete_file.path.empty()) {
+			skip_previous_deletes(delete_scan.previous_delete_file);
+		}
+		for (auto &previous_delete_file : delete_scan.other_previous_delete_files) {
+			skip_previous_deletes(previous_delete_file);
 		}
 	}
 

@@ -108,8 +108,15 @@ bool DuckLakeColumnGeoStats::ParseStats(const string &stats_name, const vector<V
 }
 
 void DuckLakeColumnGeoStats::SetUnknownExtent() {
-	auto max = std::numeric_limits<double>::max();
-	extent = GeometryExtent {-max, -max, -max, -max, max, max, max, max};
+	SetUnknownRange(extent.x_min, extent.x_max);
+	SetUnknownRange(extent.y_min, extent.y_max);
+	SetUnknownRange(extent.z_min, extent.z_max);
+	SetUnknownRange(extent.m_min, extent.m_max);
+}
+
+void DuckLakeColumnGeoStats::SetUnknownRange(double &min, double &max) {
+	min = -std::numeric_limits<double>::max();
+	max = std::numeric_limits<double>::max();
 }
 
 void DuckLakeColumnGeoStats::SetUnknownTypes() {

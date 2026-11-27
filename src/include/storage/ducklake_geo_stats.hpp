@@ -28,6 +28,8 @@ struct DuckLakeColumnGeoStats final : public DuckLakeColumnExtraStats {
 	unique_ptr<BaseStatistics> ToStats() const;
 	//! Cover every finite coordinate, which older clients read too, unlike an infinite extent
 	void SetUnknownExtent();
+	//! Covers every finite coordinate of one axis, as SetUnknownExtent does for all of them
+	static void SetUnknownRange(double &min, double &max);
 	void SetUnknownTypes();
 
 public:

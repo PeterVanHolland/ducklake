@@ -191,13 +191,14 @@ SELECT count(*) FROM dl.k WHERE v > (SELECT max(v) FROM dl.k)
 ----
 0
 
+# the retype casts the inlined rows, so their stats are the DOUBLE values written
 query II
 SELECT s.min_value, s.max_value
 FROM __ducklake_metadata_dl.ducklake_table_column_stats s
 JOIN __ducklake_metadata_dl.ducklake_table t USING (table_id)
 WHERE t.table_name = 'k'
 ----
-NULL	NULL
+0.10000000149011612	0.10000000149011612
 
 # an inlined map value, whose literal carries the type it was written with
 statement ok
@@ -229,7 +230,7 @@ FROM __ducklake_metadata_dl.ducklake_table_column_stats s
 JOIN __ducklake_metadata_dl.ducklake_table t USING (table_id)
 WHERE t.table_name = 'p' AND s.column_id = 3
 ----
-NULL	NULL
+0.10000000149011612	0.10000000149011612
 
 # queries in the retyping transaction
 statement ok

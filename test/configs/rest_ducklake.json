@@ -166,6 +166,7 @@
         "test/sql/sorted_table/data_inlining_flush_sorted_basic.test",
         "test/sql/sorted_table/data_inlining_flush_sorted_basic_expression.test",
         "test/sql/sorted_table/data_inlining_flush_sorted_expression_deletes_999.test",
+        "test/sql/sorted_table/data_inlining_flush_sorted_older_schema.test",
         "test/sql/sorted_table/data_inlining_flush_sorted_parallel.test",
         "test/sql/sorted_table/data_inlining_flush_sorted_sequential_updates.test",
         "test/sql/sorted_table/data_inlining_flush_sorted_typed_order.test",

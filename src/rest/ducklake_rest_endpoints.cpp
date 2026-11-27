@@ -233,89 +233,6 @@ RESTSnapshotData DuckLakeRESTEndpoints::GetSnapshotAt(DuckLakeRESTRequest &reque
 	return result;
 }
 
-//! The value of a field in rows that were written before the field existed
-static string MissingFieldExpression(const DuckLakeFieldId &field) {
-	auto initial_default = field.GetInitialDefault();
-	return StringUtil::Format("CAST(%s AS %s)", initial_default ? initial_default->ToString() : "NULL",
-	                          field.Type().ToString());
-}
-
-//! Whether a field was written with the type and the (nested) field ids that it has
-static bool SameFields(const DuckLakeFieldId &written, const DuckLakeFieldId &field) {
-	auto &written_children = written.Children();
-	auto &children = field.Children();
-	if (written.GetFieldIndex() != field.GetFieldIndex() || written.Type() != field.Type() ||
-	    written_children.size() != children.size()) {
-		return false;
-	}
-	for (idx_t i = 0; i < children.size(); i++) {
-		if (!SameFields(*written_children[i], *children[i])) {
-			return false;
-		}
-	}
-	return true;
-}
-
-//! The expression that turns a value of a field as it was written into a value of the field as it is, matching the
-//! (nested) fields by their field ids
-static string EvolveFieldExpression(const string &expression, const DuckLakeFieldId &written,
-                                    const DuckLakeFieldId &field, idx_t depth) {
-	if (SameFields(written, field)) {
-		return expression;
-	}
-	auto &written_children = written.Children();
-	auto &children = field.Children();
-	auto variable = "x" + to_string(depth);
-	switch (field.Type().id()) {
-	case LogicalTypeId::STRUCT: {
-		if (written.Type().id() != LogicalTypeId::STRUCT) {
-			break;
-		}
-		vector<string> entries;
-		for (auto &child : children) {
-			optional_ptr<const DuckLakeFieldId> written_child;
-			for (auto &candidate : written_children) {
-				if (candidate->GetFieldIndex() == child->GetFieldIndex()) {
-					written_child = candidate.get();
-				}
-			}
-			string value;
-			if (written_child) {
-				auto extracted = StringUtil::Format("struct_extract(%s, %s)", expression,
-				                                    SQLString::ToString(written_child->Name().GetIdentifierName()));
-				value = EvolveFieldExpression(extracted, *written_child, *child, depth + 1);
-			} else {
-				value = MissingFieldExpression(*child);
-			}
-			entries.push_back(
-			    StringUtil::Format("%s: %s", SQLString::ToString(child->Name().GetIdentifierName()), value));
-		}
-		return StringUtil::Format("CASE WHEN %s IS NULL THEN NULL ELSE {%s} END", expression,
-		                          StringUtil::Join(entries, ", "));
-	}
-	case LogicalTypeId::LIST:
-		if (written.Type().id() != LogicalTypeId::LIST || written_children.size() != 1 || children.size() != 1) {
-			break;
-		}
-		return StringUtil::Format("list_transform(%s, lambda %s: %s)", expression, variable,
-		                          EvolveFieldExpression(variable, *written_children[0], *children[0], depth + 1));
-	case LogicalTypeId::MAP:
-		if (written.Type().id() != LogicalTypeId::MAP || written_children.size() != 2 || children.size() != 2) {
-			break;
-		}
-		return StringUtil::Format(
-		    "map_from_entries(list_transform(map_entries(%s), lambda %s: {'key': %s, 'value': %s}))", expression,
-		    variable,
-		    EvolveFieldExpression(StringUtil::Format("struct_extract(%s, 'key')", variable), *written_children[0],
-		                          *children[0], depth + 1),
-		    EvolveFieldExpression(StringUtil::Format("struct_extract(%s, 'value')", variable), *written_children[1],
-		                          *children[1], depth + 1));
-	default:
-		break;
-	}
-	return StringUtil::Format("CAST(%s AS %s)", expression, field.Type().ToString());
-}
-
 //! Sets the fields of a struct that the client does not read to NULL, in the struct and in the structs it holds
 static void RemoveUnreadFields(Vector &column, idx_t count, const DuckLakeFieldId &field,
                                const RESTColumnIdentifier &identifier) {
@@ -395,11 +312,11 @@ ReadInlinedRows(DuckLakeRESTRequest &request, DuckLakeTableEntry &table, DuckLak
 		for (auto &field : fields) {
 			auto written = table_at_version->GetFieldData().GetByFieldIndex(field.get().GetFieldIndex());
 			if (!written) {
-				columns.push_back(MissingFieldExpression(field.get()));
+				columns.push_back(field.get().MissingFieldExpression());
 				continue;
 			}
 			auto read = metadata_manager.CastColumnToTarget(SQLIdentifier::ToString(written->Name()), written->Type());
-			columns.push_back(EvolveFieldExpression(read, *written, field.get(), 0));
+			columns.push_back(field.get().EvolveFieldExpression(read, *written));
 		}
 		auto query_result = read_rows(inlined_table.table_name, columns);
 		query_result->ThrowIfError("Failed to read inlined data: ");

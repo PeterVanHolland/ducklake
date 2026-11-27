@@ -6,12 +6,13 @@
 #include "duckdb/parser/result_modifier.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/parser.hpp"
 #include "duckdb/planner/bound_expression_sql_exporter.hpp"
 #include "duckdb/planner/bound_result_modifier.hpp"
 
 namespace duckdb {
 
-//! Replace the column references of a sort expression with the inlined column of the same field
+//! Replace the column references of a sort expression with the inlined column of the same field, as the table has it
 static void MapToInlinedColumns(unique_ptr<ParsedExpression> &expr, const DuckLakeTableEntry &current_table,
                                 const DuckLakeTableEntry &inlined_table) {
 	if (expr->GetExpressionClass() != ExpressionClass::COLUMN_REF) {
@@ -28,12 +29,14 @@ static void MapToInlinedColumns(unique_ptr<ParsedExpression> &expr, const DuckLa
 	const auto &column = current_table.GetColumns().GetColumn(column_ref.GetColumnName());
 	auto &field_id = current_table.GetFieldId(column.Physical());
 	auto inlined_field_id = inlined_table.GetFieldId(field_id.GetFieldIndex());
-	if (inlined_field_id) {
-		expr = make_uniq<ColumnRefExpression>(inlined_field_id->Name(), Identifier("inlined_data"));
-	} else {
+	if (!inlined_field_id) {
 		// the inlined rows were written before this column existed
 		expr = field_id.GetInitialDefault();
+		return;
 	}
+	ColumnRefExpression inlined_column(inlined_field_id->Name(), Identifier("inlined_data"));
+	auto evolved = field_id.EvolveFieldExpression(inlined_column.ToString(), *inlined_field_id);
+	expr = Parser::GetBuiltinParser().ParseSingleExpression(evolved);
 }
 
 string DuckLakeSort::BuildSortOrderSQL(ClientContext &context, const vector<BoundOrderByNode> &orders,

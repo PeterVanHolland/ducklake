@@ -68,6 +68,10 @@ public:
 	unique_ptr<ParsedExpression> GetDefault() const;
 	//! The value of this field in rows written before it existed
 	unique_ptr<ParsedExpression> GetInitialDefault() const;
+	//! The SQL of that value in the type of the field
+	string MissingFieldExpression() const;
+	//! The SQL that turns a value of the field as it was written into the field as it is, matching fields by id
+	string EvolveFieldExpression(const string &expression, const DuckLakeFieldId &written, idx_t depth = 0) const;
 
 	//! The context casts the default to its initial value in the time zone of the session, unless initial_default is
 	//! set
@@ -86,6 +90,10 @@ public:
 	unique_ptr<DuckLakeFieldId> RemoveField(const vector<Identifier> &column_path, idx_t depth = 1) const;
 	unique_ptr<DuckLakeFieldId> RenameField(const vector<Identifier> &column_path, const Identifier &new_name,
 	                                        idx_t depth = 1) const;
+
+private:
+	//! Whether the field was written with the type and the (nested) field ids that it has
+	bool SameFields(const DuckLakeFieldId &written) const;
 
 private:
 	DuckLakeColumnData column_data;

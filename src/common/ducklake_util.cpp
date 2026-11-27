@@ -8,6 +8,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/common/types/blob.hpp"
+#include "duckdb/common/types/variant/parquet_variant_iterator.hpp"
 #include "duckdb/common/encryption_state.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parser.hpp"
@@ -127,6 +128,17 @@ static string EscapeVarcharForSQL(const string &str_val) {
 	return "'" + ret + "'";
 }
 
+//! The Parquet Variant encoding of a VARIANT value, its metadata followed by its value
+static Value ParquetVariantBytes(const Value &value) {
+	Vector variant(value, count_t(1));
+	child_list_t<LogicalType> parquet_variant {{"metadata", LogicalType::BLOB}, {"value", LogicalType::BLOB}};
+	Vector encoded(LogicalType::STRUCT(std::move(parquet_variant)), 1);
+	ParquetVariantConversion::ToParquetVariant(variant, 1, encoded);
+	auto encoded_value = encoded.GetValue(0);
+	auto &parts = StructValue::GetChildren(encoded_value);
+	return Value::BLOB_RAW(StringValue::Get(parts[0]) + StringValue::Get(parts[1]));
+}
+
 string ToSQLString(DuckLakeMetadataManager &metadata_manager, const Value &value) {
 	if (value.IsNull()) {
 		return value.ToString();
@@ -167,7 +179,8 @@ string ToSQLString(DuckLakeMetadataManager &metadata_manager, const Value &value
 			                        "inlined in this catalog type");
 			// LCOV_EXCL_STOP
 		}
-		return value.ToSQLString();
+		// the text of a nested value is built once per level, the Parquet Variant bytes are flat
+		return "variant_bytes_to_variant(" + ToSQLString(metadata_manager, ParquetVariantBytes(value)) + ")";
 	}
 	case LogicalTypeId::FLOAT: {
 		float fval = FloatValue::Get(value);

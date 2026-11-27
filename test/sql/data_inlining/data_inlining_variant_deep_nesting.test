@@ -1,0 +1,86 @@
+# name: test/sql/data_inlining/data_inlining_variant_deep_nesting.test
+# description: a VARIANT nested 1200 levels deep is inlined and read back on every catalog
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/data_inlining_variant_deep_nesting', DATA_INLINING_ROW_LIMIT 10)
+
+# the Parquet Variant encoding of arrays and objects nested in each other
+statement ok
+CREATE TEMP TABLE levels AS
+WITH RECURSIVE levels(depth, child_length, width) AS (
+    SELECT 1, 1, 1
+    UNION ALL
+    SELECT depth + 1, child_length + 2 + depth % 2 + 2 * width,
+           CASE WHEN child_length + 2 + depth % 2 + 2 * width < 256 THEN 1
+                WHEN child_length + 2 + depth % 2 + 2 * width < 65536 THEN 2 ELSE 3 END
+    FROM levels WHERE depth < 1200
+)
+SELECT depth,
+       CASE WHEN depth % 2 = 1 THEN printf('%02x0100', 2 + 4 * (width - 1))
+            ELSE printf('%02x01', 3 + 4 * (width - 1)) END ||
+       repeat('00', width) ||
+       left(printf('%02x%02x%02x', child_length % 256, child_length // 256 % 256, child_length // 65536), 2 * width) AS header
+FROM levels
+
+statement ok
+CREATE TEMP TABLE deep AS
+SELECT variant_bytes_to_variant(unhex('1101000161' || string_agg(header, '' ORDER BY depth DESC) || '04')) AS v
+FROM levels
+
+statement ok
+CREATE TABLE lake.deep AS SELECT v FROM deep
+
+# the row is inlined
+query I
+SELECT count(*) FROM ducklake_list_files('lake', 'deep')
+----
+0
+
+query I
+SELECT v::VARCHAR = (SELECT v::VARCHAR FROM deep) FROM lake.deep
+----
+true
+
+# every catalog but the DuckDB file stores the Parquet Variant encoding of inlined VARIANT values, as a flush does
+statement ok
+CREATE TABLE lake.t(id INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO lake.t VALUES
+    (1, CAST(CAST(42 AS UTINYINT) AS VARIANT)),
+    (2, CAST(CAST(42 AS HUGEINT) AS VARIANT)),
+    (3, CAST(CAST(1.23 AS DECIMAL(9, 2)) AS VARIANT)),
+    (4, CAST(CAST(1.23 AS DECIMAL(3, 2)) AS VARIANT)),
+    (5, CAST(DATE '2024-01-02' AS VARIANT)),
+    (6, CAST(CAST(42 AS SMALLINT) AS VARIANT))
+
+query I
+SELECT string_agg(v::VARCHAR, ' ' ORDER BY id) FROM lake.t
+----
+42 42 1.23 1.23 2024-01-02 42
+
+query I
+SELECT string_agg(variant_typeof(v), ' ' ORDER BY id) =
+       CASE WHEN (SELECT catalog_type FROM ducklake_settings('lake')) = 'duckdb'
+            THEN 'UINT8 INT128 DECIMAL(9, 2) DECIMAL(3, 2) DATE INT16'
+            ELSE 'INT16 INT64 DECIMAL(3, 2) DECIMAL(3, 2) DATE INT16' END
+FROM lake.t
+----
+true
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 't')
+
+query II
+SELECT string_agg(v::VARCHAR, ' ' ORDER BY id), string_agg(variant_typeof(v), ' ' ORDER BY id) FROM lake.t
+----
+42 42 1.23 1.23 2024-01-02 42	INT16 INT64 DECIMAL(3, 2) DECIMAL(3, 2) DATE INT16

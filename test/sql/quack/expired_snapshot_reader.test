@@ -1,0 +1,89 @@
+# name: test/sql/quack/expired_snapshot_reader.test
+# description: A Quack reader whose snapshot another connection expires gets an error, not an empty result
+# group: [quack]
+
+require ducklake
+
+require parquet
+
+require-env DUCKLAKE_CONNECTION quack:localhost:19999
+
+require quack
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{DATA_PATH}/expired_snapshot_reader', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE lake.t AS SELECT 42 AS i
+
+statement ok con1
+BEGIN
+
+query I con1
+SELECT count(*) FROM lake.t AT (VERSION => 1)
+----
+1
+
+query I con1
+SELECT count(*) FROM lake.t
+----
+1
+
+statement ok con2
+DELETE FROM lake.t
+
+statement ok con2
+CALL ducklake_expire_snapshots('lake', versions => [1])
+
+# the server commits each statement on its own, so the expired snapshot cannot be read any more
+statement error con1
+SELECT count(*) FROM lake.t AT (VERSION => 1)
+----
+Snapshot 1 of the DuckLake catalog has been expired by another connection
+
+# the error ends the transaction like any other error
+statement error con1
+SELECT 1
+----
+Current transaction is aborted
+
+statement ok con1
+ROLLBACK
+
+query I con1
+SELECT count(*) FROM lake.t
+----
+0
+
+# the snapshot of the transaction itself can be expired too
+statement ok con2
+INSERT INTO lake.t VALUES (42)
+
+statement ok con1
+BEGIN
+
+query I con1
+SELECT i FROM lake.t
+----
+42
+
+statement ok con2
+INSERT INTO lake.t VALUES (43)
+
+statement ok con2
+CALL ducklake_expire_snapshots('lake', older_than => now())
+
+statement error con1
+SELECT i FROM lake.t
+----
+of the DuckLake catalog has been expired by another connection
+
+statement ok con1
+ROLLBACK
+
+query I con1
+SELECT count(*) FROM lake.t
+----
+2

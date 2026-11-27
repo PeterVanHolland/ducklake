@@ -10,6 +10,7 @@
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/common/operator/add.hpp"
 
 namespace duckdb {
 
@@ -101,6 +102,7 @@ DuckLakeColumnStats DuckLakeColumnStats::FromGlobalStats(const LogicalType &type
 	if (col.has_extra_stats && stats.extra_stats) {
 		stats.extra_stats->Deserialize(col.extra_stats);
 	}
+	stats.DropReversedBounds();
 	return stats;
 }
 
@@ -247,9 +249,14 @@ bool StatsBoundLessThan(const Value &left, const Value &right) {
 	return left < right;
 }
 
+//! UUID bounds are compared as values, their text may mix upper and lower case
+static bool CompareBoundsAsValues(const LogicalType &type) {
+	return RequiresValueComparison(type) || type.id() == LogicalTypeId::UUID;
+}
+
 //! Returns false when either bound is unknown
 static bool TryCompareBounds(const LogicalType &type, const string &left, const string &right, int32_t &result) {
-	if (!RequiresValueComparison(type)) {
+	if (!CompareBoundsAsValues(type)) {
 		// for other types we can compare the strings directly
 		result = left < right ? -1 : (left == right ? 0 : 1);
 		return true;
@@ -303,6 +310,7 @@ static void MergeExtraStats(unique_ptr<DuckLakeColumnExtraStats> &extra_stats, c
 }
 
 void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
+	DropReversedBounds();
 	// the null state has to be read before the counts of the source are added to it
 	bool adopt_bounds = !bounds_unknown && has_num_values && has_null_count && num_values == null_count;
 	bool types_differ = type != new_stats.type;
@@ -310,34 +318,26 @@ void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
 	if (types_differ) {
 		type = new_stats.type;
 	}
-	if (!new_stats.has_null_count) {
-		has_null_count = false;
-	} else if (has_null_count) {
-		// both stats have a null count - add them up
-		null_count += new_stats.null_count;
-	}
-	if (!new_stats.has_num_values) {
-		has_num_values = false;
-	} else if (has_num_values) {
-		// both stats have a null count - add them up
-		num_values += new_stats.num_values;
-	}
+	// a count that overflows is unknown
+	has_null_count = has_null_count && new_stats.has_null_count &&
+	                 TryAddOperator::Operation(null_count, new_stats.null_count, null_count);
+	has_num_values = has_num_values && new_stats.has_num_values &&
+	                 TryAddOperator::Operation(num_values, new_stats.num_values, num_values);
 	column_size_bytes += new_stats.column_size_bytes;
 	if (!new_stats.has_contains_nan) {
 		has_contains_nan = false;
-	} else if (has_contains_nan) {
-		// both stats have a null count - add them up
-		if (new_stats.contains_nan) {
-			contains_nan = true;
-		}
+	} else if (has_contains_nan && new_stats.contains_nan) {
+		contains_nan = true;
 	}
 
+	if (!new_stats.BoundsOrdered()) {
+		SetBoundsUnknown();
+		MergeExtraStats(extra_stats, new_stats);
+		return;
+	}
 	if (!new_stats.AnyValid()) {
-		// all values in the source are NULL - don't update min/max
 		if (!bounds_survive) {
-			has_min = false;
-			has_max = false;
-			bounds_unknown = true;
+			SetBoundsUnknown();
 		}
 		return;
 	}
@@ -346,15 +346,12 @@ void DuckLakeColumnStats::MergeStats(const DuckLakeColumnStats &new_stats) {
 			// invalidated bounds
 			return;
 		}
-		// all values in the current stats are null - copy the min/max
 		CopyMinFrom(new_stats);
 		CopyMaxFrom(new_stats);
 		any_valid = true;
 	} else if (!bounds_survive) {
 		// bounds do not survive this retype
-		has_min = false;
-		has_max = false;
-		bounds_unknown = true;
+		SetBoundsUnknown();
 	} else {
 		MergeBound(new_stats, true);
 		MergeBound(new_stats, false);
@@ -395,25 +392,55 @@ void DuckLakeColumnStats::SetValidity(BaseStatistics &stats) const {
 	}
 }
 
+bool DuckLakeColumnStats::BoundsOrdered() const {
+	if (!has_min || !has_max) {
+		return true;
+	}
+	// string bounds are a lower and an upper bound in text order, exact or not
+	if (!CompareBoundsAsValues(type) && type.id() != LogicalTypeId::VARCHAR) {
+		return true;
+	}
+	int32_t comparison;
+	return !TryCompareBounds(type, min, max, comparison) || comparison <= 0;
+}
+
+void DuckLakeColumnStats::DropReversedBounds() {
+	if (!BoundsOrdered()) {
+		SetBoundsUnknown();
+	}
+}
+
+void DuckLakeColumnStats::SetBoundsUnknown() {
+	has_min = false;
+	has_max = false;
+	bounds_unknown = true;
+}
+
 unique_ptr<BaseStatistics> DuckLakeColumnStats::CreateNumericStats() const {
 	if (!has_min && !has_max) {
 		return NumericStats::CreateUnknown(type).ToUnique();
 	}
 	// a missing bound leaves its side of the range unknown
 	auto stats = NumericStats::CreateUnknown(type);
+	optional<Value> min_value;
+	optional<Value> max_value;
 	if (has_min) {
-		auto min_value = TryCastStatsBound(min, type);
+		min_value = TryCastStatsBound(min, type);
 		if (!min_value) {
 			return nullptr;
 		}
 		NumericStats::SetMin(stats, *min_value);
 	}
 	if (has_max) {
-		auto max_value = TryCastStatsBound(max, type);
+		max_value = TryCastStatsBound(max, type);
 		if (!max_value) {
 			return nullptr;
 		}
 		NumericStats::SetMax(stats, *max_value);
+	}
+	// reversed bounds would prune every row
+	if (min_value && max_value && StatsBoundLessThan(*max_value, *min_value)) {
+		return nullptr;
 	}
 	SetValidity(stats);
 	return stats.ToUnique();

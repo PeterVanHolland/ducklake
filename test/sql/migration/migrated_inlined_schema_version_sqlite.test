@@ -12,10 +12,11 @@ require sqlite_scanner
 # inlined one more row of t and of k, for k after it changed its columns with inlining off
 unzip data/old_ducklake/migrated_inlined_schema_version_sqlite.db.gz {TEST_DIR}/migrated_inlined_sqlite.db
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok
 ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite.db' AS between
 	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'between_meta',
-	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+	DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
 
 # every schema version of t begins at its creation, the snapshots still tell where each began
 query I
@@ -79,3 +80,27 @@ SELECT x FROM between.k ORDER BY ALL
 ----
 20
 NULL
+
+# the flush wrote the inlined rows to files with their columns, the migration to 2.0 converts none
+statement ok
+DETACH between
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite.db' AS between
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT a, b FROM between.t ORDER BY ALL
+----
+1	10
+2	20
+
+query IIIII
+SELECT a, v, d, s, dc FROM between.m
+----
+1	text	2026-01-02	{'x': 5}	1.25
+
+query II
+SELECT a, c FROM between.j
+----
+1	30

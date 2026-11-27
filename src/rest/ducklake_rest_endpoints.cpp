@@ -690,6 +690,7 @@ RESTTableChangesResponse DuckLakeRESTEndpoints::TableChanges(DuckLakeRESTRequest
 RESTCompactResponse DuckLakeRESTEndpoints::Compact(DuckLakeRESTRequest &request, const RESTCompactRequest &parameters) {
 	// the compaction runs in transactions of its own
 	auto catalog_name = request.catalog->GetName().GetIdentifierName();
+	auto data_path = request.catalog->DataPath();
 	auto &db = DatabaseInstance::GetDatabase(*request.connection.context);
 	request.connection.Rollback();
 	bool flush = parameters.type == "flush_inlined_data";
@@ -738,6 +739,12 @@ RESTCompactResponse DuckLakeRESTEndpoints::Compact(DuckLakeRESTRequest &request,
 	    flush ? "schema_name, table_name, rows_flushed" : "schema_name, table_name, files_processed, files_created";
 	auto result =
 	    con.Query(StringUtil::Format("SELECT %s FROM %s(%s)", columns, function, StringUtil::Join(arguments, ", ")));
+	if (result->HasError() && result->GetErrorObject().Type() == ExceptionType::IO) {
+		result->ThrowError(StringUtil::Format("The REST server compacts the data files through its data path \"%s\", a "
+		                                      "client with another DATA_PATH has to write its files where the server "
+		                                      "reads them: ",
+		                                      data_path));
+	}
 	result->ThrowIfError();
 	RESTCompactResponse response;
 	for (auto &row : *result) {

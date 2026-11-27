@@ -44,6 +44,15 @@ bool DuckLakeTableFunctionUtil::TryGetNonNullOption(const TableFunctionBindInput
 	return true;
 }
 
+bool DuckLakeTableFunctionUtil::GetDryRunOption(const TableFunctionBindInput &input, DuckLakeCatalog &catalog) {
+	Value dry_run;
+	bool is_dry_run = TryGetNonNullOption(input, "dry_run", "boolean", dry_run) && BooleanValue::Get(dry_run);
+	if (!is_dry_run) {
+		catalog.VerifyWritable();
+	}
+	return is_dry_run;
+}
+
 bool DuckLakeTableFunctionUtil::TryGetTimestampOption(const TableFunctionBindInput &input, const string &name,
                                                       Value &result) {
 	if (!TryGetNonNullOption(input, name, "timestamp", result)) {

@@ -875,8 +875,27 @@ void DuckLakeTransaction::PinSchemaCacheEntry(shared_ptr<DuckLakeSchemaCacheEntr
 	schema_pins->Pin(std::move(entry));
 }
 
+shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeTransaction::GetKeptSchemaCacheEntry(const string &key) {
+	return schema_pins->GetKept(key);
+}
+
+shared_ptr<DuckLakeSchemaCacheEntry>
+DuckLakeTransaction::KeepSchemaCacheEntry(const string &key, shared_ptr<DuckLakeSchemaCacheEntry> entry) {
+	return schema_pins->Keep(key, std::move(entry));
+}
+
 void DuckLakeTransaction::ClearSchemaCachePins() {
 	schema_pins->Clear();
+}
+
+void DuckLakeTransaction::ForgetMetadataView() {
+	metadata_view_snapshot = DConstants::INVALID_INDEX;
+	schema_pins->ForgetKept();
+}
+
+void DuckLakeTransaction::InvalidateSchemaCache(idx_t schema_version) {
+	ducklake_catalog.InvalidateSchemaCache(schema_version);
+	schema_pins->ForgetKept();
 }
 
 const LocalTableChanges &DuckLakeTransaction::GetLocalChanges() const {
@@ -1031,6 +1050,7 @@ void DuckLakeTransaction::ReleaseMetadataTransaction() {
 	if (connection && connection->HasActiveTransaction()) {
 		connection->Commit();
 		metadata_transaction_released = true;
+		ForgetMetadataView();
 	}
 }
 
@@ -1639,7 +1659,7 @@ void DuckLakeTransaction::DropEmptySupersededInlinedTablesClientSide() {
 		return metadata_manager->ExecuteDropInTransaction(q);
 	};
 	context.invalidate_schema_cache = [&](idx_t schema_version) {
-		ducklake_catalog.InvalidateSchemaCache(schema_version);
+		InvalidateSchemaCache(schema_version);
 	};
 	try {
 		DuckLakeTransactionState::DropEmptySupersededInlinedTables(context);
@@ -1682,7 +1702,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 				return;
 			}
 			for (auto &snapshot : expired) {
-				ducklake_catalog.InvalidateSchemaCache(snapshot.schema_version);
+				InvalidateSchemaCache(snapshot.schema_version);
 			}
 			if (metadata_manager->CommitsEachStatement()) {
 				// the batch has committed on the server, a failure must not repeat it
@@ -1772,6 +1792,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		metadata_manager->ClearInlinedTableCaches();
 		connection->BeginTransaction();
 		snapshot.reset();
+		ForgetMetadataView();
 	};
 	context.verify_retry = [&]() {
 		if (ExpiredSnapshotsInMetadataTransaction() && !ExpiresSnapshotsOnCommit()) {
@@ -1899,7 +1920,7 @@ void DuckLakeTransaction::RunCommitLoop(DuckLakeSnapshot transaction_snapshot,
 		return DuckLakeCatalog::ConstructStatsMap(stats, schema);
 	};
 	context.invalidate_schema_cache = [&](idx_t schema_version) {
-		ducklake_catalog.InvalidateSchemaCache(schema_version);
+		InvalidateSchemaCache(schema_version);
 	};
 	context.set_catalog_version = [&](idx_t schema_version) {
 		catalog_version = schema_version;
@@ -2349,7 +2370,7 @@ vector<DuckLakeSnapshotInfo> DuckLakeTransaction::ExpireSnapshotsNow(const DuckL
 	}
 	set<idx_t> expired_ids;
 	for (auto &snapshot : expired) {
-		ducklake_catalog.InvalidateSchemaCache(snapshot.schema_version);
+		InvalidateSchemaCache(snapshot.schema_version);
 		expired_ids.insert(snapshot.id);
 	}
 	if (!expired_ids.empty()) {
@@ -2471,6 +2492,7 @@ DuckLakeSnapshot DuckLakeTransaction::GetLatestSnapshot() {
 	if (!snapshot) {
 		// no snapshot loaded yet for this transaction - load it
 		snapshot = metadata_manager->GetSnapshot();
+		metadata_view_snapshot = snapshot->snapshot_id;
 	}
 	return *snapshot;
 }
@@ -2503,6 +2525,15 @@ DuckLakeSnapshot DuckLakeTransaction::GetSnapshot() {
 
 idx_t DuckLakeTransaction::GetNewestVisibleSnapshotId() {
 	return GetLatestSnapshot().snapshot_id;
+}
+
+idx_t DuckLakeTransaction::GetMetadataViewSnapshotId() {
+	idx_t view_snapshot = metadata_view_snapshot;
+	if (view_snapshot == DConstants::INVALID_INDEX) {
+		view_snapshot = metadata_manager->GetSnapshot()->snapshot_id;
+		metadata_view_snapshot = view_snapshot;
+	}
+	return view_snapshot;
 }
 
 DuckLakeSnapshot DuckLakeTransaction::GetSnapshot(optional_ptr<BoundAtClause> at_clause, SnapshotBound bound) {

@@ -29,6 +29,9 @@ public:
 		return false;
 	}
 	bool ShowsConcurrentCommits() const override;
+	bool FindsConcurrentlyCreatedTables() const override {
+		return true;
+	}
 	bool InsertsInlinedRowsAfterBatch(idx_t row_count) const override;
 	idx_t MaxIdentifierLength() const override {
 		return 63;

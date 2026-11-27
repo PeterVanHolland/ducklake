@@ -1,0 +1,44 @@
+# name: test/sql/data_inlining/open_transaction_reads_after_alter_flush.test
+# description: A transaction reads a table again after another connection altered it and flushed its inlined rows
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
+(DATA_PATH '{DATA_PATH}/open_transaction_reads_after_alter_flush', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.acc (id INTEGER, bal INTEGER)
+
+statement ok
+INSERT INTO lake.acc VALUES (1, 100), (2, 100)
+
+statement ok reader
+BEGIN
+
+query II reader
+SELECT count(*), sum(bal) FROM lake.acc
+----
+2	200
+
+# the flush empties the inlined table that the ALTER superseded, and drops it
+statement ok
+ALTER TABLE lake.acc ADD COLUMN note VARCHAR
+
+statement ok
+CALL ducklake_flush_inlined_data('lake')
+
+query II reader
+SELECT count(*), sum(bal) FROM lake.acc
+----
+2	200
+
+statement ok reader
+COMMIT

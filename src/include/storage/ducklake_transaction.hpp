@@ -220,6 +220,9 @@ public:
 	//! bare references into the cached catalog set, and those references are read again at commit time, so the entry
 	//! must not be evicted from the ObjectCache in between.
 	void PinSchemaCacheEntry(shared_ptr<DuckLakeSchemaCacheEntry> entry);
+	shared_ptr<DuckLakeSchemaCacheEntry> GetKeptSchemaCacheEntry(const string &key);
+	shared_ptr<DuckLakeSchemaCacheEntry> KeepSchemaCacheEntry(const string &key,
+	                                                          shared_ptr<DuckLakeSchemaCacheEntry> entry);
 
 	DuckLakeSnapshot GetSnapshot();
 	//! Pins the snapshot that the transaction operates on
@@ -234,6 +237,8 @@ public:
 	                             SnapshotBound bound = SnapshotBound::TIME_TRAVEL);
 	//! The newest snapshot that the transaction sees, also when the catalog is opened at a fixed snapshot
 	idx_t GetNewestVisibleSnapshotId();
+	//! The newest snapshot that the metadata reads of the transaction see, also when its snapshot was set
+	idx_t GetMetadataViewSnapshotId();
 
 	static DuckLakeTransaction &Get(ClientContext &context, Catalog &catalog);
 
@@ -481,6 +486,10 @@ private:
 
 	// Invoked at transaction completion, invalidates all schema cache entries referenced by this transaction.
 	void ClearSchemaCachePins();
+	//! Forgets the snapshot and the schemas of the metadata transaction, which a new one replaces
+	void ForgetMetadataView();
+	//! Drops the cached schema of a schema version that the metadata transaction changed
+	void InvalidateSchemaCache(idx_t schema_version);
 
 private:
 	DuckLakeCatalog &ducklake_catalog;
@@ -512,6 +521,8 @@ private:
 	//! catalog is opened at a fixed snapshot
 	mutex snapshot_lock;
 	unique_ptr<DuckLakeSnapshot> snapshot;
+	//! The newest snapshot that the metadata transaction sees, read with the latest snapshot or on demand
+	atomic<idx_t> metadata_view_snapshot {DConstants::INVALID_INDEX};
 	//! The snapshot written by the commit of this transaction
 	DuckLakeSnapshot committed_snapshot;
 	idx_t local_catalog_id;

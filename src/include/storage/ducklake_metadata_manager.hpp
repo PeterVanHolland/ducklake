@@ -911,6 +911,8 @@ public:
 	void RenameInlinedColumnsByCopy(const map<Identifier, vector<pair<Identifier, Identifier>>> &renames);
 	//! Adds the schema version rows of inlined tables that older versions registered without one
 	void MigrateInlinedSchemaVersions();
+	//! Moves the rows that older versions inlined after a column change to the inlined table of that schema version
+	void MigrateInlinedRowVersions();
 	//! Restores the defaults that older versions dropped when they renamed a struct field
 	void MigrateRenamedFieldDefaults();
 	//! Clears the bounds that older versions may have stored in the type of a file or of an earlier column type

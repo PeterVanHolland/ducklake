@@ -899,6 +899,253 @@ AND NOT EXISTS (
 	result->ThrowIfError("Failed to add the schema versions of inlined-data tables while migrating to v1.1: ");
 }
 
+//! Whether two columns have the same type in an inlined table
+static bool HasSameInlinedType(const DuckLakeColumnInfo &column, const DuckLakeColumnInfo &other) {
+	if (column.type != other.type || column.children.size() != other.children.size()) {
+		return false;
+	}
+	for (idx_t child_idx = 0; child_idx < column.children.size(); child_idx++) {
+		auto &child = column.children[child_idx];
+		auto &other_child = other.children[child_idx];
+		if (child.name != other_child.name || !HasSameInlinedType(child, other_child)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+//! Whether two columns and their nested fields have the same field ids
+static bool HasSameFieldIds(const DuckLakeColumnInfo &column, const DuckLakeColumnInfo &other) {
+	if (column.id != other.id || column.children.size() != other.children.size()) {
+		return false;
+	}
+	for (idx_t child_idx = 0; child_idx < column.children.size(); child_idx++) {
+		if (!HasSameFieldIds(column.children[child_idx], other.children[child_idx])) {
+			return false;
+		}
+	}
+	return true;
+}
+
+void DuckLakeMetadataManager::MigrateInlinedRowVersions() {
+	// an older version wrote a row by position into the newest inlined table, also after the columns had changed.
+	// The fields of a table only change place when one of them ended
+	auto inlined_tables = Query(R"(
+SELECT idt.table_id, idt.table_name, registered.begin_snapshot
+FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
+JOIN {METADATA_CATALOG}.ducklake_schema_versions registered
+	ON registered.table_id = idt.table_id AND registered.schema_version = idt.schema_version
+WHERE EXISTS (
+	SELECT 1 FROM {METADATA_CATALOG}.ducklake_column ended
+	WHERE ended.table_id = idt.table_id AND ended.end_snapshot > registered.begin_snapshot)
+ORDER BY idt.table_id, idt.schema_version)");
+	inlined_tables->ThrowIfError("Failed to list inlined-data tables while migrating to v1.1: ");
+	struct InlinedTableVersion {
+		idx_t table_id;
+		Identifier table_name;
+		idx_t begin_snapshot;
+		//! The first schema version of the table that began later, as an index into its schema versions
+		idx_t first_later;
+	};
+	vector<InlinedTableVersion> tables;
+	vector<idx_t> table_ids;
+	for (auto &row : *inlined_tables) {
+		tables.push_back({row.GetValue<idx_t>(0), row.GetValue<Identifier>(1), row.GetValue<idx_t>(2), 0});
+		if (table_ids.empty() || table_ids.back() != tables.back().table_id) {
+			table_ids.push_back(tables.back().table_id);
+		}
+	}
+	if (tables.empty()) {
+		return;
+	}
+	// the schema versions of those tables as (begin snapshot, schema version) in the order they began
+	auto versions = Query(StringUtil::Format(
+	    "SELECT table_id, begin_snapshot, schema_version FROM {METADATA_CATALOG}.ducklake_schema_versions WHERE "
+	    "table_id IN (%s) ORDER BY table_id, begin_snapshot, schema_version",
+	    StringUtil::Join(table_ids, table_ids.size(), ", ", [](idx_t table_id) { return to_string(table_id); })));
+	versions->ThrowIfError("Failed to list the schema versions of inlined-data tables while migrating to v1.1: ");
+	map<idx_t, vector<pair<idx_t, idx_t>>> table_versions;
+	for (auto &row : *versions) {
+		table_versions[row.GetValue<idx_t>(0)].emplace_back(row.GetValue<idx_t>(1), row.GetValue<idx_t>(2));
+	}
+	// the version that a snapshot belongs to is the last one that began at or before it
+	auto next_version = [&](idx_t table_id, idx_t snapshot_id) {
+		auto &later = table_versions[table_id];
+		auto entry =
+		    std::upper_bound(later.begin(), later.end(), make_pair(snapshot_id, NumericLimits<idx_t>::Maximum()));
+		return NumericCast<idx_t>(entry - later.begin());
+	};
+	DuckLakeInlinedColNames col_names(true);
+	// one statement reads the begin snapshots of the rows after the first later version of a hundred tables
+	static constexpr idx_t TABLES_PER_QUERY = 100;
+	vector<set<idx_t>> written_versions(tables.size());
+	bool has_rows = false;
+	string rows_query;
+	idx_t query_tables = 0;
+	for (idx_t table_idx = 0; table_idx < tables.size(); table_idx++) {
+		auto &table = tables[table_idx];
+		table.first_later = next_version(table.table_id, table.begin_snapshot);
+		auto &later = table_versions[table.table_id];
+		if (table.first_later < later.size()) {
+			rows_query +=
+			    StringUtil::Format("%sSELECT DISTINCT %d AS table_idx, %s FROM {METADATA_CATALOG}.%s WHERE %s >= %d",
+			                       rows_query.empty() ? "" : " UNION ALL ", table_idx, col_names.begin_snapshot,
+			                       table.table_name, col_names.begin_snapshot, later[table.first_later].first);
+			query_tables++;
+		}
+		if (query_tables == 0 || (query_tables < TABLES_PER_QUERY && table_idx + 1 < tables.size())) {
+			continue;
+		}
+		auto rows = Query(DuckLakeSnapshot(), rows_query);
+		rows->ThrowIfError("Failed to read the inlined-data tables while migrating to v1.1: ");
+		for (auto &row : *rows) {
+			auto row_table_idx = row.GetValue<idx_t>(0);
+			auto version_idx = next_version(tables[row_table_idx].table_id, row.GetValue<idx_t>(1)) - 1;
+			written_versions[row_table_idx].insert(version_idx);
+			has_rows = true;
+		}
+		rows_query.clear();
+		query_tables = 0;
+	}
+	if (!has_rows) {
+		return;
+	}
+	auto registrations =
+	    Query("SELECT table_id, schema_version, table_name FROM {METADATA_CATALOG}.ducklake_inlined_data_tables");
+	registrations->ThrowIfError("Failed to list inlined-data tables while migrating to v1.1: ");
+	map<pair<idx_t, idx_t>, Identifier> registered_tables;
+	for (auto &row : *registrations) {
+		registered_tables.emplace(make_pair(row.GetValue<idx_t>(0), row.GetValue<idx_t>(1)),
+		                          row.GetValue<Identifier>(2));
+	}
+	string query;
+	for (idx_t table_idx = 0; table_idx < tables.size(); table_idx++) {
+		auto &table = tables[table_idx];
+		if (written_versions[table_idx].empty()) {
+			continue;
+		}
+		// the catalogs of the snapshots of one table, a catalog of every table would not fit a large lake
+		map<idx_t, DuckLakeCatalogInfo> catalogs;
+		auto table_at = [&](idx_t snapshot_id) -> optional_ptr<const DuckLakeTableInfo> {
+			auto entry = catalogs.find(snapshot_id);
+			if (entry == catalogs.end()) {
+				entry =
+				    catalogs.emplace(snapshot_id, GetCatalogForSnapshot(DuckLakeSnapshot(snapshot_id, 0, 0, 0))).first;
+			}
+			for (auto &table_info : entry->second.tables) {
+				if (table_info.id.index == table.table_id) {
+					return &table_info;
+				}
+			}
+			return nullptr;
+		};
+		auto &later = table_versions[table.table_id];
+		auto registered = table_at(table.begin_snapshot);
+		for (auto version_idx : written_versions[table_idx]) {
+			auto version_begin = later[version_idx].first;
+			auto schema_version = later[version_idx].second;
+			auto written = table_at(version_begin);
+			if (!registered || !written || registered->columns.size() != written->columns.size() ||
+			    !CanInlineColumns(written->columns)) {
+				continue;
+			}
+			// the rows are read by field id, so they only have to move when the fields are not the same ones
+			bool same_fields = true;
+			bool convertible = true;
+			vector<idx_t> converted_columns;
+			for (idx_t col_idx = 0; col_idx < written->columns.size(); col_idx++) {
+				auto &column = written->columns[col_idx];
+				auto &registered_column = registered->columns[col_idx];
+				same_fields = same_fields && HasSameFieldIds(column, registered_column);
+				// the new inlined table has the column names of the migrated catalog
+				convertible = convertible && !col_names.ConflictsWith(column.name);
+				if (!HasSameInlinedType(column, registered_column)) {
+					convertible = convertible && column.children.empty() && registered_column.children.empty();
+					converted_columns.push_back(col_idx);
+				}
+			}
+			if (same_fields || !convertible) {
+				continue;
+			}
+			auto row_range = StringUtil::Format("%s >= %d", col_names.begin_snapshot, version_begin);
+			if (version_idx + 1 < later.size()) {
+				row_range += StringUtil::Format(" AND %s < %d", col_names.begin_snapshot, later[version_idx + 1].first);
+			}
+			string select_list = "*";
+			string bounds_query;
+			if (!converted_columns.empty()) {
+				auto probe = Query(StringUtil::Format("SELECT * FROM {METADATA_CATALOG}.%s LIMIT 0", table.table_name));
+				probe->ThrowIfError(StringUtil::Format("Failed to read inlined-data table %s while migrating to v1.1: ",
+				                                       table.table_name));
+				auto &names = probe->GetNames();
+				vector<string> values;
+				for (auto &name : names) {
+					values.push_back(StringUtil::Format("%s", name));
+				}
+				vector<string> lost_values;
+				for (auto col_idx : converted_columns) {
+					auto name_idx = col_idx + DuckLakeInlinedColNames::COLUMN_COUNT;
+					if (name_idx >= values.size()) {
+						continue;
+					}
+					// the stored value is read in its type and stored again in the type of the column it is for
+					auto stored_type = DuckLakeTypes::FromColumnInfo(registered->columns[col_idx]);
+					auto column_type = DuckLakeTypes::FromColumnInfo(written->columns[col_idx]);
+					auto stored_value = CastColumnToTarget(values[name_idx], stored_type);
+					auto column_value = DuckLakeUtil::InlinedStorageExpression(
+					    *this, "CAST(" + stored_value + " AS " + column_type.ToString() + ")", column_type);
+					lost_values.push_back(
+					    StringUtil::Format("(%s IS NOT NULL AND TRY(%s) IS NULL)", values[name_idx], column_value));
+					values[name_idx] = std::move(column_value);
+					// the bounds of the column describe the values before the older version stored them in another type
+					bounds_query += StringUtil::Format(
+					    "UPDATE {METADATA_CATALOG}.ducklake_table_column_stats SET min_value = NULL, max_value = "
+					    "NULL WHERE table_id = %d AND column_id = %d;",
+					    table.table_id, written->columns[col_idx].id.index);
+				}
+				// a value that cannot be read in the type it is stored in, or that does not fit the type of its column,
+				// stays where it is with its rows
+				auto lost_rows =
+				    Query(StringUtil::Format("SELECT 1 FROM {METADATA_CATALOG}.%s WHERE %s AND (%s) "
+				                             "LIMIT 1",
+				                             table.table_name, row_range, StringUtil::Join(lost_values, " OR ")));
+				lost_rows->ThrowIfError(StringUtil::Format(
+				    "Failed to read inlined-data table %s while migrating to v1.1: ", table.table_name));
+				bool has_lost_rows = false;
+				for (auto &row : *lost_rows) {
+					has_lost_rows = !row.IsNull(0);
+				}
+				if (has_lost_rows) {
+					continue;
+				}
+				select_list = StringUtil::Join(values, ", ");
+			}
+			auto target_key = make_pair(table.table_id, schema_version);
+			auto target = registered_tables.find(target_key);
+			if (target == registered_tables.end()) {
+				auto target_name = InlinedTableNameFor(table.table_id, schema_version);
+				query += InlinedTableDdlSql(target_name, GetColumnDefinitions(written->columns), col_names);
+				query += InsertValuesSql("ducklake_inlined_data_tables",
+				                         {InlinedTableRegistrationTuple(table.table_id, target_name, schema_version)});
+				target = registered_tables.emplace(target_key, std::move(target_name)).first;
+			}
+			query += StringUtil::Format("INSERT INTO {METADATA_CATALOG}.%s SELECT %s FROM {METADATA_CATALOG}.%s "
+			                            "WHERE %s;",
+			                            target->second, select_list, table.table_name, row_range);
+			query += StringUtil::Format("DELETE FROM {METADATA_CATALOG}.%s WHERE %s;", table.table_name, row_range);
+			query += bounds_query;
+		}
+	}
+	if (query.empty()) {
+		return;
+	}
+	// the conversions are DuckDB expressions, and a database that commits each statement needs one transaction
+	auto result = IsDuckDBMetadataType(transaction.GetCatalog().MetadataType()) ? Execute(DuckLakeSnapshot(), query)
+	                                                                            : Execute(query);
+	result->ThrowIfError("Failed to move inlined rows to the table of their schema version while migrating to v1.1: ");
+	ClearCache();
+}
+
 void DuckLakeMetadataManager::MigrateRenamedFieldDefaults() {
 	// the defaults of a struct field cannot change, so a later row of the field without them lost them in a rename
 	auto result = Execute(R"(
@@ -1001,6 +1248,10 @@ void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	MigrateRenamedFieldDefaults();
 	MigrateRetypedBounds();
 	MigrateInlinedDataTypes();
+	if (!from_dev1) {
+		// a dev catalog can already have the layout of a later version
+		MigrateInlinedRowVersions();
+	}
 	// DDL locks the metadata tables exclusively on Postgres, skip it when a dev catalog has every addition
 	auto has_additions = from_dev1 && HasV1_1Additions();
 	ExecuteMigration(V1_1MigrationQuery(has_additions), from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");

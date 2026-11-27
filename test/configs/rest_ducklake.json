@@ -25,6 +25,8 @@
     {
       "reason": "Tests the migration of metadata that the test writes to the metadata catalog directly",
       "paths": [
+        "test/sql/migration/dev1_inlined_rows_after_column_change.test",
+        "test/sql/migration/v10_inlined_rows_after_column_change.test",
         "test/sql/migration/stale_version_after_migration.test",
         "test/sql/migration/v01_partitioned.test"
       ]
@@ -698,6 +700,8 @@
         "test/sql/migration/postgres_row_companions_index_names.test",
         "test/sql/migration/postgres_dev_migration_failure.test",
         "test/sql/migration/postgres_inlined_unknown_column.test",
+        "test/sql/migration/postgres_inlined_rows_after_column_change.test",
+        "test/sql/migration/sqlite_inlined_rows_after_column_change.test",
         "test/sql/migration/postgres_v04_dev1_missing_inlined_table.test",
         "test/sql/migration/quack_concurrent_migration.test",
         "test/sql/quack/attach_errors_as_json.test",

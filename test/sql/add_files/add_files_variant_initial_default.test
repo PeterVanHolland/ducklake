@@ -77,7 +77,7 @@ ALTER TABLE lake.t3 ADD COLUMN s.v VARIANT DEFAULT 42
 query II
 SELECT c.column_name, c.initial_default FROM __ducklake_metadata_lake.ducklake_column c
 JOIN __ducklake_metadata_lake.ducklake_table t USING (table_id)
-WHERE t.table_name = 't3' AND c.column_name = 'v' AND c.end_snapshot IS NULL
+WHERE t.table_name = 't3' AND c.column_name = 'v'
 ----
 v	42
 

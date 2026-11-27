@@ -1,0 +1,85 @@
+# name: test/sql/data_inlining/superseded_inlined_table_schema_reload.test
+# description: An open transaction reads the rows of a superseded inlined table after a flush and a later schema load
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
+	(DATA_PATH '{DATA_PATH}/superseded_inlined_table_schema_reload', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.t (id INTEGER)
+
+statement ok
+CREATE TABLE lake.other (id INTEGER)
+
+statement ok
+INSERT INTO lake.t VALUES (1), (2), (3)
+
+statement ok
+ALTER TABLE lake.t ADD COLUMN c INTEGER
+
+# con1 fixes its snapshot before the flush
+statement ok con1
+BEGIN
+
+query I con1
+SELECT count(*) FROM lake.other
+----
+0
+
+statement ok con2
+CALL ducklake_flush_inlined_data('lake')
+
+# con2 loads the schema after the flush
+query II con2
+SELECT count(*), sum(id) FROM lake.t
+----
+3	6
+
+query II con1
+SELECT count(*), sum(id) FROM lake.t
+----
+3	6
+
+statement ok con1
+COMMIT
+
+# a CHECKPOINT inside the transaction flushes and loads the schema on its own connection
+statement ok
+CREATE TABLE lake.t2 (id INTEGER)
+
+statement ok
+INSERT INTO lake.t2 VALUES (4), (5)
+
+statement ok
+ALTER TABLE lake.t2 ADD COLUMN c INTEGER
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO lake.other VALUES (1)
+
+statement ok
+CHECKPOINT lake
+
+query II
+SELECT count(*), sum(id) FROM lake.t2
+----
+2	9
+
+statement ok
+COMMIT
+
+query II
+SELECT count(*), sum(id) FROM lake.t2
+----
+2	9

@@ -1,0 +1,36 @@
+# name: test/sql/rest/rest_drop_default_schema.test
+# description: The DuckLake REST server refuses a commit request that drops the default schema
+# group: [rest]
+
+require json
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl
+
+query III
+SELECT status, response->>'$.error.type', response->>'$.error.message'
+FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"drop": {"entry_type": "schema", "entry_id": 0}}]}')
+----
+404	Catalog	Cannot drop entry "main" because it is the default schema
+
+# the schema is still there
+statement ok
+CREATE TABLE dl.t (i INTEGER)
+
+query I
+SELECT schema_name FROM duckdb_schemas() WHERE database_name = 'dl'
+----
+main
+
+query I
+SELECT count(*) FROM ducklake_snapshots('dl')
+----
+2
+
+statement ok
+DETACH dl
+
+include test/template/rest_teardown.test_template

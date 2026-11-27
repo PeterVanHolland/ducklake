@@ -1,0 +1,61 @@
+# name: test/sql/time_travel/postgres_at_timestamp_expired_shared_read_committed.test
+# description: An attach that shares a READ COMMITTED metadata attachment checks its cached timestamps again
+# group: [time_travel]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require-env DUCKLAKE_CI
+
+require-env DUCKLAKE_CONNECTION
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS l
+(DATA_PATH '{DATA_PATH}/at_timestamp_expired_shared_rc', METADATA_CATALOG 'shared_rc_meta',
+ META_ISOLATION_LEVEL 'READ COMMITTED', DATA_INLINING_ROW_LIMIT 0)
+
+# reuses the metadata attachment of the first attach, which stays at READ COMMITTED
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS r (METADATA_CATALOG 'shared_rc_meta')
+
+statement ok
+CREATE TABLE l.t(a INT)
+
+statement ok
+INSERT INTO l.t VALUES (1)
+
+# a transaction whose newest snapshot is 2 resolves the timestamp
+statement ok con2
+BEGIN
+
+statement ok con2
+SET VARIABLE t2 = (SELECT snapshot_time FROM r.snapshots() WHERE snapshot_id = 2)
+
+query I con2
+SELECT list(a) FROM r.t AT (TIMESTAMP => getvariable('t2'))
+----
+[1]
+
+# meanwhile snapshots 3 and 4 are committed and snapshot 2 expired
+statement ok
+INSERT INTO l.t VALUES (2)
+
+statement ok
+INSERT INTO l.t VALUES (3)
+
+statement ok
+CALL ducklake_expire_snapshots('l', versions => [2])
+
+# the metadata reads of the transaction see the expiry
+statement error con2
+SELECT list(a) FROM r.t AT (TIMESTAMP => getvariable('t2'))
+----
+snapshot 2 was expired
+
+statement ok con2
+ROLLBACK

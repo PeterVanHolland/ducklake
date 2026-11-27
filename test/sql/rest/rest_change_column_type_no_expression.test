@@ -1,0 +1,150 @@
+# name: test/sql/rest/rest_change_column_type_no_expression.test
+# description: A REST change_column_type without the optional expression casts the column, an empty column_path is refused
+# group: [rest]
+
+require json
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl
+
+statement ok
+CREATE TABLE dl.t(i INTEGER, f FLOAT, s STRUCT(x INTEGER))
+
+statement ok
+INSERT INTO dl.t VALUES (1, 1.5, {'x': 1}), (2, 2.5, {'x': 2})
+
+# the widening promotions without an expression, as ALTER TABLE without USING
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"change_column_type": {"column_path": ["i"], "column_type": {"id": "int64"}}}}}]}')
+----
+200
+
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"change_column_type": {"column_path": ["f"], "column_type": {"id": "float64"}}}}}]}')
+----
+200
+
+query II rest_db:rest_server_con
+SELECT column_name, column_type FROM __ducklake_metadata_rest_lake.ducklake_column WHERE end_snapshot IS NULL AND parent_column IS NULL ORDER BY column_order
+----
+i	int64
+f	float64
+s	struct
+
+query III
+SELECT i, f, s FROM dl.t ORDER BY i
+----
+1	1.5	{'x': 1}
+2	2.5	{'x': 2}
+
+query II
+SELECT typeof(i), typeof(f) FROM dl.t LIMIT 1
+----
+BIGINT	DOUBLE
+
+# a promotion DuckLake does not support fails like the SQL statement, not with an internal error
+query II
+SELECT status < 500, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"change_column_type": {"column_path": ["i"], "column_type": {"id": "int32"}}}}}]}')
+----
+true	Cannot change type of column "i" from BIGINT to INTEGER - only widening type promotions are allowed
+
+# an expression is still taken, and checked
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"change_column_type": {"column_path": ["i"], "column_type": {"id": "int128"}, "expression": "i + 1"}}}}]}')
+----
+501	Column type cannot be modified using an expression
+
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"change_column_type": {"column_path": ["i"], "column_type": {"id": "int128"}, "expression": "CAST(i AS HUGEINT)"}}}}]}')
+----
+200
+
+query I
+SELECT typeof(i) FROM dl.t LIMIT 1
+----
+HUGEINT
+
+# an empty column_path, in change_column_type and in the other alterations of a column
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"change_column_type": {"column_path": [], "column_type": {"id": "int64"}}}}}]}')
+----
+400	change_column_type requires a column_path
+
+# an empty name in the path, which the parser refuses as an identifier
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"change_column_type": {"column_path": [""], "column_type": {"id": "int64"}}}}}]}')
+----
+400	change_column_type requires a column_path without empty names
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"set_not_null": {"column_path": []}}}}]}')
+----
+400	set_not_null requires a column_path
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"drop_not_null": {"column_path": []}}}}]}')
+----
+400	drop_not_null requires a column_path
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"set_default": {"column_path": [], "expression": "42"}}}}]}')
+----
+400	set_default requires a column_path
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"rename_field": {"column_path": [], "new_name": "y"}}}}]}')
+----
+400	rename_field requires a column_path
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"add_field": {"column_path": [], "field": {"column_name": "y", "column_type": {"id": "int32"}}}}}}]}')
+----
+400	add_field requires a column_path
+
+query II
+SELECT status, response->>'$.error.message' FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"remove_field": {"column_path": []}}}}]}')
+----
+400	remove_field requires a column_path
+
+# the refused requests changed nothing and the server still answers
+query II rest_db:rest_server_con
+SELECT column_name, column_type FROM __ducklake_metadata_rest_lake.ducklake_column WHERE end_snapshot IS NULL ORDER BY column_order, column_id
+----
+i	int128
+f	float64
+s	struct
+x	int32
+
+query I
+SELECT count(*) FROM dl.t
+----
+2
+
+# the alterations of a struct field with a path
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+'{"requests": [{"alter": {"entry_id": 1, "alter": {"rename_field": {"column_path": ["s", "x"], "new_name": "y"}}}}]}')
+----
+200
+
+query I
+SELECT s FROM dl.t ORDER BY i LIMIT 1
+----
+{'y': 1}
+
+include test/template/rest_teardown.test_template

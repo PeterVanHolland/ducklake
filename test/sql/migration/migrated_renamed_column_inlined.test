@@ -1,0 +1,90 @@
+# name: test/sql/migration/migrated_renamed_column_inlined.test
+# description: a rewrite merges the stats of an inlined table whose schema version shares its begin with older ones
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# created by DuckDB 1.4.4 with a table t(a) whose column was renamed to b, migrated by DuckDB 1.5.1
+unzip data/old_ducklake/migrated_renamed_column.db.gz {TEST_DIR}/migrated_renamed_column.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_renamed_column.db' AS lake (
+	DATA_PATH '{TEST_DIR}/migrated_renamed_column',
+	OVERRIDE_DATA_PATH TRUE,
+	METADATA_CATALOG 'meta',
+	AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10
+)
+
+# that migration gave every schema version of t the snapshot of its creation
+query II
+SELECT begin_snapshot, schema_version FROM meta.ducklake_schema_versions WHERE table_id = 1 ORDER BY ALL
+----
+1	1
+1	2
+1	3
+
+statement ok
+INSERT INTO lake.t VALUES (1), (2), (3)
+
+# the inlined table of t belongs to the last of these versions, the next schema version leaves it behind
+statement ok
+ALTER TABLE lake.t ALTER COLUMN b SET DEFAULT 5
+
+statement ok
+INSERT INTO lake.t SELECT range + 100 FROM range(20)
+
+statement ok
+DELETE FROM lake.t WHERE b >= 110
+
+# the commit reads the bounds of the inlined rows under the name of their column, b
+statement ok
+CALL ducklake_rewrite_data_files('lake', 't', delete_threshold => 0)
+
+query II
+SELECT count(*), sum(b) FROM lake.t
+----
+13	1051
+
+query II
+SELECT min_value, max_value FROM meta.ducklake_table_column_stats WHERE table_id = 1
+----
+1	109
+
+query II
+SELECT count(*) FILTER (WHERE b < 4), count(*) FILTER (WHERE b >= 100) FROM lake.t
+----
+3	10
+
+statement ok
+DETACH lake
+
+# the first value after inlined NULLs checks the inlined rows under the name of their column
+unzip data/old_ducklake/migrated_renamed_column.db.gz {TEST_DIR}/migrated_renamed_column_nulls.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_renamed_column_nulls.db' AS lake (
+	DATA_PATH '{TEST_DIR}/migrated_renamed_column_nulls',
+	OVERRIDE_DATA_PATH TRUE,
+	METADATA_CATALOG 'meta',
+	AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10
+)
+
+statement ok
+INSERT INTO lake.t VALUES (NULL), (NULL)
+
+statement ok
+INSERT INTO lake.t SELECT range FROM range(20)
+
+query III
+SELECT count(*), count(b), sum(b) FROM lake.t
+----
+22	20	190
+
+query III
+SELECT contains_null, min_value, max_value FROM meta.ducklake_table_column_stats WHERE table_id = 1
+----
+true	0	19

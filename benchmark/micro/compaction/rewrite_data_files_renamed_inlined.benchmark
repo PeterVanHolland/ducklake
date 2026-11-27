@@ -1,0 +1,36 @@
+# name: benchmark/micro/compaction/rewrite_data_files_renamed_inlined.benchmark
+# description: Rewrite one file with deletes in each of 50 tables whose inlined rows predate a renamed column
+# group: [compaction]
+
+name Rewrite Data Files Renamed Inlined
+group micro
+subgroup compaction
+
+require ducklake
+
+require parquet
+
+argument work rewrite_renamed_inlined_work
+
+include benchmark/micro/fixtures/rewrite_inlined.benchmark.in
+
+include benchmark/micro/fixtures/restore_cleanup.benchmark.in
+
+# The commit reads the inlined rows under the column names of their older schema version
+run
+BEGIN;
+@for k in range(50)
+ALTER TABLE lake.r@{k} RENAME COLUMN v TO w;
+@end
+COMMIT;
+SELECT count(*) AS tables, sum(files_processed) AS processed, sum(files_created) AS created
+FROM ducklake_rewrite_data_files('lake', delete_threshold => 0.5);
+
+# The recompute keeps the inlined minimum of the renamed column, read under its old name
+result_query IIIII
+SELECT tables, processed, created, stats.min_value, stats.max_value
+FROM __answer, __ducklake_metadata_lake.ducklake_table_column_stats stats
+JOIN __ducklake_metadata_lake.ducklake_table tbl USING (table_id)
+WHERE tbl.table_name = 'r0' AND stats.column_id = 2
+----
+50	50	50	0	5997

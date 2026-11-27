@@ -693,11 +693,14 @@ ReaderInitializeType DuckLakeMultiFileReader::CreateMappingWithGlobalState(
 MultiFileReaderVirtualColumnBinding DuckLakeMultiFileReader::GetVirtualColumnExpression(
     ClientContext &context, MultiFileReaderData &reader_data, const vector<MultiFileColumnDefinition> &local_columns,
     const idx_t column_id, const LogicalType &type, MultiFileLocalIndex local_idx) {
+	// a file added with a name mapping holds new rows of the table, the lineage columns it may carry are not read
+	const auto &file_info = reader_data.file_to_be_opened.extended_info;
+	bool mapped = file_info && file_info->options.find("mapping_id") != file_info->options.end();
 	if (column_id == COLUMN_IDENTIFIER_ROW_ID) {
 		// row id column
 		// this is computed as row_id_start + file_row_number OR read from the file
 		// first check if the row id is explicitly defined in this file
-		if (FindColumnByFieldId(local_columns, MultiFileReader::ROW_ID_FIELD_ID).IsValid()) {
+		if (!mapped && FindColumnByFieldId(local_columns, MultiFileReader::ROW_ID_FIELD_ID).IsValid()) {
 			return MultiFileReaderVirtualColumnBinding(*row_id_column.get());
 		}
 		// get the row id start for this file
@@ -729,7 +732,7 @@ MultiFileReaderVirtualColumnBinding DuckLakeMultiFileReader::GetVirtualColumnExp
 		// a data file embeds the insert snapshot of each row, a deletion scan reports the snapshot of its delete
 		bool scans_deleted_rows =
 		    read_info.scan_type == DuckLakeScanType::SCAN_DELETIONS && reader_data.reader->deletion_filter;
-		if (!scans_deleted_rows &&
+		if (!scans_deleted_rows && !mapped &&
 		    FindColumnByFieldId(local_columns, MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID).IsValid()) {
 			return MultiFileReaderVirtualColumnBinding(*snapshot_id_column.get());
 		}

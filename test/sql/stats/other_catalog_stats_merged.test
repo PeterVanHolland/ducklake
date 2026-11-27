@@ -1,0 +1,47 @@
+# name: test/sql/stats/other_catalog_stats_merged.test
+# description: A commit must not merge its files into statistics cached before another catalog emptied the table
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/other_catalog_stats_merged.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+(DATA_PATH '{DATA_PATH}/other_catalog_stats_merged', DATA_INLINING_ROW_LIMIT 0)
+
+# a second catalog of the lake has a cache of its own, as another process has
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS other
+(METADATA_CATALOG '__ducklake_metadata_dl', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t (x INTEGER)
+
+statement ok
+INSERT INTO dl.t SELECT range FROM range(10)
+
+# the other catalog caches the statistics
+query I
+SELECT count(*) FROM other.t WHERE x >= 0
+----
+10
+
+query I
+DELETE FROM dl.t
+----
+10
+
+statement ok
+INSERT INTO other.t VALUES (1000)
+
+query III
+SELECT record_count, min_value, max_value
+FROM __ducklake_metadata_dl.ducklake_table_stats
+JOIN __ducklake_metadata_dl.ducklake_table_column_stats USING (table_id)
+----
+1	1000	1000

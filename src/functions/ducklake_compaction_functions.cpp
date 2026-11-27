@@ -635,6 +635,50 @@ unique_ptr<LogicalOperator> DuckLakeCompactor::PlanRewriteScan(
 	return root;
 }
 
+vector<string> DuckLakeCompactor::UnshreddedVariantColumns(const DuckLakeTableEntry &table,
+                                                           const vector<DuckLakeCompactionFileEntry> &files) {
+	// the top level VARIANT columns by field id
+	map<idx_t, string> variant_columns;
+	auto &field_data = table.GetFieldData();
+	for (auto &column : table.GetColumns().Physical()) {
+		if (column.Type().id() != LogicalTypeId::VARIANT) {
+			continue;
+		}
+		auto field_index = field_data.GetByRootIndex(column.Physical()).GetFieldIndex();
+		variant_columns.emplace(field_index.index, column.Name().GetIdentifierName());
+	}
+	vector<string> result;
+	if (variant_columns.empty() || files.empty()) {
+		return result;
+	}
+	vector<string> file_ids;
+	for (auto &file : files) {
+		file_ids.push_back(to_string(file.file.id.index));
+	}
+	vector<string> column_ids;
+	for (auto &entry : variant_columns) {
+		column_ids.push_back(to_string(entry.first));
+	}
+	// a shredded column has the stats of its typed values in every file, one written as its two blobs or a file
+	// without stats has none
+	auto query = StringUtil::Format("SELECT data_file_id, column_id FROM {METADATA_CATALOG}.ducklake_file_column_stats "
+	                                "WHERE data_file_id IN (%s) AND column_id IN (%s) AND extra_stats IS NOT NULL AND "
+	                                "extra_stats <> ''",
+	                                StringUtil::Join(file_ids, ", "), StringUtil::Join(column_ids, ", "));
+	auto query_result = transaction.GetMetadataManager().Query(transaction.GetSnapshot(), std::move(query));
+	query_result->ThrowIfError("Failed to read the column stats of the files to rewrite: ");
+	map<idx_t, idx_t> shredded_files;
+	for (auto &row : *query_result) {
+		shredded_files[row.GetValue<idx_t>(1)]++;
+	}
+	for (auto &entry : variant_columns) {
+		if (shredded_files[entry.first] < files.size()) {
+			result.push_back(entry.second);
+		}
+	}
+	return result;
+}
+
 unique_ptr<LogicalOperator>
 DuckLakeCompactor::GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry> source_files,
                                              bool bind_to_latest_schema) {
@@ -749,6 +793,7 @@ DuckLakeCompactor::GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry>
 	DuckLakeCopyInput copy_input(context, table, data_path);
 	// merge_adjacent_files does not use partitioning information - instead we always merge within partitions
 	copy_input.partition_data = nullptr;
+	copy_input.unshredded_variant_columns = UnshreddedVariantColumns(table, actionable_source_files);
 	unique_ptr<LogicalCopyToFile> copy;
 	auto root = PlanRewriteScan(
 	    context, binder, table, copy_input, write_snapshot_id,

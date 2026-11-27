@@ -196,6 +196,8 @@ struct DuckLakeCopyInput {
 	optional_idx get_table_index;
 	//! Whether the rows reach the copy in the order they must be written in
 	bool ordered_input = false;
+	//! VARIANT columns the data files store without shredding, their values are nested too deep for it
+	vector<string> unshredded_variant_columns;
 };
 
 } // namespace duckdb

@@ -78,6 +78,8 @@ public:
 
 	//! Create the data path directory if it does not yet exist
 	static void EnsureDirectoryExists(FileSystem &fs, const string &data_path);
+	//! The deepest nesting of the VARIANT values of the vector, found over their flat value lists, not by recursion
+	static idx_t VariantNestingDepth(Vector &data, idx_t count);
 
 	//! Replace occurrences of `from` with `to`, skipping content inside
 	//! single-quoted string literals and double-quoted identifiers.

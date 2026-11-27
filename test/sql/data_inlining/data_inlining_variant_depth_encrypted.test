@@ -1,0 +1,71 @@
+# name: test/sql/data_inlining/data_inlining_variant_depth_encrypted.test
+# description: A merge of an encrypted lake keeps a VARIANT column unshredded when the flushed files store it so, which their stored statistics tell
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+require httpfs
+
+test-env DATA_PATH {TEST_DIR}
+
+# the headers of nested arrays and objects as in the issue, 700 levels deep
+statement ok
+CREATE TEMP TABLE levels AS
+WITH RECURSIVE levels(depth, child_length, width) AS (
+    SELECT 1, 1, 1
+    UNION ALL
+    SELECT depth + 1, child_length + 2 + depth % 2 + 2 * width,
+           CASE WHEN child_length + 2 + depth % 2 + 2 * width < 256 THEN 1
+                WHEN child_length + 2 + depth % 2 + 2 * width < 65536 THEN 2 ELSE 3 END
+    FROM levels WHERE depth < 700
+)
+SELECT depth,
+       CASE WHEN depth % 2 = 1 THEN printf('%02x0100', 2 + 4 * (width - 1))
+            ELSE printf('%02x01', 3 + 4 * (width - 1)) END ||
+       repeat('00', width) ||
+       left(printf('%02x%02x%02x', child_length % 256, child_length // 256 % 256, child_length // 65536), 2 * width) AS header
+FROM levels
+
+statement ok
+CREATE TEMP TABLE deep_value AS
+SELECT variant_bytes_to_variant(unhex('1101000161' || string_agg(header, '' ORDER BY depth DESC) || '04')) AS v
+FROM levels
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/{UUID}_enc.db' AS enc (DATA_PATH '{DATA_PATH}/data_inlining_variant_depth_encrypted', DATA_INLINING_ROW_LIMIT 10, ENCRYPTED true)
+
+statement ok
+CREATE TABLE enc.deep (i INTEGER, v VARIANT)
+
+statement ok
+INSERT INTO enc.deep SELECT 1, v FROM deep_value
+
+statement ok
+CALL ducklake_flush_inlined_data('enc')
+
+statement ok
+INSERT INTO enc.deep SELECT 2, v FROM deep_value
+
+statement ok
+CALL ducklake_flush_inlined_data('enc')
+
+statement ok
+CALL ducklake_merge_adjacent_files('enc')
+
+query I
+SELECT count(*) FROM ducklake_list_files('enc', 'deep')
+----
+1
+
+query I
+SELECT bool_and(s.extra_stats IS NULL) FROM __ducklake_metadata_enc.ducklake_file_column_stats s JOIN __ducklake_metadata_enc.ducklake_data_file f USING (data_file_id) WHERE s.column_id = 2 AND EXISTS (SELECT 1 FROM ducklake_list_files('enc', 'deep') l WHERE ends_with(l.data_file, f.path))
+----
+true
+
+query II
+SELECT i, v::VARCHAR = (SELECT v::VARCHAR FROM deep_value) FROM enc.deep ORDER BY i
+----
+1	true
+2	true

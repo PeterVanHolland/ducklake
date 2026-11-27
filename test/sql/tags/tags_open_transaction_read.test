@@ -1,0 +1,61 @@
+# name: test/sql/tags/tags_open_transaction_read.test
+# description: an open transaction does not see the tags that other connections commit after it began
+# group: [tags]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/tags_open_transaction_read_files')
+
+statement ok
+CREATE TABLE dl.t(i INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1)
+
+statement ok
+CALL ducklake_create_tag('dl', 'early', version => 2)
+
+statement ok con1
+BEGIN
+
+query I con1
+SELECT COUNT(*) FROM dl.t
+----
+1
+
+statement ok con2
+CALL ducklake_create_tag('dl', 'late', version => 1)
+
+statement ok con2
+CALL ducklake_drop_tag('dl', 'early')
+
+# the transaction keeps the tags of its snapshot
+query I con1
+SELECT tag_name FROM ducklake_tags('dl')
+----
+early
+
+query I con1
+SELECT i FROM dl.t AT (VERSION => 'early')
+----
+1
+
+statement error con1
+SELECT i FROM dl.t AT (VERSION => 'late')
+----
+No snapshot tag with the name "late" exists
+
+statement ok con1
+COMMIT
+
+query I con1
+SELECT tag_name FROM ducklake_tags('dl')
+----
+late

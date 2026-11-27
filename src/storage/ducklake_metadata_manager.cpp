@@ -7147,7 +7147,7 @@ unique_ptr<DuckLakeSnapshot> DuckLakeMetadataManager::GetSnapshot(BoundAtClause 
 SELECT snapshot_id, schema_version, next_catalog_id, next_file_id
 FROM {METADATA_CATALOG}.ducklake_snapshot
 WHERE snapshot_id = %llu%s;)",
-		                                  ResolveSnapshotVersion(val), visible_condition));
+		                                  ResolveSnapshotVersion(val, newest_snapshot_id), visible_condition));
 	} else if (unit == "timestamp") {
 		auto timestamp = val.CastAs(*transaction.GetConnection().context, LogicalType::TIMESTAMP_TZ);
 		auto current_time = timestamp_tz_t(Timestamp::GetCurrentTimestamp());
@@ -8099,8 +8099,16 @@ vector<DuckLakeSnapshotTagInfo> DuckLakeMetadataManager::GetSnapshotTags(bool wi
 	if (!transaction.GetCatalog().SupportsSnapshotTags()) {
 		return vector<DuckLakeSnapshotTagInfo>();
 	}
-	// the tags live in the latest state, snapshot tags exist from 2.0 on where every catalog row ends in its companion
-	auto live_tags = RowVisibility("tag", RowKind("snapshot_tag"), "");
+	// the newest snapshot the transaction sees, resolving the snapshot of the attach could take the tag lock again
+	return GetSnapshotTagsAt(transaction.GetNewestVisibleSnapshotId(), with_snapshot_time);
+}
+
+vector<DuckLakeSnapshotTagInfo> DuckLakeMetadataManager::GetSnapshotTagsAt(idx_t snapshot_id, bool with_snapshot_time) {
+	if (!transaction.GetCatalog().SupportsSnapshotTags()) {
+		return vector<DuckLakeSnapshotTagInfo>();
+	}
+	// the tags the snapshot sees, snapshot tags exist from 2.0 on where every catalog row ends in its companion
+	auto live_tags = RowVisibility("tag", RowKind("snapshot_tag"), to_string(snapshot_id));
 	string query;
 	if (with_snapshot_time) {
 		query = StringUtil::Format(R"(
@@ -8136,8 +8144,8 @@ WHERE %s;)",
 	return tags;
 }
 
-optional_idx DuckLakeMetadataManager::GetTaggedSnapshot(const string &name) {
-	for (auto &tag : GetSnapshotTags()) {
+optional_idx DuckLakeMetadataManager::GetTaggedSnapshot(const string &name, idx_t visible_snapshot_id) {
+	for (auto &tag : GetSnapshotTagsAt(visible_snapshot_id)) {
 		if (StringUtil::CIEquals(tag.name, name)) {
 			return tag.snapshot_id;
 		}
@@ -8145,7 +8153,7 @@ optional_idx DuckLakeMetadataManager::GetTaggedSnapshot(const string &name) {
 	return optional_idx();
 }
 
-idx_t DuckLakeMetadataManager::ResolveSnapshotVersion(const Value &version) {
+idx_t DuckLakeMetadataManager::ResolveSnapshotVersion(const Value &version, idx_t visible_snapshot_id) {
 	if (version.type().id() != LogicalTypeId::VARCHAR) {
 		return version.DefaultCastAs(LogicalType::UBIGINT).GetValue<idx_t>();
 	}
@@ -8155,7 +8163,7 @@ idx_t DuckLakeMetadataManager::ResolveSnapshotVersion(const Value &version) {
 		return snapshot_id->DefaultCastAs(LogicalType::UBIGINT).GetValue<idx_t>();
 	}
 	auto &name = StringValue::Get(version);
-	auto tagged = GetTaggedSnapshot(name);
+	auto tagged = GetTaggedSnapshot(name, visible_snapshot_id);
 	if (tagged.IsValid()) {
 		return tagged.GetIndex();
 	}

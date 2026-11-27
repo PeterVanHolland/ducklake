@@ -81,7 +81,7 @@ public:
 	                                        const vector<string> &columns_to_read) override;
 	vector<DuckLakeSnapshotInfo> GetAllSnapshots(const DuckLakeSnapshotFilter &filter = {}) override;
 	void DeleteSnapshots(const vector<DuckLakeSnapshotInfo> &snapshots) override;
-	vector<DuckLakeSnapshotTagInfo> GetSnapshotTags(bool with_snapshot_time = true) override;
+	vector<DuckLakeSnapshotTagInfo> GetSnapshotTagsAt(idx_t snapshot_id, bool with_snapshot_time = true) override;
 	vector<DuckLakeFileForCleanup> GetOldFilesForCleanup(const string &older_than) override;
 	unique_ptr<QueryResult> ReadMetadataTable(const string &table_name) override;
 	vector<string> GetKnownFilePaths() override;

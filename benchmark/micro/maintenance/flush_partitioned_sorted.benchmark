@@ -1,0 +1,26 @@
+# name: benchmark/micro/maintenance/flush_partitioned_sorted.benchmark
+# description: Flush 500K inlined rows of a table with 64 partitions and a sort key to Parquet, including the commit
+# group: [maintenance]
+
+name Flush Partitioned Sorted
+group micro
+subgroup maintenance
+
+require ducklake
+
+require parquet
+
+argument work partitioned_sorted_flush_work
+
+include benchmark/micro/fixtures/partitioned_sorted.benchmark.in
+
+include benchmark/micro/fixtures/restore_cleanup.benchmark.in
+
+run
+SELECT sum(rows_flushed) AS flushed FROM ducklake_flush_inlined_data('lake', table_name => 'inl');
+
+# A missed reset leaves nothing to flush, and the files of the 64 partitions show the flush was partitioned
+result_query II
+SELECT flushed, (SELECT count(DISTINCT filename) FROM lake.inl) FROM __answer
+----
+500000	64

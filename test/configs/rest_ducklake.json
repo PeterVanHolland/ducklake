@@ -739,7 +739,8 @@
         "test/sql/time_travel/postgres_at_timestamp_expired_read_committed.test",
         "test/sql/transaction/postgres_failed_rollback_releases_transaction.test",
         "test/sql/data_inlining/data_inlining_variant_sql_rollback.test",
-        "test/sql/catalog/snapshot_branch_key_statements_postgres.test"
+        "test/sql/catalog/snapshot_branch_key_statements_postgres.test",
+        "test/sql/data_inlining/data_inlining_variant_decimal_width_sqlite.test"
       ]
     },
     {
@@ -760,6 +761,12 @@
         "test/sql/list_files/list_files_encrypted.test",
         "test/sql/secrets/ducklake_secret_null_options.test",
         "test/sql/transaction/transaction_conflict_inlining.test"
+      ]
+    },
+    {
+      "reason": "FIXME: the REST transport of inlined rows loses the declared width of VARIANT decimals (pdet/ducklake_internal#430)",
+      "paths": [
+        "test/sql/data_inlining/data_inlining_variant_decimal_width.test"
       ]
     }
   ]

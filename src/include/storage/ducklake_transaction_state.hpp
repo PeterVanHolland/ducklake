@@ -222,6 +222,8 @@ public:
 	static bool IsDurableCommitError(const ErrorData &error);
 	//! Whether a commit that failed with the error may have been published anyway, as after a lost answer
 	static bool CommitMayHaveBeenPublished(const ErrorData &error);
+	//! Commits the metadata connection and reports it as published, the error of a durable commit is kept for later
+	static void CommitMetadata(const DuckLakeCommitContext &context, ErrorData &error_after_commit, bool &commit_sent);
 
 	SnapshotAndStats CheckForConflicts(DuckLakeSnapshot transaction_snapshot,
 	                                   const TransactionChangeInformation &changes,

@@ -3093,9 +3093,8 @@ ErrorData ErrorOfUnknownPublication(const ErrorData &error) {
 	                                        error.RawMessage());
 }
 
-//! Commits the metadata connection. A commit that is durable although it reports an error is published: the error
-//! is kept for the end of the commit, as nothing can be rolled back, retried or cleaned up after it
-static void CommitMetadata(const DuckLakeCommitContext &context, ErrorData &error_after_commit, bool &commit_sent) {
+void DuckLakeTransactionState::CommitMetadata(const DuckLakeCommitContext &context, ErrorData &error_after_commit,
+                                              bool &commit_sent) {
 	commit_sent = true;
 	try {
 		context.commit_connection();

@@ -1,0 +1,128 @@
+# name: test/sql/transaction/commit_published_checkpoint_options.test
+# description: A commit of options that skips the commit loop keeps them in the catalog when its checkpoint fails
+# group: [transaction]
+
+require ducklake
+
+require parquet
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/commit_published_checkpoint_options.db' AS dl (
+	DATA_PATH '{TEST_DIR}/commit_published_checkpoint_options_files',
+	METADATA_CATALOG 'meta',
+	DATA_INLINING_ROW_LIMIT 10
+)
+
+statement ok
+CREATE TABLE dl.flushed(i INTEGER)
+
+statement ok
+CREATE TABLE dl.alone(i INTEGER)
+
+statement ok
+INSERT INTO dl.flushed VALUES (1), (2), (3)
+
+# the rows go to a file, the inlined data table of the table stays and is empty
+statement ok
+CALL ducklake_flush_inlined_data('dl')
+
+statement ok
+SET auto_checkpoint_skip_wal_threshold = 9999999999
+
+# an option change with a flush of only an empty inlined table writes no snapshot
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.flushed SET (data_inlining_row_limit = 20)
+
+statement ok
+CALL ducklake_flush_inlined_data('dl')
+
+# the commit of the metadata is durable, the checkpoint that follows it fails
+statement ok
+SET wal_autocheckpoint_entries = 1
+
+statement ok
+PRAGMA debug_checkpoint_abort = 'before_header_non_fatal'
+
+statement error
+COMMIT
+----
+Transaction COMMIT succeeded
+
+statement ok
+PRAGMA debug_checkpoint_abort = 'none'
+
+statement ok
+SET wal_autocheckpoint_entries = 0
+
+# the failed checkpoint invalidated the metadata database, it is attached again while the lake stays attached
+statement ok
+DETACH meta
+
+statement ok
+ATTACH '{TEST_DIR}/commit_published_checkpoint_options.db' AS meta
+
+query II
+SELECT (SELECT count(*) FROM meta.ducklake_snapshot), value
+FROM meta.ducklake_metadata WHERE key = 'data_inlining_row_limit' AND scope = 'table'
+----
+5	20
+
+# the lake inlines 15 rows, as the option in the metadata says
+statement ok
+INSERT INTO dl.flushed SELECT range FROM range(15)
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/commit_published_checkpoint_options_files/main/flushed/*.parquet')
+----
+1
+
+# an option change alone commits in the same way
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.alone SET (data_inlining_row_limit = 20)
+
+statement ok
+SET wal_autocheckpoint_entries = 1
+
+statement ok
+PRAGMA debug_checkpoint_abort = 'before_header_non_fatal'
+
+statement error
+COMMIT
+----
+Transaction COMMIT succeeded
+
+statement ok
+PRAGMA debug_checkpoint_abort = 'none'
+
+statement ok
+SET wal_autocheckpoint_entries = 0
+
+statement ok
+DETACH meta
+
+statement ok
+ATTACH '{TEST_DIR}/commit_published_checkpoint_options.db' AS meta
+
+query I
+SELECT count(*) FROM meta.ducklake_metadata WHERE key = 'data_inlining_row_limit' AND scope = 'table' AND value = '20'
+----
+2
+
+statement ok
+INSERT INTO dl.alone SELECT range FROM range(15)
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/commit_published_checkpoint_options_files/main/alone/*.parquet')
+----
+0
+
+query II
+SELECT (SELECT count(*) FROM dl.flushed), (SELECT count(*) FROM dl.alone)
+----
+18	15

@@ -1,0 +1,35 @@
+# name: test/sql/default/null_default_value_type.test
+# description: A column default without a default_value_type reads as a literal
+# group: [default]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/null_default_value_type.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/null_default_value_type')
+
+statement ok
+CREATE TABLE dl.t (id INTEGER, c VARCHAR DEFAULT 'x')
+
+# as the migration of DuckDB 1.5.1 left it on SQLite and Postgres catalogs
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_column SET default_value_type = NULL
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/null_default_value_type')
+
+statement ok
+INSERT INTO dl.t (id) VALUES (1)
+
+query II
+FROM dl.t
+----
+1	x

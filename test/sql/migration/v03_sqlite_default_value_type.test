@@ -1,0 +1,45 @@
+# name: test/sql/migration/v03_sqlite_default_value_type.test
+# description: The column defaults of a SQLite catalog that DuckDB 1.5.1 migrated from DuckLake 0.3 read as literals
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+require sqlite_scanner
+
+# written by DuckDB 1.4.4 and migrated by DuckDB 1.5.1, which left default_value_type NULL
+unzip data/old_ducklake/v03_sqlite_default_value_type.sqlite.gz {TEST_DIR}/v03_sqlite_default_value_type.sqlite
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/v03_sqlite_default_value_type.sqlite' AS dl
+(DATA_PATH 'data/old_ducklake/v03_sqlite_default_value_type/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT count(*) FROM __ducklake_metadata_dl.ducklake_column WHERE default_value_type IS NOT NULL
+----
+0
+
+query I
+SELECT column_default FROM duckdb_columns() WHERE database_name = 'dl' AND table_name = 't' AND column_name = 'c'
+----
+'x'
+
+query II
+SELECT * FROM dl.t
+----
+1	x
+
+query I
+SELECT * FROM dl.u
+----
+5
+
+# a column row that is written again gets the type
+statement ok
+ALTER TABLE dl.t RENAME COLUMN c TO d
+
+query I
+SELECT default_value_type FROM __ducklake_metadata_dl.ducklake_column WHERE column_name = 'd'
+----
+literal

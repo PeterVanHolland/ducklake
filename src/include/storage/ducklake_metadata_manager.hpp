@@ -890,6 +890,8 @@ public:
 	static string V2_0SnapshotRenameSql(const V2_0SnapshotAdditions &add);
 	//! The other additions, the second batch of a rebuild copies from the renamed tables
 	static string V2_0SnapshotAdditionsSql(const V2_0SnapshotAdditions &add);
+	//! Records the newest gap that expiries left in the snapshot ids of a 1.1 catalog, which records none itself
+	static string V2_0ExpiredGapSql();
 	//! The shape of a catalog kind against the row companions, probed so an interrupted step resumes
 	struct V2_0RowCompanion {
 		string kind;

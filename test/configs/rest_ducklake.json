@@ -607,7 +607,9 @@
         "test/sql/migration/v20_inlined_dropped_table_rows.test",
         "test/sql/migration/v20_inlined_orphan_deletions.test",
         "test/sql/migration/v20_inlined_rows_after_first_batch.test",
-        "test/sql/migration/v20_inlined_interrupted_step.test"
+        "test/sql/migration/v20_inlined_interrupted_step.test",
+        "test/sql/migration/v11_to_v20_dev1_expired_gap.test",
+        "test/sql/migration/v11_to_v20_dev1_expired_snapshot.test"
       ]
     },
     {

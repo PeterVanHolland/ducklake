@@ -1115,6 +1115,9 @@ void DuckLakeMetadataManager::MigrateV11(bool from_dev1) {
 	}
 	auto migrate_query = V2_0SnapshotAdditionsSql(layout.additions) + V2_0FileEventsSql(layout.ranges) +
 	                     V2_0RowCompanionsSql(layout.rows) + V2_0InlinedCompanionSql(layout.inlined);
+	if (!from_dev1) {
+		migrate_query += V2_0ExpiredGapSql();
+	}
 	migrate_query += "UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '2.0-dev1' WHERE key = 'version';\n";
 	ExecuteMigration(migrate_query, false, from_version, "2.0-dev1");
 }
@@ -1701,6 +1704,31 @@ string DuckLakeMetadataManager::V2_0SnapshotAdditionsSql(const V2_0SnapshotAddit
 		                                  add.has_changes_old);
 	}
 	return result;
+}
+
+string DuckLakeMetadataManager::V2_0ExpiredGapSql() {
+	// a 1.1 catalog has one branch, so the first snapshot after its newest gap gets the bounds of that gap
+	return R"(
+UPDATE {METADATA_CATALOG}.ducklake_snapshot_changes AS changes
+SET changes_made = CASE WHEN changes_made IS NULL OR changes_made = '' THEN '' ELSE changes_made || ',' END
+    || 'expired_snapshot:' || CAST((
+        SELECT MAX(remaining.snapshot_id) + 1 FROM {METADATA_CATALOG}.ducklake_snapshot remaining
+        WHERE remaining.branch_id = 0 AND remaining.snapshot_id < changes.snapshot_id) AS VARCHAR)
+    || CASE WHEN EXISTS (
+        SELECT 1 FROM {METADATA_CATALOG}.ducklake_snapshot remaining
+        WHERE remaining.branch_id = 0 AND remaining.snapshot_id = changes.snapshot_id - 2) THEN ''
+       ELSE ',expired_snapshot:' || CAST(changes.snapshot_id - 1 AS VARCHAR) END
+WHERE changes.branch_id = 0 AND changes.snapshot_id = (
+    SELECT MAX(after_gap.snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot after_gap
+    WHERE after_gap.branch_id = 0
+        AND after_gap.snapshot_id > (
+            SELECT MIN(oldest.snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot oldest WHERE oldest.branch_id = 0)
+        AND NOT EXISTS (
+            SELECT 1 FROM {METADATA_CATALOG}.ducklake_snapshot previous
+            WHERE previous.branch_id = 0 AND previous.snapshot_id = after_gap.snapshot_id - 1))
+    AND (changes.changes_made IS NULL
+        OR changes.changes_made NOT LIKE ('%expired_snapshot:' || CAST(changes.snapshot_id - 1 AS VARCHAR)));
+)";
 }
 
 DuckLakeMetadataManager::V2_0SnapshotAdditions DuckLakeMetadataManager::ProbeV2_0SnapshotAdditions() {

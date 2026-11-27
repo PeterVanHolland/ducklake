@@ -113,6 +113,10 @@ public:
 	void CleanupFiles(ClientContext &context, TableIndex table_id);
 	//! Forgets the changes of a table, the files stay
 	void Forget(TableIndex table_id);
+	//! Sets the changes of a replaced table aside, they stay readable and no commit writes them
+	void Retire(TableIndex table_id);
+	//! Removes the changes that were set aside and the files written for them
+	void CleanupRetired(ClientContext &context);
 	void GetWrittenFiles(vector<string> &result) const;
 	bool HasTransactionLocalInserts(TableIndex table_id) const;
 	bool HasTransactionInlinedData(TableIndex table_id) const;
@@ -161,12 +165,15 @@ public:
 	                            unordered_map<string, vector<DuckLakeDeleteFile>> &delete_file_map);
 
 private:
+	//! The changes to write to, the retired ones for a replaced table
+	LocalTableDataChanges &GetOrCreate(TableIndex table_id);
 	optional_ptr<LocalTableDataChanges> Find(TableIndex table_id);
 	optional_ptr<const LocalTableDataChanges> Find(TableIndex table_id) const;
 
 private:
 	mutable mutex lock;
 	map<TableIndex, LocalTableDataChanges> changes;
+	map<TableIndex, LocalTableDataChanges> retired_changes;
 };
 
 struct SnapshotAndStats {
@@ -238,7 +245,7 @@ public:
 	static DuckLakeTransaction &Get(ClientContext &context, Catalog &catalog);
 
 	void CreateEntry(unique_ptr<CatalogEntry> entry);
-	void DropEntry(CatalogEntry &entry);
+	void DropEntry(CatalogEntry &entry, bool replacing = false);
 	bool IsDeleted(CatalogEntry &entry);
 	bool IsRenamed(CatalogEntry &entry);
 	optional_ptr<CatalogEntry> GetLocalEntryById(SchemaIndex schema_id);
@@ -287,7 +294,7 @@ public:
 	//! Get all inlined file deletions for commit
 
 	void DropSchema(DuckLakeSchemaEntry &schema);
-	void DropTable(DuckLakeTableEntry &table);
+	void DropTable(DuckLakeTableEntry &table, bool replacing);
 	void DropView(DuckLakeViewEntry &view);
 	void DropScalarMacro(DuckLakeScalarMacroEntry &macro);
 	void DropTableMacro(DuckLakeTableMacroEntry &macro);
@@ -311,6 +318,8 @@ public:
 	//! Marks the inlined file deletions of the table flushed up to the snapshot, the commit deletes them
 	void MarkInlinedFileDeletionsFlushed(TableIndex table_id, idx_t flush_snapshot_id);
 	bool InlinedFileDeletionsFlushed(TableIndex table_id);
+	//! Forgets the flushes and the name maps of a dropped table whose changes are discarded
+	void ForgetDroppedTable(TableIndex table_id);
 
 	bool ChangesMade() const;
 	//! The files of the transaction were written by a client of a REST server, which cleans them up itself

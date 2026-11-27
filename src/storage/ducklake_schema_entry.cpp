@@ -676,7 +676,7 @@ void DuckLakeSchemaEntry::DropEntry(ClientContext &context, DropInfo &info, bool
 		ThrowIfTableCallsMacro(context, catalog, identifier_set_t {Identifier(catalog_entry->name)});
 	}
 	auto &transaction = DuckLakeTransaction::Get(context, catalog);
-	transaction.DropEntry(*catalog_entry);
+	transaction.DropEntry(*catalog_entry, replacing);
 }
 
 optional_ptr<CatalogEntry> DuckLakeSchemaEntry::LookupEntry(CatalogTransaction transaction,

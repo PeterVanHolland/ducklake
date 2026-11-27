@@ -1,5 +1,5 @@
 # name: test/sql/transaction/drop_altered_table_local_changes.test
-# description: Dropping a table altered in the same transaction discards its delete files and compactions
+# description: Dropping a table altered in the same transaction discards its delete files, compactions and flushes
 # group: [transaction]
 
 require ducklake
@@ -83,3 +83,214 @@ query I
 SELECT count(*) FROM glob('{DATA_PATH}/drop_altered_table_local_changes/main/compacted/*')
 ----
 2
+
+# a flush of the transaction is discarded with the table, older versions keep the inlined rows
+statement ok
+CREATE TABLE ducklake.flushed(i INTEGER)
+
+statement ok
+CALL ducklake.set_option('data_inlining_row_limit', 10, table_name => 'flushed')
+
+statement ok
+INSERT INTO ducklake.flushed VALUES (1), (2), (3)
+
+statement ok
+SET VARIABLE inserted = (SELECT max(snapshot_id) FROM ducklake.snapshots())
+
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake', table_name => 'flushed')
+
+statement ok
+COMMENT ON TABLE ducklake.flushed IS 'altered'
+
+statement ok
+DROP TABLE ducklake.flushed
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM ducklake.flushed AT (VERSION => getvariable('inserted'))
+----
+3
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/drop_altered_table_local_changes/main/flushed/*')
+----
+0
+
+# and the inlined deletions of its files
+statement ok
+CREATE TABLE ducklake.flushed_deletes(i INTEGER)
+
+statement ok
+INSERT INTO ducklake.flushed_deletes VALUES (1), (2), (3)
+
+statement ok
+CALL ducklake.set_option('data_inlining_row_limit', 10, table_name => 'flushed_deletes')
+
+statement ok
+DELETE FROM ducklake.flushed_deletes WHERE i = 1
+
+statement ok
+SET VARIABLE deleted = (SELECT max(snapshot_id) FROM ducklake.snapshots())
+
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake', table_name => 'flushed_deletes')
+
+statement ok
+COMMENT ON TABLE ducklake.flushed_deletes IS 'altered'
+
+statement ok
+DROP TABLE ducklake.flushed_deletes
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM ducklake.flushed_deletes AT (VERSION => getvariable('deleted'))
+----
+2
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/drop_altered_table_local_changes/main/flushed_deletes/*')
+----
+1
+
+# a table that is replaced from itself reads the flushed rows once, and older versions keep them
+statement ok
+CREATE TABLE ducklake.replaced(i INTEGER)
+
+statement ok
+CALL ducklake.set_option('data_inlining_row_limit', 10, table_name => 'replaced')
+
+statement ok
+INSERT INTO ducklake.replaced VALUES (1), (2), (3)
+
+statement ok
+SET VARIABLE inserted = (SELECT max(snapshot_id) FROM ducklake.snapshots())
+
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_flush_inlined_data('ducklake', table_name => 'replaced')
+
+statement ok
+COMMENT ON TABLE ducklake.replaced IS 'altered'
+
+statement ok
+CREATE OR REPLACE TABLE ducklake.replaced AS SELECT * FROM ducklake.replaced WHERE i <> 2
+
+statement ok
+COMMIT
+
+query I
+SELECT * FROM ducklake.replaced ORDER BY i
+----
+1
+3
+
+query I
+SELECT count(*) FROM ducklake.replaced AT (VERSION => getvariable('inserted'))
+----
+3
+
+# only the file of the new table is left
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/drop_altered_table_local_changes/main/replaced/*')
+----
+1
+
+# a flush that runs in the statement that replaces the table is discarded with it
+statement ok
+CREATE TABLE ducklake.flushed_inside(i INTEGER)
+
+statement ok
+CALL ducklake.set_option('data_inlining_row_limit', 10, table_name => 'flushed_inside')
+
+statement ok
+INSERT INTO ducklake.flushed_inside VALUES (1), (2), (3)
+
+statement ok
+SET VARIABLE inserted = (SELECT max(snapshot_id) FROM ducklake.snapshots())
+
+statement ok
+BEGIN
+
+statement ok
+COMMENT ON TABLE ducklake.flushed_inside IS 'altered'
+
+statement ok
+CREATE OR REPLACE TABLE ducklake.flushed_inside AS
+SELECT rows_flushed FROM ducklake_flush_inlined_data('ducklake', table_name => 'flushed_inside')
+
+statement ok
+COMMIT
+
+query I
+SELECT * FROM ducklake.flushed_inside
+----
+3
+
+query I
+SELECT i FROM ducklake.flushed_inside AT (VERSION => getvariable('inserted')) ORDER BY i
+----
+1
+2
+3
+
+# only the file of the new table is left
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/drop_altered_table_local_changes/main/flushed_inside/*')
+----
+1
+
+# so is a compaction that runs in that statement
+statement ok
+CREATE TABLE ducklake.compacted_inside(i INTEGER)
+
+statement ok
+INSERT INTO ducklake.compacted_inside VALUES (1)
+
+statement ok
+INSERT INTO ducklake.compacted_inside VALUES (2)
+
+statement ok
+SET VARIABLE inserted = (SELECT max(snapshot_id) FROM ducklake.snapshots())
+
+statement ok
+BEGIN
+
+statement ok
+COMMENT ON TABLE ducklake.compacted_inside IS 'altered'
+
+statement ok
+CREATE OR REPLACE TABLE ducklake.compacted_inside AS
+SELECT files_created FROM ducklake_merge_adjacent_files('ducklake', 'compacted_inside')
+
+statement ok
+COMMIT
+
+query I
+SELECT * FROM ducklake.compacted_inside
+----
+1
+
+query I
+SELECT i FROM ducklake.compacted_inside AT (VERSION => getvariable('inserted')) ORDER BY i
+----
+1
+2
+
+# the two files of the old table and the file of the new one
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/drop_altered_table_local_changes/main/compacted_inside/*')
+----
+3

@@ -8287,9 +8287,8 @@ AND NOT EXISTS (
 	}
 	auto deleted_table_ids = GenerateIDList(cleanup_tables);
 
-	auto read_cleanup_files = [&](QueryResult &files) {
+	auto read_cleanup_files = [&](QueryResult &files, vector<TableIndex> &file_tables) {
 		vector<DuckLakeFileForCleanup> cleanup_files;
-		vector<TableIndex> file_tables;
 		vector<DuckLakePath> file_paths;
 		for (auto &row : files) {
 			DuckLakeFileForCleanup info;
@@ -8321,10 +8320,36 @@ AND NOT EXISTS (
 
 	auto file_events = WritesFileVisibilityEvents();
 	result = Query(UnusedFilesQuery(DataFiles(), "data_file_id", table_id_filter));
-	auto cleanup_files = read_cleanup_files(*result);
+	vector<TableIndex> data_file_tables;
+	auto cleanup_files = read_cleanup_files(*result, data_file_tables);
 	auto deleted_file_ids = CleanupFileIdList(cleanup_files);
 	vector<string> tables_to_delete_from;
 	if (!cleanup_files.empty()) {
+		// the inlined deletions go before their files, the deletion table of a dropped table is dropped below
+		map<TableIndex, vector<DataFileIndex>> table_files;
+		for (idx_t i = 0; i < cleanup_files.size(); i++) {
+			table_files[data_file_tables[i]].push_back(cleanup_files[i].id);
+		}
+		for (auto &table_id : cleanup_tables) {
+			table_files.erase(table_id);
+		}
+		string delete_inlined_deletions;
+		if (!table_files.empty()) {
+			// listed now, a commit after the snapshot of the transaction can have created a deletion table
+			auto deletion_tables = ListInlinedDeletionTables();
+			for (auto &entry : table_files) {
+				auto deletion_table = InlinedFileDeletionTableName(entry.first);
+				if (deletion_tables.count(deletion_table.GetIdentifierName())) {
+					delete_inlined_deletions +=
+					    StringUtil::Format("DELETE FROM {METADATA_CATALOG}.%s WHERE file_id IN (%s);\n", deletion_table,
+					                       GenerateIDList(entry.second));
+				}
+			}
+		}
+		if (!delete_inlined_deletions.empty()) {
+			result = Execute(transaction.GetSnapshot(), delete_inlined_deletions);
+			result->ThrowIfError("Failed to delete old inlined file deletions in DuckLake: ");
+		}
 		// delete the data files
 		tables_to_delete_from = {"ducklake_data_file", "ducklake_file_column_stats", "ducklake_file_variant_stats",
 		                         "ducklake_file_partition_value"};
@@ -8349,7 +8374,8 @@ WHERE data_file_id IN (%s);
 	}
 
 	result = Query(UnusedFilesQuery(DeleteFiles(), "delete_file_id", table_id_filter + file_id_filter));
-	auto cleanup_deletes = read_cleanup_files(*result);
+	vector<TableIndex> delete_file_tables;
+	auto cleanup_deletes = read_cleanup_files(*result, delete_file_tables);
 	if (!cleanup_deletes.empty()) {
 		// delete the delete files
 		auto deleted_delete_file_ids = CleanupFileIdList(cleanup_deletes);

@@ -1,0 +1,82 @@
+# name: test/sql/deletion_inlining/inlined_deletions_expire_with_file.test
+# description: an expiry that removes a data file removes the inlined deletions of the file
+# group: [deletion_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (
+	DATA_PATH '{DATA_PATH}/inlined_deletions_expire_files',
+	METADATA_CATALOG 'ducklake_meta',
+	DATA_INLINING_ROW_LIMIT 10
+)
+
+statement ok
+CREATE TABLE ducklake.t AS SELECT range AS i FROM range(100)
+
+statement ok
+DELETE FROM ducklake.t WHERE i = 5
+
+# the rewrite replaces the file
+statement ok
+CALL ducklake_rewrite_data_files('ducklake', 't', delete_threshold => 0)
+
+# a second file with an inlined deletion of its own
+statement ok
+INSERT INTO ducklake.t SELECT range AS i FROM range(100, 200)
+
+statement ok
+DELETE FROM ducklake.t WHERE i = 150
+
+query I
+SELECT count(*) FROM ducklake_meta.ducklake_inlined_delete_1
+----
+2
+
+# the snapshot of the first delete still reads the replaced file with its inlined deletion
+statement ok
+CALL ducklake_expire_snapshots('ducklake', versions => [1])
+
+query I
+SELECT count(*) FROM ducklake_meta.ducklake_inlined_delete_1
+----
+2
+
+query II
+SELECT count(*), count(*) FILTER (WHERE i = 5) FROM ducklake.t AT (VERSION => 2)
+----
+99	0
+
+statement ok
+CALL ducklake_expire_snapshots('ducklake', older_than => now())
+
+# the deletion of the replaced file is gone with the file, the one of the live file stays
+query I
+SELECT count(*) FROM ducklake_meta.ducklake_inlined_delete_1
+----
+1
+
+query III
+SELECT count(*), count(*) FILTER (WHERE i = 5), count(*) FILTER (WHERE i = 150) FROM ducklake.t
+----
+198	0	0
+
+# the flush writes the remaining deletion to a delete file
+statement ok
+CALL ducklake_flush_inlined_data('ducklake')
+
+query I
+SELECT count(*) FROM ducklake_meta.ducklake_inlined_delete_1
+----
+0
+
+query III
+SELECT count(*), count(*) FILTER (WHERE i = 5), count(*) FILTER (WHERE i = 150) FROM ducklake.t
+----
+198	0	0

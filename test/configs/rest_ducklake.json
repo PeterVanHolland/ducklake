@@ -374,6 +374,8 @@
         "test/sql/delete/test_delete_partial_max_snapshot.test",
         "test/sql/deletion_inlining/flush_inlined_file_deletes_after_delete_concurrent.test",
         "test/sql/deletion_inlining/flush_inlined_file_deletes_after_delete_transaction.test",
+        "test/sql/deletion_inlining/inlined_deletions_expire_open_transaction.test",
+        "test/sql/deletion_inlining/inlined_deletions_expire_with_file.test",
         "test/sql/deletion_inlining/test_deletion_from_file_and_inserted_inlining.test",
         "test/sql/deletion_inlining/test_deletion_from_file_and_inserted_inlining_non_sequential.test",
         "test/sql/deletion_inlining/test_deletion_from_inlined_insertion.test",

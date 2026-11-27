@@ -1,0 +1,40 @@
+# name: benchmark/micro/fixtures/rewritten_inlined_deletes.benchmark.in
+# description: A table of 2000 partition files that were rewritten after one inlined deletion each
+# group: [fixtures]
+
+argument lake rewritten_inlined_deletes
+
+cache_file ${lake}_ready.marker
+
+# The rewrite keeps the 2000 old files and their inlined deletions for the snapshots before it
+load
+@create ${lake}_pristine
+@attach ${lake}_pristine AS lake (DATA_PATH '${BENCHMARK_DIR}/${lake}_files')
+CALL lake.set_option('data_inlining_row_limit', 1);
+CREATE TABLE lake.t (id INTEGER, p INTEGER);
+ALTER TABLE lake.t SET PARTITIONED BY (p);
+INSERT INTO lake.t SELECT i, i % 2000 FROM range(40000) t(i);
+DELETE FROM lake.t WHERE id < 2000;
+SELECT CASE WHEN (SELECT count(*) FROM ducklake_list_files('lake', 't')) <> 2000
+OR (SELECT count(*) FROM ducklake_list_files('lake', 't') WHERE delete_file IS NOT NULL) <> 0
+THEN error('t must consist of 2000 files with inlined deletions') END;
+CALL ducklake_rewrite_data_files('lake', 't', delete_threshold => 0);
+SELECT CASE WHEN (SELECT count(*) <> 4000 FROM __ducklake_metadata_lake.ducklake_data_file)
+OR (SELECT count(*) FROM ducklake_list_files('lake', 't')) <> 2000
+OR (SELECT count(*) <> 38000 FROM lake.t)
+THEN error('the rewrite must replace the 2000 files of t') END;
+CALL ducklake_delete_orphaned_files('lake', cleanup_all => true);
+DETACH lake;
+COPY (SELECT count(*) FROM glob('${BENCHMARK_DIR}/${lake}_files/**'))
+TO '${BENCHMARK_DIR}/${lake}_filecount.csv' (FORMAT CSV, HEADER false);
+@seal ${lake}_pristine
+COPY (SELECT 1) TO '${BENCHMARK_DIR}/${lake}_ready.marker' (FORMAT CSV);
+DETACH DATABASE IF EXISTS lake;
+@copy ${lake}_pristine TO ${work}
+@attach ${work} AS lake
+CALL ducklake_delete_orphaned_files('lake', cleanup_all => true);
+SELECT CASE WHEN (SELECT count(*) FROM glob('${BENCHMARK_DIR}/${lake}_files/**'))
+<> (SELECT column0 FROM read_csv('${BENCHMARK_DIR}/${lake}_filecount.csv', header = false))
+THEN error('the fixture files were not restored') END;
+
+include benchmark/micro/fixtures/restore_reload.benchmark.in

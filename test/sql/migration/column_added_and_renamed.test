@@ -1,0 +1,474 @@
+# name: test/sql/migration/column_added_and_renamed.test
+# description: columns or fields that an older release left with one field id can be dropped down to one name
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.1 with data inlining, which added x to t and renamed it to xq in one transaction and left a
+# row for each name
+unzip data/old_ducklake/column_added_and_renamed.db.gz {TEST_DIR}/column_added_and_renamed.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_added_and_renamed.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_added_and_renamed', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.1')
+
+query I
+SELECT list(column_name ORDER BY column_index) FROM duckdb_columns()
+WHERE database_name = 'renamed' AND table_name = 't'
+----
+[id, x, xq]
+
+# any other change of the column is refused, it would have to pick one of the names
+statement error
+ALTER TABLE renamed.t ALTER COLUMN xq TYPE BIGINT
+----
+Drop one of the two columns first
+
+statement error
+ALTER TABLE renamed.t RENAME COLUMN x TO y
+----
+Drop one of the two columns first
+
+statement error
+ALTER TABLE renamed.t ALTER COLUMN xq SET DEFAULT 5
+----
+Drop one of the two columns first
+
+statement error
+ALTER TABLE renamed.t ALTER COLUMN x SET NOT NULL
+----
+Drop one of the two columns first
+
+statement error
+COMMENT ON COLUMN renamed.t.xq IS 'both names'
+----
+Drop one of the two columns first
+
+statement ok
+ALTER TABLE renamed.t DROP COLUMN x
+
+# the column stays under its other name, with the default of the rows from before it
+query II
+SELECT * FROM renamed.t
+----
+1	8
+
+# the migration to 2.0 converts no inlined rows, the flush writes them to files first
+statement ok
+CALL ducklake_flush_inlined_data('renamed')
+
+statement ok
+DETACH renamed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_added_and_renamed.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_added_and_renamed', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+INSERT INTO renamed.t VALUES (2, 9)
+
+statement ok
+ALTER TABLE renamed.t ALTER COLUMN xq TYPE BIGINT
+
+statement ok
+DETACH renamed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_added_and_renamed.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_added_and_renamed', OVERRIDE_DATA_PATH TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+query III
+SELECT id, xq, typeof(xq) FROM renamed.t ORDER BY id
+----
+1	8	BIGINT
+2	9	BIGINT
+
+statement ok
+DETACH renamed
+
+# the other name can go instead, and the column after it
+unzip data/old_ducklake/column_added_and_renamed.db.gz {TEST_DIR}/column_added_and_renamed_other.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_added_and_renamed_other.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_added_and_renamed_other', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.1')
+
+statement ok
+ALTER TABLE renamed.t DROP COLUMN xq
+
+query II
+SELECT id, x FROM renamed.t
+----
+1	8
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE renamed.t ADD COLUMN z INTEGER
+
+statement ok
+ALTER TABLE renamed.t DROP COLUMN x
+
+statement ok
+COMMIT
+
+query II
+SELECT id, z FROM renamed.t
+----
+1	NULL
+
+statement ok
+DETACH renamed
+
+# a catalog without inlined rows migrates to 2.0 with both rows, where the table can be dropped
+unzip data/old_ducklake/column_added_and_renamed.db.gz {TEST_DIR}/column_added_and_renamed_dropped.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_added_and_renamed_dropped.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_added_and_renamed_dropped', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.1')
+
+# no flush writes the row while the column has two names, it goes with the snapshots that read it
+statement ok
+DELETE FROM renamed.t
+
+statement ok
+CALL ducklake_expire_snapshots('renamed', versions => [2, 3])
+
+statement ok
+DETACH renamed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_added_and_renamed_dropped.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_added_and_renamed_dropped', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+DROP TABLE renamed.t
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'renamed'
+----
+0
+
+statement ok
+DETACH renamed
+
+# and one name can go there, one end row ends both rows
+unzip data/old_ducklake/column_added_and_renamed.db.gz {TEST_DIR}/column_added_and_renamed_v20.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_added_and_renamed_v20.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_added_and_renamed_v20', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.1')
+
+statement ok
+DELETE FROM renamed.t
+
+statement ok
+CALL ducklake_expire_snapshots('renamed', versions => [2, 3])
+
+statement ok
+DETACH renamed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_added_and_renamed_v20.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_added_and_renamed_v20', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+ALTER TABLE renamed.t DROP COLUMN x
+
+statement ok
+INSERT INTO renamed.t VALUES (2, 9)
+
+statement ok
+DETACH renamed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_added_and_renamed_v20.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_added_and_renamed_v20', OVERRIDE_DATA_PATH TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+query II
+SELECT id, xq FROM renamed.t ORDER BY id
+----
+2	9
+
+statement ok
+DETACH renamed
+
+# a catalog that keeps the end snapshots in the rows ends both rows too
+unzip data/old_ducklake/column_added_and_renamed.db.gz {TEST_DIR}/column_added_and_renamed_v11.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_added_and_renamed_v11.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_added_and_renamed_v11', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.1')
+
+statement ok
+ALTER TABLE renamed.t DROP COLUMN x
+
+statement ok
+INSERT INTO renamed.t VALUES (2, 9)
+
+statement ok
+DETACH renamed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_added_and_renamed_v11.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_added_and_renamed_v11', OVERRIDE_DATA_PATH TRUE, DATA_INLINING_ROW_LIMIT 10,
+	DUCKLAKE_VERSION '1.1')
+
+query II
+SELECT id, xq FROM renamed.t ORDER BY id
+----
+1	8
+2	9
+
+statement ok
+DETACH renamed
+
+# written by DuckDB 1.5.1, which renamed the new column twice in that transaction and left three rows
+unzip data/old_ducklake/column_renamed_twice.db.gz {TEST_DIR}/column_renamed_twice.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_renamed_twice.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_renamed_twice', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.1')
+
+query I
+SELECT list(column_name ORDER BY column_index) FROM duckdb_columns()
+WHERE database_name = 'renamed' AND table_name = 't'
+----
+[id, x, xq, xr]
+
+# the column stays under the last of the names that are left
+statement ok
+ALTER TABLE renamed.t DROP COLUMN x
+
+query II
+SELECT id, xr FROM renamed.t
+----
+1	8
+
+statement ok
+INSERT INTO renamed.t VALUES (2, 9)
+
+statement ok
+CALL ducklake_flush_inlined_data('renamed')
+
+statement ok
+DETACH renamed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_renamed_twice.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_renamed_twice', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+query II
+SELECT * FROM renamed.t ORDER BY id
+----
+1	8
+2	9
+
+statement ok
+DETACH renamed
+
+# two drops in one transaction leave no row of the column
+unzip data/old_ducklake/column_renamed_twice.db.gz {TEST_DIR}/column_renamed_twice_dropped.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_renamed_twice_dropped.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_renamed_twice_dropped', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.1')
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE renamed.t DROP COLUMN xr
+
+statement ok
+ALTER TABLE renamed.t DROP COLUMN xq
+
+statement ok
+COMMIT
+
+statement ok
+CALL ducklake_flush_inlined_data('renamed')
+
+statement ok
+DETACH renamed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/column_renamed_twice_dropped.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/column_renamed_twice_dropped', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+query I
+SELECT * FROM renamed.t
+----
+1
+
+statement ok
+DETACH renamed
+
+# written by DuckDB 1.5.6, which added the struct r to t and renamed its field y to z in one transaction
+unzip data/old_ducklake/field_added_and_renamed.db.gz {TEST_DIR}/field_added_and_renamed.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/field_added_and_renamed.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/field_added_and_renamed', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.1')
+
+query I
+SELECT typeof(r) FROM renamed.t
+----
+STRUCT(x INTEGER, y INTEGER, z INTEGER)
+
+statement ok
+ALTER TABLE renamed.t DROP COLUMN r.y
+
+statement ok
+INSERT INTO renamed.t VALUES (2, {'x': 1, 'z': 2})
+
+statement ok
+CALL ducklake_flush_inlined_data('renamed')
+
+statement ok
+DETACH renamed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/field_added_and_renamed.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/field_added_and_renamed', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+query II
+SELECT * FROM renamed.t ORDER BY id
+----
+1	NULL
+2	{'x': 1, 'z': 2}
+
+statement ok
+DETACH renamed
+
+# the catalog of that release keeps the end snapshots in the rows, the other name can go there
+unzip data/old_ducklake/field_added_and_renamed.db.gz {TEST_DIR}/field_added_and_renamed_v10.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/field_added_and_renamed_v10.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/field_added_and_renamed_v10', OVERRIDE_DATA_PATH TRUE, DATA_INLINING_ROW_LIMIT 10,
+	DUCKLAKE_VERSION '1.0')
+
+statement ok
+ALTER TABLE renamed.t DROP COLUMN r.z
+
+statement ok
+INSERT INTO renamed.t VALUES (2, {'x': 1, 'y': 2})
+
+query II
+SELECT * FROM renamed.t ORDER BY id
+----
+1	NULL
+2	{'x': 1, 'y': 2}
+
+statement ok
+DETACH renamed
+
+# the struct can be dropped while the field has both rows
+unzip data/old_ducklake/field_added_and_renamed.db.gz {TEST_DIR}/field_added_and_renamed_struct.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/field_added_and_renamed_struct.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/field_added_and_renamed_struct', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.1')
+
+statement ok
+ALTER TABLE renamed.t DROP COLUMN r
+
+statement ok
+INSERT INTO renamed.t VALUES (2)
+
+query I
+SELECT * FROM renamed.t ORDER BY id
+----
+1
+2
+
+statement ok
+DETACH renamed
+
+# and on a catalog that migrated to 2.0 with both rows of the field
+unzip data/old_ducklake/field_added_and_renamed.db.gz {TEST_DIR}/field_added_and_renamed_struct_v20.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/field_added_and_renamed_struct_v20.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/field_added_and_renamed_struct_v20', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.0')
+
+statement ok
+DELETE FROM renamed.t
+
+statement ok
+CALL ducklake_expire_snapshots('renamed', versions => [2, 3])
+
+statement ok
+DETACH renamed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/field_added_and_renamed_struct_v20.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/field_added_and_renamed_struct_v20', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+ALTER TABLE renamed.t DROP COLUMN r
+
+statement ok
+INSERT INTO renamed.t VALUES (2)
+
+query I
+SELECT * FROM renamed.t ORDER BY id
+----
+2
+
+statement ok
+DETACH renamed
+
+# and so can the table
+unzip data/old_ducklake/field_added_and_renamed.db.gz {TEST_DIR}/field_added_and_renamed_dropped.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/field_added_and_renamed_dropped.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/field_added_and_renamed_dropped', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.0')
+
+statement ok
+DELETE FROM renamed.t
+
+statement ok
+CALL ducklake_expire_snapshots('renamed', versions => [2, 3])
+
+statement ok
+DETACH renamed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/field_added_and_renamed_dropped.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/field_added_and_renamed_dropped', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+DROP TABLE renamed.t
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'renamed'
+----
+0
+
+statement ok
+DETACH renamed

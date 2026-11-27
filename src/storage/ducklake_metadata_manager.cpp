@@ -590,7 +590,7 @@ string DuckLakeMetadataManager::EndRows(const RowVisibilityKind &kind, const str
 	// a row born at the commit snapshot is not ended, the callers write it after the ends or leave it out
 	return StringUtil::Format(R"(INSERT INTO {METADATA_CATALOG}.ducklake_%s_visibility
     (branch_id, %s, row_branch_id, row_snapshot, end_snapshot)
-SELECT 0, %s, t.%s, t.%s, {SNAPSHOT_ID}
+SELECT DISTINCT 0, %s, t.%s, t.%s, {SNAPSHOT_ID}
 FROM {METADATA_CATALOG}.%s t
 WHERE %s AND %s;
 )",

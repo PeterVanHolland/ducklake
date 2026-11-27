@@ -34,6 +34,37 @@ ALTER TABLE ducklake.t DROP COLUMN m.value
 ----
 Cannot drop field "value" from column "m" - it's not a struct
 
+# neither can the element of a list or the key of a map inside a struct
+statement ok
+CREATE TABLE ducklake.n (s STRUCT(l INTEGER[], m MAP(INTEGER, VARCHAR), o STRUCT(x INTEGER, y INTEGER)[]))
+
+statement ok
+INSERT INTO ducklake.n VALUES ({'l': [1, 2], 'm': MAP {1: 'one'}, 'o': [{'x': 1, 'y': 2}]})
+
+statement error
+ALTER TABLE ducklake.n DROP COLUMN s.l.element
+----
+Cannot drop field "element" from column "l" - it's not a struct
+
+statement error
+ALTER TABLE ducklake.n DROP COLUMN s.m.key
+----
+Cannot drop field "key" from column "m" - it's not a struct
+
+statement error
+ALTER TABLE ducklake.n DROP COLUMN s.m.value
+----
+Cannot drop field "value" from column "m" - it's not a struct
+
+# a field of a struct inside a list still can
+statement ok
+ALTER TABLE ducklake.n DROP COLUMN s.o.element.y
+
+query I
+SELECT * FROM ducklake.n
+----
+{'l': [1, 2], 'm': {1=one}, 'o': [{'x': 1}]}
+
 statement error
 ALTER TABLE ducklake.t DROP COLUMN v.a
 ----

@@ -1,0 +1,66 @@
+# name: test/sql/comments/comment_on_view_column_collation.test
+# description: comments of view columns whose names differ in case alone end one by one under nocase
+# group: [comments]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+SET GLOBAL default_collation = 'nocase'
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/comment_on_view_column_collation/')
+
+statement ok
+CREATE VIEW ducklake.vw AS SELECT 1 AS "Ö", 2 AS "ö"
+
+statement ok
+BEGIN
+
+statement ok
+COMMENT ON COLUMN ducklake.vw."Ö" IS 'upper'
+
+statement ok
+COMMENT ON COLUMN ducklake.vw."ö" IS 'lower'
+
+statement ok
+COMMIT
+
+# one commit replaces both comments, and ends the two it replaces
+statement ok
+BEGIN
+
+statement ok
+COMMENT ON COLUMN ducklake.vw."Ö" IS 'upper again'
+
+statement ok
+COMMENT ON COLUMN ducklake.vw."ö" IS 'lower again'
+
+statement ok
+COMMIT
+
+query II
+SELECT column_name, comment FROM duckdb_columns() WHERE database_name = 'ducklake' AND table_name = 'vw'
+ORDER BY column_index
+----
+Ö	upper again
+ö	lower again
+
+# each of the two comments that were replaced has its own end
+query III
+SELECT t.column_name, t.value, e.end_snapshot IS NOT NULL
+FROM __ducklake_metadata_ducklake.ducklake_view_column_tag t
+LEFT JOIN __ducklake_metadata_ducklake.ducklake_view_column_tag_visibility e ON e.view_id = t.view_id
+    AND (e.column_name COLLATE "C") = (t.column_name COLLATE "C") AND e.key = t.key
+    AND e.row_branch_id = t.branch_id AND e.row_snapshot = t.begin_snapshot
+ORDER BY t.begin_snapshot, t.value
+----
+ö	lower	true
+Ö	upper	true
+ö	lower again	false
+Ö	upper again	false

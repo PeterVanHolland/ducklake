@@ -1,0 +1,63 @@
+# name: test/sql/delete/several_delete_files_removed_release.test
+# description: The change feed of a removed data file that DuckDB 1.5.6 left with two delete files lists its live rows
+# group: [delete]
+
+require ducklake
+
+require parquet
+
+# DuckDB 1.5.6 wrote the catalog, a transaction with a DELETE and ducklake_flush_inlined_data left the live data file
+# with two live delete files
+unzip data/old_ducklake/deleted_and_flushed.db.gz {TEST_DIR}/deleted_and_flushed_removed.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/deleted_and_flushed_removed.db' AS flushed
+	(DATA_PATH 'data/old_ducklake/deleted_and_flushed/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT id FROM flushed.t ORDER BY id
+----
+5
+6
+7
+8
+
+# the data file is listed once for each of its delete files
+query III
+SELECT count(*), count(DISTINCT data_file), count(DISTINCT delete_file) FROM ducklake_list_files('flushed', 't')
+----
+2	1	2
+
+statement ok
+SET VARIABLE removed_file = (SELECT data_file FROM ducklake_list_files('flushed', 't') LIMIT 1)
+
+statement ok
+CALL ducklake_remove_data_files('flushed', 't', [getvariable('removed_file')])
+
+query I
+SELECT count(*) FROM flushed.t
+----
+0
+
+# the rows that the two delete files had deleted at versions 3 and 4 are not deleted again
+query III
+SELECT snapshot_id, change_type, id FROM ducklake_table_changes('flushed', 'main', 't', 5, 5) ORDER BY ALL
+----
+5	delete	5
+5	delete	6
+5	delete	7
+5	delete	8
+
+query III
+SELECT snapshot_id, change_type, count(*) FROM ducklake_table_changes('flushed', 'main', 't', 3, 5)
+GROUP BY ALL ORDER BY ALL
+----
+3	delete	5
+4	delete	11
+5	delete	4
+
+# the removal leaves the files of the fixture in place
+query I
+SELECT count(*) FROM glob('data/old_ducklake/deleted_and_flushed/main/t/*')
+----
+3

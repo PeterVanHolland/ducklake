@@ -352,16 +352,18 @@ static void FlushInlinedFileDeletions(ClientContext &context, DuckLakeCatalog &c
 		if (file_info.file_path.empty()) {
 			file_info.file_path = deletion.data_file_path;
 			file_info.max_snapshot = begin_snapshot;
-			if (deletion.delete_file_id.IsValid()) {
-				file_info.has_existing_delete_file = true;
-				file_info.existing_delete_file_id = deletion.delete_file_id;
-				file_info.existing_delete_path = deletion.delete_file.path;
-				file_info.existing_delete_begin_snapshot = deletion.delete_file_begin_snapshot;
-				file_info.existing_delete_encryption_key = deletion.delete_file.encryption_key;
-				file_info.existing_delete_format = deletion.delete_file.format;
-			}
 		} else {
 			file_info.max_snapshot = MaxValue(file_info.max_snapshot, begin_snapshot);
+		}
+		// of several delete files the one with the highest path is replaced, the one the file lists keep
+		if (deletion.delete_file_id.IsValid() &&
+		    (!file_info.has_existing_delete_file || file_info.existing_delete_path < deletion.delete_file.path)) {
+			file_info.has_existing_delete_file = true;
+			file_info.existing_delete_file_id = deletion.delete_file_id;
+			file_info.existing_delete_path = deletion.delete_file.path;
+			file_info.existing_delete_begin_snapshot = deletion.delete_file_begin_snapshot;
+			file_info.existing_delete_encryption_key = deletion.delete_file.encryption_key;
+			file_info.existing_delete_format = deletion.delete_file.format;
 		}
 
 		PositionWithSnapshot pos_with_snap;

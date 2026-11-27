@@ -45,6 +45,8 @@ public:
 	idx_t Filter(row_t start_row_index, idx_t count, SelectionVector &result_sel) override;
 	void Initialize(ClientContext &context, const DuckLakeFileData &delete_file);
 	void Initialize(const DuckLakeInlinedDataDeletes &inlined_deletes);
+	//! Adds the rows that further delete files of the data file delete at the snapshot filter
+	void AddDeleteFiles(ClientContext &context, const vector<DuckLakeFileData> &delete_files);
 	void Initialize(ClientContext &context, const DuckLakeDeleteScanEntry &delete_scan);
 	void SetSnapshotFilter(idx_t snapshot_filter);
 

@@ -238,10 +238,9 @@ struct NestedVariantStats {
 			if (entry == field_stats.end()) {
 				throw InternalException("NestedVariantStats failed to find field name");
 			}
-			auto field_stats = entry->second.field_stats.ToStats();
-			if (field_stats) {
-				stats.Copy(*field_stats);
-			}
+			// a field without stats gets unknown stats
+			StructStats::SetChildStats(main_stats, VariantStats::TYPED_VALUE_INDEX,
+			                           entry->second.field_stats.ToStats());
 			return;
 		}
 		if (child_names.empty()) {

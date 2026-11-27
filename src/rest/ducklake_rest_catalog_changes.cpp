@@ -53,14 +53,17 @@ RESTColumnDefinition DuckLakeRESTCatalogChanges::WriteColumn(const ColumnDefinit
 
 Value DuckLakeRESTCatalogChanges::GetInitialDefault(ClientContext &context, const ColumnDefinition &column) {
 	idx_t column_id = 0;
-	return DuckLakeFieldId::FieldIdFromColumn(column, column_id, context)->GetColumnData().initial_default;
+	// the column or field is added to existing rows
+	return DuckLakeFieldId::FieldIdFromColumn(column, column_id, context, true)->GetColumnData().initial_default;
 }
 
-Value DuckLakeRESTCatalogChanges::ReadInitialDefault(ClientContext &context, const RESTColumnDefinition &column) {
+Value DuckLakeRESTCatalogChanges::ReadInitialDefault(ClientContext &context, const RESTColumnDefinition &column,
+                                                     bool add_column) {
 	if (column.initial_default.has_value) {
 		return Value(column.initial_default.value).DefaultCastAs(column.column_type);
 	}
-	if (!column.default_value.empty()) {
+	// a VARIANT column of a new table keeps only a string as initial default, which no time zone changes
+	if (!column.default_value.empty() && (add_column || column.column_type.id() != LogicalTypeId::VARIANT)) {
 		auto expression = ReadExpression(column.default_value);
 		Value literal;
 		// the session casts a literal to or from a time zone type, a NULL is the same in every zone

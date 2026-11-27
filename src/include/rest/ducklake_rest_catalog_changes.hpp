@@ -24,7 +24,7 @@ struct DuckLakeRESTCatalogChanges {
 	static Value GetInitialDefault(ClientContext &context, const ColumnDefinition &column);
 	//! The initial default a client sent, NULL if it sent none. Rejects a default that the time zone of the server
 	//! would decide without one
-	static Value ReadInitialDefault(ClientContext &context, const RESTColumnDefinition &column);
+	static Value ReadInitialDefault(ClientContext &context, const RESTColumnDefinition &column, bool add_column);
 	static ColumnDefinition ReadColumn(ClientContext &context, const RESTColumnDefinition &column);
 
 	static unique_ptr<RESTAlteration> WriteAlter(ClientContext &context, const AlterInfo &info);

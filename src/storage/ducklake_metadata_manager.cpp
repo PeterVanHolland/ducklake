@@ -3844,7 +3844,8 @@ WHERE data.table_id=%d AND {SNAPSHOT_ID} >= data.begin_snapshot AND ({SNAPSHOT_I
 vector<DuckLakeFileListEntry>
 DuckLakeMetadataManager::GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
                                           const FilterPushdownInfo *filter_info, bool include_local_changes,
-                                          optional_ptr<const vector<DuckLakeProjectedColumn>> projection) {
+                                          optional_ptr<const vector<DuckLakeProjectedColumn>> projection,
+                                          optional_ptr<identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>>>) {
 	auto table_id = table.GetTableId();
 
 	// Top-N dynamic filters order the files by their statistics and check them per file
@@ -3935,9 +3936,10 @@ DuckLakeMetadataManager::GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSna
 vector<DuckLakeFileListEntry>
 DuckLakeMetadataManager::GetTableInsertions(DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot,
                                             DuckLakeSnapshot end_snapshot,
-                                            optional_ptr<const vector<DuckLakeProjectedColumn>> projection) {
+                                            optional_ptr<const vector<DuckLakeProjectedColumn>> projection,
+                                            optional_ptr<identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>>>) {
 	auto table_id = table.GetTableId();
-	string select_list = GetDataFileSelectList("data") +
+	string select_list = "data.data_file_id, " + GetDataFileSelectList("data") +
 	                     ", data.row_id_start, data.begin_snapshot, data.partial_max, data.mapping_id, " +
 	                     GetDeleteFileSelectList("del");
 	// Files either match the exact snapshot range
@@ -3968,6 +3970,7 @@ WHERE data.table_id=%d AND data.begin_snapshot <= {SNAPSHOT_ID} AND (
 	for (auto &row : *result) {
 		DuckLakeFileListEntry file_entry;
 		idx_t col_idx = 0;
+		file_entry.file_id = DataFileIndex(row.GetValue<idx_t>(col_idx++));
 		file_entry.file = ReadDataFile(table, row, col_idx, IsEncrypted());
 		file_entry.row_id_start = OptIdx(row, col_idx++);
 		auto begin_snapshot = row.GetValue<idx_t>(col_idx++);
@@ -4004,7 +4007,8 @@ WHERE data.table_id=%d AND data.begin_snapshot <= {SNAPSHOT_ID} AND (
 vector<DuckLakeDeleteScanEntry>
 DuckLakeMetadataManager::GetTableDeletions(DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot,
                                            DuckLakeSnapshot end_snapshot, bool include_local_changes,
-                                           optional_ptr<const vector<DuckLakeProjectedColumn>> projection) {
+                                           optional_ptr<const vector<DuckLakeProjectedColumn>> projection,
+                                           optional_ptr<identifier_map_t<shared_ptr<DuckLakeCommittedInlinedRows>>>) {
 	auto table_id = table.GetTableId();
 	string insert_snapshot = "CASE WHEN data.partial_max IS NULL THEN data.begin_snapshot END";
 	string select_list = "data.data_file_id, " + GetDataFileSelectList("data") +

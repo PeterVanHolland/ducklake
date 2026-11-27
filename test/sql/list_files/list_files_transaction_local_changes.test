@@ -1,0 +1,271 @@
+# name: test/sql/list_files/list_files_transaction_local_changes.test
+# description: ducklake_list_files lists the files as the transaction sees them
+# group: [list_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/list_files_transaction_local_changes', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE ducklake.t (i INTEGER)
+
+statement ok
+INSERT INTO ducklake.t FROM range(5)
+
+statement ok
+INSERT INTO ducklake.t FROM range(5, 10)
+
+query II
+SELECT COUNT(*), COUNT(delete_file) FROM ducklake_list_files('ducklake', 't')
+----
+2	0
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.t FROM range(10, 15)
+
+# the delete empties the first file, which is dropped instead of getting a delete file
+query I
+DELETE FROM ducklake.t WHERE i < 5
+----
+5
+
+query I
+DELETE FROM ducklake.t WHERE i = 7
+----
+1
+
+# the listing follows the transaction
+query II
+SELECT COUNT(*), COUNT(delete_file) FROM ducklake_list_files('ducklake', 't')
+----
+2	1
+
+query I
+SELECT COUNT(*) FROM ducklake_list_files('ducklake', 't') WHERE data_file_size_bytes > 0 AND data_file_footer_size > 0
+----
+2
+
+query I
+SELECT COUNT(*) FROM ducklake_list_files('ducklake', 't') WHERE delete_file IS NOT NULL AND delete_file_size_bytes > 0
+----
+1
+
+# the listed files are the files a scan reads
+query I
+SELECT COUNT(*) FROM (
+	SELECT parse_filename(data_file) FROM ducklake_list_files('ducklake', 't')
+	EXCEPT
+	SELECT DISTINCT parse_filename(filename) FROM ducklake.t
+)
+----
+0
+
+query I
+SELECT COUNT(*) FROM (
+	SELECT DISTINCT parse_filename(filename) FROM ducklake.t
+	EXCEPT
+	SELECT parse_filename(data_file) FROM ducklake_list_files('ducklake', 't')
+)
+----
+0
+
+# a snapshot of the past lists the committed files of that snapshot
+query II
+SELECT COUNT(*), COUNT(delete_file) FROM ducklake_list_files('ducklake', 't', snapshot_version => 3)
+----
+2	0
+
+query II
+SELECT COUNT(*), COUNT(delete_file) FROM ducklake_list_files('ducklake', 't', snapshot_version => 2)
+----
+1	0
+
+# every listed file can be removed
+statement ok
+SET VARIABLE listed = (SELECT list(data_file ORDER BY data_file) FROM ducklake_list_files('ducklake', 't'))
+
+statement ok
+CALL ducklake_remove_data_files('ducklake', 't', getvariable('listed')[1])
+
+query I
+SELECT COUNT(*) FROM ducklake_list_files('ducklake', 't')
+----
+1
+
+statement ok
+CALL ducklake_remove_data_files('ducklake', 't', getvariable('listed')[2])
+
+query I
+SELECT COUNT(*) FROM ducklake_list_files('ducklake', 't')
+----
+0
+
+query I
+SELECT COUNT(*) FROM ducklake.t
+----
+0
+
+statement ok
+ROLLBACK
+
+# the rollback restores the committed listing
+query II
+SELECT COUNT(*), COUNT(delete_file) FROM ducklake_list_files('ducklake', 't')
+----
+2	0
+
+query I
+SELECT COUNT(*) FROM ducklake.t
+----
+10
+
+# a committed table altered in the transaction keeps its committed files in the listing and in the removal
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE ducklake.t ADD COLUMN j INTEGER
+
+query II
+SELECT COUNT(*), COUNT(delete_file) FROM ducklake_list_files('ducklake', 't')
+----
+2	0
+
+statement ok
+SET VARIABLE altered = (SELECT list(data_file ORDER BY data_file) FROM ducklake_list_files('ducklake', 't'))
+
+statement ok
+CALL ducklake_remove_data_files('ducklake', 't', getvariable('altered')[1])
+
+query I
+SELECT COUNT(*) FROM ducklake_list_files('ducklake', 't')
+----
+1
+
+query I
+SELECT COUNT(*) FROM ducklake.t
+----
+5
+
+statement ok
+ROLLBACK
+
+query I
+SELECT COUNT(*) FROM ducklake_list_files('ducklake', 't')
+----
+2
+
+# the files of a table created in the transaction are listed
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE ducklake.u AS SELECT i FROM range(5) t(i)
+
+statement ok
+INSERT INTO ducklake.u FROM range(5, 10)
+
+query II
+SELECT COUNT(*), COUNT(delete_file) FROM ducklake_list_files('ducklake', 'u')
+----
+2	0
+
+query I
+DELETE FROM ducklake.u WHERE i = 2
+----
+1
+
+query II
+SELECT COUNT(*), COUNT(delete_file) FROM ducklake_list_files('ducklake', 'u')
+----
+2	1
+
+statement ok
+COMMIT
+
+query II
+SELECT COUNT(*), COUNT(delete_file) FROM ducklake_list_files('ducklake', 'u')
+----
+2	1
+
+# a delete of a later transaction replaces the committed delete file in the listing until its rollback
+query I
+SELECT COUNT(*) FROM ducklake_list_files('ducklake', 'u') WHERE delete_file IS NOT NULL
+----
+1
+
+statement ok
+SET VARIABLE committed_delete = (SELECT delete_file FROM ducklake_list_files('ducklake', 'u') WHERE delete_file IS NOT NULL)
+
+statement ok
+BEGIN
+
+query I
+DELETE FROM ducklake.u WHERE i = 3
+----
+1
+
+query I
+SELECT COUNT(*) FROM ducklake_list_files('ducklake', 'u') WHERE delete_file IS NOT NULL AND delete_file <> getvariable('committed_delete')
+----
+1
+
+statement ok
+ROLLBACK
+
+query I
+SELECT COUNT(*) FROM ducklake_list_files('ducklake', 'u') WHERE delete_file = getvariable('committed_delete')
+----
+1
+
+# inlined rows are not files, committed or written in the transaction
+statement ok
+CREATE TABLE ducklake.v (i INTEGER)
+
+statement ok
+CALL ducklake.set_option('data_inlining_row_limit', 10, table_name => 'v')
+
+statement ok
+INSERT INTO ducklake.v VALUES (1), (2), (3)
+
+query I
+SELECT COUNT(*) FROM ducklake_list_files('ducklake', 'v')
+----
+0
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ducklake.v VALUES (4), (5)
+
+statement ok
+INSERT INTO ducklake.v FROM range(100)
+
+query I
+SELECT COUNT(*) FROM ducklake_list_files('ducklake', 'v')
+----
+1
+
+query I
+SELECT COUNT(*) FROM ducklake.v
+----
+105
+
+statement ok
+COMMIT
+
+query I
+SELECT COUNT(*) FROM ducklake_list_files('ducklake', 'v')
+----
+1

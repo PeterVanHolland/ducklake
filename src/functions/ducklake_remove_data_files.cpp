@@ -59,7 +59,7 @@ static void DuckLakeRemoveDataFilesExecute(ClientContext &context, TableFunction
 
 	// the committed files are listed as ducklake_list_files does, the transaction-local files are kept separately
 	vector<DuckLakeFileListExtendedEntry> committed_files;
-	if (!table.IsTransactionLocal()) {
+	if (!IsTransactionLocal(table_id)) {
 		auto &metadata_manager = transaction.GetMetadataManager();
 		committed_files = metadata_manager.GetExtendedFilesForTable(table, transaction.GetSnapshot());
 	}

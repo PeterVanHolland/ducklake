@@ -3666,7 +3666,7 @@ DuckLakeMetadataManager::GetTableDeletions(DuckLakeTableEntry &table, DuckLakeSn
 	// 2. Data files being deleted entirely through setting end_snapshot (full file deletes)
 	// 3. Inlined file deletions stored in the metadata database
 	// For all deletes, we need to obtain any PREVIOUS deletes as well to exclude rows already deleted
-	// the end of a data file is listed once for each delete file that was visible before it
+	// a delete file and the end of a data file are listed once for each delete file that was visible before
 	string query;
 
 	// Add CTE for aggregated inlined deletions if the table exists
@@ -3703,7 +3703,7 @@ SELECT %s, current_delete.begin_snapshot, false AS file_deleted FROM (
 	WHERE table_id = %d AND begin_snapshot <= {SNAPSHOT_ID}
 ) AS current_delete
 LEFT JOIN LATERAL (
-	SELECT DISTINCT ON (data_file_id)
+	SELECT
 		data_file_id,
 		path,
 		path_is_relative,
@@ -3712,8 +3712,7 @@ LEFT JOIN LATERAL (
 		encryption_key,
 		format{FILE_COUNTS}
 	FROM {DELETE_FILES}
-	WHERE table_id = %d AND begin_snapshot < %d
-	ORDER BY data_file_id ASC, begin_snapshot DESC
+	WHERE table_id = %d AND begin_snapshot < %d AND (end_snapshot IS NULL OR end_snapshot >= %d)
 ) AS previous_delete
 USING (data_file_id)
 JOIN (
@@ -3753,9 +3752,9 @@ USING (data_file_id), (
 		CAST(NULL AS VARCHAR) format{NULL_FILE_COUNTS}
 ) current_delete
 )",
-	                            select_list, table_id.index, table_id.index, start_snapshot.snapshot_id, table_id.index,
-	                            delete_file_in_range, select_list, table_id.index, start_snapshot.snapshot_id,
-	                            rewrite_end_filter, table_id.index);
+	                            select_list, table_id.index, table_id.index, start_snapshot.snapshot_id,
+	                            start_snapshot.snapshot_id, table_id.index, delete_file_in_range, select_list,
+	                            table_id.index, start_snapshot.snapshot_id, rewrite_end_filter, table_id.index);
 	// the row group count only exists in the metadata of DuckLake 1.1
 	string row_group_count =
 	    transaction.GetCatalog().SupportsV1_1Metadata() ? "row_group_count" : "CAST(NULL AS BIGINT) AS row_group_count";

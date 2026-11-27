@@ -463,11 +463,22 @@ struct DuckLakeFileListEntry {
 	shared_ptr<DuckLakeCommittedInlinedRows> inlined_rows;
 };
 
+//! A delete file with the snapshot that added it
+struct DuckLakeDeleteScanFile : public DuckLakeFileData {
+	DuckLakeDeleteScanFile(DuckLakeFileData file, idx_t snapshot_id)
+	    : DuckLakeFileData(std::move(file)), snapshot_id(snapshot_id) {
+	}
+
+	idx_t snapshot_id;
+};
+
 struct DuckLakeDeleteScanEntry {
 	DuckLakeFileData file;
 	DuckLakeFileData delete_file;
 	DuckLakeFileData previous_delete_file;
-	//! The other delete files that were visible before the data file ended
+	//! The other delete files of the data file with deletes of the range
+	vector<DuckLakeDeleteScanFile> other_delete_files;
+	//! The other delete files that were visible before the range or before the data file ended
 	vector<DuckLakeFileData> other_previous_delete_files;
 	idx_t row_count;
 	optional_idx row_id_start;

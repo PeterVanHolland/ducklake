@@ -30,8 +30,6 @@ struct DuckLakeDeleteData {
 struct DeleteFileScanResult {
 	vector<idx_t> deleted_rows;
 	vector<idx_t> snapshot_ids;
-	//! Whether the delete file has embedded snapshot_id column
-	bool has_embedded_snapshots = false;
 };
 
 class DuckLakeDeleteFilter : public DeleteFilter {

@@ -788,21 +788,22 @@ enum CompactionType {
     FLUSH_INLINED_DATA = "flush_inlined_data"
 }
 
-/// A data file whose rows were deleted between two snapshots.
+/// A data file whose rows were deleted between two snapshots, by one of its delete files or entirely.
 ///
-/// A data file that an older release left with several delete files and that was deleted entirely has an entry for
-/// each of them, as its `previous_delete_file`. The entries are one deletion, whose rows are the rows that none of the
-/// delete files had deleted before.
+/// A data file has an entry for each of its delete files that can hold deletes of the range. An older release could
+/// leave delete files that hold the same row. Such a row is deleted once, at the earliest snapshot that one of the
+/// delete files gives it. The rows that `previous_delete_file` held before the range, or before the data file was
+/// deleted entirely, were deleted before. An entry is repeated with every delete file that was visible then.
 @cppClass("DuckLakeDeleteScanEntry")
 structure DeleteScanEntry {
     /// The data file.
     @required
     file: FileData
 
-    /// The delete file at the end of the range.
+    /// The delete file with the deletes, absent if the data file was deleted entirely or all its deletes are inlined.
     delete_file: FileData
 
-    /// The delete file at the start of the range.
+    /// A delete file that was visible before the range, or before the data file was deleted entirely.
     previous_delete_file: FileData
 
     /// The number of rows of the data file.

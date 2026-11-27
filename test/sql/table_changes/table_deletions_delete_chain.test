@@ -1,0 +1,70 @@
+# name: test/sql/table_changes/table_deletions_delete_chain.test
+# description: The change feed lists a deletion once when DuckDB 1.4.4 wrote a delete file per delete of a data file
+# group: [table_changes]
+
+require ducklake
+
+require parquet
+
+# DuckDB 1.4.4 deleted three times from the data file of each table, every delete file holds all rows deleted so far
+# and ends the one before. DuckDB 2.0.0 then deleted from u once more
+unzip data/old_ducklake/delete_chain.db.gz {TEST_DIR}/delete_chain.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/delete_chain.db' AS chain
+	(DATA_PATH 'data/old_ducklake/delete_chain/', OVERRIDE_DATA_PATH TRUE, READ_ONLY)
+
+query II
+SELECT (SELECT count(*) FROM chain.t), (SELECT count(*) FROM chain.u)
+----
+40	25
+
+query IIII
+SELECT snapshot_id, count(*), min(id), max(id) FROM ducklake_table_deletions('chain', 'main', 't', 3, 5)
+GROUP BY ALL ORDER BY ALL
+----
+3	20	0	19
+4	30	20	49
+5	10	50	59
+
+query IIII
+SELECT snapshot_id, count(*), min(id), max(id) FROM ducklake_table_deletions('chain', 'main', 't', 4, 5)
+GROUP BY ALL ORDER BY ALL
+----
+4	30	20	49
+5	10	50	59
+
+query III
+SELECT snapshot_id, change_type, count(*) FROM ducklake_table_changes('chain', 'main', 't', 2, 5)
+GROUP BY ALL ORDER BY ALL
+----
+2	insert	100
+3	delete	20
+4	delete	30
+5	delete	10
+
+# the delete file of DuckDB 2.0.0 holds the rows of the delete file it replaced with the snapshot of that file
+query IIII
+SELECT snapshot_id, count(*), min(id), max(id) FROM ducklake_table_deletions('chain', 'main', 'u', 10, 10)
+GROUP BY ALL ORDER BY ALL
+----
+10	10	50	59
+
+query IIII
+SELECT snapshot_id, count(*), min(id), max(id) FROM ducklake_table_deletions('chain', 'main', 'u', 8, 11)
+GROUP BY ALL ORDER BY ALL
+----
+8	20	0	19
+9	30	20	49
+10	10	50	59
+11	15	60	74
+
+query III
+SELECT snapshot_id, change_type, count(*) FROM ducklake_table_changes('chain', 'main', 'u', 7, 11)
+GROUP BY ALL ORDER BY ALL
+----
+7	insert	100
+8	delete	20
+9	delete	30
+10	delete	10
+11	delete	15

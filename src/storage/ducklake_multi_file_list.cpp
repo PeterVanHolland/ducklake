@@ -599,30 +599,46 @@ static void MergeDeleteFile(DuckLakeFileListExtendedEntry &entry, DuckLakeFileLi
 	}
 }
 
+template <class FILE_DATA>
+static bool HasFile(const vector<FILE_DATA> &files, const DuckLakeFileData &file) {
+	return std::any_of(files.begin(), files.end(), [&](const FILE_DATA &other) { return other.path == file.path; });
+}
+
 static void MergeDeleteFile(DuckLakeDeleteScanEntry &scan, DuckLakeDeleteScanEntry &other) {
-	scan.other_previous_delete_files.push_back(std::move(other.previous_delete_file));
+	if (other.delete_file.path != scan.delete_file.path && !HasFile(scan.other_delete_files, other.delete_file)) {
+		scan.other_delete_files.emplace_back(std::move(other.delete_file), other.snapshot_id.GetIndex());
+	}
+	auto &previous_delete_file = other.previous_delete_file;
+	if (previous_delete_file.path != scan.previous_delete_file.path &&
+	    !HasFile(scan.other_previous_delete_files, previous_delete_file)) {
+		scan.other_previous_delete_files.push_back(std::move(previous_delete_file));
+	}
 	scan.inlined_file_deletions.insert(other.inlined_file_deletions.begin(), other.inlined_file_deletions.end());
 }
 
 template <class ENTRY>
-static bool IsListedPerDeleteFile(const ENTRY &entry) {
+static bool IsListedPerDeleteFile(const ENTRY &entry, idx_t &file_key) {
+	file_key = entry.file_id.index;
 	return !entry.delete_file.path.empty();
 }
 
-static bool IsListedPerDeleteFile(const DuckLakeDeleteScanEntry &scan) {
-	return scan.file_deleted && !scan.previous_delete_file.path.empty();
+static bool IsListedPerDeleteFile(const DuckLakeDeleteScanEntry &scan, idx_t &file_key) {
+	// the end of a data file is a scan of its own
+	file_key = 2 * scan.file_id.index + scan.file_deleted;
+	return !scan.delete_file.path.empty() || !scan.previous_delete_file.path.empty();
 }
 
-//! Keeps one entry per data file, an older release could leave a data file with several visible delete files.
-//! Every file list keeps the delete file with the highest path, which is the one a new delete file replaces
+//! Merges the entries of a data file, an older release could leave a data file with several visible delete files.
+//! A file list keeps the delete file with the highest path, which is the one a new delete file replaces
 template <class ENTRY>
 static void MergeDeleteFiles(vector<ENTRY> &entries) {
 	unordered_map<idx_t, idx_t> file_positions;
 	idx_t entry_count = 0;
 	for (idx_t entry_idx = 0; entry_idx < entries.size(); entry_idx++) {
 		auto &entry = entries[entry_idx];
-		if (IsListedPerDeleteFile(entry)) {
-			auto position = file_positions.emplace(entry.file_id.index, entry_count);
+		idx_t file_key;
+		if (IsListedPerDeleteFile(entry, file_key)) {
+			auto position = file_positions.emplace(file_key, entry_count);
 			if (!position.second) {
 				MergeDeleteFile(entries[position.first->second], entry);
 				continue;

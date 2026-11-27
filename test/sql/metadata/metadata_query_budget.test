@@ -38,8 +38,9 @@ CALL ducklake.set_option('parquet_row_group_size', 2048, table_name => 'many')
 statement ok
 CREATE MACRO metadata_queries() AS (SELECT count(*) FROM duckdb_logs_parsed('DuckLakeMetadata'))
 
+# the tables of the lake are loaded as they are looked up, the listing loads them all before a measurement
 statement ok
-CREATE MACRO warm_up() AS TABLE SELECT count(*) FROM ducklake.few UNION ALL SELECT count(*) FROM ducklake.many
+CREATE MACRO warm_up() AS TABLE SELECT count(*) FROM duckdb_tables() WHERE database_name = 'ducklake' UNION ALL SELECT count(*) FROM ducklake.few UNION ALL SELECT count(*) FROM ducklake.many
 
 # inserts that write 4 and 40 files
 statement ok

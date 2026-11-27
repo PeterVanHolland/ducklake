@@ -1,4 +1,5 @@
 benchmark/micro/show_all_tables.benchmark
+benchmark/micro/table_lookup_many_tables.benchmark
 benchmark/micro/compaction/merge_adjacent_small_files.benchmark
 benchmark/micro/compaction/merge_adjacent_partitioned.benchmark
 benchmark/micro/compaction/merge_adjacent_empty_tables.benchmark

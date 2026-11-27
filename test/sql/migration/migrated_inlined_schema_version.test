@@ -188,6 +188,18 @@ SELECT a, b FROM between.w ORDER BY ALL
 1	10
 2	20
 
+query II
+SELECT s.y, b FROM between.d ORDER BY ALL
+----
+20	200
+NULL	100
+
+query II
+SELECT a, b FROM between.e ORDER BY ALL
+----
+1	NULL
+2	20
+
 # once the snapshots of those schema versions are expired, the first row of an inlined table tells its table
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_schema_version_expired.db' AS between_expired

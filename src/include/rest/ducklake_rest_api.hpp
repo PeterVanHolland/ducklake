@@ -729,7 +729,7 @@ struct RESTColumnIdentifier {
 	vector<RESTColumnIdentifier> children;
 };
 
-//! The snapshot that a request reads. A `snapshot` is used as-is, which also allows reading at snapshots that
+//! The snapshot that a request reads, the latest one without `snapshot` and `snapshot_id`.
 struct RESTSnapshotReference {
 	//! The snapshot, as returned by `snapshots/latest` and `snapshots/at`.
 	DuckLakeSnapshot snapshot;

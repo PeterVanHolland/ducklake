@@ -597,6 +597,15 @@ DuckLakeCatalogSet &DuckLakeCatalog::GetSchemaForSnapshot(DuckLakeTransaction &t
 	return catalog_set;
 }
 
+void DuckLakeCatalog::RememberSnapshot(const DuckLakeSnapshot &snapshot) {
+	PutCacheEntry(SnapshotCacheKey(snapshot.snapshot_id), make_shared_ptr<DuckLakeSnapshotCacheEntry>(snapshot));
+}
+
+bool DuckLakeCatalog::RemembersSnapshot(const DuckLakeSnapshot &snapshot) {
+	auto cached = GetObjectCacheInstance().Get<DuckLakeSnapshotCacheEntry>(SnapshotCacheKey(snapshot.snapshot_id));
+	return cached && cached->snapshot == snapshot;
+}
+
 //! `parent_path` is the quoted path of the enclosing column (e.g. "s"), empty for a top-level column
 static unique_ptr<DuckLakeFieldId> TransformColumnType(const DuckLakeColumnInfo &col, const string &parent_path = "") {
 	DuckLakeColumnData col_data;
@@ -1714,6 +1723,10 @@ string DuckLakeCatalog::NetRowCountCacheKey(TableIndex table_id) const {
 string DuckLakeCatalog::SchemaCacheKey(idx_t schema_version) const {
 	// a loaded schema holds the name of the DuckLake, its macros for one, so a new name loads it again
 	return StringUtil::Format("ducklake:%s:%s:schema:%llu", instance_id, GetName(), schema_version);
+}
+
+string DuckLakeCatalog::SnapshotCacheKey(idx_t snapshot_id) const {
+	return StringUtil::Format("ducklake:%s:snapshot:%llu", instance_id, snapshot_id);
 }
 
 void DuckLakeCatalog::InvalidateTableStatsCache(idx_t next_file_id, TableIndex table_id) {

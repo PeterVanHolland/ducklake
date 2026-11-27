@@ -31,6 +31,14 @@ struct DuckLakeSnapshot {
 	idx_t next_catalog_id;
 	idx_t next_file_id;
 
+	bool operator==(const DuckLakeSnapshot &other) const {
+		return snapshot_id == other.snapshot_id && schema_version == other.schema_version &&
+		       next_catalog_id == other.next_catalog_id && next_file_id == other.next_file_id;
+	}
+	bool operator!=(const DuckLakeSnapshot &other) const {
+		return !(*this == other);
+	}
+
 	void Serialize(Serializer &serializer) const;
 	static DuckLakeSnapshot Deserialize(Deserializer &deserializer);
 };

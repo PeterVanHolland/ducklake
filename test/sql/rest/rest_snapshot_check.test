@@ -1,0 +1,178 @@
+# name: test/sql/rest/rest_snapshot_check.test
+# description: The snapshot of a request has to be the one that the catalog has under its id
+# group: [rest]
+
+require json
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.t (i INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1)
+
+statement ok
+CREATE MACRO latest_snapshot() AS (
+	SELECT response->'$.snapshot' FROM ducklake_rest_request('{rest_server}', 'GET', '/v1/snapshots/latest', ''))
+
+# the snapshot with a field of another snapshot, plus n
+statement ok
+CREATE MACRO with_field(snapshot, field, other, n := 0) AS
+	json_merge_patch(snapshot, json_object(field, (other->>('$.' || field))::BIGINT + n))
+
+statement ok
+CREATE MACRO body(snapshot, request := '{}') AS json_merge_patch(request, json_object('snapshot', snapshot))::VARCHAR
+
+statement ok
+CREATE MACRO send(server, path, snapshot, request := '{}') AS TABLE
+	SELECT status, response->>'$.error.message' AS message
+	FROM ducklake_rest_request(server, 'POST', path, body(snapshot, request := request))
+
+statement ok
+CREATE MACRO scan(snapshot) AS TABLE FROM send('{rest_server}', '/v1/tables/1/scan', snapshot)
+
+statement ok
+SET VARIABLE old = latest_snapshot()
+
+# the latest snapshot with the schema version that the next change of the catalog gets
+query II
+FROM scan(with_field(getvariable('old'), 'schema_version', getvariable('old'), n := 1))
+----
+400	Snapshot 2 of the request does not match the catalog
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN j INTEGER
+
+query II
+FROM dl.t
+----
+1	NULL
+
+statement ok
+SET VARIABLE new = latest_snapshot()
+
+# a snapshot with the schema version of another one
+query II
+FROM scan(with_field(getvariable('old'), 'schema_version', getvariable('new')))
+----
+400	Snapshot 2 of the request does not match the catalog
+
+query II
+FROM scan(with_field(getvariable('new'), 'schema_version', getvariable('old')))
+----
+400	Snapshot 3 of the request does not match the catalog
+
+# the table statistics are cached by the next file id
+query II
+FROM scan(with_field(getvariable('old'), 'next_file_id', getvariable('old'), n := 1))
+----
+400	Snapshot 2 of the request does not match the catalog
+
+# a snapshot that the catalog does not have yet
+query II
+FROM scan(with_field(getvariable('new'), 'snapshot_id', getvariable('new'), n := 1))
+----
+400	No snapshot found at version 4
+
+# the change feed and a commit check their snapshot as well
+query II
+FROM send('{rest_server}', '/v1/tables/1/changes', with_field(getvariable('old'), 'schema_version', getvariable('new')),
+	request := '{"start_snapshot_id": 0, "changes": "insertions"}')
+----
+400	Snapshot 2 of the request does not match the catalog
+
+statement ok
+SET VARIABLE create_schema = '{"requests": [{"create_schema": {"placeholder_id": -1, "schema_name": "s"}}]}'
+
+query II
+FROM send('{rest_server}', '/v1/transactions/commit',
+	with_field(getvariable('old'), 'schema_version', getvariable('new')), request := getvariable('create_schema'))
+----
+400	Snapshot 2 of the request does not match the catalog
+
+query I
+SELECT count(*) FROM duckdb_schemas() WHERE database_name = 'dl' AND schema_name = 's'
+----
+0
+
+# the snapshots as the server returned them are read
+query II
+SELECT count(*), list(i)
+FROM ducklake_rest_rows('{rest_server}', 'POST', '/v1/tables/1/scan', body(getvariable('old')))
+----
+1	[1]
+
+query III
+SELECT count(*), list(i), list(j)
+FROM ducklake_rest_rows('{rest_server}', 'POST', '/v1/tables/1/scan', body(getvariable('new')))
+----
+1	[1]	[NULL]
+
+# a snapshot that no request sent before it was expired
+statement ok
+INSERT INTO dl.t VALUES (2, 2)
+
+statement ok
+SET VARIABLE unsent = latest_snapshot()
+
+statement ok rest_db:rest_server_con
+INSERT INTO rest_lake.t VALUES (3, 3)
+
+statement ok rest_db:rest_server_con
+CALL ducklake_expire_snapshots('rest_lake', versions => [2, 4])
+
+query II
+FROM scan(getvariable('unsent'))
+----
+400	No snapshot found at version 4
+
+# a snapshot that a request sent before it was expired is still read, as it was sent
+query II
+SELECT count(*), list(i)
+FROM ducklake_rest_rows('{rest_server}', 'POST', '/v1/tables/1/scan', body(getvariable('old')))
+----
+1	[1]
+
+statement ok
+SET VARIABLE latest = latest_snapshot()
+
+query II
+FROM scan(with_field(getvariable('old'), 'schema_version', getvariable('latest')))
+----
+400	No snapshot found at version 2
+
+query II
+FROM dl.t ORDER BY i
+----
+1	NULL
+2	2
+3	3
+
+# a server that relays to another server checks the snapshot with that server
+statement ok relay_db:relay_con
+ATTACH 'ducklake:rest:{rest_server}' AS relay
+
+statement ok relay_db:relay_con
+SET VARIABLE relay_uri = (SELECT listen_uri FROM ducklake_rest_serve('relay'))
+
+set variable relay_server <variable:relay_con:relay_uri>
+
+query II
+FROM send('{relay_server}', '/v1/transactions/commit',
+	with_field(getvariable('new'), 'schema_version', getvariable('old')), request := getvariable('create_schema'))
+----
+400	Snapshot 3 of the request does not match the catalog
+
+query II
+FROM send('{relay_server}', '/v1/transactions/commit', getvariable('new'), request := getvariable('create_schema'))
+----
+200	NULL
+
+query I
+SELECT count(*) FROM duckdb_schemas() WHERE database_name = 'dl' AND schema_name = 's'
+----
+1

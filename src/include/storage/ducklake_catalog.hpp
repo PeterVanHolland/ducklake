@@ -112,6 +112,24 @@ struct DuckLakeTableRecordCountCacheEntry : public ObjectCacheEntry {
 	optional_idx GetEstimatedCacheMemory() const override;
 };
 
+//! A snapshot that the metadata had, kept after the snapshot was expired
+struct DuckLakeSnapshotCacheEntry : public ObjectCacheEntry {
+	explicit DuckLakeSnapshotCacheEntry(DuckLakeSnapshot snapshot_p) : snapshot(snapshot_p) {
+	}
+
+	DuckLakeSnapshot snapshot;
+
+	static string ObjectType() {
+		return "ducklake_snapshot";
+	}
+	string GetObjectType() override {
+		return ObjectType();
+	}
+	optional_idx GetEstimatedCacheMemory() const override {
+		return sizeof(DuckLakeSnapshotCacheEntry);
+	}
+};
+
 //! Cache entry for a DuckLake schema version
 struct DuckLakeSchemaCacheEntry : public ObjectCacheEntry {
 	explicit DuckLakeSchemaCacheEntry(unique_ptr<DuckLakeCatalogSet> catalog_set_p)
@@ -461,6 +479,9 @@ public:
 	                                                   DuckLakeCatalogSet &schema);
 	//! Return the schema for the given snapshot - loading it if it is not yet loaded
 	DuckLakeCatalogSet &GetSchemaForSnapshot(DuckLakeTransaction &transaction, DuckLakeSnapshot snapshot);
+	void RememberSnapshot(const DuckLakeSnapshot &snapshot);
+	//! Whether the metadata had this snapshot, which can have been expired since
+	bool RemembersSnapshot(const DuckLakeSnapshot &snapshot);
 
 	//! Callback type for instrumenting metadata queries
 	using QueryCallback = std::function<void(const string &query, std::chrono::steady_clock::duration elapsed)>;
@@ -527,6 +548,7 @@ private:
 	string RecordCountCacheKey(idx_t snapshot_id) const;
 	string NetRowCountCacheKey(TableIndex table_id) const;
 	string SchemaCacheKey(idx_t schema_version) const;
+	string SnapshotCacheKey(idx_t snapshot_id) const;
 	ObjectCache &GetObjectCacheInstance();
 	//! A table stats entry this DuckLake put in the object cache, kept without its key as there is one per table
 	struct TrackedStatsEntry {

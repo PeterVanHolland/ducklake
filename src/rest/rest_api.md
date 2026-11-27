@@ -1478,8 +1478,9 @@ A snapshot, with its commit information.
 
 ### `SnapshotReference`
 
-The snapshot that a request reads. A `snapshot` is used as-is, which also allows reading at snapshots that
-have been expired since the client loaded them. Without `snapshot` and `snapshot_id`, the latest snapshot is read.
+The snapshot that a request reads, the latest one without `snapshot` and `snapshot_id`.
+A `snapshot` has to be the one that the catalog has under its id. After it has been expired, it can still be read
+while the server remembers it from a request that sent it before.
 
 | Field | Type | Description |
 |-------|------|-------------|

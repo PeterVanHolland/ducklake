@@ -148,7 +148,22 @@ DuckLakeSnapshot DuckLakeRESTRequest::GetSnapshot(const DuckLakeSnapshot &snapsh
 }
 
 DuckLakeSnapshot DuckLakeRESTRequest::GetSnapshot(const RESTSnapshotReference &reference) {
+	if (!RESTIsNull(reference.snapshot)) {
+		CheckSentSnapshot(reference.snapshot);
+	}
 	return GetSnapshot(reference.snapshot, reference.snapshot_id);
+}
+
+void DuckLakeRESTRequest::CheckSentSnapshot(const DuckLakeSnapshot &snapshot) {
+	if (catalog->RemembersSnapshot(snapshot)) {
+		return;
+	}
+	auto latest = transaction->GetSnapshot();
+	auto stored = snapshot.snapshot_id == latest.snapshot_id ? latest : GetSnapshotById(snapshot.snapshot_id);
+	if (stored != snapshot) {
+		throw InvalidInputException("Snapshot %llu of the request does not match the catalog", snapshot.snapshot_id);
+	}
+	catalog->RememberSnapshot(snapshot);
 }
 
 //===--------------------------------------------------------------------===//

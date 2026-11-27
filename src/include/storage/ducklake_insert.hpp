@@ -46,7 +46,7 @@ public:
 	idx_t rows_flushed = 0;
 };
 
-//! Refuses NULL values of NOT NULL columns whose file statistics cannot show them
+//! Refuses NULL values of NOT NULL columns before they are written
 class DuckLakeVerifyNotNull : public PhysicalOperator {
 public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::EXTENSION;

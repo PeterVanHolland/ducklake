@@ -2338,8 +2338,8 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 		DuckLakeSnapshot written;
 		optional_idx last_written;
 		if (first_written.IsValid()) {
-			auto last_row = Query(StringUtil::Format("SELECT MAX(%s) FROM {METADATA_CATALOG}.%s", begin_column,
-			                                         SQLIdentifier(inlined_table_name)));
+			auto last_row =
+			    Query(StringUtil::Format("SELECT MAX(%s) FROM %s", begin_column, InlinedRowSource(inlined_table_name)));
 			last_row->ThrowIfError("Failed to get the last row of inlined data from DuckLake: ");
 			for (auto &row : *last_row) {
 				// there is none once a flush of another transaction took the rows
@@ -2374,7 +2374,7 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 		if (written_columns) {
 			bool stored_fields = true;
 			for (auto &column : written_table->GetColumns().Physical()) {
-				auto &stored_type = stored_types[column.Physical().index + DuckLakeInlinedColNames::COLUMN_COUNT];
+				auto &stored_type = stored_types[stored_columns[column.Physical().index]];
 				stored_fields = stored_fields && HasStoredFields(column.Type(), stored_type, false);
 			}
 			if (stored_fields) {
@@ -2421,7 +2421,7 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 				return false;
 			}
 			for (auto &column : columns.Physical()) {
-				auto &stored_type = stored_types[column.Physical().index + DuckLakeInlinedColNames::COLUMN_COUNT];
+				auto &stored_type = stored_types[stored_columns[column.Physical().index]];
 				// the fields of a stored struct can be in another order
 				bool typed = HasStoredFields(column.Type(), stored_type, true);
 				if (!reads_field(entry.GetFieldId(column.Physical()), written_table->GetFieldId(column.Physical()),

@@ -13,10 +13,11 @@ require sqlite_scanner
 # widened it to a BIGINT, then inlined a row into the inlined table of each
 unzip data/old_ducklake/migrated_inlined_widened_sqlite.db.gz {TEST_DIR}/migrated_inlined_widened_sqlite.db
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok
 ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_widened_sqlite.db' AS widened
 	(DATA_PATH '{TEST_DIR}/migrated_inlined_widened_sqlite', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'widened_meta',
-	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+	DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
 
 # SQLite stores the values as they were written, the narrower types of the table of the schema version would not
 # keep them, so the rows are read as before

@@ -11,10 +11,11 @@ require parquet
 # inlined table of each
 unzip data/old_ducklake/migrated_inlined_renamed_struct.db.gz {TEST_DIR}/migrated_inlined_renamed_struct.db
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_renamed_struct.db' AS renamed
-	(DATA_PATH '{TEST_DIR}/migrated_inlined_renamed_struct', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
-	DATA_INLINING_ROW_LIMIT 10)
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_renamed_struct', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
 
 # s of w was renamed to r, its field x widened and renamed to X. The table of the row names the column r, the table
 # of the schema version has it as s for the same fields

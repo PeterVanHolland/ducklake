@@ -213,6 +213,60 @@ SELECT i FROM dl.t
 statement ok
 DETACH dl
 
+# a missing companion of the inlined rows is a missing step of 2.0-dev1 too
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_10.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation',
+    DUCKLAKE_VERSION '2.0-dev1', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t AS SELECT 42 AS i
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH '{TEST_DIR}/metadata_table_validation_10.db' AS meta
+
+statement ok
+DROP TABLE meta.ducklake_inlined_data_visibility
+
+statement ok
+DETACH meta
+
+statement error
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_10.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation',
+    DUCKLAKE_VERSION '2.0-dev1')
+----
+catalog version is 2.0-dev1, but the catalog lacks the inlined data visibility
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_10.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation',
+    DUCKLAKE_VERSION '2.0-dev1', AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT i FROM dl.t
+----
+42
+
+statement ok
+DETACH dl
+
+# the columns of the companion are checked like those of the other metadata tables
+statement ok
+ATTACH '{TEST_DIR}/metadata_table_validation_10.db' AS meta
+
+statement ok
+ALTER TABLE meta.ducklake_inlined_data_visibility DROP COLUMN end_snapshot
+
+statement ok
+DETACH meta
+
+statement error
+ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_10.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation',
+    DUCKLAKE_VERSION '2.0-dev1')
+----
+metadata table "ducklake_inlined_data_visibility" has no column "end_snapshot"
+
 # a missing table
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/metadata_table_validation_5.db' AS dl (DATA_PATH '{TEST_DIR}/metadata_table_validation')

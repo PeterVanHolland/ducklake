@@ -112,3 +112,18 @@ SELECT (SELECT count(*) FROM lake.renamed), (SELECT count(*) FROM lake.dropped),
 	(SELECT sum(i) FROM lake.widened), (SELECT count(c) FROM lake.added)
 ----
 2	2	5000000003	1
+
+statement ok
+DETACH lake
+
+# the checkpoint wrote the inlined rows to files, the migration to 2.0 converts none
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_lost_change.db' AS lake
+	(DATA_PATH '{TEST_DIR}/v10_inlined_lost_change_data', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+query IIII
+SELECT (SELECT count(*) FROM lake.renamed), (SELECT count(*) FROM lake.dropped),
+	(SELECT sum(i) FROM lake.widened), (SELECT count(c) FROM lake.added)
+----
+2	2	5000000003	1

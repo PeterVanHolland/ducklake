@@ -1,0 +1,35 @@
+# name: test/sql/data_inlining/flush_inlined_data_twice_one_statement.test
+# description: Two ducklake_flush_inlined_data calls in one statement flush an inlined table once
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake (DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 500, METADATA_CATALOG 'meta')
+
+statement ok
+SET threads=4
+
+statement ok
+CREATE TABLE lake.t AS SELECT i FROM range(100) t(i)
+
+query I
+SELECT count(*) FROM meta.ducklake_inlined_data_1_1
+----
+100
+
+# one of the two flushes registers the rows, the other reports nothing
+query III
+SELECT * FROM ducklake_flush_inlined_data('lake') UNION ALL SELECT * FROM ducklake_flush_inlined_data('lake')
+----
+main	t	100
+
+query IIII
+SELECT (SELECT count(*) FROM ducklake_list_files('lake', 't')), (SELECT count(*) FROM lake.t), count(*),
+       count(DISTINCT i) FROM lake.t
+----
+1	100	100	100

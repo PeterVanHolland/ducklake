@@ -2396,6 +2396,14 @@ void DuckLakeTransaction::MarkMetadataWritten() {
 	}
 }
 
+bool DuckLakeTransaction::TryClaimInlinedTableFlush(const Identifier &table_name) {
+	lock_guard<mutex> guard(flushed_inlined_lock);
+	if (state->InlinedTableFlushed(table_name)) {
+		return false;
+	}
+	return state->claimed_inlined_flushes.insert(table_name).second;
+}
+
 void DuckLakeTransaction::MarkInlinedDataForDeletion(DuckLakeInlinedTableInfo inlined_table, idx_t flush_snapshot_id,
                                                      bool wrote_files) {
 	lock_guard<mutex> guard(flushed_inlined_lock);

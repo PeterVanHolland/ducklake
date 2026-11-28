@@ -360,6 +360,9 @@ public:
 	map<SchemaIndex, reference<DuckLakeSchemaEntry>> dropped_schemas;
 	LocalTableChanges local_changes;
 	vector<FlushedInlinedTableInfo> flushed_inlined_tables;
+	//! The inlined tables a running flush of the transaction claimed, so a second flush of the same statement
+	//! registers nothing; the flushed mark above follows once the files are registered
+	identifier_set_t claimed_inlined_flushes;
 	//! The tables whose inlined file deletions were flushed, with the snapshot of the flush
 	map<TableIndex, idx_t> flushed_inlined_file_deletions;
 	vector<DuckLakeConfigOption> committed_table_options;

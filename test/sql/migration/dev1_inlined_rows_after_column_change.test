@@ -45,8 +45,10 @@ UPDATE __ducklake_metadata_dl.ducklake_metadata SET value = '1.1-dev1' WHERE key
 statement ok
 DETACH dl
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/dev1_inlined_rows_after_column_change', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/dev1_inlined_rows_after_column_change',
+    DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
 
 query II
 SELECT * FROM dl.s ORDER BY a

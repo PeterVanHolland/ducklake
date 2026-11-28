@@ -50,8 +50,11 @@ SET GLOBAL sqlite_all_varchar = false
 statement ok
 DETACH dl
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok
-ATTACH 'ducklake:sqlite:{TEST_DIR}/sqlite_inlined_rows_after_column_change.db' AS dl (DATA_PATH '{DATA_PATH}/sqlite_inlined_rows_after_column_change', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+ATTACH 'ducklake:sqlite:{TEST_DIR}/sqlite_inlined_rows_after_column_change.db' AS dl (
+    DATA_PATH '{DATA_PATH}/sqlite_inlined_rows_after_column_change', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE,
+    DATA_INLINING_ROW_LIMIT 10)
 
 query II
 SELECT * FROM dl.t ORDER BY a

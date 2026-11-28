@@ -163,8 +163,10 @@ INSERT INTO dl.s VALUES (4, 40)
 statement ok
 DETACH dl
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/v10_inlined_rows_after_column_change', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/v10_inlined_rows_after_column_change',
+    DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
 
 # only rows whose fields changed place move, and only when the columns can hold them
 query II

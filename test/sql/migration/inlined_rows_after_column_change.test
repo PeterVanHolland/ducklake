@@ -10,8 +10,11 @@ require parquet
 # release wrote by position into the inlined table of the schema version before the change
 unzip data/old_ducklake/inlined_after_column_changes.db.gz {TEST_DIR}/inlined_after_column_changes.db
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok
-ATTACH 'ducklake:{TEST_DIR}/inlined_after_column_changes.db' AS dl (DATA_PATH '{TEST_DIR}/inlined_after_column_changes_files/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+ATTACH 'ducklake:{TEST_DIR}/inlined_after_column_changes.db' AS dl (
+    DATA_PATH '{TEST_DIR}/inlined_after_column_changes_files/', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+    AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
 
 # the rows are in the inlined table of the schema version they were written for, where the columns can hold them
 query II

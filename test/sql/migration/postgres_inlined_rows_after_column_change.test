@@ -74,9 +74,11 @@ CALL postgres_execute('pg', 'INSERT INTO inlined_rows_text_column.ducklake_inlin
 statement ok
 CALL postgres_execute('pg', 'UPDATE inlined_rows_text_column.ducklake_table_stats SET record_count = 3, next_row_id = 3 WHERE table_id IN (1, 2)')
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok
-ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
-(DATA_PATH '{DATA_PATH}/postgres_inlined_rows_after_column_change', METADATA_SCHEMA 'inlined_rows_text_column', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/postgres_inlined_rows_after_column_change',
+    METADATA_SCHEMA 'inlined_rows_text_column', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE,
+    DATA_INLINING_ROW_LIMIT 10)
 
 query III
 SELECT * FROM dl.t ORDER BY a

@@ -5969,7 +5969,7 @@ shared_ptr<DuckLakeInlinedData> DuckLakeMetadataManager::TransformInlinedData(Qu
 	return inlined_data;
 }
 
-bool DuckLakeMetadataManager::InlinedTableDropped(DuckLakeTableEntry &table, const Identifier &inlined_table_name,
+bool DuckLakeMetadataManager::InlinedTableDropped(const DuckLakeTableEntry &table, const Identifier &inlined_table_name,
                                                   DuckLakeSnapshot snapshot) {
 	if (!table.InlinedTableMayBeDropped(transaction, inlined_table_name, snapshot)) {
 		return false;

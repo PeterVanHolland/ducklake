@@ -2657,8 +2657,8 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 	}
 
 	// drop data files
+	set<DataFileIndex> dropped_indexes;
 	if (!dropped_files.empty()) {
-		set<DataFileIndex> dropped_indexes;
 		for (auto &entry : dropped_files) {
 			dropped_indexes.insert(entry.second);
 		}
@@ -2684,7 +2684,12 @@ string DuckLakeTransactionState::CommitChanges(DuckLakeCommitState &commit_state
 		batch_queries += DuckLakeMetadataManager::WriteNewDeleteFiles(
 		    file_list, table_relative_paths(file_list, &DuckLakeDeleteFileInfo::path), context.supports_v1_1_metadata,
 		    context.supports_file_visibility_events);
+	}
+	// the delete files of the dropped data files end with them, the ones written in this transaction included
+	batch_queries +=
+	    DuckLakeMetadataManager::DropDeleteFilesOfDataFiles(dropped_indexes, context.supports_file_visibility_events);
 
+	if (has_table_data_changes) {
 		// write new inlined deletes (for inlined data tables)
 		auto inlined_deletes = GetNewInlinedDeletes(commit_state);
 		for (auto &entry : inlined_deletes) {

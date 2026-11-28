@@ -233,6 +233,7 @@
         "test/sql/rewrite_data_files/test_rewrite_concurrency.test",
         "test/sql/rewrite_data_files/test_rewrite_db.test",
         "test/sql/rewrite_data_files/test_rewrite_inlined_deletes_flush.test",
+        "test/sql/remove_files/dropped_data_files_end_delete_files.test",
         "test/sql/remove_orphans/puffin_orphan.test",
         "test/sql/delete/delete_file_events_main.test",
         "test/sql/delete/delete_replacement_commit_statements.test",

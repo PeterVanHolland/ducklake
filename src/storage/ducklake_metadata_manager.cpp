@@ -6763,6 +6763,21 @@ string DuckLakeMetadataManager::DropDataFiles(const set<DataFileIndex> &dropped_
 	return FlushDrop("ducklake_data_file", "data_file_id", dropped_files);
 }
 
+string DuckLakeMetadataManager::DropDeleteFilesOfDataFiles(const set<DataFileIndex> &dropped_files, bool file_events) {
+	if (!file_events) {
+		return FlushDrop("ducklake_delete_file", "data_file_id", dropped_files);
+	}
+	if (dropped_files.empty()) {
+		return {};
+	}
+	// the events name no data file, the delete file rows do
+	auto delete_file_ids = StringUtil::Format(
+	    "SELECT delete_file_id FROM {METADATA_CATALOG}.ducklake_delete_file WHERE data_file_id IN (%s)",
+	    GenerateIDList(dropped_files));
+	return FileEndEvents("ducklake_delete_file_visibility", "delete_file_id", "delete_file_id", delete_file_ids,
+	                     "{SNAPSHOT_ID}");
+}
+
 string DuckLakeMetadataManager::GetDeleteCountForDataFilesSql(TableIndex table_id, const set<DataFileIndex> &file_ids,
                                                               const Identifier &inlined_deletion_table,
                                                               bool file_events) {

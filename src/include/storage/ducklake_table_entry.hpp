@@ -232,12 +232,15 @@ private:
 	//! The entry of a column type change, which starts a new partition spec when bucket hashes change
 	unique_ptr<CatalogEntry> AlterColumnType(DuckLakeTransaction &transaction, CreateTableInfo &info,
 	                                         unique_ptr<ColumnChangeInfo> change_info,
-	                                         shared_ptr<DuckLakeFieldData> new_field_data);
+	                                         shared_ptr<DuckLakeFieldData> new_field_data,
+	                                         optional_idx new_next_column_id);
 
 	unique_ptr<DuckLakeFieldId> GetNestedEvolution(const DuckLakeFieldId &source_id, const LogicalType &target,
-	                                               ColumnChangeInfo &result, optional_idx parent_idx);
+	                                               ColumnChangeInfo &result, optional_idx parent_idx,
+	                                               optional_idx &next_field_id);
 	unique_ptr<DuckLakeFieldId> TypePromotion(const DuckLakeFieldId &source_id, const LogicalType &target,
-	                                          ColumnChangeInfo &result, optional_idx parent_idx);
+	                                          ColumnChangeInfo &result, optional_idx parent_idx,
+	                                          optional_idx &next_field_id);
 
 	void CheckSupportedType(const LogicalType &type);
 

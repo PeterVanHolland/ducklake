@@ -1,0 +1,66 @@
+# name: test/sql/alter/rolled_back_alter_column_ids.test
+# description: A change of a struct that is rolled back or fails takes no column id
+# group: [alter]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta')
+
+statement ok
+CREATE TABLE dl.t(i INTEGER, s STRUCT(x INTEGER, y VARCHAR))
+
+# a new field of a struct
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN s.f VARCHAR
+
+statement ok
+ROLLBACK
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN a DATE
+
+# a struct type with new fields
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.t ALTER COLUMN s SET DATA TYPE STRUCT(x INTEGER, y VARCHAR, z INTEGER, w INTEGER)
+
+statement ok
+ROLLBACK
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN b DATE
+
+# a new field that fails on its type
+statement error
+ALTER TABLE dl.t ADD COLUMN s.u UNION(n INTEGER, v VARCHAR)
+----
+unsupported type UNION(n INTEGER, v VARCHAR)
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN c DATE
+
+query II
+SELECT column_name, column_id FROM meta.ducklake_column ORDER BY column_id
+----
+i	1
+s	2
+x	3
+y	4
+a	5
+b	6
+c	7
+
+statement ok
+DETACH dl

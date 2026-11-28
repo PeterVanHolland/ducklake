@@ -1021,7 +1021,8 @@ bool IsSimpleCast(const ParsedExpression &expr) {
 
 unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::GetNestedEvolution(const DuckLakeFieldId &source_id,
                                                                    const LogicalType &target, ColumnChangeInfo &result,
-                                                                   optional_idx parent_idx) {
+                                                                   optional_idx parent_idx,
+                                                                   optional_idx &next_field_id) {
 	auto &source_type = source_id.Type();
 	if (source_type.id() != target.id()) {
 		throw NotImplementedException("Type evolution is not supported from type %s to type %s", source_type, target);
@@ -1047,10 +1048,10 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::GetNestedEvolution(const DuckLak
 		if (entry == source_type_map.end()) {
 			// type not found - this is a new entry
 			// first construct a new field id for this entry
-			idx_t next_col = next_column_id.GetIndex();
+			idx_t next_col = next_field_id.GetIndex();
 			auto field_id =
 			    DuckLakeFieldId::FieldIdFromType(target_name, target_type, nullptr, next_col, nullptr, false);
-			next_column_id = next_col;
+			next_field_id = next_col;
 
 			// add the column to the list of "to-be-added" columns
 			DuckLakeNewColumn new_col;
@@ -1065,7 +1066,7 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::GetNestedEvolution(const DuckLak
 		// the name exists in both the source and target
 		// recursively perform type promotion
 		promoted_children[source_idx] =
-		    TypePromotion(*source_children[source_idx], target_type, result, column_data.id.index);
+		    TypePromotion(*source_children[source_idx], target_type, result, column_data.id.index, next_field_id);
 		// erase from the source map to indicate this field has been handled
 		source_type_map.erase(target_name);
 	}
@@ -1090,9 +1091,9 @@ unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::GetNestedEvolution(const DuckLak
 
 unique_ptr<DuckLakeFieldId> DuckLakeTableEntry::TypePromotion(const DuckLakeFieldId &source_id,
                                                               const LogicalType &target, ColumnChangeInfo &result,
-                                                              optional_idx parent_idx) {
+                                                              optional_idx parent_idx, optional_idx &next_field_id) {
 	if (!source_id.Children().empty()) {
-		return GetNestedEvolution(source_id, target, result, parent_idx);
+		return GetNestedEvolution(source_id, target, result, parent_idx, next_field_id);
 	}
 	auto &source_type = source_id.Type();
 	if (source_type == target) {
@@ -1165,7 +1166,9 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	if (info.target_type.IsNested()) {
 		RequireNextColumnId(transaction);
 	}
-	auto new_field_id = TypePromotion(field_id, info.target_type, *change_info, optional_idx());
+	// the altered entry gets the ids of new fields, this entry keeps its next id
+	auto next_field_id = next_column_id;
+	auto new_field_id = TypePromotion(field_id, info.target_type, *change_info, optional_idx(), next_field_id);
 	ValidateAddedFieldsCanSkipStats(field_id, *new_field_id);
 	col.SetType(new_field_id->Type());
 	CheckSupportedType(col.Type());
@@ -1176,14 +1179,16 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	table_info.columns.SetAllowDuplicates(false);
 
 	auto new_field_ids = DuckLakeFieldData::ReplaceRootField(*field_data, col.Physical(), std::move(new_field_id));
-	return AlterColumnType(transaction, table_info, std::move(change_info), std::move(new_field_ids));
+	return AlterColumnType(transaction, table_info, std::move(change_info), std::move(new_field_ids), next_field_id);
 }
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterColumnType(DuckLakeTransaction &transaction, CreateTableInfo &info,
                                                              unique_ptr<ColumnChangeInfo> change_info,
-                                                             shared_ptr<DuckLakeFieldData> new_field_data) {
+                                                             shared_ptr<DuckLakeFieldData> new_field_data,
+                                                             optional_idx new_next_column_id) {
 	auto result = make_uniq<DuckLakeTableEntry>(*this, info, LocalChangeType::CHANGE_COLUMN_TYPE,
 	                                            std::move(change_info), std::move(new_field_data));
+	result->next_column_id = new_next_column_id;
 	auto &partition = result->partition_data;
 	if (!partition) {
 		return std::move(result);
@@ -1252,7 +1257,6 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	auto next_field_id = next_column_id.GetIndex();
 	auto child_field_id = DuckLakeFieldId::FieldIdFromColumn(info.new_field, next_field_id, context.get(), false,
 	                                                         transaction.TakeInitialDefault());
-	next_column_id = next_field_id;
 
 	ValidateAddedFieldsCanSkipStats(parent_id, *child_field_id);
 
@@ -1264,7 +1268,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	col.SetType(new_root_id->Type());
 	CheckSupportedType(info.new_field.Type());
 	auto new_field_ids = DuckLakeFieldData::ReplaceRootField(*field_data, col.Physical(), std::move(new_root_id));
-	return AlterColumnType(transaction, table_info, std::move(change_info), std::move(new_field_ids));
+	return AlterColumnType(transaction, table_info, std::move(change_info), std::move(new_field_ids), next_field_id);
 }
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &transaction, RemoveFieldInfo &info) {
@@ -1302,7 +1306,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	auto new_root_id = GetFieldId(col.Physical()).RemoveField(info.column_path);
 	col.SetType(new_root_id->Type());
 	auto new_field_ids = DuckLakeFieldData::ReplaceRootField(*field_data, col.Physical(), std::move(new_root_id));
-	return AlterColumnType(transaction, table_info, std::move(change_info), std::move(new_field_ids));
+	return AlterColumnType(transaction, table_info, std::move(change_info), std::move(new_field_ids), next_column_id);
 }
 
 void RenameField(const DuckLakeFieldId &field_id, const DuckLakeFieldId &parent_id, Identifier new_name,
@@ -1343,7 +1347,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &tra
 	auto new_root_id = GetFieldId(col.Physical()).RenameField(info.column_path, info.new_name);
 	col.SetType(new_root_id->Type());
 	auto new_field_ids = DuckLakeFieldData::ReplaceRootField(*field_data, col.Physical(), std::move(new_root_id));
-	return AlterColumnType(transaction, table_info, std::move(change_info), std::move(new_field_ids));
+	return AlterColumnType(transaction, table_info, std::move(change_info), std::move(new_field_ids), next_column_id);
 }
 
 unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(DuckLakeTransaction &transaction, SetDefaultInfo &info) {

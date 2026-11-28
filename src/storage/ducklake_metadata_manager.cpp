@@ -5483,7 +5483,10 @@ vector<Identifier> DuckLakeMetadataManager::InlinedRowColumnNames(TableIndex tab
                                                                   optional_ptr<const DuckLakeTableInfo> new_table,
                                                                   const vector<DuckLakeTableInfo> &new_tables) {
 	auto col_names = InlinedColNames();
-	vector<Identifier> names {col_names.row_id, col_names.begin_snapshot, col_names.end_snapshot};
+	vector<Identifier> names {col_names.row_id, col_names.begin_snapshot};
+	if (!col_names.has_branch_id) {
+		names.push_back(col_names.end_snapshot);
+	}
 	for (auto &table : new_tables) {
 		if (!new_table && table.id == table_id) {
 			new_table = &table;
@@ -5493,16 +5496,20 @@ vector<Identifier> DuckLakeMetadataManager::InlinedRowColumnNames(TableIndex tab
 		for (auto &column : new_table->columns) {
 			names.push_back(column.name);
 		}
-		return names;
+	} else {
+		auto table_entry = transaction.GetCatalog().GetEntryById(transaction, snapshot, table_id);
+		if (!table_entry) {
+			// LCOV_EXCL_START
+			return vector<Identifier>();
+			// LCOV_EXCL_STOP
+		}
+		for (auto &column : table_entry->Cast<DuckLakeTableEntry>().GetColumns().Logical()) {
+			names.push_back(column.Name());
+		}
 	}
-	auto table_entry = transaction.GetCatalog().GetEntryById(transaction, snapshot, table_id);
-	if (!table_entry) {
-		// LCOV_EXCL_START
-		return vector<Identifier>();
-		// LCOV_EXCL_STOP
-	}
-	for (auto &column : table_entry->Cast<DuckLakeTableEntry>().GetColumns().Logical()) {
-		names.push_back(column.Name());
+	// the birth branch follows the columns of the table from 2.0 on
+	if (col_names.has_branch_id) {
+		names.push_back(col_names.branch_id);
 	}
 	return names;
 }

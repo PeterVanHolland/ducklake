@@ -48,6 +48,9 @@
         "test/sql/general/ducklake_metadata_logging.test",
         "test/sql/transaction/commit_skips_catalog_load.test",
         "test/sql/transaction/commit_retry_skips_catalog_load.test",
+        "test/sql/stats/read_after_commit_table_stats.test",
+        "test/sql/stats/read_after_commit_table_stats_concurrent.test",
+        "test/sql/stats/read_after_commit_table_stats_evicted.test",
         "test/sql/transaction/commit_table_paths_from_catalog.test",
         "test/sql/stats/stats_reads_filter_table.test",
         "test/sql/stats/null_first_bounds_unrelated_commits.test"

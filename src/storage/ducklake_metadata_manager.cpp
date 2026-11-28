@@ -6033,13 +6033,13 @@ FROM bounds)",
 		// a table that is not superseded at the snapshot is not dropped by DuckLake
 		return false;
 	}
-	// an expired snapshot took the record of its inserts with it, the rows may still be there
+	// with a snapshot of the range expired, the first snapshot of the version and its inserts are not known
 	auto oldest_required = first_snapshot.GetIndex() > 0 ? first_snapshot.GetIndex() - 1 : 0;
 	if (remaining_snapshots != superseded_snapshot.GetIndex() - oldest_required + 1) {
 		return false;
 	}
-	// the table was empty at the snapshot when no inlined insert reached it before it was superseded; a flush after
-	// that does not prove it, since a flush does not conflict with inserts committed after its snapshot
+	// only the lack of inlined inserts before the table was superseded proves it empty, a flush does not conflict
+	// with inserts committed after its snapshot
 	auto changes = Query(StringUtil::Format(R"(
 SELECT changes_made
 FROM {METADATA_CATALOG}.ducklake_snapshot_changes

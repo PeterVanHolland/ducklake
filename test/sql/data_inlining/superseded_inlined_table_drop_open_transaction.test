@@ -65,7 +65,7 @@ SELECT count(*), sum(id), count(DISTINCT tenant) FROM lake.t
 ----
 15	9965	2
 
-# a superseded table that held rows: the flush empties it, a transaction open across the flush still reads u
+# a superseded table that held rows, the flush empties it and a transaction open across the flush still reads u
 statement ok
 CREATE TABLE lake.u (tenant INTEGER, id BIGINT, v DOUBLE)
 

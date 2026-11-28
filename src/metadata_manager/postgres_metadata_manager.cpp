@@ -519,10 +519,8 @@ static constexpr const char *DROP_DEFERRED_MESSAGE =
 unique_ptr<QueryResult> PostgresMetadataManager::ExecuteDropInTransaction(string &query) {
 	// DROP TABLE waits for every open transaction that read the table and the readers queued behind it fail, so it
 	// gives up instead and leaves the table to a later cleanup
-	// a transaction reads ducklake_snapshot first and keeps its share lock until it ends, while its REPEATABLE READ
-	// snapshot still lists the table, so the drop only runs when no such transaction is open and a transaction that
-	// starts meanwhile takes its snapshot after the drop; a lock timeout is recorded in a setting of the transaction
-	// and read back, so that no message of the server is interpreted and any other failure of the lock is reported
+	// an open transaction keeps its share lock on ducklake_snapshot while its snapshot still lists the table, so
+	// the drop locks ducklake_snapshot first and reads a lock timeout back from a setting of the transaction
 	auto schema = SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName());
 	auto lock_body = StringUtil::Format("BEGIN LOCK TABLE %s.ducklake_snapshot IN ACCESS EXCLUSIVE MODE; "
 	                                    "EXCEPTION WHEN lock_not_available THEN "

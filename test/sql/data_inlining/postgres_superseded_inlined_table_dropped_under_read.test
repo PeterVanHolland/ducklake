@@ -77,7 +77,7 @@ CALL ducklake_expire_snapshots('lake', versions => [0])
 statement ok con1
 COMMIT
 
-# a superseded table that held rows: the flush empties it, but a snapshot cannot tell that from its change log
+# a superseded table that held rows, the flush empties it but a snapshot cannot tell that from its change log
 statement ok
 CREATE TABLE lake.u (tenant INTEGER, id BIGINT, v DOUBLE)
 

@@ -367,8 +367,8 @@ bool DuckLakeInlinedDataReader::LoadNextPage(ClientContext &context) {
 		limit = MaxValue<idx_t>(1, page_bytes / MaxValue<idx_t>(1, row_bytes));
 	} else if (row_bytes == 0) {
 		limit = 1;
-	} else if (keys.size() - key_position <= page_bytes / largest_row_bytes) {
-		// the read keys fit a page even at the size of the largest rows, which reads each vector of values once
+	} else if (key_page.offset <= page_bytes / largest_row_bytes) {
+		// every key read so far fits a page at the size of the largest rows, a range reads whole vectors of values
 		limit = keys.size() - key_position;
 	} else if (row_bytes > small_row_bytes) {
 		limit = 1;

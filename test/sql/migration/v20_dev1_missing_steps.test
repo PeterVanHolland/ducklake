@@ -1275,7 +1275,8 @@ SELECT list(i ORDER BY i) FROM dl.t
 statement ok
 DETACH dl
 
-# a 2.0-dev1 attach of a complete layout probes the layout with one statement and runs no migration statement
+# a 2.0-dev1 attach of a complete layout probes the layout with one statement and runs no migration statement,
+# it also lists the metadata columns to check them
 statement ok
 CALL truncate_duckdb_logs()
 

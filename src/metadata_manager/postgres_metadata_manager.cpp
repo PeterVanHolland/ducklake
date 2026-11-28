@@ -396,6 +396,12 @@ bool PostgresMetadataManager::IsRetryableCommitError(const string &message) cons
 	return false;
 }
 
+//! The DuckDB name of a Postgres type
+static string MetadataColumnType(const string &postgres_type) {
+	auto type_id = TransformStringToLogicalTypeId(postgres_type == "character varying" ? "varchar" : postgres_type);
+	return type_id == LogicalTypeId::UNBOUND ? postgres_type : LogicalType(type_id).ToString();
+}
+
 unordered_set<string> PostgresMetadataManager::ListInlinedDeletionTables() {
 	// the server lists the tables, so a table another connection committed is seen without a catalog refresh
 	auto &catalog = transaction.GetCatalog();
@@ -548,14 +554,22 @@ bool PostgresMetadataManager::ProbeMetadataColumns() {
 	// the scanner lists the tables it cached, so the server is asked for the ones a commit created since
 	auto schema = SQLString::ToString(transaction.GetCatalog().MetadataSchemaName().GetIdentifierName());
 	auto remote_query = StringUtil::Format(R"(
-SELECT c.relname, a.attname
+SELECT c.relname, a.attname, pg_catalog.format_type(a.atttypid, NULL)
 FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
 WHERE n.nspname = %s AND c.relkind IN ('r', 'v', 'm', 'f', 'p') AND a.attnum > 0 AND NOT a.attisdropped
 ORDER BY c.relname, a.attnum)",
 	                                       schema);
-	return ProbeMetadataColumnsFromListing(PostgresQuery(remote_query));
+	if (!ProbeMetadataColumnsFromListing(PostgresQuery(remote_query))) {
+		return false;
+	}
+	for (auto &table : probed_columns) {
+		for (auto &column : table.second) {
+			column.type = MetadataColumnType(column.type);
+		}
+	}
+	return true;
 }
 
 string PostgresMetadataManager::GetLatestSnapshotQuery() const {

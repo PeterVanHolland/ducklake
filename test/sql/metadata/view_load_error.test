@@ -15,13 +15,14 @@ statement ok
 CREATE TABLE lake.t(i INTEGER)
 
 statement ok
-DROP TABLE __ducklake_metadata_lake.main.ducklake_view
-
-statement ok
 DETACH lake
 
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/view_load_error.db' AS lake (DATA_PATH '{DATA_PATH}/view_load_error')
+
+# drop the table underneath the attached catalog, since ATTACH refuses a catalog without it
+statement ok
+DROP TABLE __ducklake_metadata_lake.main.ducklake_view
 
 statement error
 SELECT * FROM lake.t

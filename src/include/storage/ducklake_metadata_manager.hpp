@@ -214,6 +214,12 @@ struct FilterPushdownInfo {
 	}
 };
 
+//! A column of a metadata table as the metadata database lists it
+struct DuckLakeMetadataColumn {
+	Identifier name;
+	string type;
+};
+
 //! The DuckLake metadata manger is the communication layer between the system and the metadata catalog
 class DuckLakeMetadataManager {
 public:
@@ -865,6 +871,12 @@ public:
 	static string GetBranchTableStatement();
 	//! Inserts the row of the main branch unless the table has it
 	static string GetMainBranchRowStatement();
+	//! Checks the columns of every metadata table against the tables that this catalog version creates
+	void ValidateMetadataTables();
+	//! The type that a metadata column created with the given type is read back as
+	string StoredMetadataType(const LogicalType &type) const;
+	//! Whether the types that the metadata columns are read back as are known
+	virtual bool KnowsStoredMetadataTypes() const;
 	//! Whether the catalog already has every metadata table and column of v1.1
 	bool HasV1_1Additions();
 	//! Whether the catalog has the tables of 1.1 under their names in their shape, false once a migration to 2.0 began
@@ -976,11 +988,20 @@ public:
 	bool HasMetadataColumn(const string &table, const string &column);
 	//! The inlined deletion tables of the catalog that hold the snapshot of their rows, named by the probe
 	vector<string> ProbedInlinedDeletionTables();
+	//! The listed columns of a metadata table, asked for when the pass listed none, none for a missing table
+	//! With probe_unlisted a table the listing lacks is asked for too, where the engine finds it by a name of any case
+	const vector<DuckLakeMetadataColumn> &ProbedMetadataColumns(const string &table, bool probe_unlisted);
+	//! The columns of a table from the local catalog, a view by the columns it has now
+	vector<DuckLakeMetadataColumn> LookupMetadataColumns(const string &table);
+	//! The columns of a table from a query, which the metadata database resolves itself
+	vector<DuckLakeMetadataColumn> QueryMetadataColumns(const string &table);
+	//! Whether the metadata database finds a table by a name of any case, so an unlisted table can be asked for
+	virtual bool FoldsMetadataTableCase() const;
 	//! Scans the metadata schema into the memo, once per probe pass
 	void ProbeMetadataSchema();
 	//! Reads the columns of every table of the metadata schema into the memo, false when the catalog lists none
 	virtual bool ProbeMetadataColumns();
-	//! Fills the memo from the table and column names a listing returns, false when the metadata table is not listed
+	//! Fills the memo from the (table, column, type) rows of a listing, false when the metadata table is not listed
 	bool ProbeMetadataColumnsFromListing(string query);
 	//! Drops the memo of a probe pass
 	void ResetProbedColumns();
@@ -1177,11 +1198,13 @@ protected:
 	map<TableIndex, string> table_paths;
 	bool pending_cache_clear = false;
 	//! The columns of the metadata tables probed in the current pass, a missing table has none
-	unordered_map<string, vector<Identifier>> probed_columns;
+	unordered_map<string, vector<DuckLakeMetadataColumn>> probed_columns;
 	//! Whether the pass scanned the metadata schema, a scan that listed no tables leaves the probes in the memo
 	bool probed_metadata_schema = false;
 	//! Whether the pass read the columns of every metadata table at once
 	bool probed_all_columns = false;
+	//! Whether the pass listed the local catalog, which also finds a table the listing lacks
+	bool probed_local_catalog = false;
 	bool read_file_counts = false;
 };
 

@@ -100,7 +100,6 @@ void DuckLakeInitializer::Initialize() {
 	// check if we are loading an existing DuckLake or creating a new one
 	// directly query a known ducklake metadata table to avoid scanning all attached catalogs via duckdb_tables()
 	// this prevents a corrupted ducklake catalog from blocking initialization of unrelated ducklake databases
-	// FIXME: verify that all ducklake tables are in the correct format
 	if (transaction.GetMetadataManager().MetadataExists()) {
 		LoadExistingDuckLakeWithRetries(transaction);
 	} else {
@@ -276,6 +275,7 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 	DuckLakeVersion resolved_version = DuckLakeVersion::UNSET;
 	DuckLakeVersion catalog_version = DuckLakeVersion::UNSET;
 	DuckLakeVersion target_version = DuckLakeVersion::UNSET;
+	bool has_data_path = false;
 	string missing_step;
 	for (auto &tag : metadata.tags) {
 		if (tag.key == "version" && metadata_manager.IsRemote()) {
@@ -325,6 +325,7 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 			}
 		}
 		if (tag.key == "data_path") {
+			has_data_path = true;
 			if (options.data_path.empty()) {
 				options.data_path = metadata_manager.LoadPath(tag.value);
 				InitializeDataPath();
@@ -415,9 +416,15 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 	for (auto &entry : metadata.table_settings) {
 		options.table_options[entry.table_id][entry.tag.key] = entry.tag.value;
 	}
-	// set correct version metadata manager
-	if (resolved_version != DuckLakeVersion::UNSET) {
-		SetVersionedMetadataManager(transaction, resolved_version);
+	if (resolved_version == DuckLakeVersion::UNSET || !has_data_path) {
+		throw InvalidInputException("Failed to load DuckLake: the metadata has no %s",
+		                            resolved_version == DuckLakeVersion::UNSET ? "version" : "data path");
+	}
+	SetVersionedMetadataManager(transaction, resolved_version);
+	auto &versioned_manager = transaction.GetMetadataManager();
+	if (!versioned_manager.IsRemote()) {
+		// a remote server attached and checked the metadata itself
+		versioned_manager.ValidateMetadataTables();
 	}
 }
 

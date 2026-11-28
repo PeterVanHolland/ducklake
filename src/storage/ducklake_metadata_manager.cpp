@@ -6975,7 +6975,7 @@ string DuckLakeMetadataManager::WriteSnapshotChangesSql(const SnapshotChangeInfo
 }
 
 string DuckLakeMetadataManager::SnapshotAndStatsAndChangesQuery(bool include_exactness, bool keyed_lookups,
-                                                                bool keyed_scans) {
+                                                                bool keyed_scans, bool from_transaction_snapshot) {
 	// both UNION arms must stay column-aligned - extend them together
 	string snapshot_arm_padding;
 	string stats_arm_columns;
@@ -6987,6 +6987,10 @@ string DuckLakeMetadataManager::SnapshotAndStatsAndChangesQuery(bool include_exa
 	string changes_filter = keyed_lookups ? " AND c.branch_id = 0" : "";
 	string head_filter = keyed_scans ? " WHERE branch_id = 0" : "";
 	string main_filter = keyed_lookups ? " AND branch_id = 0" : "";
+	if (from_transaction_snapshot) {
+		head_filter = " WHERE snapshot_id >= {SNAPSHOT_ID}" + main_filter;
+		main_filter = " AND snapshot_id >= {SNAPSHOT_ID}" + main_filter;
+	}
 	return R"(
 SELECT
     snapshot_id,
@@ -7061,7 +7065,7 @@ SnapshotChangeInfo DuckLakeMetadataManager::ParseSnapshotAndStatsAndChanges(Quer
 }
 
 string DuckLakeMetadataManager::GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot, bool include_exactness) const {
-	return SnapshotAndStatsAndChangesQuery(include_exactness, BranchKeyedLookups(), false);
+	return SnapshotAndStatsAndChangesQuery(include_exactness, BranchKeyedLookups(), false, BoundsHeadLookups());
 }
 
 SnapshotChangeInfo
@@ -7093,16 +7097,31 @@ unique_ptr<DuckLakeSnapshot> DuckLakeMetadataManager::ParseSnapshot(QueryResult 
 	return snapshot;
 }
 
-string DuckLakeMetadataManager::LatestSnapshotQuery(bool keyed_lookups, bool keyed_scans) {
+string DuckLakeMetadataManager::LatestSnapshotQuery(bool keyed_lookups, bool keyed_scans, idx_t first_snapshot) {
+	string main_filter = keyed_lookups ? " AND branch_id = 0" : "";
+	string head_lookup;
+	if (first_snapshot > 0) {
+		// one scan from first_snapshot on, a scanner pushes that filter down
+		head_lookup =
+		    StringUtil::Format("snapshot_id >= %d%s ORDER BY snapshot_id DESC LIMIT 1", first_snapshot, main_filter);
+	} else {
+		head_lookup =
+		    StringUtil::Format("snapshot_id = (SELECT MAX(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot%s)%s",
+		                       keyed_scans ? " WHERE branch_id = 0" : "", main_filter);
+	}
 	return StringUtil::Format(R"(SELECT snapshot_id, schema_version, next_catalog_id, next_file_id,
 (SELECT MAX(value) FROM {METADATA_CATALOG}.ducklake_metadata WHERE key = 'version')
 FROM {METADATA_CATALOG}.ducklake_snapshot
-WHERE snapshot_id = (SELECT MAX(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot%s)%s;)",
-	                          keyed_scans ? " WHERE branch_id = 0" : "", keyed_lookups ? " AND branch_id = 0" : "");
+WHERE %s;)",
+	                          head_lookup);
 }
 
 string DuckLakeMetadataManager::GetLatestSnapshotQuery() const {
 	return LatestSnapshotQuery(BranchKeyedLookups(), false);
+}
+
+bool DuckLakeMetadataManager::BoundsHeadLookups() const {
+	return !IsDuckDBMetadataType(transaction.GetCatalog().MetadataType());
 }
 
 bool DuckLakeMetadataManager::BranchKeyedLookups() const {
@@ -7116,12 +7135,28 @@ string DuckLakeMetadataManager::MainSnapshotFilter() const {
 }
 
 unique_ptr<DuckLakeSnapshot> DuckLakeMetadataManager::GetSnapshot() {
-	auto result = Query(GetLatestSnapshotQuery());
-	result->ThrowIfError("Failed to query most recent snapshot for DuckLake: ");
+	auto &catalog = transaction.GetCatalog();
 	string catalog_version;
-	auto snapshot = ParseSnapshot(*result, &catalog_version);
+	auto read_head = [&](string query) {
+		auto result = Query(query);
+		result->ThrowIfError("Failed to query most recent snapshot for DuckLake: ");
+		return ParseSnapshot(*result, &catalog_version);
+	};
+	unique_ptr<DuckLakeSnapshot> snapshot;
+	bool bound_lookup = BoundsHeadLookups();
+	idx_t known_head = bound_lookup ? catalog.KnownHeadSnapshot() : 0;
+	if (known_head > 0) {
+		snapshot = read_head(LatestSnapshotQuery(BranchKeyedLookups(), false, known_head));
+	}
+	if (!snapshot) {
+		// no head is known, or the transaction began before the known head was committed
+		snapshot = read_head(GetLatestSnapshotQuery());
+	}
 	if (!snapshot) {
 		throw InvalidInputException("No snapshot found in DuckLake");
+	}
+	if (bound_lookup) {
+		catalog.SetKnownHeadSnapshot(snapshot->snapshot_id);
 	}
 	auto attached_version = DuckLakeVersionToString(transaction.GetCatalog().GetDuckLakeVersion());
 	if (!catalog_version.empty() && catalog_version != attached_version) {

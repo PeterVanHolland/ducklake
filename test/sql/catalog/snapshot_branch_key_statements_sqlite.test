@@ -63,10 +63,10 @@ COMMIT
 statement ok
 CALL ducklake_expire_snapshots('dl', versions => [1])
 
-# the head read looks its row up by the key of main, DuckDB computes the MAX over the scanned table
+# the head read scans by the key of main from the head that the catalog read last
 query I
 SELECT count(*) > 0 FROM duckdb_logs_parsed('DuckLakeMetadata')
-WHERE query LIKE '%WHERE snapshot_id = (SELECT MAX(snapshot_id) FROM %ducklake_snapshot) AND branch_id = 0;%'
+WHERE query LIKE '%WHERE snapshot_id >= 2 AND branch_id = 0 ORDER BY snapshot_id DESC LIMIT 1;%'
 ----
 true
 
@@ -101,11 +101,12 @@ WHERE query LIKE '%DELETE FROM %ducklake_snapshot WHERE snapshot_id IN (1) AND b
 ----
 true
 
-# the conflict check keys the range over the changes and the head lookup, not the MAX over the table
+# the conflict check keys the range over the changes, the head lookup and the MAX from the snapshot of the transaction
 query I
 SELECT count(*) > 0 FROM duckdb_logs_parsed('DuckLakeMetadata')
 WHERE regexp_replace(query, '\s+', ' ', 'g') LIKE '%WHERE c.snapshot_id > 2 AND c.branch_id = 0 )%'
-  AND regexp_replace(query, '\s+', ' ', 'g') LIKE '%FROM %ducklake_snapshot) AND branch_id = 0 UNION ALL%'
+  AND regexp_replace(query, '\s+', ' ', 'g') LIKE '%FROM %ducklake_snapshot WHERE snapshot_id >= 2 AND ' ||
+      'branch_id = 0) AND snapshot_id >= 2 AND branch_id = 0 UNION ALL%'
   AND query NOT LIKE '%ducklake_snapshot WHERE branch_id = 0%'
 ----
 true

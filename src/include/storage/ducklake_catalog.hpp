@@ -434,6 +434,14 @@ public:
 		return Value();
 	}
 
+	//! The head that was read last, a hint for the next lookup of the head
+	idx_t KnownHeadSnapshot() const {
+		return known_head_snapshot;
+	}
+	void SetKnownHeadSnapshot(idx_t snapshot_id) {
+		known_head_snapshot = snapshot_id;
+	}
+
 	std::recursive_mutex &GetMetadataQueryLock() {
 		return metadata_query_lock;
 	}
@@ -615,6 +623,7 @@ private:
 	//! The id of the last committed snapshot, set at FlushChanges on a successful commit
 	mutable mutex commit_lock;
 	optional_idx last_committed_snapshot;
+	atomic<idx_t> known_head_snapshot {0};
 	//! Serializes metadata statements on the shared metadata connection
 	std::recursive_mutex metadata_query_lock;
 	//! Optional callback for instrumenting metadata queries

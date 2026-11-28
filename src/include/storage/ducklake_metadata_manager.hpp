@@ -477,8 +477,9 @@ public:
 	//! Pure SQL templates (use `{METADATA_CATALOG}` placeholder) — caller substitutes + executes.
 	//! Both used by the regular metadata-manager methods and by server-side commit, which runs the
 	//! SQL on a fresh Connection without going through the metadata-manager wrapper.
-	//! keyed_lookups puts branch_id = 0 beside the predicates on snapshot_id, keyed_scans on a MAX over the table
-	static string LatestSnapshotQuery(bool keyed_lookups, bool keyed_scans);
+	//! keyed_lookups puts branch_id = 0 beside the predicates on snapshot_id, keyed_scans on a MAX over the table.
+	//! The head is looked up from first_snapshot on unless that is 0
+	static string LatestSnapshotQuery(bool keyed_lookups, bool keyed_scans, idx_t first_snapshot = 0);
 	//! With table ids only those tables' stats are read
 	static string GlobalTableStatsQuery(bool include_exactness, const vector<TableIndex> &table_ids = {});
 	//! Pure parsers for the results of the above queries.
@@ -744,7 +745,9 @@ public:
 	GetSnapshotAndStatsAndChanges(SnapshotAndStats &current_snapshot,
 	                              const std::function<unique_ptr<QueryResult>(string)> &executor, const string &query,
 	                              bool file_events);
-	static string SnapshotAndStatsAndChangesQuery(bool include_exactness, bool keyed_lookups, bool keyed_scans);
+	//! from_transaction_snapshot looks the head up from the snapshot of the transaction on
+	static string SnapshotAndStatsAndChangesQuery(bool include_exactness, bool keyed_lookups, bool keyed_scans,
+	                                              bool from_transaction_snapshot = false);
 	//! The query of the conflict check, which must read the latest snapshot and the table stats consistently
 	virtual string GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot snapshot, bool include_exactness) const;
 	static SnapshotChangeInfo ParseSnapshotAndStatsAndChanges(QueryResult &result, SnapshotAndStats &current_snapshot);
@@ -1011,6 +1014,8 @@ protected:
 	enum class StatsCastType : uint8_t { ORDERING, MIN, MAX };
 
 	virtual string GetLatestSnapshotQuery() const;
+	//! Whether the head is looked up from a known snapshot on, a scanner reads every snapshot otherwise
+	virtual bool BoundsHeadLookups() const;
 	//! The branch conjunct of a lookup on snapshot_id, preceded by AND, empty where the engine would not use it
 	string MainSnapshotFilter() const;
 	//! The changes of the snapshots from first_snapshot to last_snapshot that recorded a rewrite

@@ -2346,9 +2346,9 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 		auto filter = InlinedFlushFilter(table_id, inlined_table_name);
 		auto flushed =
 		    Query(transaction.GetSnapshot(),
-		          StringUtil::Format("SELECT 1 FROM {METADATA_CATALOG}.%s%s {SNAPSHOT_ID} >= %s LIMIT 1",
-		                             SQLIdentifier(inlined_table_name), filter.empty() ? " WHERE" : filter + " AND",
-		                             SQLIdentifier(InlinedColNames().begin_snapshot)));
+		          StringUtil::Format("SELECT 1 FROM %s%s {SNAPSHOT_ID} >= %s LIMIT 1",
+		                             InlinedRowSource(inlined_table_name), filter.empty() ? " WHERE" : filter + " AND",
+		                             SQLIdentifier(col_names.begin_snapshot)));
 		flushed->ThrowIfError("Failed to get the rows of inlined data from DuckLake: ");
 		for (auto &row : *flushed) {
 			(void)row;

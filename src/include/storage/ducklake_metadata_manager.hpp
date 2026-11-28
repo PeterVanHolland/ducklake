@@ -83,6 +83,8 @@ struct DuckLakeInlinedColNames {
 
 	//! Whether a user column name collides with the metadata columns written for inlining
 	bool ConflictsWith(const Identifier &name) const;
+	//! Whether a column of an inlined data table is one of its metadata columns
+	bool IsMetadataColumn(const Identifier &name) const;
 
 	//! Whether the names carry the reserved prefix, from 1.1 on
 	bool prefixed;
@@ -345,9 +347,25 @@ public:
 	bool CanInlineColumns(const vector<DuckLakeColumnInfo> &columns);
 
 	virtual string GetColumnTypeInternal(const LogicalType &column_type);
+	//! Whether an inlined column of this type is stored as a blob that a read decodes
+	bool DecodesInlinedColumn(const LogicalType &type);
+	//! Reads an inlined column as its type, text as a blob or as older versions stored it
 	string CastColumnToTarget(const string &column, const LogicalType &type);
+	//! The columns of an inlined table that are not stored as the storage type of their type, empty without any
+	virtual vector<bool> InlinedColumnsStoredAsValues(const Identifier &inlined_table_name,
+	                                                  const vector<LogicalType> &types) {
+		return vector<bool>();
+	}
+	//! Whether a flush of this transaction takes rows of the inlined table
+	bool HasInlinedRowsToFlush(TableIndex table_id, const Identifier &inlined_table_name);
+	//! Whether an inlined table stores as many columns as a table has, where the catalog tells without a query
+	virtual bool InlinedTableStoresColumnCount(const Identifier &inlined_table_name, idx_t column_count) {
+		return true;
+	}
 	//! The inlined rows to flush with typed columns, without those this transaction deleted
 	string InlinedFlushSource(const Identifier &inlined_table_name, const DuckLakeTableEntry &table);
+	//! The filter of the inlined rows to flush, empty when this transaction deleted none
+	string InlinedFlushFilter(TableIndex table_id, const Identifier &inlined_table_name);
 	//! The order of the rows in a flushed file
 	string InlinedFlushOrder(const string &sort_order_sql) const;
 
@@ -532,7 +550,24 @@ public:
 	                                                                  DuckLakeSnapshot snapshot,
 	                                                                  DuckLakeFileSizeOptions options);
 	virtual idx_t GetBeginSnapshotForTable(TableIndex table_id);
-	virtual idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version);
+	//! The snapshot a schema version of a table is read at, with an invalid schema version when it is unknown
+	virtual DuckLakeSnapshot GetSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version,
+	                                                     bool require_columns = false);
+	//! The snapshots that ended columns of the table, in order
+	vector<idx_t> GetColumnEndSnapshots(TableIndex table_id);
+	//! The snapshot of the table that the rows of the inlined table of a schema version were written for, invalid when
+	//! it cannot be told, which unresolved tells from a schema version without an inlined table. With require_columns
+	//! that throws when the inlined table has rows to flush
+	DuckLakeSnapshot GetInlinedTableSnapshot(TableIndex table_id, idx_t schema_version, DuckLakeSnapshot created,
+	                                         bool require_columns, bool &unresolved);
+	//! The newest snapshot the transaction sees the table at, invalid when there is none
+	DuckLakeSnapshot GetNewestTableSnapshot(TableIndex table_id);
+	//! The snapshots at which a column of the table began or ended, in ascending order
+	vector<idx_t> GetColumnChangeSnapshots(TableIndex table_id);
+	//! The snapshots that changed a column of the table and at which every column that was renamed before the snapshot
+	//! of a row had its stored name, newest first
+	vector<idx_t> GetRenamedColumnSnapshots(TableIndex table_id, const map<idx_t, string> &stored_names,
+	                                        idx_t written_snapshot, const vector<idx_t> &changes);
 	virtual DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! The net row count of the data files that were committed before the snapshot's next file id
 	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);
@@ -996,7 +1031,8 @@ public:
 	void MigrateRenamedFieldDefaults();
 	//! Clears the bounds that older versions may have stored in the type of a file or of an earlier column type
 	void MigrateRetypedBounds();
-	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version
+	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version, the
+	//! columns of an inlined table are those of its schema version or, without them, those its names ever had
 	virtual void MigrateInlinedDataTypes() {
 	}
 	virtual void ExecuteMigration(string migrate_query, bool allow_failures, const string &from_version,
@@ -1069,6 +1105,7 @@ protected:
 	bool CanInlineColumn(const Identifier &name, const LogicalType &type);
 	string GetInliningObstacle(const Identifier &name, const LogicalType &type);
 	string GetColumnType(const DuckLakeColumnInfo &col);
+	string GetColumnType(const LogicalType &column_type);
 	string GetColumnDefinitions(const vector<DuckLakeColumnInfo> &columns);
 	string GetKnownFilesForCleanupQuery() const;
 

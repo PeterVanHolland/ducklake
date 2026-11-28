@@ -1,0 +1,33 @@
+# name: test/sql/migration/migrated_inlined_internal_names.test
+# description: an inlined column with the name of an internal column of data files, in a DuckDB 1.5.1 migration
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.4.4, attached with DATA_INLINING_ROW_LIMIT 10, with these statements
+#   CREATE TABLE t (id INTEGER, _ducklake_internal_row_id BIGINT), ALTER TABLE t ADD COLUMN b INTEGER
+#   INSERT INTO t VALUES (1, 2, 3), CREATE TABLE u (x INTEGER)
+# and migrated by DuckDB 1.5.1, which gave the three schema versions of t the begin of its creation
+unzip data/old_ducklake/migrated_inlined_internal_names.db.gz {TEST_DIR}/migrated_inlined_internal_names.db
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_internal_names.db' AS internal_names
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_internal_names', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+# the column is one of the table, so the row tells the table with the three columns that its inlined table stores
+query III
+SELECT id, _ducklake_internal_row_id, b FROM internal_names.t
+----
+1	2	3
+
+statement ok
+CALL ducklake_flush_inlined_data('internal_names')
+
+query III
+SELECT id, _ducklake_internal_row_id, b FROM internal_names.t
+----
+1	2	3

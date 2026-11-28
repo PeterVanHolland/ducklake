@@ -1,0 +1,48 @@
+# name: test/sql/migration/migrated_inlined_widened_sqlite.test
+# description: rows inlined after their column was renamed and widened, on a SQLite catalog of a DuckDB 1.5.1 migration
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+require sqlite_scanner
+
+# written by DuckDB 1.4.4 with data inlining: t got s STRUCT(x FLOAT) and i got b INTEGER after their creation.
+# Migrated by DuckDB 1.5.1, which with inlining off renamed s to r and widened x to a DOUBLE, renamed b to c and
+# widened it to a BIGINT, then inlined a row into the inlined table of each
+unzip data/old_ducklake/migrated_inlined_widened_sqlite.db.gz {TEST_DIR}/migrated_inlined_widened_sqlite.db
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_widened_sqlite.db' AS widened
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_widened_sqlite', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'widened_meta',
+	DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+# SQLite stores the values as they were written, the narrower types of the table of the schema version would not
+# keep them, so the rows are read as before
+query I
+SELECT a FROM widened.t
+----
+1
+
+query I
+SELECT a FROM widened.i
+----
+1
+
+# and their flush is refused
+statement error
+CALL ducklake_flush_inlined_data('widened', table_name => 't')
+----
+the columns of its rows cannot be told
+
+statement error
+CALL ducklake_flush_inlined_data('widened', table_name => 'i')
+----
+the columns of its rows cannot be told
+
+query II
+SELECT (SELECT s FROM widened_meta.ducklake_inlined_data_1_2), (SELECT b FROM widened_meta.ducklake_inlined_data_2_4)
+----
+{'x': 16777217.0}	5000000000

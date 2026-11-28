@@ -1,0 +1,226 @@
+# name: test/sql/data_inlining/postgres_inlined_stored_types_flush.test
+# description: a 1.1 catalog whose inlined tables store their columns as DuckLake 0.3 did flushes them and migrates
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require json
+
+require-env DUCKLAKE_CI
+
+require-env DUCKLAKE_CONNECTION
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/postgres_inlined_stored_types_flush', DATA_INLINING_ROW_LIMIT 200, DUCKLAKE_VERSION '1.1')
+
+statement ok
+CREATE TABLE dl.t (id INTEGER, v VARCHAR, d DATE, ts TIMESTAMP, f FLOAT, s STRUCT(x INTEGER), j JSON, tz TIMESTAMPTZ)
+
+statement ok
+INSERT INTO dl.t VALUES (1, 'abc', DATE '2026-01-02', TIMESTAMP '2026-01-02 03:04:05', 1.5, {'x': 1}, '{"k": 1}',
+	TIMESTAMPTZ '2026-01-02 03:04:05+00')
+
+# o and p got a column after their creation, p with a row before it
+statement ok
+CREATE TABLE dl.o (a VARCHAR)
+
+statement ok
+ALTER TABLE dl.o ADD COLUMN b INTEGER
+
+statement ok
+INSERT INTO dl.o VALUES ('x', 1)
+
+statement ok
+CREATE TABLE dl.p (a VARCHAR)
+
+statement ok
+INSERT INTO dl.p VALUES ('first')
+
+statement ok
+ALTER TABLE dl.p ADD COLUMN b VARCHAR
+
+statement ok
+INSERT INTO dl.p VALUES ('x', 'y')
+
+statement ok
+CREATE TABLE dl.n (id INTEGER, k BIGINT)
+
+statement ok
+INSERT INTO dl.n VALUES (1, 2)
+
+query II
+SELECT table_name, schema_version FROM __ducklake_metadata_dl.ducklake_inlined_data_tables
+ORDER BY table_id, schema_version
+----
+ducklake_inlined_data_1_1	1
+ducklake_inlined_data_2_2	2
+ducklake_inlined_data_2_3	3
+ducklake_inlined_data_3_4	4
+ducklake_inlined_data_3_5	5
+ducklake_inlined_data_4_6	6
+
+# DuckLake 0.3 stored text as text, JSON, a date and a timestamp as such and a FLOAT as a double
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE ducklake_inlined_data_1_1 ALTER COLUMN v TYPE VARCHAR USING convert_from(v, ''UTF8''),
+	ALTER COLUMN d TYPE DATE USING d::DATE, ALTER COLUMN ts TYPE TIMESTAMP USING ts::TIMESTAMP,
+	ALTER COLUMN f TYPE DOUBLE PRECISION, ALTER COLUMN j TYPE JSON USING convert_from(j, ''UTF8'')::JSON,
+	ALTER COLUMN tz TYPE TIMESTAMPTZ USING tz::TIMESTAMPTZ')
+
+foreach inlined ducklake_inlined_data_2_2 ducklake_inlined_data_2_3 ducklake_inlined_data_3_4
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE {inlined} ALTER COLUMN a TYPE VARCHAR USING convert_from(a, ''UTF8'')')
+
+endloop
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE ducklake_inlined_data_3_5 ALTER COLUMN a TYPE VARCHAR USING convert_from(a, ''UTF8''),
+	ALTER COLUMN b TYPE VARCHAR USING convert_from(b, ''UTF8'')')
+
+# DuckDB 1.5.1 and older inlined a column that has the name of an internal column of data files
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE ducklake_inlined_data_4_6 RENAME COLUMN k TO _ducklake_internal_row_id')
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_column SET column_name = '_ducklake_internal_row_id' WHERE column_name = 'k'
+
+# the migration of DuckDB 1.5.1 gave every schema version of a table the begin of its creation
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 3 WHERE table_id = 2
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 6 WHERE table_id = 3
+
+query III
+SELECT table_id, begin_snapshot, schema_version FROM __ducklake_metadata_dl.ducklake_schema_versions ORDER BY ALL
+----
+1	1	1
+2	3	2
+2	3	3
+3	6	4
+3	6	5
+4	10	6
+
+statement ok
+DETACH dl
+
+# a build that took such a catalog to 1.1 left those columns, and the migration to 2.0 takes no inlined rows
+statement error
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/postgres_inlined_stored_types_flush', DATA_INLINING_ROW_LIMIT 200,
+	AUTOMATIC_MIGRATION TRUE)
+----
+holds rows and the migration to 2.0 converts no inlined rows
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/postgres_inlined_stored_types_flush', DATA_INLINING_ROW_LIMIT 200,
+	DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT string_agg(data_type, ', ' ORDER BY table_name, ordinal_position) FROM postgres_query('__ducklake_metadata_dl',
+	'SELECT table_name, data_type, ordinal_position FROM information_schema.columns
+	WHERE table_name IN (''ducklake_inlined_data_2_3'', ''ducklake_inlined_data_3_5'')
+	AND column_name IN (''a'', ''b'')')
+----
+character varying, integer, character varying, character varying
+
+# a new row is stored the way the columns are
+statement ok
+INSERT INTO dl.p VALUES ('p', 'q')
+
+query II
+SELECT * FROM postgres_query('__ducklake_metadata_dl', 'SELECT a, b FROM ducklake_inlined_data_3_5 ORDER BY a')
+----
+p	q
+x	y
+
+# the flush reads text in either storage
+statement ok
+CALL ducklake_flush_inlined_data('dl')
+
+query IIIIIIII
+SELECT id, v, d, ts, f, s.x, j, tz FROM dl.t
+----
+1	abc	2026-01-02	2026-01-02 03:04:05	1.5	1	{"k": 1}	2026-01-02 03:04:05+00
+
+query II
+SELECT a, b FROM dl.o
+----
+x	1
+
+query II
+SELECT a, b FROM dl.p ORDER BY a
+----
+first	NULL
+p	q
+x	y
+
+query II
+SELECT id, _ducklake_internal_row_id FROM dl.n
+----
+1	2
+
+# the rows are in files now
+query IIII
+SELECT (SELECT count(*) > 0 FROM ducklake_list_files('dl', 't')),
+	(SELECT count(*) > 0 FROM ducklake_list_files('dl', 'o')),
+	(SELECT count(*) > 0 FROM ducklake_list_files('dl', 'p')),
+	(SELECT count(*) > 0 FROM ducklake_list_files('dl', 'n'))
+----
+true	true	true	true
+
+# a row that is stored after the flush is text again, and a CHECKPOINT flushes it
+statement ok
+INSERT INTO dl.p VALUES ('r', 's')
+
+query II
+SELECT * FROM postgres_query('__ducklake_metadata_dl', 'SELECT a, b FROM ducklake_inlined_data_3_5')
+----
+r	s
+
+statement ok
+CHECKPOINT dl
+
+statement ok
+DETACH dl
+
+# without inlined rows the catalog migrates
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/postgres_inlined_stored_types_flush', DATA_INLINING_ROW_LIMIT 200,
+	AUTOMATIC_MIGRATION TRUE)
+
+query IIIIIIII
+SELECT id, v, d, ts, f, s.x, j, tz FROM dl.t
+----
+1	abc	2026-01-02	2026-01-02 03:04:05	1.5	1	{"k": 1}	2026-01-02 03:04:05+00
+
+query II
+SELECT a, b FROM dl.o
+----
+x	1
+
+query II
+SELECT a, b FROM dl.p ORDER BY a
+----
+first	NULL
+p	q
+r	s
+x	y
+
+query II
+SELECT id, _ducklake_internal_row_id FROM dl.n
+----
+1	2

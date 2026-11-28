@@ -1,0 +1,222 @@
+# name: test/sql/migration/migrated_inlined_renamed_expired.test
+# description: rows inlined after columns were renamed with inlining off, in a DuckDB 1.5.1 migration, after an expiry
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.4.4, attached with DATA_INLINING_ROW_LIMIT 10, with these statements
+#   CREATE TABLE t (a INTEGER), ALTER TABLE t ADD COLUMN b INTEGER
+#   CREATE TABLE s (a INTEGER, s STRUCT(x INTEGER)), ALTER TABLE s ADD COLUMN s.y INTEGER
+#   CREATE TABLE two (a INTEGER), ALTER TABLE two ADD COLUMN b INTEGER, ALTER TABLE two ADD COLUMN c INTEGER
+#   CREATE TABLE back (a INTEGER), ALTER TABLE back ADD COLUMN b INTEGER
+#   CREATE TABLE gone (a INTEGER, s STRUCT(x INTEGER)), ALTER TABLE gone ADD COLUMN s.y INTEGER
+#   CREATE TABLE later (a INTEGER), ALTER TABLE later ADD COLUMN b INTEGER
+#   CREATE TABLE cross (a INTEGER), ALTER TABLE cross ADD COLUMN b INTEGER, ALTER TABLE cross ADD COLUMN c INTEGER
+#   CREATE TABLE u (x INTEGER)
+# migrated by DuckDB 1.5.1, which then ran these with data_inlining_row_limit 0
+#   ALTER TABLE t RENAME COLUMN b TO c, ALTER TABLE s RENAME COLUMN s TO r
+#   ALTER TABLE two RENAME COLUMN b TO x, ALTER TABLE two RENAME COLUMN c TO y
+#   ALTER TABLE back RENAME COLUMN b TO c, RENAME COLUMN c TO b, RENAME COLUMN b TO d
+#   ALTER TABLE gone RENAME COLUMN s TO r, DROP COLUMN r.y, ADD COLUMN r.y INTEGER
+#   ALTER TABLE later RENAME COLUMN b TO c
+#   ALTER TABLE cross RENAME COLUMN b TO x, RENAME COLUMN c TO y, RENAME COLUMN x TO b, RENAME COLUMN b TO x
+# with the limit at 10 again it stored one row of each table by position in the inlined table from before the renames,
+# (1, 10) in t, back and later, (1, {'x': 10, 'y': 20}) in s and gone, (1, 10, 100) in two and cross. With the limit
+# at 0 once more it ran ALTER TABLE later RENAME COLUMN c TO b, and then set the limit to 10 again
+unzip data/old_ducklake/migrated_inlined_renamed_expired.db.gz {TEST_DIR}/migrated_inlined_renamed_expired.db
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_renamed_expired.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_renamed_expired', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+# the snapshot of its schema version has the columns that an inlined table stores
+query II
+SELECT a, c FROM renamed.t
+----
+1	10
+
+statement ok
+CALL ducklake_expire_snapshots('renamed', older_than => now())
+
+statement ok
+DETACH renamed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_renamed_expired.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_renamed_expired', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	DATA_INLINING_ROW_LIMIT 10)
+
+# once those snapshots are expired, the rows of a renamed column still tell when it had the stored name
+query II
+SELECT a, c FROM renamed.t
+----
+1	10
+
+# a struct that got a field before its column was renamed
+query II
+SELECT a, r FROM renamed.s
+----
+1	{'x': 10, 'y': 20}
+
+# two columns that were renamed one after the other
+query III
+SELECT a, x, y FROM renamed.two
+----
+1	10	100
+
+# a column that had the stored name twice
+query II
+SELECT a, d FROM renamed.back
+----
+1	10
+
+# a column that got its stored name back after the row
+query II
+SELECT a, b FROM renamed.later
+----
+1	10
+
+# a column that had the stored name again when the other one had lost it
+query III
+SELECT a, x, y FROM renamed.cross
+----
+1	10	100
+
+# gone never had the names s and y for the fields of its row, so it is read as before and its flush is refused
+query II
+SELECT a, r FROM renamed.gone
+----
+1	{'x': 10, 'y': NULL}
+
+statement error
+CALL ducklake_flush_inlined_data('renamed', table_name => 'gone')
+----
+the columns of its rows cannot be told
+
+query I
+SELECT s.y FROM __ducklake_metadata_renamed.ducklake_inlined_data_5_11
+----
+20
+
+foreach flushed t s two back later cross
+
+statement ok
+CALL ducklake_flush_inlined_data('renamed', table_name => '{flushed}')
+
+endloop
+
+query II
+SELECT a, c FROM renamed.t
+----
+1	10
+
+query II
+SELECT a, r FROM renamed.s
+----
+1	{'x': 10, 'y': 20}
+
+query III
+SELECT a, x, y FROM renamed.two
+----
+1	10	100
+
+query II
+SELECT a, d FROM renamed.back
+----
+1	10
+
+query II
+SELECT a, b FROM renamed.later
+----
+1	10
+
+query III
+SELECT a, x, y FROM renamed.cross
+----
+1	10	100
+
+query I
+SELECT count(*) FROM __ducklake_metadata_renamed.ducklake_inlined_data_1_2
+----
+0
+
+# written by DuckDB 1.3.2, attached with DATA_INLINING_ROW_LIMIT 10, with these statements
+#   CREATE TABLE t (a INTEGER), ALTER TABLE t ADD COLUMN b INTEGER
+#   CREATE TABLE n (a INTEGER), ALTER TABLE n ADD COLUMN b STRUCT(x INTEGER)
+#   CREATE TABLE f (a INTEGER), ALTER TABLE f ADD COLUMN s STRUCT(x INTEGER, w INTEGER)
+#   ALTER TABLE f RENAME COLUMN s.x TO d
+#   CREATE TABLE u (x INTEGER)
+# and attached again without inlining, with these for t, then for n, and the last line for f
+#   ALTER TABLE t RENAME COLUMN b TO c, RENAME COLUMN c TO b, RENAME COLUMN b TO d
+#   ALTER TABLE f RENAME COLUMN s TO r, RENAME COLUMN r.d TO e, RENAME COLUMN r.e TO d
+# DuckDB 1.3.2 ends every earlier row of a renamed column at its last rename. Migrated by DuckDB 1.4.4 and then by
+# DuckDB 1.5.1, which stored by position in the inlined table from before the renames (1, 10) in t, (1, {'x': 10})
+# in n and (1, {'d': 10, 'w': 20}) in f
+unzip data/old_ducklake/migrated_inlined_renamed_expired_v13.db.gz {TEST_DIR}/migrated_inlined_renamed_expired_v13.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_renamed_expired_v13.db' AS overlapping
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_renamed_expired_v13', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CALL ducklake_expire_snapshots('overlapping', older_than => now())
+
+statement ok
+DETACH overlapping
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_renamed_expired_v13.db' AS overlapping
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_renamed_expired_v13', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	DATA_INLINING_ROW_LIMIT 10)
+
+# the table between two of those renames has the column more than once and does not load, the one before the first
+# rename does
+query II
+SELECT a, d FROM overlapping.t
+----
+1	10
+
+# a struct between two of those renames is there more than once, and all but one have no field
+query II
+SELECT a, d FROM overlapping.n
+----
+1	{'x': 10}
+
+# the table of f that stores s with the fields d and w has the first of them under two names, so f is read as before
+# and its flush is refused
+query II
+SELECT a, r FROM overlapping.f
+----
+1	NULL
+
+statement error
+CALL ducklake_flush_inlined_data('overlapping', table_name => 'f')
+----
+the columns of its rows cannot be told
+
+query I
+SELECT s.d FROM __ducklake_metadata_overlapping.ducklake_inlined_data_3_7
+----
+10
+
+foreach flushed t n
+
+statement ok
+CALL ducklake_flush_inlined_data('overlapping', table_name => '{flushed}')
+
+endloop
+
+query II
+SELECT a, d FROM overlapping.t
+----
+1	10
+
+query II
+SELECT a, d FROM overlapping.n
+----
+1	{'x': 10}

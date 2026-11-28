@@ -47,6 +47,9 @@ public:
 	}
 	unordered_set<string> ListInlinedDeletionTables() override;
 	void MigrateInlinedDataTypes() override;
+	vector<bool> InlinedColumnsStoredAsValues(const Identifier &inlined_table_name,
+	                                          const vector<LogicalType> &types) override;
+	bool InlinedTableStoresColumnCount(const Identifier &inlined_table_name, idx_t column_count) override;
 	bool IsRetryableCommitError(const string &message) const override;
 	bool ProbeMetadataColumns() override;
 	string CommitErrorWithoutQuery(const string &message) const override;
@@ -79,6 +82,8 @@ protected:
 private:
 	//! Where the server error starts in the error of the last Execute
 	optional_idx BatchServerErrorStart(const string &message) const;
+	//! The types an inlined table stores its columns as, without the ones of the layout, empty when it is not found
+	vector<LogicalType> GetStoredInlinedTypes(const Identifier &inlined_table_name);
 
 	//! The size of the last query of Execute, which the scanner repeats in front of a server error
 	idx_t executed_query_size = 0;

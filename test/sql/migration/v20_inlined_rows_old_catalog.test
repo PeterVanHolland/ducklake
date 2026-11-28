@@ -1,0 +1,122 @@
+# name: test/sql/migration/v20_inlined_rows_old_catalog.test
+# description: a catalog older than 1.0 with inlined rows is refused with an attach that this build accepts
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# DuckDB 1.5.1 wrote both catalogs at DuckLake 0.4 with DATA_INLINING_ROW_LIMIT 10
+unzip data/old_ducklake/v04_inlined_rows.db.gz {TEST_DIR}/v20_old_rows.db
+
+unzip data/old_ducklake/v04_inlined_dropped_table.db.gz {TEST_DIR}/v20_old_dropped.db
+
+# snapshot 2 inlined the rows 1 and 2 of t, 3 the row 3, 4 deleted the row 2
+statement error
+ATTACH 'ducklake:{TEST_DIR}/v20_old_rows.db' AS dl (DATA_PATH '{TEST_DIR}/v20_old_rows_files', OVERRIDE_DATA_PATH TRUE,
+    AUTOMATIC_MIGRATION TRUE)
+----
+Attach the catalog with DUCKLAKE_VERSION '1.1' and AUTOMATIC_MIGRATION TRUE, run CALL ducklake_flush_inlined_data('dl')
+
+# the refused attach left the catalog at 0.4, which attaches only with a migration
+statement error
+ATTACH 'ducklake:{TEST_DIR}/v20_old_rows.db' AS dl (DATA_PATH '{TEST_DIR}/v20_old_rows_files', OVERRIDE_DATA_PATH TRUE)
+----
+catalog version is 0.4
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v20_old_rows.db' AS dl (DATA_PATH '{TEST_DIR}/v20_old_rows_files', OVERRIDE_DATA_PATH TRUE,
+    DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT value FROM dl.options() WHERE option_name = 'version'
+----
+1.1
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('dl')
+----
+main	t	3
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v20_old_rows.db' AS dl (DATA_PATH '{TEST_DIR}/v20_old_rows_files', OVERRIDE_DATA_PATH TRUE,
+    AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT value FROM dl.options() WHERE option_name = 'version'
+----
+2.0-dev1
+
+query II
+SELECT * FROM dl.t ORDER BY i
+----
+1	a
+3	c
+
+# the flush kept the snapshots of the inlined rows
+query II
+SELECT * FROM dl.t AT (VERSION => 3) ORDER BY i
+----
+1	a
+2	b
+3	c
+
+query IIII
+SELECT snapshot_id, change_type, i, s FROM ducklake_table_changes('dl', 'main', 't', 2, 4) ORDER BY ALL
+----
+2	insert	1	a
+2	insert	2	b
+3	insert	3	c
+4	delete	2	b
+
+statement ok
+DETACH dl
+
+# snapshot 2 inlined two rows of d, 3 dropped the table
+statement error
+ATTACH 'ducklake:{TEST_DIR}/v20_old_dropped.db' AS dl (DATA_PATH '{TEST_DIR}/v20_old_dropped_files',
+    OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+----
+Attach the catalog with DUCKLAKE_VERSION '1.1' and AUTOMATIC_MIGRATION TRUE, expire the snapshots that read the table
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v20_old_dropped.db' AS dl (DATA_PATH '{TEST_DIR}/v20_old_dropped_files',
+    OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT i FROM dl.d AT (VERSION => 2) ORDER BY i
+----
+1
+2
+
+statement ok
+DETACH dl
+
+# the catalog is stored at 1.1 now, so the refusal names an attach at that version
+statement error
+ATTACH 'ducklake:{TEST_DIR}/v20_old_dropped.db' AS dl (DATA_PATH '{TEST_DIR}/v20_old_dropped_files',
+    OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+----
+Attach the catalog at its current version, expire the snapshots that read the table with ducklake_expire_snapshots
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v20_old_dropped.db' AS dl (DATA_PATH '{TEST_DIR}/v20_old_dropped_files',
+    OVERRIDE_DATA_PATH TRUE)
+
+statement ok
+CALL ducklake_expire_snapshots('dl', older_than => now())
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v20_old_dropped.db' AS dl (DATA_PATH '{TEST_DIR}/v20_old_dropped_files',
+    OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT value FROM dl.options() WHERE option_name = 'version'
+----
+2.0-dev1

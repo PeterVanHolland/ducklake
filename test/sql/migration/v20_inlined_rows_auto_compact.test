@@ -1,0 +1,160 @@
+# name: test/sql/migration/v20_inlined_rows_auto_compact.test
+# description: the refused migration to 2.0 names the auto_compact option when it keeps the flush from a table
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+    DUCKLAKE_VERSION '1.1', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.t (i INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1), (2)
+
+statement ok
+DETACH dl
+
+# no scope has the option off, so the refusal leaves it out
+statement error
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+    AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+----
+<!REGEX>:.*auto_compact.*
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+    DATA_INLINING_ROW_LIMIT 10)
+
+# the option is off for the catalog
+statement ok
+CALL dl.set_option('auto_compact', false)
+
+statement ok
+DETACH dl
+
+statement error
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+    AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+----
+The flush skips the tables whose auto_compact option is false, set that option to true before the flush
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+    DATA_INLINING_ROW_LIMIT 10)
+
+# the flush leaves the table out while the option is off
+query III
+SELECT * FROM ducklake_flush_inlined_data('dl')
+----
+
+statement ok
+CALL dl.set_option('auto_compact', true)
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('dl')
+----
+main	t	2
+
+# the option is off for a nested schema
+statement ok
+CREATE SCHEMA dl.p
+
+statement ok
+CREATE SCHEMA dl.p.s
+
+statement ok
+CREATE TABLE dl.p.s.a (i INTEGER)
+
+statement ok
+INSERT INTO dl.p.s.a VALUES (3)
+
+statement ok
+CALL dl.set_option('auto_compact', false, schema => 'p.s')
+
+statement ok
+DETACH dl
+
+statement error
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+    AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+----
+The flush skips the tables whose auto_compact option is false, set that option to true before the flush
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+    DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CALL dl.set_option('auto_compact', true, schema => 'p.s')
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('dl')
+----
+p.s	a	1
+
+# the option is off for a table whose data file has an inlined deletion
+statement ok
+CREATE TABLE dl.f AS SELECT range AS i FROM range(100)
+
+statement ok
+DELETE FROM dl.f WHERE i = 5
+
+statement ok
+CALL dl.set_option('auto_compact', false, table_name => 'f')
+
+statement ok
+DETACH dl
+
+statement error
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+    AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+----
+The flush skips the tables whose auto_compact option is false, set that option to true before the flush
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+    DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CALL dl.set_option('auto_compact', true, table_name => 'f')
+
+statement ok
+CALL ducklake_flush_inlined_data('dl')
+
+statement ok
+DETACH dl
+
+# every table is flushed, the catalog migrates
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+    AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+query I
+SELECT value FROM dl.options() WHERE option_name = 'version'
+----
+2.0-dev1
+
+query I
+SELECT i FROM dl.t ORDER BY i
+----
+1
+2
+
+query I
+SELECT i FROM dl.p.s.a
+----
+3
+
+query I
+SELECT COUNT(*) FROM dl.f
+----
+99

@@ -1,0 +1,77 @@
+# name: test/sql/rest/rest_rolled_back_field_ids.test
+# description: A struct field that is not committed takes no column id, so client and server agree on the next one
+# group: [rest]
+
+require json
+
+include test/template/rest_setup.test_template
+
+statement ok
+ATTACH 'ducklake:rest:{rest_server}' AS dl (DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t(i INTEGER, s STRUCT(x INTEGER, y VARCHAR))
+
+statement ok
+CREATE TABLE dl.u(i INTEGER, s STRUCT(x INTEGER, y VARCHAR))
+
+# the client rolls back a new field of t
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN s.f VARCHAR
+
+statement ok
+ROLLBACK
+
+# the request of a raw client fails on the server after it added a field to u
+statement ok
+SET VARIABLE add_field = (SELECT '{"alter": {"entry_id": ' || table_id ||
+    ', "alter": {"add_field": {"column_path": ["s"], "field": {"column_name": "f", "column_type": {"id": "int32"}}}}}}'
+FROM ducklake_table_info('dl') WHERE table_name = 'u')
+
+query I
+SELECT status FROM ducklake_rest_request('{rest_server}', 'POST', '/v1/transactions/commit',
+    '{"requests": [' || getvariable('add_field') || ', ' || getvariable('add_field') || ']}')
+----
+404
+
+# a column added next to a row has the statistics of that row
+foreach tbl t u
+
+statement ok
+INSERT INTO dl.{tbl} (i) VALUES (1), (NULL)
+
+statement ok
+DELETE FROM dl.{tbl}
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO dl.{tbl} (i) VALUES (2)
+
+statement ok
+ALTER TABLE dl.{tbl} ADD COLUMN n DATE
+
+statement ok
+COMMIT
+
+statement error
+ALTER TABLE dl.{tbl} ALTER n SET NOT NULL
+----
+Cannot SET NOT NULL on column "n" - the column has NULL values
+
+endloop
+
+query III rest_db:rest_server_con
+SELECT t.table_name, c.column_id, s.contains_null
+FROM __ducklake_metadata_rest_lake.ducklake_table_column_stats s
+JOIN __ducklake_metadata_rest_lake.ducklake_column c USING (table_id, column_id)
+JOIN __ducklake_metadata_rest_lake.ducklake_table t USING (table_id)
+WHERE c.column_name = 'n'
+ORDER BY t.table_name
+----
+t	5	true
+u	5	true

@@ -72,6 +72,10 @@ CREATE TABLE lake.u (tenant INTEGER, id BIGINT, v DOUBLE)
 statement ok
 INSERT INTO lake.u SELECT 1, 1000 - i, i FROM range(10) r(i)
 
+# five of its rows end before the transaction starts
+statement ok
+DELETE FROM lake.u WHERE id > 995
+
 statement ok
 ALTER TABLE lake.u SET PARTITIONED BY (tenant)
 
@@ -92,16 +96,26 @@ SELECT count(*) FROM lake.other
 ----
 0
 
+# one more row ends after the snapshot of con1
+statement ok con2
+DELETE FROM lake.u WHERE id = 992
+
 statement ok con2
 CALL ducklake_flush_inlined_data('lake', table_name => 'u')
 
+# con1 reads the rows of its snapshot with their ends
 query II con1
 SELECT count(*), sum(id) FROM lake.u
 ----
-15	9965
+10	4975
 
 statement ok con1
 COMMIT
+
+query II
+SELECT count(*), sum(id) FROM lake.u
+----
+9	3983
 
 # once the transaction ended, the next flush drops the emptied table
 statement ok con2
@@ -119,4 +133,4 @@ WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table W
 query II
 SELECT (SELECT count(*) FROM lake.t), (SELECT count(*) FROM lake.u)
 ----
-15	20
+15	14

@@ -3320,9 +3320,14 @@ string DuckLakeMetadataManager::GenerateColumnFilterCondition(const ColumnFilter
 	if (filter_condition.empty()) {
 		return string();
 	}
-	// the file statistics of a nested column do not show its NULL values
-	if (column_filter.column_type.IsNested() && referenced_stats.count("null_count") > 0) {
-		return string();
+	if (referenced_stats.count("null_count") > 0) {
+		if (!FileStatsShowNulls(column_filter.column_type)) {
+			return string();
+		}
+		// a TIMETZ file of DuckDB 1.4 and older counts no NULL and has no bounds, unlike one that counted them
+		if (!StoredStatsShowNulls(column_filter.column_type)) {
+			referenced_stats.insert("min_value");
+		}
 	}
 
 	string null_checks;

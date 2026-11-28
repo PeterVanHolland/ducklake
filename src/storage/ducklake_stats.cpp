@@ -76,8 +76,7 @@ DuckLakeColumnStats DuckLakeColumnStats::FromGlobalStats(const LogicalType &type
                                                          const DuckLakeGlobalColumnStatsInfo &col,
                                                          bool table_has_rows) {
 	DuckLakeColumnStats stats(type);
-	// the stored statistics of a nested column do not show its NULL values
-	stats.has_null_count = col.has_contains_null && !type.IsNested();
+	stats.has_null_count = col.has_contains_null && StoredStatsShowNulls(type);
 	if (stats.has_null_count) {
 		stats.null_count = col.contains_null ? 1 : 0;
 	}

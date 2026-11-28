@@ -34,6 +34,11 @@ inline bool FileStatsShowNulls(const LogicalType &type) {
 	return !type.IsNested() && type.id() != LogicalTypeId::INTERVAL;
 }
 
+//! Stored statistics do not show the NULL values of TIMETZ either, DuckDB 1.5 and older stored none without counting
+inline bool StoredStatsShowNulls(const LogicalType &type) {
+	return FileStatsShowNulls(type) && type.id() != LogicalTypeId::TIME_TZ;
+}
+
 //! Bounds that cannot be cast are unknown
 optional<Value> TryCastStatsBound(const string &bound, const LogicalType &type);
 //! Orders two stats bounds of the same type, TIMETZ by instant as SQL does

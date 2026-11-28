@@ -1317,6 +1317,8 @@ void DuckLakeRESTCommit::InsertRows(RESTInsertRowsRequest &parameters) {
 		transaction.SetRequiresNewInlinedTable(true);
 	}
 	transaction.AppendInlinedData(table.GetTableId(), std::move(new_data));
+	// the request does not say whether the client read the table, so its insert keeps the table rule
+	transaction.MarkTableRead(table.GetTableId());
 }
 
 void DuckLakeRESTCommit::InsertFiles(RESTInsertFilesRequest &parameters) {
@@ -1331,6 +1333,8 @@ void DuckLakeRESTCommit::InsertFiles(RESTInsertFilesRequest &parameters) {
 		RemapPartition(table, file);
 	}
 	transaction.AppendFiles(table.GetTableId(), std::move(parameters.files));
+	// the request does not say whether the client read the table, so its insert keeps the table rule
+	transaction.MarkTableRead(table.GetTableId());
 }
 
 void DuckLakeRESTCommit::Configure(const RESTCommitTransactionRequest &parameters) {

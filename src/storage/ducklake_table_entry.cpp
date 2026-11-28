@@ -1,3 +1,4 @@
+#include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "common/ducklake_types.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -420,6 +421,10 @@ TableFunction DuckLakeTableEntry::GetScanFunctionById(ClientContext &context, un
 	auto function_info =
 	    DuckLakeFunctionInfo::Create(*this, transaction, transaction.GetSnapshot(lookup_info.GetAtClause()));
 	function_info->include_local_changes = !lookup_info.GetAtClause();
+	// without the optimizer hook the bind records the scan
+	if (function_info->ReadsCurrentRows() && Optimizer::OptimizerDisabled(context, OptimizerType::EXTENSION)) {
+		transaction.RecordScan(GetTableId(), function_info->scan_id);
+	}
 	function.function_info = std::move(function_info);
 	if (!lookup_info.GetAtClause() && transaction.IsDeleted(*this)) {
 		throw BinderException("Table with name %s does not exist", name);

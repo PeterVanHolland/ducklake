@@ -19,6 +19,13 @@ namespace duckdb {
 class CatalogEntry;
 class DuckLakeSchemaEntry;
 
+//! The delete filters of a table, checked against the files other transactions inserted
+struct DeleteConflictFilters {
+	bool unfiltered = false;
+	//! Per delete, a query that finds an inserted file the filters can match
+	vector<string> queries;
+};
+
 struct TransactionChangeInformation {
 	case_insensitive_map_t<reference<DuckLakeSchemaEntry>> created_schemas;
 	map<SchemaIndex, reference<DuckLakeSchemaEntry>> dropped_schemas;
@@ -39,6 +46,9 @@ struct TransactionChangeInformation {
 	set<TableIndex> tables_deleted_from;
 	//! Tables a delete predicate was evaluated against, regardless of whether any rows matched
 	set<TableIndex> tables_delete_attempted;
+	map<TableIndex, DeleteConflictFilters> delete_filters;
+	//! Tables the transaction scanned, whose rows its inserts can depend on
+	set<TableIndex> tables_read;
 	set<TableIndex> tables_inserted_inlined;
 	set<TableIndex> tables_deleted_inlined;
 	set<TableIndex> tables_flushed_inlined;

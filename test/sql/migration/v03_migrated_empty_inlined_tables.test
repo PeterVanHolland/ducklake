@@ -1,0 +1,149 @@
+# name: test/sql/migration/v03_migrated_empty_inlined_tables.test
+# description: Inlined tables without rows are not read with the columns a migration by DuckDB 1.5.1 leaves unknown
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.4.4 and migrated by DuckDB 1.5.1, each table got its row before its column b changed
+unzip data/old_ducklake/v03_migrated_empty_inlined_tables.db.gz {TEST_DIR}/v03_migrated_empty_inlined_tables.db
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v03_migrated_empty_inlined_tables.db' AS lake
+(DATA_PATH '{TEST_DIR}/v03_migrated_empty_inlined_tables', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta',
+ DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+# the migration gave every schema version of a table the snapshot of its creation
+query III
+SELECT table_id, begin_snapshot, count(*) FROM meta.ducklake_schema_versions GROUP BY ALL ORDER BY ALL
+----
+1	1	7
+2	4	5
+3	7	3
+4	10	1
+
+# the inlined tables of the schema versions that changed b hold no rows
+query III
+SELECT (SELECT count(*) FROM meta.ducklake_inlined_data_1_2), (SELECT count(*) FROM meta.ducklake_inlined_data_2_4),
+       (SELECT count(*) FROM meta.ducklake_inlined_data_3_6)
+----
+0	0	0
+
+query I
+FROM lake.dropped
+----
+1
+
+query II
+FROM lake.renamed
+----
+1	2
+
+query III
+SELECT *, typeof(b) FROM lake.retyped
+----
+1	2	BIGINT
+
+# time travel reads the columns of its snapshot
+query I
+FROM lake.dropped AT (VERSION => 3)
+----
+1
+
+query II
+SELECT a, c FROM lake.renamed AT (VERSION => 6)
+----
+1	2
+
+query III
+SELECT *, typeof(b) FROM lake.retyped AT (VERSION => 9)
+----
+1	2	BIGINT
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('lake') ORDER BY ALL
+----
+main	dropped	1
+main	renamed	1
+main	retyped	1
+
+query I
+FROM lake.dropped
+----
+1
+
+query II
+FROM lake.renamed
+----
+1	2
+
+query III
+SELECT *, typeof(b) FROM lake.retyped
+----
+1	2	BIGINT
+
+# the commit of the flush dropped the flushed tables, which the empty ones superseded
+query I
+SELECT table_name FROM meta.ducklake_inlined_data_tables ORDER BY ALL
+----
+ducklake_inlined_data_1_2
+ducklake_inlined_data_2_4
+ducklake_inlined_data_3_6
+ducklake_inlined_data_4_7
+
+statement ok
+CHECKPOINT lake
+
+# the flush wrote the inlined rows to files, the migration to 2.0 converts none
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v03_migrated_empty_inlined_tables.db' AS lake
+(DATA_PATH '{TEST_DIR}/v03_migrated_empty_inlined_tables', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query I
+FROM lake.dropped
+----
+1
+
+query II
+FROM lake.renamed
+----
+1	2
+
+query III
+SELECT *, typeof(b) FROM lake.retyped
+----
+1	2	BIGINT
+
+# the same catalog once the snapshots of those schema versions are expired
+unzip data/old_ducklake/v03_migrated_empty_inlined_tables.db.gz {TEST_DIR}/v03_migrated_empty_inlined_tables_expired.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v03_migrated_empty_inlined_tables_expired.db' AS expired
+(DATA_PATH '{TEST_DIR}/v03_migrated_empty_inlined_tables_expired', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+ AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CALL ducklake_expire_snapshots('expired', versions => [1, 2, 3, 4, 5, 6, 7, 8, 9])
+
+query II
+FROM expired.renamed
+----
+1	2
+
+query III
+SELECT *, typeof(b) FROM expired.retyped
+----
+1	2	BIGINT
+
+statement ok
+CHECKPOINT expired
+
+query I
+FROM expired.dropped
+----
+1

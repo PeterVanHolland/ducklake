@@ -532,7 +532,15 @@ public:
 	                                                                  DuckLakeSnapshot snapshot,
 	                                                                  DuckLakeFileSizeOptions options);
 	virtual idx_t GetBeginSnapshotForTable(TableIndex table_id);
-	virtual idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version);
+	//! The snapshot a schema version of a table is read at, with an invalid schema version when it is unknown
+	virtual DuckLakeSnapshot GetSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version);
+	//! The snapshots that ended columns of the table, in order
+	vector<idx_t> GetColumnEndSnapshots(TableIndex table_id);
+	//! The snapshot whose table has the columns of the inlined table of a schema version, the one that created the
+	//! table or else the one of its first row, invalid when neither has them
+	DuckLakeSnapshot GetInlinedRowsSnapshot(TableIndex table_id, idx_t schema_version, DuckLakeSnapshot created);
+	//! The newest snapshot the transaction sees the table at, invalid when there is none
+	DuckLakeSnapshot GetNewestTableSnapshot(TableIndex table_id);
 	virtual DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! The net row count of the data files that were committed before the snapshot's next file id
 	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);
@@ -674,6 +682,8 @@ public:
 	string DropInlinedTableIfEmpty(TableIndex table_id, const DuckLakeTableEntry &table);
 	//! A query that returns a row if the inlined data table holds any row
 	static string InlinedTableHasRowsQuery(const Identifier &table_name);
+	//! Whether the inlined data table is there and holds no row
+	bool InlinedTableIsEmpty(const Identifier &table_name);
 	static string DropInlinedTableSql(idx_t table_id, idx_t schema_version, const Identifier &table_name);
 	virtual Identifier GetInlinedTableQueries(DuckLakeSnapshot commit_snapshot, const DuckLakeTableInfo &table,
 	                                          vector<string> &inlined_tables, string &inlined_table_queries);

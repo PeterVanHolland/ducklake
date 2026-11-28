@@ -1,0 +1,267 @@
+# name: test/sql/migration/migrated_inlined_schema_version.test
+# description: rows inlined at a schema version that DuckDB 1.5.1 migrated between two others of the same begin
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.4.4 with rows inlined after a table got a column, migrated by DuckDB 1.5.1, which then inlined
+# more rows of each table, for s, r, w, d, e and k after it changed their columns with inlining off
+unzip data/old_ducklake/migrated_inlined_schema_version.db.gz {TEST_DIR}/migrated_inlined_schema_version.db
+
+unzip data/old_ducklake/migrated_inlined_schema_version.db.gz {TEST_DIR}/migrated_inlined_schema_version_expired.db
+
+# the rows were inlined at schema versions between the first and the last of their table, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_schema_version.db' AS between
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_schema_version', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'between_meta',
+	DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+query III
+SELECT table_id, table_name, schema_version FROM between_meta.ducklake_inlined_data_tables ORDER BY ALL
+----
+1	ducklake_inlined_data_1_1	1
+1	ducklake_inlined_data_1_2	2
+2	ducklake_inlined_data_2_3	3
+2	ducklake_inlined_data_2_4	4
+2	ducklake_inlined_data_2_5	5
+3	ducklake_inlined_data_3_10	10
+3	ducklake_inlined_data_3_8	8
+3	ducklake_inlined_data_3_9	9
+4	ducklake_inlined_data_4_11	11
+4	ducklake_inlined_data_4_12	12
+5	ducklake_inlined_data_5_13	13
+5	ducklake_inlined_data_5_14	14
+6	ducklake_inlined_data_6_15	15
+6	ducklake_inlined_data_6_16	16
+7	ducklake_inlined_data_7_20	20
+7	ducklake_inlined_data_7_21	21
+8	ducklake_inlined_data_8_22	22
+8	ducklake_inlined_data_8_25	25
+9	ducklake_inlined_data_9_26	26
+
+query II
+SELECT a, b FROM between.t ORDER BY ALL
+----
+1	10
+2	20
+
+# the snapshot that gave t its column b keeps its own catalog
+query II
+SELECT a, b FROM between.t AT (VERSION => 2)
+----
+
+statement ok
+CALL ducklake_flush_inlined_data('between', table_name => 't')
+
+query II
+SELECT a, b FROM between.t ORDER BY ALL
+----
+1	10
+2	20
+
+# n has the columns of its creation, and was NOT NULL for the first row of its inlined table
+query I
+SELECT a FROM between.n ORDER BY ALL
+----
+1
+2
+NULL
+
+statement ok
+CALL ducklake_flush_inlined_data('between', table_name => 'n')
+
+query I
+SELECT a FROM between.n ORDER BY ALL
+----
+1
+2
+NULL
+
+# the inlined table of s has the column names of its creation, the later rows went in by position
+query II
+SELECT a, b FROM between.s ORDER BY ALL
+----
+10	1
+20	2
+
+statement ok
+CALL ducklake_flush_inlined_data('between', table_name => 's')
+
+query II
+SELECT a, b FROM between.s ORDER BY ALL
+----
+10	1
+20	2
+
+# the fields of d.s, the type of e.b and the names of the columns of k changed before the first rows of their inlined
+# tables, which the tables as created still read as far as they have the columns
+query I
+SELECT s.y FROM between.d ORDER BY ALL
+----
+20
+NULL
+
+query I
+SELECT a FROM between.e WHERE b IS NULL OR b > -1 ORDER BY ALL
+----
+1
+2
+
+query I
+SELECT x FROM between.k ORDER BY ALL
+----
+20
+NULL
+
+# the fields of r.s swapped their names and w.a got wider after the first rows of their inlined tables
+query III
+SELECT s.x, s.y, b FROM between.r ORDER BY b
+----
+10	1	100
+NULL	NULL	200
+
+query II
+SELECT a, b FROM between.w ORDER BY ALL
+----
+1	10
+2	20
+
+statement ok
+CALL ducklake_flush_inlined_data('between')
+
+query III
+SELECT s.x, s.y, b FROM between.r ORDER BY b
+----
+10	1	100
+NULL	NULL	200
+
+query II
+SELECT a, b FROM between.w ORDER BY ALL
+----
+1	10
+2	20
+
+query I
+SELECT s.y FROM between.d ORDER BY ALL
+----
+20
+NULL
+
+query I
+SELECT a FROM between.e WHERE b IS NULL OR b > -1 ORDER BY ALL
+----
+1
+2
+
+query I
+SELECT x FROM between.k ORDER BY ALL
+----
+20
+NULL
+
+# the flush wrote the inlined rows to files with their columns, the migration to 2.0 converts none
+statement ok
+DETACH between
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_schema_version.db' AS between
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_schema_version', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT a, b FROM between.t ORDER BY ALL
+----
+1	10
+2	20
+
+query III
+SELECT s.x, s.y, b FROM between.r ORDER BY b
+----
+10	1	100
+NULL	NULL	200
+
+query II
+SELECT a, b FROM between.w ORDER BY ALL
+----
+1	10
+2	20
+
+# the same once the snapshots of those schema versions are expired
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_schema_version_expired.db' AS between_expired
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_schema_version_expired', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CALL ducklake_expire_snapshots('between_expired', older_than => now())
+
+query II
+SELECT a, b FROM between_expired.t ORDER BY ALL
+----
+1	10
+2	20
+
+query III
+SELECT s.x, s.y, b FROM between_expired.r ORDER BY b
+----
+10	1	100
+NULL	NULL	200
+
+query II
+SELECT a, b FROM between_expired.w ORDER BY ALL
+----
+1	10
+2	20
+
+statement ok
+CALL ducklake_flush_inlined_data('between_expired')
+
+query II
+SELECT a, b FROM between_expired.t ORDER BY ALL
+----
+1	10
+2	20
+
+query I
+SELECT a FROM between_expired.n ORDER BY ALL
+----
+1
+2
+NULL
+
+query II
+SELECT a, b FROM between_expired.s ORDER BY ALL
+----
+10	1
+20	2
+
+query III
+SELECT s.x, s.y, b FROM between_expired.r ORDER BY b
+----
+10	1	100
+NULL	NULL	200
+
+query II
+SELECT a, b FROM between_expired.w ORDER BY ALL
+----
+1	10
+2	20
+
+query I
+SELECT s.y FROM between_expired.d ORDER BY ALL
+----
+20
+NULL
+
+query I
+SELECT a FROM between_expired.e WHERE b IS NULL OR b > -1 ORDER BY ALL
+----
+1
+2
+
+query I
+SELECT x FROM between_expired.k ORDER BY ALL
+----
+20
+NULL

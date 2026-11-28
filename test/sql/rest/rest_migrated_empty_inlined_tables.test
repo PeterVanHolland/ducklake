@@ -7,9 +7,11 @@ include test/template/rest_setup.test_template
 # written by DuckDB 1.4.4 and migrated by DuckDB 1.5.1, the table got its row before its column b was renamed
 unzip data/old_ducklake/v03_migrated_empty_inlined_tables.db.gz {TEST_DIR}/rest_migrated_empty_inlined_tables.db
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok rest_db:rest_server_con
 ATTACH 'ducklake:{TEST_DIR}/rest_migrated_empty_inlined_tables.db' AS migrated
-(DATA_PATH '{TEST_DIR}/rest_migrated_empty_inlined_tables', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+(DATA_PATH '{TEST_DIR}/rest_migrated_empty_inlined_tables', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+ AUTOMATIC_MIGRATION TRUE)
 
 statement ok rest_db:rest_server_con
 SET VARIABLE migrated_listen_uri = (SELECT listen_uri FROM ducklake_rest_serve('migrated',

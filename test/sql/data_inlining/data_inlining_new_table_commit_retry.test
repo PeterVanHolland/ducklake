@@ -1,0 +1,92 @@
+# name: test/sql/data_inlining/data_inlining_new_table_commit_retry.test
+# description: a commit that creates an inlined table and inlines rows into it is retried after a concurrent commit
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
+	(DATA_PATH '{DATA_PATH}/data_inlining_new_table_commit_retry', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE lake.other (i INTEGER)
+
+statement ok
+CREATE TABLE lake.altered (i INTEGER)
+
+statement ok
+INSERT INTO lake.altered VALUES (1)
+
+# a new table with a row
+statement ok con1
+BEGIN
+
+statement ok con1
+CREATE TABLE lake.created (i INTEGER, v VARCHAR)
+
+statement ok con1
+INSERT INTO lake.created VALUES (1, 'a')
+
+statement ok con2
+INSERT INTO lake.other VALUES (1)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT * FROM lake.created
+----
+1	a
+
+# a new column with a row
+statement ok con1
+BEGIN
+
+statement ok con1
+ALTER TABLE lake.altered ADD COLUMN v VARCHAR
+
+statement ok con1
+INSERT INTO lake.altered VALUES (2, 'b')
+
+statement ok con2
+INSERT INTO lake.other VALUES (2)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT * FROM lake.altered ORDER BY i
+----
+1	NULL
+2	b
+
+# a row for a table that has its inlined table
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO lake.altered VALUES (3, 'c')
+
+statement ok con2
+INSERT INTO lake.other VALUES (3)
+
+statement ok con1
+COMMIT
+
+query II
+SELECT * FROM lake.altered ORDER BY i
+----
+1	NULL
+2	b
+3	c
+
+query I
+SELECT count(*) FROM lake.other
+----
+3

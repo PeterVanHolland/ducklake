@@ -283,7 +283,8 @@ string DuckLakeDataFlusher::GetFlushSortOrderSQL(const DuckLakeTableEntry &table
 }
 
 unique_ptr<LogicalOperator> DuckLakeDataFlusher::GenerateFlushCommand() {
-	auto table_entry = catalog.GetTableAtSchemaVersion(transaction, table_id, inlined_table.schema_version);
+	// a flush with other columns than those of the rows would lose values
+	auto table_entry = catalog.GetTableAtSchemaVersion(transaction, table_id, inlined_table.schema_version, true);
 	if (!table_entry) {
 		throw InternalException("DuckLakeDataFlusher: failed to find table entry for given schema version");
 	}

@@ -83,6 +83,8 @@ struct DuckLakeInlinedColNames {
 
 	//! Whether a user column name collides with the metadata columns written for inlining
 	bool ConflictsWith(const Identifier &name) const;
+	//! Whether a column of an inlined data table is one of its metadata columns
+	bool IsMetadataColumn(const Identifier &name) const;
 
 	//! Whether the names carry the reserved prefix, from 1.1 on
 	bool prefixed;
@@ -347,12 +349,18 @@ public:
 	virtual string GetColumnTypeInternal(const LogicalType &column_type);
 	//! Whether an inlined column of this type is stored as a blob that a read decodes
 	bool DecodesInlinedColumn(const LogicalType &type);
-	//! Reads an inlined column as its type. A flush only takes text as a blob, a read also as older versions stored it
-	string CastColumnToTarget(const string &column, const LogicalType &type, bool flush = false);
+	//! Reads an inlined column as its type, text as a blob or as older versions stored it
+	string CastColumnToTarget(const string &column, const LogicalType &type);
 	//! The columns of an inlined table that are not stored as the storage type of their type, empty without any
 	virtual vector<bool> InlinedColumnsStoredAsValues(const Identifier &inlined_table_name,
 	                                                  const vector<LogicalType> &types) {
 		return vector<bool>();
+	}
+	//! Whether a flush of this transaction takes rows of the inlined table
+	bool HasInlinedRowsToFlush(TableIndex table_id, const Identifier &inlined_table_name);
+	//! Whether an inlined table stores as many columns as a table has, where the catalog tells without a query
+	virtual bool InlinedTableStoresColumnCount(const Identifier &inlined_table_name, idx_t column_count) {
+		return true;
 	}
 	//! The inlined rows to flush with typed columns, without those this transaction deleted
 	string InlinedFlushSource(const Identifier &inlined_table_name, const DuckLakeTableEntry &table);

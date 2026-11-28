@@ -408,9 +408,8 @@ unordered_set<string> PostgresMetadataManager::ListInlinedDeletionTables() {
 	return ReadTableNames(*DuckLakeMetadataManager::Query(query));
 }
 
-vector<bool> PostgresMetadataManager::InlinedColumnsStoredAsValues(const Identifier &inlined_table_name,
-                                                                   const vector<LogicalType> &types) {
-	vector<bool> stored_as_values;
+vector<LogicalType> PostgresMetadataManager::GetStoredInlinedTypes(const Identifier &inlined_table_name) {
+	vector<LogicalType> stored_types;
 	auto &ducklake_catalog = transaction.GetCatalog();
 	auto &context = *transaction.GetConnection().context;
 	auto col_names = InlinedColNames();
@@ -423,26 +422,37 @@ vector<bool> PostgresMetadataManager::InlinedColumnsStoredAsValues(const Identif
 			return;
 		}
 		// the columns of the table, without the ones of the layout
-		vector<LogicalType> stored_types;
 		for (auto &column : table->GetColumns().Logical()) {
-			if (!col_names.ConflictsWith(column.Name())) {
+			if (!col_names.IsMetadataColumn(column.Name())) {
 				stored_types.push_back(column.Type());
 			}
 		}
-		if (stored_types.size() != types.size()) {
-			return;
-		}
-		bool found = false;
-		for (idx_t i = 0; i < types.size(); i++) {
-			// DuckLake 0.3 stored text as text and most other types as PostgreSQL has them
-			stored_as_values.push_back(stored_types[i] != UnboundType::TryParseAndDefaultBind(GetColumnType(types[i])));
-			found = found || stored_as_values.back();
-		}
-		if (!found) {
-			stored_as_values.clear();
-		}
 	});
+	return stored_types;
+}
+
+vector<bool> PostgresMetadataManager::InlinedColumnsStoredAsValues(const Identifier &inlined_table_name,
+                                                                   const vector<LogicalType> &types) {
+	vector<bool> stored_as_values;
+	auto stored_types = GetStoredInlinedTypes(inlined_table_name);
+	if (stored_types.size() != types.size()) {
+		return stored_as_values;
+	}
+	bool found = false;
+	for (idx_t i = 0; i < types.size(); i++) {
+		// DuckLake 0.3 stored text as text and most other types as PostgreSQL has them
+		stored_as_values.push_back(stored_types[i] != UnboundType::TryParseAndDefaultBind(GetColumnType(types[i])));
+		found = found || stored_as_values.back();
+	}
+	if (!found) {
+		stored_as_values.clear();
+	}
 	return stored_as_values;
+}
+
+bool PostgresMetadataManager::InlinedTableStoresColumnCount(const Identifier &inlined_table_name, idx_t column_count) {
+	auto stored_types = GetStoredInlinedTypes(inlined_table_name);
+	return stored_types.empty() || stored_types.size() == column_count;
 }
 
 void PostgresMetadataManager::MigrateInlinedDataTypes() {

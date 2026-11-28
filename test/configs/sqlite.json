@@ -140,6 +140,7 @@
         "test/sql/general/postgres_nul_byte_text.test",
         "test/sql/data_inlining/postgres_new_inlined_table_keeps_cache.test",
         "test/sql/data_inlining/postgres_inlined_stored_types.test",
+        "test/sql/data_inlining/postgres_inlined_stored_types_flush.test",
         "test/sql/data_inlining/postgres_shared_schema_version_begin_text.test",
         "test/sql/migration/postgres_inlined_types_shared_begin.test",
         "test/sql/transaction/postgres_failed_rollback_releases_transaction.test",

@@ -150,12 +150,6 @@ SELECT id, v FROM dl.t ORDER BY id
 3	NULL
 50	both
 
-# a flush only takes text in its current storage, so these rows are migrated before they are flushed
-statement error
-CALL ducklake_flush_inlined_data('dl')
-----
-decode
-
 statement ok
 DETACH dl
 

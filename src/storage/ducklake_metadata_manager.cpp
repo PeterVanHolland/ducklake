@@ -174,8 +174,11 @@ bool DuckLakeMetadataManager::CanInlineValues(DataChunk &chunk) {
 }
 
 bool DuckLakeInlinedColNames::ConflictsWith(const Identifier &name) const {
-	return name == row_id || name == begin_snapshot || name == end_snapshot || (has_branch_id && name == branch_id) ||
-	       name == "_ducklake_internal_snapshot_id" || name == "_ducklake_internal_row_id";
+	return IsMetadataColumn(name) || name == "_ducklake_internal_snapshot_id" || name == "_ducklake_internal_row_id";
+}
+
+bool DuckLakeInlinedColNames::IsMetadataColumn(const Identifier &name) const {
+	return name == row_id || name == begin_snapshot || name == end_snapshot || (has_branch_id && name == branch_id);
 }
 
 string DuckLakeMetadataManager::GetInliningObstacle(const Identifier &name, const LogicalType &type) {
@@ -2312,7 +2315,7 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 		// the columns of the table, without the ones of the layout
 		vector<idx_t> stored_columns;
 		for (idx_t column_idx = 0; column_idx < names.size(); column_idx++) {
-			if (!col_names.ConflictsWith(names[column_idx])) {
+			if (!col_names.IsMetadataColumn(names[column_idx])) {
 				stored_columns.push_back(column_idx);
 			}
 		}
@@ -2548,14 +2551,7 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 			continue;
 		}
 		// the table as created is used then, a flush through it does not keep what the rows hold
-		auto filter = InlinedFlushFilter(table_id, inlined_table_name);
-		auto flushed = Query(transaction.GetSnapshot(),
-		                     StringUtil::Format("SELECT 1 FROM %s%s {SNAPSHOT_ID} >= %s LIMIT 1",
-		                                        InlinedRowSource(inlined_table_name),
-		                                        filter.empty() ? " WHERE" : filter + " AND", begin_column));
-		flushed->ThrowIfError("Failed to get the rows of inlined data from DuckLake: ");
-		for (auto &row : *flushed) {
-			(void)row;
+		if (HasInlinedRowsToFlush(table_id, inlined_table_name)) {
 			throw InvalidInputException(
 			    "Cannot flush inlined data table \"%s\": schema version %d of its table has no begin snapshot of its "
 			    "own and the columns of its rows cannot be told",
@@ -2563,6 +2559,21 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 		}
 	}
 	return DuckLakeSnapshot();
+}
+
+bool DuckLakeMetadataManager::HasInlinedRowsToFlush(TableIndex table_id, const Identifier &inlined_table_name) {
+	auto filter = InlinedFlushFilter(table_id, inlined_table_name);
+	auto flushed =
+	    Query(transaction.GetSnapshot(),
+	          StringUtil::Format("SELECT 1 FROM %s%s {SNAPSHOT_ID} >= %s LIMIT 1", InlinedRowSource(inlined_table_name),
+	                             filter.empty() ? " WHERE" : filter + " AND",
+	                             SQLIdentifier::ToString(InlinedColNames().begin_snapshot)));
+	flushed->ThrowIfError("Failed to get the rows of inlined data from DuckLake: ");
+	for (auto &row : *flushed) {
+		(void)row;
+		return true;
+	}
+	return false;
 }
 
 //! The rows that end a column, from 2.0 on a column ends in its companion
@@ -5411,7 +5422,7 @@ bool DuckLakeMetadataManager::DecodesInlinedColumn(const LogicalType &type) {
 	return type.id() == LogicalTypeId::VARCHAR && !TypeIsNativelySupported(type);
 }
 
-string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const LogicalType &type, bool flush) {
+string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const LogicalType &type) {
 	auto &metadata_type = transaction.GetCatalog().MetadataType();
 	// a column created with an overridden type is cast back like on any other database
 	auto storage_type = DuckLakeUtil::GetInlinedStorageType(*this, type);
@@ -5421,9 +5432,7 @@ string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const L
 		return DuckLakeTypes::IsNested(type) ? "CAST(" + column + " AS " + type.ToString() + ")" : column;
 	}
 	auto expression = column;
-	if (DecodesInlinedColumn(type) && flush) {
-		expression = "decode(" + expression + ")";
-	} else if (DecodesInlinedColumn(type)) {
+	if (DecodesInlinedColumn(type)) {
 		// an older version stored the text itself, the plan keeps the branch of the stored type
 		expression = StringUtil::Format("CASE WHEN typeof(%s) = 'BLOB' THEN decode(CAST(%s AS BLOB)) ELSE CAST(%s AS "
 		                                "VARCHAR) END",
@@ -5438,6 +5447,13 @@ string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const L
 
 string DuckLakeMetadataManager::InlinedFlushSource(const Identifier &inlined_table_name,
                                                    const DuckLakeTableEntry &table) {
+	// a table that was looked up wrong lacks columns of the rows, which a flush through it would not write
+	if (!InlinedTableStoresColumnCount(inlined_table_name, table.GetColumns().PhysicalColumnCount()) &&
+	    HasInlinedRowsToFlush(table.GetTableId(), inlined_table_name)) {
+		throw InvalidInputException("Cannot flush inlined data table \"%s\": it stores other columns than its table "
+		                            "has at the schema version of its rows",
+		                            inlined_table_name.GetIdentifierName());
+	}
 	auto col_names = InlinedColNames();
 	vector<string> projection {SQLIdentifier::ToString(col_names.row_id),
 	                           SQLIdentifier::ToString(col_names.begin_snapshot),
@@ -5445,7 +5461,7 @@ string DuckLakeMetadataManager::InlinedFlushSource(const Identifier &inlined_tab
 	bool has_casts = false;
 	for (auto &col : table.GetColumns().Physical()) {
 		auto name = SQLIdentifier::ToString(col.Name());
-		auto typed_column = CastColumnToTarget(name, col.Type(), true);
+		auto typed_column = CastColumnToTarget(name, col.Type());
 		if (typed_column != name) {
 			has_casts = true;
 			typed_column += " AS " + name;

@@ -329,7 +329,8 @@ SELECT a, b, c FROM dl.y
 ----
 x	y	NULL
 
-# the row of w is read and flushed with the table as created, which has no b, so its text is kept and stops the flush
+# the row of w is read and flushed with the table as created, which has no b, so its text is kept and its flush is
+# refused
 query I
 SELECT string_agg(data_type, ', ' ORDER BY ordinal_position) FROM postgres_query('__ducklake_metadata_dl',
 	'SELECT data_type, ordinal_position FROM information_schema.columns
@@ -340,10 +341,10 @@ character varying, character varying
 statement error
 CALL ducklake_flush_inlined_data('dl', table_name => 'w')
 ----
-decode
+it stores other columns than its table has
 
 # the table at the begin of the first schema version that v has left has no b, so its text is kept too. Its row
-# tells its table, a flush of the text still needs it converted
+# tells its table, and the flush reads the text with it
 query I
 SELECT string_agg(data_type, ', ' ORDER BY ordinal_position) FROM postgres_query('__ducklake_metadata_dl',
 	'SELECT data_type, ordinal_position FROM information_schema.columns
@@ -356,10 +357,13 @@ SELECT a, b, c FROM dl.v
 ----
 x	y	NULL
 
-statement error
+statement ok
 CALL ducklake_flush_inlined_data('dl', table_name => 'v')
+
+query III
+SELECT a, b, c FROM dl.v
 ----
-decode
+x	y	NULL
 
 # a string that is written now is stored as the reader expects it
 statement ok

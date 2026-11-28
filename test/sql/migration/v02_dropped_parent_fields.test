@@ -1,0 +1,53 @@
+# name: test/sql/migration/v02_dropped_parent_fields.test
+# description: a catalog of DuckDB 1.3 loads after its migration when a transaction changed a field of a dropped struct
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.3.2, one transaction renamed t.s.a, retyped r.s.a, renamed n.s.n and n.s.n.x, added n.s.n.z and
+# k.s.c, dropped each of these structs and added a new k.s
+unzip data/old_ducklake/dropped_parent_fields_v02.db.gz {TEST_DIR}/v02_dropped_parent_fields.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v02_dropped_parent_fields.db' AS lake (
+    DATA_PATH 'data/old_ducklake/dropped_parent_fields_v02/', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta',
+    AUTOMATIC_MIGRATION TRUE)
+
+# the field rows that the transaction wrote below the dropped structs end at their begin
+query IIII
+SELECT c.column_name, c.begin_snapshot, v.end_snapshot, c.parent_column FROM meta.ducklake_column c
+LEFT JOIN meta.ducklake_column_visibility v
+    ON c.table_id = v.table_id AND c.column_id = v.column_id AND c.begin_snapshot = v.row_snapshot
+WHERE c.begin_snapshot = 11 ORDER BY c.table_id, c.column_id
+----
+a2	11	11	2
+a	11	11	2
+n2	11	11	2
+x2	11	11	4
+z	11	11	4
+c	11	11	2
+s	11	NULL	NULL
+q	11	NULL	6
+
+query IIII
+SELECT (SELECT id FROM lake.t), (SELECT id FROM lake.r), (SELECT id FROM lake.n), (SELECT id FROM lake.other)
+----
+1	1	1	7
+
+query II
+SELECT * FROM lake.k
+----
+1	NULL
+
+# the versions before the transaction
+query II
+SELECT * FROM lake.n AT (VERSION => 10)
+----
+1	{'a': 1, 'n': {'x': 2, 'y': 3}}
+
+query II
+SELECT * FROM lake.t AT (VERSION => 10)
+----
+1	{'a': 1, 'b': 2}

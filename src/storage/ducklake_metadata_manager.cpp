@@ -1317,6 +1317,29 @@ string DuckLakeMetadataManager::V2_0RowEndBackfillSql(const RowVisibilityKind &k
 	auto table = RowTableName(kind);
 	auto &end = kind.end_column;
 	if (kind.kind == "column") {
+		// a field row whose parent column is not live at its begin ends there, and so do the fields below it
+		query += StringUtil::Format(R"(
+UPDATE {METADATA_CATALOG}.%s AS ended SET %s = ended.begin_snapshot
+WHERE (ended.table_id, ended.column_id, ended.begin_snapshot) IN (
+    WITH RECURSIVE orphan AS (
+        SELECT field.table_id, field.column_id, field.begin_snapshot, field.%s AS end_snapshot
+        FROM {METADATA_CATALOG}.%s field
+        WHERE field.parent_column IS NOT NULL AND (field.%s IS NULL OR field.%s > field.begin_snapshot)
+            AND NOT EXISTS (
+                SELECT 1 FROM {METADATA_CATALOG}.%s parent
+                WHERE parent.table_id = field.table_id AND parent.column_id = field.parent_column
+                    AND parent.begin_snapshot <= field.begin_snapshot
+                    AND (parent.%s IS NULL OR parent.%s > field.begin_snapshot))
+        UNION
+        SELECT field.table_id, field.column_id, field.begin_snapshot, field.%s
+        FROM {METADATA_CATALOG}.%s field
+        JOIN orphan ON orphan.table_id = field.table_id AND orphan.column_id = field.parent_column
+            AND orphan.begin_snapshot <= field.begin_snapshot
+            AND (orphan.end_snapshot IS NULL OR orphan.end_snapshot > field.begin_snapshot)
+        WHERE field.%s IS NULL OR field.%s > field.begin_snapshot)
+    SELECT table_id, column_id, begin_snapshot FROM orphan);
+)",
+		                            table, end, end, table, end, end, table, end, end, end, table, end, end);
 		// overlapping version rows of a column end at its next change
 		auto next_change = StringUtil::Format("%s AND later.%s > ended.%s", KeyMatches(kind, "later", "ended"),
 		                                      kind.begin_column, kind.begin_column);

@@ -3429,14 +3429,18 @@ FilterSQLResult DuckLakeMetadataManager::ConvertFilterPushdownToSQL(const Filter
 	return result;
 }
 
+//! Every row of a file counts as a value or a NULL, so zero counts of both read as unknown
+static string KnownFileCountSql(const string &count, const string &prefix) {
+	return StringUtil::Format("CASE WHEN %svalue_count = 0 AND %snull_count = 0 THEN NULL ELSE %s%s END", prefix,
+	                          prefix, prefix, count);
+}
+
 string DuckLakeMetadataManager::GenerateFileColumnStatsCTEBody(const CTERequirement &req, TableIndex table_id,
                                                                const string &metadata_table_prefix) {
 	string select_list = "data_file_id";
 	for (const auto &stat : req.referenced_stats) {
 		if (stat == "value_count" || stat == "null_count") {
-			// every row of a file counts as a value or a NULL, so zero counts of both are unknown
-			select_list += StringUtil::Format(
-			    ", CASE WHEN value_count = 0 AND null_count = 0 THEN NULL ELSE %s END AS %s", stat, stat);
+			select_list += ", " + KnownFileCountSql(stat, string()) + " AS " + stat;
 			continue;
 		}
 		select_list += ", " + stat;
@@ -6125,8 +6129,9 @@ WHERE {SNAPSHOT_ID} >= %s AND ({SNAPSHOT_ID} < %s OR %s IS NULL);
 string DuckLakeMetadataManager::ReadFileColumnStatsForTableSql(TableIndex table_id, bool include_exactness,
                                                                bool file_events) {
 	string select_list = "data.data_file_id, data.record_count, data.file_size_bytes,\n"
-	                     "       stats.column_id, stats.value_count, stats.null_count, stats.min_value, "
-	                     "stats.max_value,\n"
+	                     "       stats.column_id, " +
+	                     KnownFileCountSql("value_count", "stats.") + ", " + KnownFileCountSql("null_count", "stats.") +
+	                     ", stats.min_value, stats.max_value,\n"
 	                     "       stats.contains_nan, stats.extra_stats";
 	if (include_exactness) {
 		select_list += ", stats.min_is_exact, stats.max_is_exact";
@@ -6679,7 +6684,7 @@ string DuckLakeMetadataManager::GetColumnsWithRecordedValuesSql(TableIndex table
 SELECT s.column_id
 FROM {METADATA_CATALOG}.ducklake_file_column_stats s
 JOIN %s f ON f.data_file_id = s.data_file_id AND f.table_id = %d AND f.end_snapshot IS NULL
-WHERE s.table_id = %d AND s.column_id IN (%s) AND (s.value_count IS NULL OR s.value_count > 0)
+WHERE s.table_id = %d AND s.column_id IN (%s) AND COALESCE(%s, 1) > 0
 UNION ALL
 SELECT c.column_id
 FROM {METADATA_CATALOG}.ducklake_column c
@@ -6687,7 +6692,8 @@ JOIN %s f
     ON f.table_id = c.table_id AND f.end_snapshot IS NULL
     AND COALESCE(f.partial_max, f.begin_snapshot) < c.begin_snapshot
 WHERE c.table_id = %d AND c.column_id IN (%s) AND c.initial_default IS NOT NULL)",
-	                              data_files, table_id.index, table_id.index, ids, data_files, table_id.index, ids);
+	                              data_files, table_id.index, table_id.index, ids,
+	                              KnownFileCountSql("value_count", "s."), data_files, table_id.index, ids);
 	if (column_ids.size() == 1) {
 		return sql + "\nLIMIT 1";
 	}
@@ -6712,11 +6718,11 @@ LEFT JOIN {METADATA_CATALOG}.ducklake_file_column_stats s
     ON s.data_file_id = f.data_file_id AND s.table_id = %d AND s.column_id = c.column_id
 WHERE f.table_id = %d AND f.end_snapshot IS NULL AND CASE
     WHEN s.data_file_id IS NULL THEN COALESCE(f.partial_max, f.begin_snapshot) >= c.values_from
-    ELSE s.value_count IS NULL OR s.value_count > 0
+    ELSE COALESCE(%s, 1) > 0
 END)",
 	                          StringUtil::Join(column_values, ", "),
 	                          DataFileSource(file_events, "{METADATA_CATALOG}", table_id.index), table_id.index,
-	                          table_id.index);
+	                          table_id.index, KnownFileCountSql("value_count", "s."));
 }
 
 string DuckLakeMetadataManager::GetColumnDefaultsSql(TableIndex table_id, const set<FieldIndex> &column_ids) {

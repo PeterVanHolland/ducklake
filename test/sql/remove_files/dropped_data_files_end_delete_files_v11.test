@@ -1,0 +1,81 @@
+# name: test/sql/remove_files/dropped_data_files_end_delete_files_v11.test
+# description: Dropping a whole data file ends its delete file on a catalog of version 1.1
+# group: [remove_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/dropped_data_files_end_delete_files_v11',
+    DATA_INLINING_ROW_LIMIT 0, DUCKLAKE_VERSION '1.1')
+
+statement ok
+CREATE TABLE ducklake.t (i INTEGER)
+
+statement ok
+INSERT INTO ducklake.t FROM range(10)
+
+query I
+DELETE FROM ducklake.t WHERE i = 3
+----
+1
+
+query II
+SELECT file_count, delete_file_count FROM ducklake_table_info('ducklake') WHERE table_name = 't'
+----
+1	1
+
+statement ok
+SET VARIABLE t_file = (SELECT data_file FROM ducklake_list_files('ducklake', 't'))
+
+# removing the data file ends its delete file in the same snapshot
+statement ok
+CALL ducklake_remove_data_files('ducklake', 't', getvariable('t_file'))
+
+query II
+SELECT file_count, delete_file_count FROM ducklake_table_info('ducklake') WHERE table_name = 't'
+----
+0	0
+
+query I
+SELECT count(*) FROM ducklake_list_files('ducklake', 't')
+----
+0
+
+# the delete file still applies to the snapshots before the removal
+query II
+SELECT (SELECT count(*) FROM ducklake.t AT (VERSION => 2)), (SELECT count(*) FROM ducklake.t AT (VERSION => 3))
+----
+10	9
+
+# a DELETE that empties the data file drops it the same way
+statement ok
+CREATE TABLE ducklake.u (i INTEGER)
+
+statement ok
+INSERT INTO ducklake.u FROM range(10)
+
+query I
+DELETE FROM ducklake.u WHERE i = 3
+----
+1
+
+query I
+DELETE FROM ducklake.u WHERE i <> 3
+----
+9
+
+query II
+SELECT file_count, delete_file_count FROM ducklake_table_info('ducklake') WHERE table_name = 'u'
+----
+0	0
+
+query II
+SELECT (SELECT count(*) FROM ducklake.u AT (VERSION => 7)), (SELECT count(*) FROM ducklake.u)
+----
+9	0

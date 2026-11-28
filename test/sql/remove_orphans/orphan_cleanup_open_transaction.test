@@ -65,6 +65,29 @@ SELECT list(id ORDER BY id) FROM ducklake.t
 ----
 [1, 2, 4, 20]
 
+# the statement that replaces a table of its transaction reads the files of that table
+statement ok con1
+BEGIN
+
+statement ok con1
+CREATE TABLE ducklake.replaced AS SELECT 1 AS id
+
+statement ok con1
+CREATE OR REPLACE TABLE ducklake.replaced AS SELECT * FROM ducklake.replaced
+
+query I con2
+SELECT count(*) FROM ducklake_delete_orphaned_files('ducklake', cleanup_all => true)
+----
+0
+
+statement ok con1
+COMMIT
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/orphan_cleanup_open_transaction/main/replaced/*')
+----
+1
+
 # cleanup after a flush or a rewrite in the same transaction
 statement ok
 CREATE TABLE ducklake.t2 (id INTEGER)

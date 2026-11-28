@@ -343,6 +343,8 @@ public:
 
 	map<SchemaIndex, unique_ptr<DuckLakeCatalogSet>> new_tables;
 	set<TableIndex> dropped_tables;
+	//! The tables of the transaction that were replaced, the statement that replaces a table can read from it
+	vector<unique_ptr<CatalogEntry>> replaced_tables;
 
 	map<SchemaIndex, unique_ptr<DuckLakeCatalogSet>> new_scalar_macros;
 	map<SchemaIndex, unique_ptr<DuckLakeCatalogSet>> new_table_macros;

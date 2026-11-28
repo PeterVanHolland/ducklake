@@ -1,0 +1,306 @@
+# name: test/sql/transaction/replace_table_from_itself.test
+# description: CREATE OR REPLACE TABLE reads the table it replaces when the transaction created or altered it
+# group: [transaction]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/replace_table_from_itself')
+
+foreach limit 0 10
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', {limit})
+
+foreach tbl altered defaulted twice viewed sorted renamed undone
+
+statement ok
+CREATE TABLE dl.{tbl} (id BIGINT, c DOUBLE, k INTEGER NOT NULL)
+
+statement ok
+INSERT INTO dl.{tbl} VALUES (1001, 1, 1), (1002, 2, 2), (1003, 3, 3)
+
+endloop
+
+statement ok
+CREATE VIEW dl.viewed_rows AS SELECT id, c, k FROM dl.viewed
+
+# an altered table
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.altered ADD COLUMN n INTEGER
+
+statement ok
+CREATE OR REPLACE TABLE dl.altered AS SELECT * FROM dl.altered WHERE id % 2 = 0
+
+query IIII
+SELECT * FROM dl.altered
+----
+1002	2.0	2	NULL
+
+statement ok
+COMMIT
+
+query IIII
+SELECT * FROM dl.altered
+----
+1002	2.0	2	NULL
+
+# a table the transaction created, with the rows it inserted
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE dl.created (id BIGINT)
+
+statement ok
+INSERT INTO dl.created VALUES (1), (2), (3)
+
+statement ok
+CREATE OR REPLACE TABLE dl.created AS SELECT * FROM dl.created WHERE id % 2 = 0
+
+query I
+SELECT * FROM dl.created
+----
+2
+
+statement ok
+CREATE TABLE dl.selected AS SELECT range AS id FROM range(3)
+
+statement ok
+CREATE OR REPLACE TABLE dl.selected AS SELECT * FROM dl.selected WHERE id % 2 = 0
+
+statement ok
+COMMIT
+
+query I
+SELECT * FROM dl.created
+----
+2
+
+query I
+SELECT * FROM dl.selected ORDER BY id
+----
+0
+2
+
+# the rows the transaction inserted into and deleted from an altered table
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.defaulted ALTER c SET DEFAULT 5
+
+statement ok
+INSERT INTO dl.defaulted (id, k) VALUES (1004, 4), (1006, 6)
+
+statement ok
+DELETE FROM dl.defaulted WHERE id IN (1002, 1006)
+
+statement ok
+CREATE OR REPLACE TABLE dl.defaulted AS SELECT * FROM dl.defaulted WHERE id > 1001
+
+statement ok
+COMMIT
+
+query III
+SELECT * FROM dl.defaulted ORDER BY id
+----
+1003	3.0	3
+1004	5.0	4
+
+# a table that was replaced before
+statement ok
+BEGIN
+
+statement ok
+CREATE OR REPLACE TABLE dl.twice AS SELECT * FROM dl.twice WHERE id < 1003
+
+statement ok
+CREATE OR REPLACE TABLE dl.twice AS SELECT * FROM dl.twice WHERE id % 2 = 0
+
+statement ok
+COMMIT
+
+query III
+SELECT * FROM dl.twice
+----
+1002	2.0	2
+
+# through a view
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.viewed ADD COLUMN n INTEGER
+
+statement ok
+CREATE OR REPLACE TABLE dl.viewed AS SELECT * FROM dl.viewed_rows WHERE id % 2 = 0
+
+statement ok
+COMMIT
+
+query III
+SELECT * FROM dl.viewed
+----
+1002	2.0	2
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.sorted SET SORTED BY (c DESC)
+
+statement ok
+CREATE OR REPLACE TABLE dl.sorted AS SELECT * FROM dl.sorted
+
+statement ok
+COMMIT
+
+query III
+SELECT * FROM dl.sorted ORDER BY id
+----
+1001	1.0	1
+1002	2.0	2
+1003	3.0	3
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.renamed RENAME TO renamed_again
+
+statement ok
+CREATE OR REPLACE TABLE dl.renamed_again AS SELECT * FROM dl.renamed_again WHERE id % 2 = 0
+
+statement ok
+COMMIT
+
+query III
+SELECT * FROM dl.renamed_again
+----
+1002	2.0	2
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.undone ADD COLUMN n INTEGER
+
+statement ok
+CREATE OR REPLACE TABLE dl.undone AS SELECT * FROM dl.undone WHERE id % 2 = 0
+
+statement ok
+ROLLBACK
+
+query III
+SELECT * FROM dl.undone ORDER BY id
+----
+1001	1.0	1
+1002	2.0	2
+1003	3.0	3
+
+statement ok
+DROP VIEW dl.viewed_rows
+
+foreach tbl altered created selected defaulted twice viewed sorted renamed_again undone
+
+statement ok
+DROP TABLE dl.{tbl}
+
+endloop
+
+endloop
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 0)
+
+statement ok
+CREATE TABLE dl.files (id BIGINT)
+
+statement ok
+INSERT INTO dl.files VALUES (1), (2), (3)
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.files ADD COLUMN n INTEGER
+
+statement ok
+INSERT INTO dl.files VALUES (4, 40)
+
+statement ok
+DELETE FROM dl.files WHERE id = 1
+
+statement ok
+CREATE OR REPLACE TABLE dl.files AS SELECT * FROM dl.files WHERE id % 2 = 0
+
+statement ok
+COMMIT
+
+query II
+SELECT * FROM dl.files ORDER BY id
+----
+2	NULL
+4	40
+
+# the files the transaction wrote for the replaced table are removed, the committed file and the new one stay
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/replace_table_from_itself/main/files/*')
+----
+2
+
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE dl.unwritten AS SELECT range AS id FROM range(3)
+
+statement ok
+CREATE OR REPLACE TABLE dl.unwritten AS SELECT * FROM dl.unwritten
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/replace_table_from_itself/main/unwritten/*')
+----
+0
+
+# a replaced table that is dropped leaves the transaction without changes
+query I nosort snapshots
+SELECT count(*) FROM ducklake_snapshots('dl')
+----
+
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE dl.dropped AS SELECT range AS id FROM range(3)
+
+statement ok
+CREATE OR REPLACE TABLE dl.dropped AS SELECT * FROM dl.dropped
+
+statement ok
+DROP TABLE dl.dropped
+
+statement ok
+COMMIT
+
+query I nosort snapshots
+SELECT count(*) FROM ducklake_snapshots('dl')
+----
+
+query I
+SELECT count(*) FROM glob('{DATA_PATH}/replace_table_from_itself/main/dropped/*')
+----
+0

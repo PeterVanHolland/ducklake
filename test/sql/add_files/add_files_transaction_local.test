@@ -39,3 +39,46 @@ query II
 FROM ducklake.test
 ----
 1	hello world
+
+# a table that is dropped in the transaction that created it takes the name map of its added file with it
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE ducklake.dropped(col1 INTEGER, col2 VARCHAR);
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'dropped', '{DATA_PATH}/my_file.parquet')
+
+statement ok
+DROP TABLE ducklake.dropped
+
+statement ok
+COMMIT
+
+# the statement that replaces such a table reads the added file
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE ducklake.replaced(col1 INTEGER, col2 VARCHAR);
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'replaced', '{DATA_PATH}/my_file.parquet')
+
+statement ok
+CREATE OR REPLACE TABLE ducklake.replaced AS SELECT col1 + 1 AS col1, col2 FROM ducklake.replaced
+
+statement ok
+COMMIT
+
+query II
+FROM ducklake.replaced
+----
+2	hello world
+
+# the added file is not removed with the table
+query II
+FROM ducklake.test
+----
+1	hello world

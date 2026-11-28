@@ -11,10 +11,11 @@ require parquet
 # the older row of each table in ducklake_table was ended by hand, so that the catalog loads
 unzip data/old_ducklake/v10_inlined_lost_change.db.gz {TEST_DIR}/v10_inlined_lost_change.db
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/v10_inlined_lost_change.db' AS lake
-	(DATA_PATH '{TEST_DIR}/v10_inlined_lost_change_data', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
-	DATA_INLINING_ROW_LIMIT 10)
+	(DATA_PATH '{TEST_DIR}/v10_inlined_lost_change_data', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
 
 query I
 SELECT * FROM lake.u

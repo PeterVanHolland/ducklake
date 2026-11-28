@@ -1426,6 +1426,9 @@ DuckLakeMetadataManager::V2_0InlinedCompanion DuckLakeMetadataManager::ProbeV2_0
 		payload.table = row.GetValue<Identifier>(1);
 		auto &name = payload.table.GetIdentifierName();
 		payload.present = HasMetadataColumn(name, col_names.begin_snapshot.GetIdentifierName());
+		payload.has_v1_0_names =
+		    !payload.present &&
+		    HasMetadataColumn(name, DuckLakeInlinedColNames(false).begin_snapshot.GetIdentifierName());
 		payload.has_branch_column = HasMetadataColumn(name, col_names.branch_id.GetIdentifierName());
 		payload.has_end_column = HasMetadataColumn(name, col_names.end_snapshot.GetIdentifierName());
 		// the previous layout had no branch column, so one next to the end column is a user column
@@ -1482,14 +1485,27 @@ string DuckLakeMetadataManager::V2_0InlinedRowsMessage(const string &holder, idx
 	if (dropped_table.empty()) {
 		return StringUtil::Format("Cannot migrate this DuckLake catalog: %s holds rows and the migration to 2.0 "
 		                          "converts no inlined rows. Attach the catalog at its current version, run CALL "
-		                          "ducklake_flush_inlined_data('%s') and attach again with the migration",
-		                          holder, catalog_name);
+		                          "ducklake_flush_inlined_data(%s) and attach again with the migration",
+		                          holder, SQLString(catalog_name));
 	}
 	return StringUtil::Format("Cannot migrate this DuckLake catalog: %s holds rows of the dropped table %s, kept for "
 	                          "time travel, and the migration to 2.0 converts no inlined rows. Attach the catalog at "
 	                          "its current version, expire the snapshots that read the table with "
 	                          "ducklake_expire_snapshots and attach again with the migration",
 	                          holder, dropped_table);
+}
+
+string DuckLakeMetadataManager::V2_0InlinedLegacyRowsMessage(const string &table, idx_t table_id) {
+	DuckLakeInlinedColNames old_names(false);
+	DuckLakeInlinedColNames new_names(true);
+	// the rows are reached like those of any other inlined table once the table is read at the current version
+	auto holder = StringUtil::Format(
+	    "inlined data table %s has the metadata column names of DuckLake 1.0, which this build cannot read before "
+	    "the columns %s, %s and %s of the inlined data tables that still have them are renamed to %s, %s and %s. It",
+	    table, old_names.row_id.GetIdentifierName(), old_names.begin_snapshot.GetIdentifierName(),
+	    old_names.end_snapshot.GetIdentifierName(), new_names.row_id.GetIdentifierName(),
+	    new_names.begin_snapshot.GetIdentifierName(), new_names.end_snapshot.GetIdentifierName());
+	return V2_0InlinedRowsMessage(holder, table_id);
 }
 
 bool DuckLakeMetadataManager::HasListedFileDeletions(const string &deletion_table) {
@@ -1521,6 +1537,10 @@ void DuckLakeMetadataManager::VerifyV2_0InlinedCompanion(const V2_0Layout &layou
 			                            "for table %d, this build names the inlined data tables "
 			                            "ducklake_inlined_data_<table>_<version>",
 			                            name, payload.table_id);
+		}
+		// a session of 1.0 that outlived the migration to 1.1 stores its rows under the bare names
+		if (payload.has_v1_0_names && TableHasRows(name)) {
+			throw InvalidInputException(V2_0InlinedLegacyRowsMessage(name, payload.table_id));
 		}
 		if (!payload.present) {
 			continue;
@@ -1561,7 +1581,7 @@ string DuckLakeMetadataManager::V2_0InlinedCompanionSql(const V2_0InlinedCompani
 		if (!payload.Incomplete()) {
 			continue;
 		}
-		if (payload.present) {
+		if (payload.present || payload.has_v1_0_names) {
 			query += StringUtil::Format("DROP TABLE {METADATA_CATALOG}.%s;\n", payload.table);
 		}
 		// the registration goes after its table, a stop between the two leaves one the next run removes

@@ -932,6 +932,8 @@ public:
 		Identifier table;
 		idx_t table_id = 0;
 		bool present = false;
+		//! Whether the table still has the metadata column names of 1.0, as a session of that version creates it
+		bool has_v1_0_names = false;
 		bool has_branch_column = false;
 		bool has_end_column = false;
 		//! Whether a user column of the previous layout carries the name of the branch column
@@ -965,6 +967,8 @@ public:
 	void VerifyV2_0InlinedCompanion(const V2_0Layout &layout);
 	//! The refusal of inlined rows: a flush reaches those of a live table, an expiry those of a dropped one
 	string V2_0InlinedRowsMessage(const string &holder, idx_t table_id);
+	//! The refusal of the rows of an inlined table that still has the metadata column names of 1.0
+	string V2_0InlinedLegacyRowsMessage(const string &table, idx_t table_id);
 	//! Whether a deletion table holds a deletion of a data file the catalog still lists
 	bool HasListedFileDeletions(const string &deletion_table);
 	//! The renames that move the tables of the first batch back, while nothing else of the migration ran

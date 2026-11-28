@@ -544,8 +544,12 @@ struct DuckLakeCompactionFileEntry {
 	vector<DuckLakeCompactionDeleteFileData> delete_files;
 	optional_idx max_partial_file_snapshot;
 	idx_t schema_version;
+	//! The snapshot whose table has the columns of the file, when its schema version cannot tell them
+	optional_idx schema_snapshot;
 	//! Schema version used to resolve the file's partition spec.
 	optional_idx partition_schema_version;
+	//! The snapshot whose table has the partition spec of the file, when that schema version cannot tell it
+	optional_idx partition_schema_snapshot;
 	//! Inlined file deletions stored in the metadata database rather than delete files.
 	set<idx_t> inlined_file_deletions;
 	//! Whether this file has any inlined deletions (cheap flag; set for all compaction types).

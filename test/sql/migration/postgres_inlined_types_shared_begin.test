@@ -1,0 +1,371 @@
+# name: test/sql/migration/postgres_inlined_types_shared_begin.test
+# description: the inlined type migration converts the inlined table of a schema version that shares its begin
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require-env DUCKLAKE_CI
+
+require-env DUCKLAKE_CONNECTION
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/postgres_inlined_types_shared_begin', DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.0')
+
+statement ok
+CREATE TABLE dl.o (a VARCHAR)
+
+statement ok
+ALTER TABLE dl.o ADD COLUMN b VARCHAR
+
+statement ok
+INSERT INTO dl.o VALUES ('x', 'y')
+
+# the column of r became a timestamp after its creation
+statement ok
+CREATE TABLE dl.r (c DATE)
+
+statement ok
+ALTER TABLE dl.r ALTER COLUMN c TYPE TIMESTAMP
+
+statement ok
+INSERT INTO dl.r VALUES (TIMESTAMP '2026-01-02 03:04:05')
+
+# z had a struct of the name of its text column
+statement ok
+CREATE TABLE dl.z (a INTEGER)
+
+statement ok
+ALTER TABLE dl.z ADD COLUMN s STRUCT(x INTEGER)
+
+statement ok
+ALTER TABLE dl.z DROP COLUMN s
+
+statement ok
+ALTER TABLE dl.z ADD COLUMN s VARCHAR
+
+statement ok
+INSERT INTO dl.z VALUES (1, 'x')
+
+# g had a text column of the name of its struct when it was created
+statement ok
+CREATE TABLE dl.g (k INTEGER, s VARCHAR)
+
+statement ok
+ALTER TABLE dl.g DROP COLUMN s
+
+statement ok
+ALTER TABLE dl.g ADD COLUMN s STRUCT(x INTEGER)
+
+statement ok
+ALTER TABLE dl.g ADD COLUMN b INTEGER
+
+statement ok
+INSERT INTO dl.g VALUES (1, {'x': 7}, 2)
+
+# h is like g, and the schema version of its inlined table has no begin at all
+statement ok
+CREATE TABLE dl.h (k INTEGER, s VARCHAR)
+
+statement ok
+ALTER TABLE dl.h DROP COLUMN s
+
+statement ok
+ALTER TABLE dl.h ADD COLUMN s STRUCT(x INTEGER)
+
+statement ok
+ALTER TABLE dl.h ADD COLUMN b INTEGER
+
+statement ok
+INSERT INTO dl.h VALUES (1, {'x': 7}, 2)
+
+# f has a FLOAT, which DuckLake 0.3 stored as a double, next to its text
+statement ok
+CREATE TABLE dl.f (s VARCHAR, f FLOAT)
+
+statement ok
+ALTER TABLE dl.f ADD COLUMN spare INTEGER
+
+statement ok
+ALTER TABLE dl.f DROP COLUMN spare
+
+statement ok
+INSERT INTO dl.f VALUES ('x', 1.5)
+
+# the row of y is at a schema version between two others, whose snapshots are expired below
+statement ok
+CREATE TABLE dl.y (a VARCHAR)
+
+statement ok
+ALTER TABLE dl.y ADD COLUMN b VARCHAR
+
+statement ok
+INSERT INTO dl.y VALUES ('x', 'y')
+
+statement ok
+ALTER TABLE dl.y ADD COLUMN c INTEGER
+
+# w is like y, and the schema version of its row has no begin at all
+statement ok
+CREATE TABLE dl.w (a VARCHAR)
+
+statement ok
+ALTER TABLE dl.w ADD COLUMN b VARCHAR
+
+statement ok
+INSERT INTO dl.w VALUES ('x', 'y')
+
+statement ok
+ALTER TABLE dl.w ADD COLUMN c INTEGER
+
+# v is like y, and the schema version of its creation has no begin at all
+statement ok
+CREATE TABLE dl.v (a VARCHAR)
+
+statement ok
+ALTER TABLE dl.v ADD COLUMN b VARCHAR
+
+statement ok
+INSERT INTO dl.v VALUES ('x', 'y')
+
+statement ok
+ALTER TABLE dl.v ADD COLUMN c INTEGER
+
+# DuckLake 0.3 stored text as text and a timestamp as a timestamp
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE ducklake_inlined_data_1_2 ALTER COLUMN a TYPE VARCHAR USING convert_from(a, ''UTF8''),
+	ALTER COLUMN b TYPE VARCHAR USING convert_from(b, ''UTF8'')')
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE ducklake_inlined_data_2_4 ALTER COLUMN c TYPE TIMESTAMP USING c::TIMESTAMP')
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE ducklake_inlined_data_3_8 ALTER COLUMN s TYPE VARCHAR USING convert_from(s, ''UTF8'')')
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE ducklake_inlined_data_6_19 ALTER COLUMN s TYPE VARCHAR USING convert_from(s, ''UTF8''),
+	ALTER COLUMN f TYPE DOUBLE PRECISION')
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE ducklake_inlined_data_7_21 ALTER COLUMN a TYPE VARCHAR USING convert_from(a, ''UTF8''),
+	ALTER COLUMN b TYPE VARCHAR USING convert_from(b, ''UTF8'')')
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE ducklake_inlined_data_8_24 ALTER COLUMN a TYPE VARCHAR USING convert_from(a, ''UTF8''),
+	ALTER COLUMN b TYPE VARCHAR USING convert_from(b, ''UTF8'')')
+
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE ducklake_inlined_data_9_27 ALTER COLUMN a TYPE VARCHAR USING convert_from(a, ''UTF8''),
+	ALTER COLUMN b TYPE VARCHAR USING convert_from(b, ''UTF8'')')
+
+query III
+SELECT table_id, begin_snapshot, schema_version FROM __ducklake_metadata_dl.ducklake_schema_versions ORDER BY ALL
+----
+1	1	1
+1	2	2
+2	4	3
+2	5	4
+3	7	5
+3	8	6
+3	9	7
+3	10	8
+4	12	9
+4	13	10
+4	14	11
+4	15	12
+5	17	13
+5	18	14
+5	19	15
+5	20	16
+6	22	17
+6	23	18
+6	24	19
+7	26	20
+7	27	21
+7	29	22
+8	30	23
+8	31	24
+8	33	25
+9	34	26
+9	35	27
+9	37	28
+
+# the migration of DuckDB 1.5.1 gave every schema version of a table the begin of its creation
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 1 WHERE schema_version = 2
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 4 WHERE schema_version = 4
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 7 WHERE schema_version IN (6, 7, 8)
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 12 WHERE schema_version IN (10, 11, 12)
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 22 WHERE schema_version IN (18, 19)
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 26 WHERE schema_version IN (21, 22)
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 34 WHERE schema_version IN (27, 28)
+
+# an older release did not write the row, and the migration cannot add it once the snapshot before it is expired
+statement ok
+DELETE FROM __ducklake_metadata_dl.ducklake_schema_versions WHERE schema_version IN (16, 24, 26)
+
+statement ok
+CALL ducklake_expire_snapshots('dl', versions => [19, 27, 28, 30, 33])
+
+statement ok
+DETACH dl
+
+# the column b is not a column of the table at that begin, its type is found by its name
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/postgres_inlined_types_shared_begin', DATA_INLINING_ROW_LIMIT 10, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT string_agg(data_type, ', ' ORDER BY ordinal_position) FROM postgres_query('__ducklake_metadata_dl',
+	'SELECT data_type, ordinal_position FROM information_schema.columns
+	WHERE table_name = ''ducklake_inlined_data_1_2'' AND column_name IN (''a'', ''b'')')
+----
+bytea, bytea
+
+query II
+SELECT a, b FROM dl.o
+----
+x	y
+
+# at that begin the column of r was a DATE, the stored timestamp tells which of its types it has
+query I
+SELECT data_type FROM postgres_query('__ducklake_metadata_dl',
+	'SELECT data_type FROM information_schema.columns
+	WHERE table_name = ''ducklake_inlined_data_2_4'' AND column_name = ''c''')
+----
+character varying
+
+query I
+SELECT c FROM dl.r
+----
+2026-01-02 03:04:05
+
+# the text of z could be the struct that its column once was, so its inlined tables are left alone
+query II
+SELECT table_name, data_type FROM postgres_query('__ducklake_metadata_dl',
+	'SELECT table_name, data_type FROM information_schema.columns
+	WHERE table_name IN (''ducklake_inlined_data_3_6'', ''ducklake_inlined_data_3_8'') AND column_name = ''s''
+	ORDER BY table_name')
+----
+ducklake_inlined_data_3_6	character varying
+ducklake_inlined_data_3_8	character varying
+
+query II
+SELECT a, s FROM dl.z
+----
+1	x
+
+# the struct of g is not taken for the text column that the table had at that begin
+query III
+SELECT k, s.x, b FROM dl.g
+----
+1	7	2
+
+# nor is the struct of h, whose inlined table is looked up at the creation of the table
+query I
+SELECT data_type FROM postgres_query('__ducklake_metadata_dl',
+	'SELECT data_type FROM information_schema.columns
+	WHERE table_name = ''ducklake_inlined_data_5_16'' AND column_name = ''s''')
+----
+character varying
+
+# the double of f is not a storage type of a FLOAT and is kept, its text is converted
+query I
+SELECT string_agg(data_type, ', ' ORDER BY ordinal_position) FROM postgres_query('__ducklake_metadata_dl',
+	'SELECT data_type, ordinal_position FROM information_schema.columns
+	WHERE table_name = ''ducklake_inlined_data_6_19'' AND column_name IN (''s'', ''f'')')
+----
+bytea, double precision
+
+query II
+SELECT s, f FROM dl.f
+----
+x	1.5
+
+# the text of y is converted, and without a snapshot of its schema version its row still tells its table
+query I
+SELECT string_agg(data_type, ', ' ORDER BY ordinal_position) FROM postgres_query('__ducklake_metadata_dl',
+	'SELECT data_type, ordinal_position FROM information_schema.columns
+	WHERE table_name = ''ducklake_inlined_data_7_21'' AND column_name IN (''a'', ''b'')')
+----
+bytea, bytea
+
+query III
+SELECT a, b, c FROM dl.y
+----
+x	y	NULL
+
+statement ok
+CALL ducklake_flush_inlined_data('dl', table_name => 'y')
+
+query III
+SELECT a, b, c FROM dl.y
+----
+x	y	NULL
+
+# the row of w is read and flushed with the table as created, which has no b, so its text is kept and stops the flush
+query I
+SELECT string_agg(data_type, ', ' ORDER BY ordinal_position) FROM postgres_query('__ducklake_metadata_dl',
+	'SELECT data_type, ordinal_position FROM information_schema.columns
+	WHERE table_name = ''ducklake_inlined_data_8_24'' AND column_name IN (''a'', ''b'')')
+----
+character varying, character varying
+
+statement error
+CALL ducklake_flush_inlined_data('dl', table_name => 'w')
+----
+decode
+
+# the table at the begin of the first schema version that v has left has no b, so its text is kept too. Its row
+# tells its table, a flush of the text still needs it converted
+query I
+SELECT string_agg(data_type, ', ' ORDER BY ordinal_position) FROM postgres_query('__ducklake_metadata_dl',
+	'SELECT data_type, ordinal_position FROM information_schema.columns
+	WHERE table_name = ''ducklake_inlined_data_9_27'' AND column_name IN (''a'', ''b'')')
+----
+character varying, character varying
+
+query III
+SELECT a, b, c FROM dl.v
+----
+x	y	NULL
+
+statement error
+CALL ducklake_flush_inlined_data('dl', table_name => 'v')
+----
+decode
+
+# a string that is written now is stored as the reader expects it
+statement ok
+INSERT INTO dl.o VALUES ('p', 'q')
+
+query II
+SELECT a, b FROM dl.o WHERE a = 'p'
+----
+p	q

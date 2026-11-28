@@ -1,0 +1,81 @@
+# name: test/sql/migration/migrated_inlined_renamed_struct.test
+# description: rows inlined after their struct column changed with inlining off, in a DuckDB 1.5.1 migration
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.4.4 with data inlining: w, d, n and c got a struct column or a field of one after their
+# creation. Migrated by DuckDB 1.5.1, which changed the structs with inlining off and then inlined a row into the
+# inlined table of each
+unzip data/old_ducklake/migrated_inlined_renamed_struct.db.gz {TEST_DIR}/migrated_inlined_renamed_struct.db
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_renamed_struct.db' AS renamed
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_renamed_struct', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+# s of w was renamed to r, its field x widened and renamed to X. The table of the row names the column r, the table
+# of the schema version has it as s for the same fields
+query II
+SELECT a, r.X FROM renamed.w
+----
+1	10
+
+# s of d was renamed to r and lost its field y, which the inlined table still has
+query II
+SELECT a, r.x FROM renamed.d
+----
+1	10
+
+# the fields x and y of n swapped their names, the row is stored under the names of its table
+query III
+SELECT a, s.y, s.x FROM renamed.n
+----
+1	10	20
+
+# s of c was renamed to r, and its field y replaced by another one of that name. The inlined table stores the row
+# under the names s and y, which no table has for its fields, so it is read as before and its flush is refused
+query I
+SELECT a FROM renamed.c
+----
+1
+
+statement error
+CALL ducklake_flush_inlined_data('renamed', table_name => 'c')
+----
+the columns of its rows cannot be told
+
+query II
+SELECT s.y, b FROM __ducklake_metadata_renamed.ducklake_inlined_data_4_9
+----
+20	30
+
+foreach flushed w d n
+
+statement ok
+CALL ducklake_flush_inlined_data('renamed', table_name => '{flushed}')
+
+endloop
+
+query II
+SELECT a, r.X FROM renamed.w
+----
+1	10
+
+query II
+SELECT a, r.x FROM renamed.d
+----
+1	10
+
+query III
+SELECT a, s.y, s.x FROM renamed.n
+----
+1	10	20
+
+query III
+SELECT (SELECT typeof(r) FROM renamed.w), (SELECT typeof(r) FROM renamed.d), (SELECT typeof(s) FROM renamed.n)
+----
+STRUCT(X BIGINT)	STRUCT(x INTEGER)	STRUCT(y INTEGER, x INTEGER)

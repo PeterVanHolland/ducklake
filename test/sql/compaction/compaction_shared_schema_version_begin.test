@@ -1,0 +1,187 @@
+# name: test/sql/compaction/compaction_shared_schema_version_begin.test
+# description: compaction of tables whose schema versions all begin at their creation, as DuckDB 1.5.1 migrated them
+# group: [compaction]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t (a INTEGER)
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN b INTEGER
+
+statement ok
+CREATE TABLE dl.u (a INTEGER)
+
+statement ok
+ALTER TABLE dl.u ADD COLUMN b INTEGER
+
+statement ok
+CREATE TABLE dl.h (a INTEGER, b INTEGER)
+
+statement ok
+INSERT INTO dl.h VALUES (1, 10)
+
+statement ok
+INSERT INTO dl.h VALUES (2, 20)
+
+statement ok
+ALTER TABLE dl.h DROP COLUMN b
+
+statement ok
+CREATE TABLE dl.p (a INTEGER, k INTEGER)
+
+statement ok
+ALTER TABLE dl.p SET PARTITIONED BY (k)
+
+statement ok
+INSERT INTO dl.p VALUES (1, 1)
+
+statement ok
+INSERT INTO dl.p VALUES (2, 1)
+
+statement ok
+ALTER TABLE dl.p SET PARTITIONED BY (a)
+
+# the rows of test/sql/migration/migrated_schema_versions.test on every catalog
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 1 WHERE schema_version = 2
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 3 WHERE schema_version = 4
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 5 WHERE schema_version = 6
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 9 WHERE schema_version IN (8, 9)
+
+# the rows of the first schema versions of u and p are stored after the rows of their last ones
+statement ok
+DELETE FROM __ducklake_metadata_dl.ducklake_schema_versions WHERE schema_version IN (3, 7)
+
+statement ok
+INSERT INTO __ducklake_metadata_dl.ducklake_schema_versions (begin_snapshot, schema_version, table_id)
+SELECT begin_snapshot, schema_version - 1, table_id
+FROM __ducklake_metadata_dl.ducklake_schema_versions WHERE schema_version IN (4, 8)
+
+query II
+SELECT begin_snapshot, schema_version FROM __ducklake_metadata_dl.ducklake_schema_versions ORDER BY ALL
+----
+1	1
+1	2
+3	3
+3	4
+5	5
+5	6
+9	7
+9	8
+9	9
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 0)
+
+# the files of h were written before its column ended and keep it
+query IIII
+CALL ducklake_merge_adjacent_files('dl', 'h')
+----
+main	h	2	1
+
+query I
+SELECT a FROM dl.h ORDER BY ALL
+----
+1
+2
+
+query II
+SELECT a, b FROM dl.h AT (VERSION => 7) ORDER BY ALL
+----
+1	10
+2	20
+
+statement ok
+INSERT INTO dl.t VALUES (1, 10)
+
+statement ok
+INSERT INTO dl.t VALUES (2, 20)
+
+statement ok
+ALTER TABLE dl.t DROP COLUMN a
+
+# the files of t are read at the snapshot before the drop
+query IIII
+CALL ducklake_merge_adjacent_files('dl', 't')
+----
+main	t	2	1
+
+query I
+SELECT b FROM dl.t ORDER BY ALL
+----
+10
+20
+
+# the partition of the first files of p ended before its schema versions were given one begin
+query IIII
+CALL ducklake_merge_adjacent_files('dl', 'p')
+----
+main	p	2	1
+
+statement ok
+INSERT INTO dl.p VALUES (3, 1)
+
+statement ok
+INSERT INTO dl.p VALUES (3, 2)
+
+statement ok
+ALTER TABLE dl.p SET PARTITIONED BY (k)
+
+# the partition of the next files of p ended after that
+query IIII
+CALL ducklake_merge_adjacent_files('dl', 'p')
+----
+main	p	2	1
+
+query II
+SELECT a, k FROM dl.p ORDER BY ALL
+----
+1	1
+2	1
+3	1
+3	2
+
+statement ok
+INSERT INTO dl.u VALUES (1, 10), (2, 20)
+
+statement ok
+ALTER TABLE dl.u DROP COLUMN a
+
+statement ok
+DELETE FROM dl.u WHERE b = 10
+
+statement ok
+CALL ducklake_expire_snapshots('dl', older_than => now())
+
+# the snapshot before the drop of u is expired
+query IIII
+CALL ducklake_rewrite_data_files('dl', 'u', delete_threshold => 0)
+----
+main	u	1	1
+
+query I
+SELECT b FROM dl.u
+----
+20

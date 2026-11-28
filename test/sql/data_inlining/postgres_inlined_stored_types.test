@@ -1,0 +1,227 @@
+# name: test/sql/data_inlining/postgres_inlined_stored_types.test
+# description: an attach without migration reads and writes inlined tables that store their columns as DuckLake 0.3 did
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require json
+
+require-env DUCKLAKE_CI
+
+require-env DUCKLAKE_CONNECTION
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/postgres_inlined_stored_types', DATA_INLINING_ROW_LIMIT 200, DUCKLAKE_VERSION '1.0')
+
+statement ok
+CREATE TABLE dl.t (id INTEGER, v VARCHAR, d DATE, ts TIMESTAMP, f FLOAT, s STRUCT(x INTEGER), j JSON, tz TIMESTAMPTZ)
+
+statement ok
+INSERT INTO dl.t VALUES (1, 'abc', DATE '2026-01-02', TIMESTAMP '2026-01-02 03:04:05', 1.5, {'x': 1}, '{"k": 1}',
+	TIMESTAMPTZ '2026-01-02 03:04:05+00')
+
+# DuckLake 0.3 stored text as text, JSON, a date and a timestamp as such and a FLOAT as a double
+statement ok
+CALL postgres_execute('__ducklake_metadata_dl',
+	'ALTER TABLE ducklake_inlined_data_1_1 ALTER COLUMN v TYPE VARCHAR USING convert_from(v, ''UTF8''),
+	ALTER COLUMN d TYPE DATE USING d::DATE, ALTER COLUMN ts TYPE TIMESTAMP USING ts::TIMESTAMP,
+	ALTER COLUMN f TYPE DOUBLE PRECISION, ALTER COLUMN j TYPE JSON USING convert_from(j, ''UTF8'')::JSON,
+	ALTER COLUMN tz TYPE TIMESTAMPTZ USING tz::TIMESTAMPTZ')
+
+statement ok
+DETACH dl
+
+# an attach that does not migrate finds those columns
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/postgres_inlined_stored_types', DATA_INLINING_ROW_LIMIT 200, DUCKLAKE_VERSION '1.0')
+
+query IIIIIIII
+SELECT id, v, d, ts, f, s.x, j, tz FROM dl.t
+----
+1	abc	2026-01-02	2026-01-02 03:04:05	1.5	1	{"k": 1}	2026-01-02 03:04:05+00
+
+query I
+SELECT id FROM dl.t WHERE v = 'abc' AND j->>'k' = '1'
+----
+1
+
+# a new row is stored the way the columns are
+statement ok
+INSERT INTO dl.t VALUES (2, 'né\w', DATE '2026-02-03', TIMESTAMP '2026-02-03 04:05:06', 2.5, {'x': 2}, '{"k": 2}',
+	TIMESTAMPTZ '2026-02-03 04:05:06+00'), (3, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+
+query IIIIIIII
+SELECT id, v, d, ts, f, s.x, j, tz FROM dl.t ORDER BY id
+----
+1	abc	2026-01-02	2026-01-02 03:04:05	1.5	1	{"k": 1}	2026-01-02 03:04:05+00
+2	né\w	2026-02-03	2026-02-03 04:05:06	2.5	2	{"k": 2}	2026-02-03 04:05:06+00
+3	NULL	NULL	NULL	NULL	NULL	NULL	NULL
+
+query I
+SELECT id FROM dl.t WHERE v = 'né\w'
+----
+2
+
+query IIIIIII
+SELECT * FROM postgres_query('__ducklake_metadata_dl',
+	'SELECT v, d::TEXT, ts::TEXT, f::TEXT, s, j::TEXT, (tz AT TIME ZONE ''UTC'')::TEXT
+	FROM ducklake_inlined_data_1_1 ORDER BY id')
+----
+abc	2026-01-02	2026-01-02 03:04:05	1.5	{'x': 1}	{"k": 1}	2026-01-02 03:04:05
+né\w	2026-02-03	2026-02-03 04:05:06	2.5	{'x': 2}	{"k": 2}	2026-02-03 04:05:06
+NULL	NULL	NULL	NULL	NULL	NULL	NULL
+
+# so are the rows of an insert that is not sent with the commit
+statement ok
+INSERT INTO dl.t SELECT 100 + i, 'r' || i, DATE '2026-03-04', TIMESTAMP '2026-03-04 05:06:07', 3.5, {'x': i},
+	'{"k": 3}', TIMESTAMPTZ '2026-03-04 05:06:07+00'
+FROM range(150) r(i)
+
+query III
+SELECT count(*), count(DISTINCT v), max(v) FROM dl.t WHERE id >= 100
+----
+150	150	r99
+
+query I
+SELECT count(*) FROM postgres_query('__ducklake_metadata_dl',
+	'SELECT 1 FROM ducklake_inlined_data_1_1 WHERE v LIKE ''r%'' AND d = DATE ''2026-03-04''')
+----
+150
+
+# a commit writes this table next to one in the current storage, also when it is retried
+statement ok
+CREATE TABLE dl.n (id INTEGER, v VARCHAR)
+
+statement ok
+INSERT INTO dl.n VALUES (0, 'n0')
+
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO dl.t (id, v) VALUES (50, 'both')
+
+statement ok con1
+INSERT INTO dl.n VALUES (1, 'n1')
+
+statement ok con2
+INSERT INTO dl.n VALUES (2, 'n2')
+
+statement ok con1
+COMMIT
+
+query II
+SELECT (SELECT v FROM dl.t WHERE id = 50), (SELECT string_agg(v, ' ' ORDER BY id) FROM dl.n)
+----
+both	n0 n1 n2
+
+query II
+SELECT * FROM postgres_query('__ducklake_metadata_dl',
+	'SELECT v, pg_typeof(v)::TEXT FROM ducklake_inlined_data_1_1 WHERE id = 50')
+----
+both	character varying
+
+# the change feed reads the text too
+query III
+SELECT id, v, change_type FROM dl.table_changes('t', 3, 3) ORDER BY id
+----
+2	né\w	insert
+3	NULL	insert
+
+statement ok
+UPDATE dl.t SET v = 'upd' WHERE id = 1
+
+statement ok
+DELETE FROM dl.t WHERE id >= 100
+
+query II
+SELECT id, v FROM dl.t ORDER BY id
+----
+1	upd
+2	né\w
+3	NULL
+50	both
+
+# a flush only takes text in its current storage, so these rows are migrated before they are flushed
+statement error
+CALL ducklake_flush_inlined_data('dl')
+----
+decode
+
+statement ok
+DETACH dl
+
+# the migration to 1.1 converts the columns with every value, the double is no storage type of a FLOAT and stays
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/postgres_inlined_stored_types', DATA_INLINING_ROW_LIMIT 200, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT string_agg(data_type, ', ' ORDER BY ordinal_position) FROM postgres_query('__ducklake_metadata_dl',
+	'SELECT data_type, ordinal_position FROM information_schema.columns
+	WHERE table_name = ''ducklake_inlined_data_1_1'' AND column_name IN (''v'', ''d'', ''ts'', ''f'', ''j'', ''tz'')')
+----
+bytea, character varying, character varying, double precision, bytea, character varying
+
+query IIIIIIII
+SELECT id, v, d, ts, f, s.x, j, tz FROM dl.t ORDER BY id
+----
+1	upd	2026-01-02	2026-01-02 03:04:05	1.5	1	{"k": 1}	2026-01-02 03:04:05+00
+2	né\w	2026-02-03	2026-02-03 04:05:06	2.5	2	{"k": 2}	2026-02-03 04:05:06+00
+3	NULL	NULL	NULL	NULL	NULL	NULL	NULL
+50	both	NULL	NULL	NULL	NULL	NULL	NULL
+
+statement ok
+INSERT INTO dl.t VALUES (4, 'new', DATE '2026-04-05', TIMESTAMP '2026-04-05 06:07:08', 4.5, {'x': 4}, '{"k": 4}',
+	TIMESTAMPTZ '2026-04-05 06:07:08+00')
+
+statement ok
+CALL ducklake_flush_inlined_data('dl')
+
+query IIIIIIII
+SELECT id, v, d, ts, f, s.x, j, tz FROM dl.t ORDER BY id
+----
+1	upd	2026-01-02	2026-01-02 03:04:05	1.5	1	{"k": 1}	2026-01-02 03:04:05+00
+2	né\w	2026-02-03	2026-02-03 04:05:06	2.5	2	{"k": 2}	2026-02-03 04:05:06+00
+3	NULL	NULL	NULL	NULL	NULL	NULL	NULL
+4	new	2026-04-05	2026-04-05 06:07:08	4.5	4	{"k": 4}	2026-04-05 06:07:08+00
+50	both	NULL	NULL	NULL	NULL	NULL	NULL
+
+# the flush wrote the inlined rows to files, the migration to 2.0 converts none
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/postgres_inlined_stored_types', DATA_INLINING_ROW_LIMIT 200, AUTOMATIC_MIGRATION TRUE)
+
+query IIIIIIII
+SELECT id, v, d, ts, f, s.x, j, tz FROM dl.t ORDER BY id
+----
+1	upd	2026-01-02	2026-01-02 03:04:05	1.5	1	{"k": 1}	2026-01-02 03:04:05+00
+2	né\w	2026-02-03	2026-02-03 04:05:06	2.5	2	{"k": 2}	2026-02-03 04:05:06+00
+3	NULL	NULL	NULL	NULL	NULL	NULL	NULL
+4	new	2026-04-05	2026-04-05 06:07:08	4.5	4	{"k": 4}	2026-04-05 06:07:08+00
+50	both	NULL	NULL	NULL	NULL	NULL	NULL
+
+# an insert finds the columns of a 2.0 inlined table in the current storage
+statement ok
+INSERT INTO dl.t (id, v) VALUES (5, 'five')
+
+statement ok
+INSERT INTO dl.t (id, v) VALUES (6, 'né\w')
+
+query II
+SELECT id, v FROM dl.t WHERE id IN (5, 6) ORDER BY id
+----
+5	five
+6	né\w

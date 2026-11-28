@@ -64,6 +64,8 @@ public:
 	}
 	const DuckLakeFieldId &GetChildByIndex(idx_t index) const;
 	optional_ptr<const DuckLakeFieldId> GetChildByName(const Identifier &name) const;
+	//! Whether the other field has the type and the (nested) field ids of this one
+	bool SameFields(const DuckLakeFieldId &other) const;
 	unique_ptr<DuckLakeFieldId> Copy() const;
 	unique_ptr<ParsedExpression> GetDefault() const;
 	//! The value of this field in rows written before it existed

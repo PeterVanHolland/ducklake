@@ -1,0 +1,242 @@
+# name: test/sql/data_inlining/data_inlining_shared_begin_struct_fields.test
+# description: struct rows inlined at schema versions that share a begin are read under the names of their fields
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 10)
+
+# s of h gets the field y after the creation and is renamed with inlining off
+statement ok
+CREATE TABLE dl.h (a INTEGER, s STRUCT(x INTEGER))
+
+statement ok
+ALTER TABLE dl.h ADD COLUMN s.y INTEGER
+
+statement ok
+INSERT INTO dl.h VALUES (1, {'x': 10, 'y': 20})
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 0)
+
+statement ok
+ALTER TABLE dl.h RENAME COLUMN s TO r
+
+query III
+SELECT table_id, begin_snapshot, schema_version FROM __ducklake_metadata_dl.ducklake_schema_versions ORDER BY ALL
+----
+1	1	1
+1	2	2
+1	4	3
+
+# the migration of DuckDB 1.5.1 gave every schema version of a table the begin of its creation
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 1 WHERE table_id = 1
+
+# a release wrote the row after the rename, by position into the inlined table that was there
+statement ok
+CREATE OR REPLACE TEMPORARY TABLE moved AS FROM __ducklake_metadata_dl.ducklake_inlined_data_1_2
+
+statement ok
+DELETE FROM __ducklake_metadata_dl.ducklake_inlined_data_1_2
+
+statement ok
+INSERT INTO __ducklake_metadata_dl.ducklake_inlined_data_1_2
+SELECT * REPLACE (4 AS begin_snapshot) FROM moved AS r(row_id, begin_snapshot)
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 10)
+
+# the table as created has the names of the inlined table without the field y, the table of the schema version has it
+query III
+SELECT a, r.x, r.y FROM dl.h
+----
+1	10	20
+
+statement ok
+CALL ducklake_flush_inlined_data('dl', table_name => 'h')
+
+query III
+SELECT a, r.x, r.y FROM dl.h
+----
+1	10	20
+
+# a DuckDB catalog stores a struct with the names of its fields
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/{BASE_TEST_NAME}_native.db' AS native
+	(DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_native_files', DATA_INLINING_ROW_LIMIT 10)
+
+# the row of k keeps the name x that s.z had when its transaction began
+statement ok
+CREATE TABLE native.k (s STRUCT(x INTEGER, y INTEGER))
+
+statement ok
+INSERT INTO native.k VALUES ({'x': 10, 'y': 20})
+
+# s of e is added after the creation and loses its field y before the row
+statement ok
+CREATE TABLE native.e (a INTEGER)
+
+statement ok
+ALTER TABLE native.e ADD COLUMN s STRUCT(x INTEGER, y INTEGER)
+
+statement ok
+INSERT INTO native.e VALUES (1, {'x': 10, 'y': NULL})
+
+# s of o is renamed and its field x widened before the row
+statement ok
+CREATE TABLE native.o (a INTEGER)
+
+statement ok
+ALTER TABLE native.o ADD COLUMN s STRUCT(x INTEGER, y INTEGER)
+
+statement ok
+INSERT INTO native.o VALUES (1, {'x': 10, 'y': 20})
+
+statement ok
+CALL native.set_option('data_inlining_row_limit', 0)
+
+statement ok
+ALTER TABLE native.k RENAME COLUMN s.x TO z
+
+statement ok
+ALTER TABLE native.e DROP COLUMN s.y
+
+statement ok
+ALTER TABLE native.o RENAME COLUMN s TO r
+
+statement ok
+ALTER TABLE native.o ALTER COLUMN r TYPE STRUCT(x BIGINT, y INTEGER)
+
+query III
+SELECT table_id, begin_snapshot, schema_version FROM __ducklake_metadata_native.ducklake_schema_versions ORDER BY ALL
+----
+1	1	1
+1	9	6
+2	3	2
+2	4	3
+2	10	7
+3	6	4
+3	7	5
+3	11	8
+3	12	9
+
+statement ok
+UPDATE __ducklake_metadata_native.ducklake_schema_versions SET begin_snapshot = 1 WHERE table_id = 1
+
+statement ok
+UPDATE __ducklake_metadata_native.ducklake_schema_versions SET begin_snapshot = 3 WHERE table_id = 2
+
+statement ok
+UPDATE __ducklake_metadata_native.ducklake_schema_versions SET begin_snapshot = 6 WHERE table_id = 3
+
+statement ok
+CREATE OR REPLACE TEMPORARY TABLE moved AS FROM __ducklake_metadata_native.ducklake_inlined_data_1_1
+
+statement ok
+DELETE FROM __ducklake_metadata_native.ducklake_inlined_data_1_1
+
+statement ok
+INSERT INTO __ducklake_metadata_native.ducklake_inlined_data_1_1
+SELECT * REPLACE (9 AS begin_snapshot) FROM moved AS r(row_id, begin_snapshot)
+
+statement ok
+CREATE OR REPLACE TEMPORARY TABLE moved AS FROM __ducklake_metadata_native.ducklake_inlined_data_2_3
+
+statement ok
+DELETE FROM __ducklake_metadata_native.ducklake_inlined_data_2_3
+
+statement ok
+INSERT INTO __ducklake_metadata_native.ducklake_inlined_data_2_3
+SELECT * REPLACE (10 AS begin_snapshot) FROM moved AS r(row_id, begin_snapshot)
+
+statement ok
+CREATE OR REPLACE TEMPORARY TABLE moved AS FROM __ducklake_metadata_native.ducklake_inlined_data_3_5
+
+statement ok
+DELETE FROM __ducklake_metadata_native.ducklake_inlined_data_3_5
+
+statement ok
+INSERT INTO __ducklake_metadata_native.ducklake_inlined_data_3_5
+SELECT * REPLACE (12 AS begin_snapshot) FROM moved AS r(row_id, begin_snapshot)
+
+# a release that changed a struct with an ALTER stores its fields in the order of that statement
+statement ok
+ALTER TABLE __ducklake_metadata_native.ducklake_inlined_data_3_5 ALTER COLUMN s TYPE STRUCT(y INTEGER, x INTEGER)
+
+statement ok
+DETACH native
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/{BASE_TEST_NAME}_native.db' AS native
+	(DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_native_files', DATA_INLINING_ROW_LIMIT 10)
+
+# the table of the row has no field x, the table as created has it for the field that is z now
+query II
+SELECT s.z, s.y FROM native.k
+----
+10	20
+
+query II
+SELECT a, s.x FROM native.e
+----
+1	10
+
+# the table of the schema version of o has the fields that are stored, in its own order
+query III
+SELECT a, r.x, r.y FROM native.o
+----
+1	10	20
+
+statement ok
+CALL ducklake_flush_inlined_data('native', table_name => 'o')
+
+query IIII
+SELECT a, r.x, r.y, typeof(r) FROM native.o
+----
+1	10	20	STRUCT(x BIGINT, y INTEGER)
+
+statement ok
+CALL ducklake_expire_snapshots('native', older_than => now())
+
+statement ok
+DETACH native
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/{BASE_TEST_NAME}_native.db' AS native
+	(DATA_PATH '{TEST_DIR}/{BASE_TEST_NAME}_native_files', DATA_INLINING_ROW_LIMIT 10)
+
+# no other table of e has the columns of the inlined table then, the table of the row reads the fields it stored
+query II
+SELECT a, s.x FROM native.e
+----
+1	10
+
+foreach flushed k e
+
+statement ok
+CALL ducklake_flush_inlined_data('native', table_name => '{flushed}')
+
+endloop
+
+query II
+SELECT s.z, s.y FROM native.k
+----
+10	20
+
+query II
+SELECT a, s.x FROM native.e
+----
+1	10

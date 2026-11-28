@@ -1,0 +1,242 @@
+# name: test/sql/migration/migrated_schema_versions.test
+# description: a table altered before DuckDB 1.5.1 migrated its schema versions keeps the values of its added column
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.4.4 and migrated by DuckDB 1.5.1, which began every schema version of t at its creation
+unzip data/old_ducklake/migrated_schema_versions.db.gz {TEST_DIR}/migrated_schema_versions_merge.db
+
+unzip data/old_ducklake/migrated_schema_versions.db.gz {TEST_DIR}/migrated_schema_versions_expired.db
+
+unzip data/old_ducklake/migrated_schema_versions.db.gz {TEST_DIR}/migrated_schema_versions_rewrite.db
+
+unzip data/old_ducklake/migrated_schema_versions.db.gz {TEST_DIR}/migrated_schema_versions_inlined.db
+
+unzip data/old_ducklake/migrated_schema_versions.db.gz {TEST_DIR}/migrated_schema_versions_flushed.db
+
+unzip data/old_ducklake/migrated_schema_versions.db.gz {TEST_DIR}/migrated_schema_versions_dropped.db
+
+unzip data/old_ducklake/migrated_schema_versions.db.gz {TEST_DIR}/migrated_schema_versions_pinned.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_merge.db' AS merged
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_merge', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'merged_meta',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 0)
+
+# t was created at snapshot 1 and got b at snapshot 2, u was created at snapshot 3
+query III
+SELECT table_id, begin_snapshot, schema_version FROM merged_meta.ducklake_schema_versions ORDER BY ALL
+----
+1	1	1
+1	1	2
+1	1	3
+2	3	3
+
+statement ok
+INSERT INTO merged.t VALUES (1, 10)
+
+statement ok
+INSERT INTO merged.t VALUES (2, 20)
+
+# the files keep their schema version, the latest schema lost a column of theirs
+statement ok
+ALTER TABLE merged.t DROP COLUMN a
+
+query IIII
+CALL ducklake_merge_adjacent_files('merged', 't')
+----
+main	t	2	1
+
+query I
+SELECT b FROM merged.t ORDER BY ALL
+----
+10
+20
+
+# the merged file holds the columns of the table before the drop
+query II
+SELECT a, b FROM merged.t AT (VERSION => 5) ORDER BY ALL
+----
+1	10
+2	20
+
+# the same merge once every snapshot of the files' schema version is expired
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_expired.db' AS expired
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_expired', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'expired_meta',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+INSERT INTO expired.t VALUES (1, 10)
+
+statement ok
+INSERT INTO expired.t VALUES (2, 20)
+
+statement ok
+ALTER TABLE expired.t DROP COLUMN a
+
+statement ok
+CALL ducklake_expire_snapshots('expired', older_than => now())
+
+query I
+SELECT min(snapshot_id) FROM expired_meta.ducklake_snapshot
+----
+6
+
+query IIII
+CALL ducklake_merge_adjacent_files('expired', 't')
+----
+main	t	2	1
+
+query I
+SELECT b FROM expired.t ORDER BY ALL
+----
+10
+20
+
+# a rewrite reads the file at its schema version, which no snapshot has once another table is created
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_rewrite.db' AS rewritten
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_rewrite', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+INSERT INTO rewritten.t VALUES (1, 10), (2, 20)
+
+statement ok
+CREATE TABLE rewritten.other (i INTEGER)
+
+statement ok
+DELETE FROM rewritten.t WHERE a = 1
+
+query IIII
+CALL ducklake_rewrite_data_files('rewritten', 't', delete_threshold => 0)
+----
+main	t	1	1
+
+query II
+SELECT a, b FROM rewritten.t
+----
+2	20
+
+# an inlined table is registered at the last schema version of its table
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_inlined.db' AS inlined
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_inlined', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+INSERT INTO inlined.t VALUES (7, 70)
+
+statement ok
+CREATE TABLE inlined.other (i INTEGER)
+
+statement ok
+DETACH inlined
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_inlined.db' AS inlined
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_inlined', OVERRIDE_DATA_PATH TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+query II
+SELECT a, b FROM inlined.t
+----
+7	70
+
+statement ok
+CALL ducklake_flush_inlined_data('inlined', table_name => 't')
+
+query II
+SELECT a, b FROM inlined.t
+----
+7	70
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog flushes the ones of such an inlined table first
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_flushed.db' AS flushed
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_flushed', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+INSERT INTO flushed.t VALUES (7, 70)
+
+statement ok
+CREATE TABLE flushed.other (i INTEGER)
+
+statement ok
+DETACH flushed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_flushed.db' AS flushed
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_flushed', OVERRIDE_DATA_PATH TRUE)
+
+query II
+SELECT a, b FROM flushed.t
+----
+7	70
+
+statement ok
+CALL ducklake_flush_inlined_data('flushed')
+
+statement ok
+DETACH flushed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_flushed.db' AS flushed
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_flushed', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT a, b FROM flushed.t
+----
+7	70
+
+# the inlined rows of a dropped table are read at the snapshot before the drop
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_dropped.db' AS dropped
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_dropped', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+INSERT INTO dropped.t VALUES (7, 70)
+
+statement ok
+DROP TABLE dropped.t
+
+statement ok
+DETACH dropped
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_dropped.db' AS dropped
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_dropped', OVERRIDE_DATA_PATH TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+query II
+SELECT a, b FROM dropped.t AT (VERSION => 4)
+----
+7	70
+
+# a catalog opened at the snapshot that created t reads the inlined rows of a later one with their columns
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_pinned.db' AS pinned
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_pinned', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+INSERT INTO pinned.t VALUES (7, 70)
+
+statement ok
+CREATE TABLE pinned.other (i INTEGER)
+
+statement ok
+DETACH pinned
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_pinned.db' AS pinned
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_pinned', OVERRIDE_DATA_PATH TRUE, SNAPSHOT_VERSION 1)
+
+query II
+SELECT a, b FROM pinned.t AT (VERSION => 5)
+----
+7	70

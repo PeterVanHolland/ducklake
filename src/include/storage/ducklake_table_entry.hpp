@@ -283,4 +283,7 @@ private:
 	unique_ptr<ColumnChangeInfo> changed_fields;
 };
 
+//! Whether a column of the source type can be changed to the target type
+bool TypePromotionIsAllowed(const LogicalType &source, const LogicalType &target);
+
 } // namespace duckdb

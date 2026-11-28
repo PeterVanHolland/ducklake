@@ -358,6 +358,7 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 		if (tag.key == "version" && !metadata_manager.IsRemote()) {
 			// every check passed, migrate the catalog to the target version
 			migrating = catalog_version < target_version || !missing_step.empty();
+			auto stored_version = catalog_version;
 			if (catalog_version == DuckLakeVersion::V0_1) {
 				metadata_manager.MigrateV01();
 				catalog_version = DuckLakeVersion::V0_2;
@@ -392,11 +393,11 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				catalog_version = DuckLakeVersion::V1_1;
 			}
 			if (catalog_version == DuckLakeVersion::V1_1 && catalog_version < target_version) {
-				metadata_manager.MigrateV11(false);
+				metadata_manager.MigrateV11(false, stored_version);
 				catalog_version = DuckLakeVersion::V2_0_DEV1;
 			}
 			if (catalog_version == DuckLakeVersion::V2_0_DEV1 && !missing_step.empty()) {
-				metadata_manager.MigrateV11(true);
+				metadata_manager.MigrateV11(true, stored_version);
 			}
 			migrating = false;
 			if (catalog_version != target_version) {

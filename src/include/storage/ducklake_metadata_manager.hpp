@@ -839,8 +839,8 @@ public:
 	virtual void MigrateV03(bool allow_failures = false);
 	virtual void MigrateV04();
 	virtual void MigrateV10(bool from_dev1 = false);
-	//! Completes the steps of 2.0 the catalog lacks
-	virtual void MigrateV11(bool from_dev1 = false);
+	//! Completes the steps of 2.0 the catalog lacks, stored_version is its version before the attach
+	virtual void MigrateV11(bool from_dev1, DuckLakeVersion stored_version);
 	//! A file table moved aside with the range columns it still holds
 	struct V2_0RangeTable {
 		string name;
@@ -962,15 +962,15 @@ public:
 	};
 	V2_0Layout ProbeV2_0Layout();
 	//! Refuses the names and columns the inlined step cannot take and the inlined rows it does not convert
-	void VerifyV2_0InlinedCompanion(const V2_0Layout &layout);
+	void VerifyV2_0InlinedCompanion(const V2_0Layout &layout, DuckLakeVersion stored_version);
 	//! The refusal of inlined rows: a flush reaches those of a live table, an expiry those of a dropped one
-	string V2_0InlinedRowsMessage(const string &holder, idx_t table_id);
+	string V2_0InlinedRowsMessage(const string &holder, idx_t table_id, DuckLakeVersion stored_version);
 	//! Whether a deletion table holds a deletion of a data file the catalog still lists
 	bool HasListedFileDeletions(const string &deletion_table);
 	//! The renames that move the tables of the first batch back, while nothing else of the migration ran
 	string V2_0RenameUndoSql(const V2_0Layout &layout);
-	//! Verifies the inlined step, a refused catalog gets its first batch moved back and attaches at its version
-	void VerifyV2_0InlinedStep(const V2_0Layout &layout, const string &from_version);
+	//! Verifies the inlined step, a refused catalog gets its first batch moved back and attaches as before the step
+	void VerifyV2_0InlinedStep(const V2_0Layout &layout, const string &from_version, DuckLakeVersion stored_version);
 	//! The first step of 2.0 the catalog lacks, empty for a complete layout
 	string MissingV2_0Step();
 	bool HasMetadataColumn(const string &table, const string &column);

@@ -1,0 +1,164 @@
+# name: test/sql/migration/v20_inlined_legacy_names.test
+# description: the migration to 2.0-dev1 refuses an inlined data table with rows that still has the column names of 1.0
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta',
+    DUCKLAKE_VERSION '1.1', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.n (a INTEGER)
+
+statement ok
+INSERT INTO dl.n VALUES (2)
+
+statement ok
+CREATE TABLE dl.e (a INTEGER)
+
+# a column of b has one of the old names, its inlined table has the names of 1.1
+statement ok
+CREATE TABLE dl.b (a INTEGER, begin_snapshot INTEGER)
+
+statement ok
+INSERT INTO dl.b VALUES (3, 4)
+
+# a session of 1.0 that stays attached after the migration to 1.1 names the columns of its inlined tables as 1.0 did
+foreach inlined ducklake_inlined_data_1_1 ducklake_inlined_data_2_2
+
+statement ok
+ALTER TABLE meta.{inlined} RENAME COLUMN _ducklake_row_id TO row_id
+
+statement ok
+ALTER TABLE meta.{inlined} RENAME COLUMN _ducklake_begin_snapshot TO begin_snapshot
+
+statement ok
+ALTER TABLE meta.{inlined} RENAME COLUMN _ducklake_end_snapshot TO end_snapshot
+
+endloop
+
+statement ok
+DETACH dl
+
+# the migration converts no inlined rows, the ones under the old names included
+statement error
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta',
+    AUTOMATIC_MIGRATION TRUE)
+----
+inlined data table ducklake_inlined_data_1_1 has the metadata column names of DuckLake 1.0
+
+# the flush that the refusal asks for names the catalog as a string
+statement error
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS "it's" (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+    METADATA_CATALOG 'meta', AUTOMATIC_MIGRATION TRUE)
+----
+run CALL ducklake_flush_inlined_data('it''s') and attach again with the migration
+
+# the catalog stays at 1.1 and keeps the table with its row
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta',
+    DUCKLAKE_VERSION '1.1')
+
+query I
+SELECT value FROM dl.options() WHERE option_name = 'version'
+----
+1.1
+
+query II
+SELECT table_name, schema_version FROM meta.ducklake_inlined_data_tables ORDER BY ALL
+----
+ducklake_inlined_data_1_1	1
+ducklake_inlined_data_2_2	2
+ducklake_inlined_data_3_3	3
+
+query IIII
+SELECT row_id, begin_snapshot, end_snapshot, a FROM meta.ducklake_inlined_data_1_1
+----
+0	2	NULL	2
+
+# under the names of 1.1 the row is read and flushed
+statement ok
+ALTER TABLE meta.ducklake_inlined_data_1_1 RENAME COLUMN row_id TO _ducklake_row_id
+
+statement ok
+ALTER TABLE meta.ducklake_inlined_data_1_1 RENAME COLUMN begin_snapshot TO _ducklake_begin_snapshot
+
+statement ok
+ALTER TABLE meta.ducklake_inlined_data_1_1 RENAME COLUMN end_snapshot TO _ducklake_end_snapshot
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta',
+    DUCKLAKE_VERSION '1.1')
+
+query I
+SELECT a FROM dl.n
+----
+2
+
+statement ok
+CALL ducklake_flush_inlined_data('dl', table_name => 'n')
+
+statement ok
+DETACH dl
+
+# the rows of b are refused as those of any table of 1.1
+statement error
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta',
+    AUTOMATIC_MIGRATION TRUE)
+----
+inlined data table ducklake_inlined_data_3_3 holds rows and the migration to 2.0 converts no inlined rows
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta',
+    DUCKLAKE_VERSION '1.1')
+
+statement ok
+CALL ducklake_flush_inlined_data('dl', table_name => 'b')
+
+statement ok
+DETACH dl
+
+# an empty table under the old names goes with its registration
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta',
+    AUTOMATIC_MIGRATION TRUE)
+
+query I
+SELECT value FROM dl.options() WHERE option_name = 'version'
+----
+2.0-dev1
+
+query I
+SELECT a FROM dl.n
+----
+2
+
+query II
+SELECT a, begin_snapshot FROM dl.b
+----
+3	4
+
+query I
+SELECT count(*) FROM dl.e
+----
+0
+
+query I
+SELECT count(*) FROM meta.ducklake_inlined_data_tables
+----
+0
+
+statement error
+SELECT * FROM meta.ducklake_inlined_data_2_2
+----
+Table with name ducklake_inlined_data_2_2 does not exist

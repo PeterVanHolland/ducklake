@@ -1,5 +1,5 @@
 # name: test/sql/migration/v20_inlined_rows_old_catalog.test
-# description: a catalog older than 1.0 with inlined rows is refused with an attach that this build accepts
+# description: a catalog below 1.1 with inlined rows is refused with the attach that takes it to 1.1 first
 # group: [migration]
 
 require ducklake
@@ -120,3 +120,53 @@ query I
 SELECT value FROM dl.options() WHERE option_name = 'version'
 ----
 2.0-dev1
+
+statement ok
+DETACH dl
+
+# a 1.0 catalog attaches at its version, the steps to 1.1 still come before the flush
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v20_old_v10.db' AS dl (DATA_PATH '{TEST_DIR}/v20_old_v10_files', DUCKLAKE_VERSION '1.0',
+    DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.t (i INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1), (2)
+
+statement ok
+DETACH dl
+
+statement error
+ATTACH 'ducklake:{TEST_DIR}/v20_old_v10.db' AS dl (DATA_PATH '{TEST_DIR}/v20_old_v10_files', AUTOMATIC_MIGRATION TRUE,
+    DATA_INLINING_ROW_LIMIT 10)
+----
+Attach the catalog with DUCKLAKE_VERSION '1.1' and AUTOMATIC_MIGRATION TRUE, run CALL ducklake_flush_inlined_data('dl')
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v20_old_v10.db' AS dl (DATA_PATH '{TEST_DIR}/v20_old_v10_files', DUCKLAKE_VERSION '1.1',
+    AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('dl')
+----
+main	t	2
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v20_old_v10.db' AS dl (DATA_PATH '{TEST_DIR}/v20_old_v10_files', AUTOMATIC_MIGRATION TRUE,
+    DATA_INLINING_ROW_LIMIT 10)
+
+query I
+SELECT value FROM dl.options() WHERE option_name = 'version'
+----
+2.0-dev1
+
+query I
+SELECT i FROM dl.t ORDER BY i
+----
+1
+2

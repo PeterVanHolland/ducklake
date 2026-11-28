@@ -1454,8 +1454,8 @@ static optional_idx InlinedDeletionTableId(const string &name) {
 string DuckLakeMetadataManager::V2_0InlinedRowsMessage(const string &holder, idx_t table_id,
                                                        DuckLakeVersion stored_version) {
 	auto catalog_name = transaction.GetCatalog().GetName().GetIdentifierName();
-	// a version that this build does not support attaches only with a migration
-	string attach = DuckLakeVersionIsSupported(stored_version)
+	// a catalog below 1.1 takes the steps to 1.1 first, they repair the inlined tables of older releases
+	string attach = stored_version >= DuckLakeVersion::V1_1
 	                    ? "Attach the catalog at its current version"
 	                    : "Attach the catalog with DUCKLAKE_VERSION '1.1' and AUTOMATIC_MIGRATION TRUE";
 	// a table is live by its open range in 1.x and by its companion once the catalog rows are converted

@@ -229,7 +229,8 @@
         "test/sql/sorted_table/data_inlining_flush_sorted_macro_expression_transaction.test",
         "test/sql/sorted_table/data_inlining_flush_sorted_reset.test",
         "test/sql/sorted_table/data_inlining_flush_sorted_transaction_renamed.test",
-        "test/sql/data_inlining/flush_renamed_table_name.test"
+        "test/sql/data_inlining/flush_renamed_table_name.test",
+        "test/sql/delete/full_file_delete_stats_flush.test"
       ]
     },
     {

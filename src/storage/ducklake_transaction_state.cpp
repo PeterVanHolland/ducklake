@@ -128,6 +128,16 @@ bool DuckLakeTransactionState::InlinedTableFlushed(const Identifier &table_name)
 	                   });
 }
 
+bool DuckLakeTransactionState::InlinedDataFlushed(TableIndex table_id) const {
+	return std::any_of(flushed_inlined_tables.begin(), flushed_inlined_tables.end(),
+	                   [&](const FlushedInlinedTableInfo &flushed_table) {
+		                   idx_t schema_version;
+		                   auto flushed_id = DuckLakeMetadataManager::ParseInlinedTableName(
+		                       flushed_table.inlined_table.table_name.GetIdentifierName(), schema_version);
+		                   return flushed_id.IsValid() && flushed_id.GetIndex() == table_id.index;
+	                   });
+}
+
 namespace {
 
 template <class T, class MAP>
@@ -1547,6 +1557,10 @@ string DuckLakeTransactionState::UpdateStatsForDroppedFiles(
 bool DuckLakeTransactionState::TryRecomputeGlobalStatsAfterDrop(TableIndex table_id, idx_t dropped_row_count,
                                                                 const DuckLakeCommitContext &context,
                                                                 DuckLakeTableStats &result) {
+	if (InlinedDataFlushed(table_id)) {
+		// neither the files nor the inlined tables read below hold the rows of a flushed inlined table
+		return false;
+	}
 	set<DataFileIndex> dropped_ids;
 	for (auto &entry : dropped_files) {
 		dropped_ids.insert(entry.second);

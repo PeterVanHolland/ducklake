@@ -330,6 +330,8 @@ public:
 
 	bool SchemaChangesMade() const;
 	bool InlinedTableFlushed(const Identifier &table_name) const;
+	//! Whether the transaction flushed inlined data of the table
+	bool InlinedDataFlushed(TableIndex table_id) const;
 
 public:
 	DatabaseInstance &db;

@@ -1,0 +1,123 @@
+# name: test/sql/delete/full_file_delete_stats_flush.test
+# description: Table stats after a transaction flushes inlined rows and deletes every row of a data file
+# group: [delete]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS lake
+	(DATA_PATH '{DATA_PATH}/full_file_delete_stats_flush', DATA_INLINING_ROW_LIMIT 10)
+
+# the transaction deletes the rows it flushed
+statement ok
+CREATE TABLE lake.a (id BIGINT)
+
+statement ok
+INSERT INTO lake.a VALUES (1000), (1001), (1002), (1003), (1004)
+
+statement ok
+INSERT INTO lake.a SELECT 100 + range FROM range(40)
+
+statement ok
+INSERT INTO lake.a SELECT 2000 + range FROM range(40)
+
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'a')
+
+statement ok
+DELETE FROM lake.a WHERE id < 1500
+
+statement ok
+COMMIT
+
+query III
+SELECT min(id), max(id), count(*) FROM lake.a
+----
+2000	2039	40
+
+# the rows the transaction deleted stay inlined until the next flush
+statement ok
+CREATE TABLE lake.b (id BIGINT)
+
+statement ok
+INSERT INTO lake.b VALUES (1000), (1001), (1002), (1003), (1004)
+
+statement ok
+INSERT INTO lake.b SELECT 100 + range FROM range(40)
+
+statement ok
+INSERT INTO lake.b SELECT 2000 + range FROM range(40)
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM lake.b WHERE id < 1500
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'b')
+
+statement ok
+COMMIT
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'b')
+
+query III
+SELECT min(id), max(id), count(*) FROM lake.b
+----
+2000	2039	40
+
+# the flushed rows stay and are the only ones left
+statement ok
+CREATE TABLE lake.c (id BIGINT)
+
+statement ok
+INSERT INTO lake.c SELECT 100 + range FROM range(40)
+
+statement ok
+INSERT INTO lake.c VALUES (1000), (1001), (1002), (1003), (1004)
+
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_flush_inlined_data('lake', table_name => 'c')
+
+statement ok
+DELETE FROM lake.c WHERE id < 500
+
+statement ok
+COMMIT
+
+statement ok
+INSERT INTO lake.c SELECT 3000 + range FROM range(50)
+
+# the bounds of the table cover the flushed rows
+query I
+SELECT count(*) FROM lake.c WHERE id < 2000
+----
+5
+
+query III
+SELECT min(id), max(id), count(*) FROM lake.c
+----
+1000	3049	55
+
+# a delete that drops the flushed file finds its rows in the row count
+statement ok
+DELETE FROM lake.c
+
+query I
+SELECT count(*) FROM lake.c
+----
+0

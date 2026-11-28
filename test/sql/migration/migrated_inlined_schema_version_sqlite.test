@@ -124,7 +124,8 @@ unzip data/old_ducklake/migrated_inlined_schema_version_sqlite.db.gz {TEST_DIR}/
 statement ok
 ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite_expired.db' AS between_expired
 	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite_expired', OVERRIDE_DATA_PATH TRUE,
-	METADATA_CATALOG 'between_expired_meta', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+	METADATA_CATALOG 'between_expired_meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
 
 statement ok
 CALL ducklake_expire_snapshots('between_expired', older_than => now())
@@ -135,7 +136,7 @@ DETACH between_expired
 statement ok
 ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite_expired.db' AS between_expired
 	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite_expired', OVERRIDE_DATA_PATH TRUE,
-	METADATA_CATALOG 'between_expired_meta', DATA_INLINING_ROW_LIMIT 10)
+	METADATA_CATALOG 'between_expired_meta', DUCKLAKE_VERSION '1.1', DATA_INLINING_ROW_LIMIT 10)
 
 # a flush with the table as created would lose the values of b, so it is refused and the rows stay
 statement error

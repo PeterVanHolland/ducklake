@@ -10,10 +10,11 @@ require parquet
 # NOT NULL with inlining off and then inlined (NULL, 10)
 unzip data/old_ducklake/migrated_inlined_not_null_dropped.db.gz {TEST_DIR}/migrated_inlined_not_null_dropped.db
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_not_null_dropped.db' AS between
-	(DATA_PATH '{TEST_DIR}/migrated_inlined_not_null_dropped', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
-	DATA_INLINING_ROW_LIMIT 10)
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_not_null_dropped', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
 
 # the row went into the inlined table of the schema version that added b, the table of the row has no NOT NULL
 query II

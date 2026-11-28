@@ -1,0 +1,69 @@
+# name: test/sql/migration/sqlite_inlined_rows_after_column_change.test
+# description: A row with a value that cannot be read in the type of the column it was inlined into stays where it is
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+require sqlite_scanner
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/sqlite_inlined_rows_after_column_change.db' AS dl (DATA_PATH '{DATA_PATH}/sqlite_inlined_rows_after_column_change', DUCKLAKE_VERSION '1.0', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.t (a INTEGER, b DOUBLE)
+
+statement ok
+INSERT INTO dl.t VALUES (1, 1.5), (5, 5.5)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 0)
+
+statement ok
+ALTER TABLE dl.t DROP COLUMN b
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN b VARCHAR
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10)
+
+statement ok
+CREATE TABLE dl.other (x INTEGER)
+
+# SQLite keeps a text in a DOUBLE column, where an older release wrote the next row by position
+statement ok
+SET GLOBAL sqlite_all_varchar = true
+
+statement ok
+INSERT INTO __ducklake_metadata_dl.ducklake_inlined_data_1_1 VALUES (2, 5, NULL, 3, 'hello')
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_stats SET record_count = 3, next_row_id = 3 WHERE table_id = 1
+
+statement ok
+SET GLOBAL sqlite_all_varchar = false
+
+statement ok
+DETACH dl
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/sqlite_inlined_rows_after_column_change.db' AS dl (
+    DATA_PATH '{DATA_PATH}/sqlite_inlined_rows_after_column_change', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE,
+    DATA_INLINING_ROW_LIMIT 10)
+
+query II
+SELECT * FROM dl.t ORDER BY a
+----
+1	NULL
+3	NULL
+5	NULL
+
+query I
+SELECT table_name FROM __ducklake_metadata_dl.ducklake_inlined_data_tables WHERE table_id = 1
+----
+ducklake_inlined_data_1_1

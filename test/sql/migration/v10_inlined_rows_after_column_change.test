@@ -1,0 +1,326 @@
+# name: test/sql/migration/v10_inlined_rows_after_column_change.test
+# description: The migration moves rows that were inlined by position after a column change to the inlined table of their schema version
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/v10_inlined_rows_after_column_change', DUCKLAKE_VERSION '1.0', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.t (a INTEGER, b VARCHAR, c INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1, 'x', 100), (5, 'y', 500)
+
+foreach tbl s r d e m
+
+statement ok
+CREATE TABLE dl.{tbl} (a INTEGER, b INTEGER)
+
+statement ok
+INSERT INTO dl.{tbl} VALUES (1, 10), (5, 50)
+
+endloop
+
+statement ok
+CREATE TABLE dl.n (a INTEGER, b STRUCT(x INTEGER))
+
+statement ok
+INSERT INTO dl.n VALUES (1, {'x': 10}), (5, {'x': 50})
+
+statement ok
+CREATE TABLE dl.q (a INTEGER, b STRUCT(x INTEGER, y INTEGER))
+
+statement ok
+INSERT INTO dl.q VALUES (1, {'x': 10, 'y': 100}), (5, {'x': 50, 'y': 500})
+
+statement ok
+CREATE TABLE dl.l (a INTEGER, b DOUBLE)
+
+statement ok
+INSERT INTO dl.l VALUES (1, 1.5), (5, 5.5)
+
+statement ok
+CREATE TABLE dl.k (a INTEGER, b INTEGER)
+
+statement ok
+INSERT INTO dl.k VALUES (1, 10), (5, 50)
+
+# with inlining off a column change registers no inlined table
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 0)
+
+statement ok
+ALTER TABLE dl.t DROP COLUMN b
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN d INTEGER
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE dl.s DROP COLUMN b
+
+statement ok
+ALTER TABLE dl.s ADD COLUMN b INTEGER
+
+statement ok
+COMMIT
+
+statement ok
+ALTER TABLE dl.r RENAME COLUMN b TO bb
+
+statement ok
+ALTER TABLE dl.d DROP COLUMN a
+
+statement ok
+ALTER TABLE dl.e DROP COLUMN b
+
+statement ok
+ALTER TABLE dl.e ADD COLUMN b INTEGER
+
+statement ok
+ALTER TABLE dl.m DROP COLUMN b
+
+statement ok
+ALTER TABLE dl.m ADD COLUMN b INTEGER
+
+statement ok
+ALTER TABLE dl.n DROP COLUMN b
+
+statement ok
+ALTER TABLE dl.n ADD COLUMN b STRUCT(y INTEGER)
+
+statement ok
+ALTER TABLE dl.q DROP COLUMN b.y
+
+statement ok
+ALTER TABLE dl.q ADD COLUMN b.y INTEGER
+
+statement ok
+ALTER TABLE dl.l DROP COLUMN b
+
+statement ok
+ALTER TABLE dl.l ADD COLUMN b BIGINT
+
+statement ok
+ALTER TABLE dl.k DROP COLUMN b
+
+statement ok
+ALTER TABLE dl.k ADD COLUMN _ducklake_begin_snapshot INTEGER
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10)
+
+statement ok
+CREATE TABLE dl.other (x INTEGER)
+
+query I
+SELECT max(snapshot_id) FROM __ducklake_metadata_dl.ducklake_snapshot
+----
+38
+
+# an older release wrote the next row of a table by position into its newest inlined table
+statement ok
+INSERT INTO __ducklake_metadata_dl.ducklake_inlined_data_1_1 VALUES (2, 38, NULL, 3, '300', 7)
+
+foreach inlined ducklake_inlined_data_2_2 ducklake_inlined_data_3_3 ducklake_inlined_data_4_4 ducklake_inlined_data_10_10
+
+statement ok
+INSERT INTO __ducklake_metadata_dl.{inlined} VALUES (2, 38, NULL, 3, 30)
+
+endloop
+
+statement ok
+INSERT INTO __ducklake_metadata_dl.ducklake_inlined_data_7_7 VALUES (2, 38, NULL, 3, NULL)
+
+statement ok
+INSERT INTO __ducklake_metadata_dl.ducklake_inlined_data_8_8 VALUES (2, 38, NULL, 3, '{''x'': 30, ''y'': 300}')
+
+# a value that fits the DOUBLE column it was stored in, but not the BIGINT column it was written for
+statement ok
+INSERT INTO __ducklake_metadata_dl.ducklake_inlined_data_9_9 VALUES (2, 38, NULL, 3, 9.3e18)
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_table_stats SET record_count = 3, next_row_id = 3 WHERE table_id IN (1, 2, 3, 4, 7, 8, 9, 10)
+
+# the schema versions of a table that was migrated from DuckLake 0.3 all begin with the table
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 11 WHERE table_id = 6
+
+# a later release registers the inlined table of the schema version for its own row
+statement ok
+INSERT INTO dl.s VALUES (4, 40)
+
+statement ok
+DETACH dl
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/v10_inlined_rows_after_column_change',
+    DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+# only rows whose fields changed place move, and only when the columns can hold them
+query II
+SELECT table_name, schema_version FROM __ducklake_metadata_dl.ducklake_inlined_data_tables WHERE table_id <= 10 ORDER BY table_id, schema_version
+----
+ducklake_inlined_data_1_1	1
+ducklake_inlined_data_1_12	12
+ducklake_inlined_data_2_2	2
+ducklake_inlined_data_2_13	13
+ducklake_inlined_data_3_3	3
+ducklake_inlined_data_4_4	4
+ducklake_inlined_data_5_5	5
+ducklake_inlined_data_6_6	6
+ducklake_inlined_data_7_7	7
+ducklake_inlined_data_8_8	8
+ducklake_inlined_data_8_23	23
+ducklake_inlined_data_9_9	9
+ducklake_inlined_data_10_10	10
+
+# the values of the shifted columns, one of them stored as text
+query III
+SELECT * FROM dl.t ORDER BY a
+----
+1	100	NULL
+3	300	7
+5	500	NULL
+
+query III
+SELECT * FROM dl.t AT (VERSION => 2) ORDER BY a
+----
+1	x	100
+5	y	500
+
+# the bounds of the column whose value was converted are unknown
+query II
+SELECT min_value, max_value FROM __ducklake_metadata_dl.ducklake_table_column_stats WHERE table_id = 1 AND column_id = 3
+----
+NULL	NULL
+
+# both changes in one transaction, the row joins the row of the later release
+query II
+SELECT * FROM dl.s ORDER BY a
+----
+1	NULL
+3	30
+4	40
+5	NULL
+
+query II
+SELECT * FROM dl.r ORDER BY a
+----
+1	10
+3	30
+5	50
+
+query I
+SELECT * FROM dl.d ORDER BY b
+----
+10
+30
+50
+
+query II
+SELECT * FROM dl.e ORDER BY a
+----
+1	NULL
+5	NULL
+
+query II
+SELECT * FROM dl.m ORDER BY a
+----
+1	NULL
+5	NULL
+
+query II
+SELECT * FROM dl.n ORDER BY a
+----
+1	NULL
+3	NULL
+5	NULL
+
+# a field of a struct that was dropped and added again
+query II
+SELECT * FROM dl.q ORDER BY a
+----
+1	{'x': 10, 'y': NULL}
+3	{'x': 30, 'y': 300}
+5	{'x': 50, 'y': NULL}
+
+query II
+SELECT * FROM dl.l ORDER BY a
+----
+1	NULL
+3	NULL
+5	NULL
+
+query II
+SELECT * FROM dl.k ORDER BY a
+----
+1	NULL
+3	NULL
+5	NULL
+
+statement ok
+CALL ducklake_flush_inlined_data('dl')
+
+query III
+SELECT * FROM dl.t ORDER BY a
+----
+1	100	NULL
+3	300	7
+5	500	NULL
+
+query II
+SELECT * FROM dl.s ORDER BY a
+----
+1	NULL
+3	30
+4	40
+5	NULL
+
+query II
+SELECT * FROM dl.r ORDER BY a
+----
+1	10
+3	30
+5	50
+
+query II
+SELECT * FROM dl.q ORDER BY a
+----
+1	{'x': 10, 'y': NULL}
+3	{'x': 30, 'y': 300}
+5	{'x': 50, 'y': NULL}
+
+statement ok
+DETACH dl
+
+# the flush wrote the inlined rows to files with their columns, the migration to 2.0 converts none
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/v10_inlined_rows_after_column_change',
+    AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+query III
+SELECT * FROM dl.t ORDER BY a
+----
+1	100	NULL
+3	300	7
+5	500	NULL
+
+query II
+SELECT * FROM dl.s ORDER BY a
+----
+1	NULL
+3	30
+4	40
+5	NULL

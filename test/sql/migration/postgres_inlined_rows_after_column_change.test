@@ -1,0 +1,113 @@
+# name: test/sql/migration/postgres_inlined_rows_after_column_change.test
+# description: Rows inlined by position after a column change move after the Postgres inlined type migration
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+require-env DUCKLAKE_CI
+
+require-env DUCKLAKE_CONNECTION
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH '{DUCKLAKE_CONNECTION}' AS pg
+
+statement ok
+CALL postgres_execute('pg', 'DROP SCHEMA IF EXISTS inlined_rows_text_column CASCADE')
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+(DATA_PATH '{DATA_PATH}/postgres_inlined_rows_after_column_change', METADATA_SCHEMA 'inlined_rows_text_column', DUCKLAKE_VERSION '1.0', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.t (a INTEGER, b VARCHAR, c INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1, 'x', 100), (5, 'y', 500)
+
+statement ok
+CREATE TABLE dl.u (a INTEGER, b VARCHAR)
+
+statement ok
+INSERT INTO dl.u VALUES (1, 'x'), (5, 'y')
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 0)
+
+statement ok
+ALTER TABLE dl.t DROP COLUMN b
+
+statement ok
+ALTER TABLE dl.t ADD COLUMN d INTEGER
+
+statement ok
+ALTER TABLE dl.u DROP COLUMN b
+
+statement ok
+ALTER TABLE dl.u ADD COLUMN b BLOB
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10)
+
+statement ok
+CREATE TABLE dl.other (x INTEGER)
+
+statement ok
+DETACH dl
+
+# DuckLake 0.3 stored a VARCHAR column as text, and an older release wrote the next row by position
+statement ok
+CALL postgres_execute('pg', 'ALTER TABLE inlined_rows_text_column.ducklake_inlined_data_1_1 ALTER COLUMN b TYPE VARCHAR USING convert_from(b, ''UTF8'')')
+
+statement ok
+CALL postgres_execute('pg', 'INSERT INTO inlined_rows_text_column.ducklake_inlined_data_1_1 VALUES (2, 9, NULL, 3, ''300'', 7)')
+
+# the bytes of a BLOB that are no text in the column of the dropped VARCHAR
+statement ok
+CALL postgres_execute('pg', 'INSERT INTO inlined_rows_text_column.ducklake_inlined_data_2_2 VALUES (2, 9, NULL, 3, ''\xff''::bytea)')
+
+statement ok
+CALL postgres_execute('pg', 'UPDATE inlined_rows_text_column.ducklake_table_stats SET record_count = 3, next_row_id = 3 WHERE table_id IN (1, 2)')
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/postgres_inlined_rows_after_column_change',
+    METADATA_SCHEMA 'inlined_rows_text_column', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE,
+    DATA_INLINING_ROW_LIMIT 10)
+
+query III
+SELECT * FROM dl.t ORDER BY a
+----
+1	100	NULL
+3	300	7
+5	500	NULL
+
+query III
+SELECT * FROM dl.t AT (VERSION => 2) ORDER BY a
+----
+1	x	100
+5	y	500
+
+# the row whose value cannot be read as the text it is stored as stays where it is
+query II
+SELECT * FROM dl.u ORDER BY a
+----
+1	NULL
+3	NULL
+5	NULL
+
+query I
+SELECT table_name FROM __ducklake_metadata_dl.ducklake_inlined_data_tables WHERE table_id = 2
+----
+ducklake_inlined_data_2_2
+
+statement ok
+DETACH dl
+
+statement ok
+CALL postgres_execute('pg', 'DROP SCHEMA IF EXISTS inlined_rows_text_column CASCADE')

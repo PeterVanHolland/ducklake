@@ -1,0 +1,228 @@
+# name: test/sql/migration/inlined_rows_after_column_change.test
+# description: Rows that DuckDB 1.5.1 inlined after a column change with inlining off are read in their columns
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.1: columns were dropped and added with inlining off, then a row was inlined, which that
+# release wrote by position into the inlined table of the schema version before the change
+unzip data/old_ducklake/inlined_after_column_changes.db.gz {TEST_DIR}/inlined_after_column_changes.db
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/inlined_after_column_changes.db' AS dl (
+    DATA_PATH '{TEST_DIR}/inlined_after_column_changes_files/', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+    AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+# the rows are in the inlined table of the schema version they were written for, where the columns can hold them
+query II
+SELECT table_name, schema_version FROM __ducklake_metadata_dl.ducklake_inlined_data_tables ORDER BY table_id, schema_version
+----
+ducklake_inlined_data_1_1	1
+ducklake_inlined_data_1_12	12
+ducklake_inlined_data_2_2	2
+ducklake_inlined_data_2_14	14
+ducklake_inlined_data_3_3	3
+ducklake_inlined_data_3_16	16
+ducklake_inlined_data_4_4	4
+ducklake_inlined_data_5_5	5
+ducklake_inlined_data_5_19	19
+ducklake_inlined_data_5_30	30
+ducklake_inlined_data_6_6	6
+ducklake_inlined_data_6_21	21
+ducklake_inlined_data_7_7	7
+ducklake_inlined_data_8_8	8
+ducklake_inlined_data_8_25	25
+ducklake_inlined_data_9_9	9
+ducklake_inlined_data_10_10	10
+ducklake_inlined_data_10_28	28
+
+# DROP COLUMN b and ADD COLUMN b
+query II
+SELECT * FROM dl.t ORDER BY a
+----
+1	NULL
+2	20
+
+query II
+SELECT * FROM dl.t AT (VERSION => 2)
+----
+1	10
+
+# a dropped column in the middle and an added one shifted the values
+query III
+SELECT * FROM dl.mid ORDER BY a
+----
+1	100	NULL
+3	300	3000
+
+# the row that was deleted later keeps its end
+query III
+SELECT * FROM dl.mid AT (VERSION => 51) ORDER BY a
+----
+1	100	NULL
+2	200	2000
+
+# the value of an INTEGER column that was stored in a VARCHAR column
+query III
+SELECT * FROM dl.typed ORDER BY a
+----
+1	100	NULL
+2	200	2000
+
+# a rename moves nothing
+query II
+SELECT * FROM dl.renamed ORDER BY a
+----
+1	10
+2	20
+
+# two changes left rows of three schema versions in one inlined table
+query II
+SELECT * FROM dl.twice ORDER BY a
+----
+1	NULL
+2	NULL
+3	30
+
+query II
+SELECT * FROM dl.twice AT (VERSION => 43) ORDER BY a
+----
+1	NULL
+2	20
+
+query II
+SELECT * FROM dl.twice AT (VERSION => 10)
+----
+1	10
+
+# 1.6 was stored in an INTEGER column, the value that is left is found
+query II
+SELECT * FROM dl.rounded ORDER BY a
+----
+1	NULL
+2	2.0
+
+query I
+SELECT a FROM dl.rounded WHERE b = 2
+----
+2
+
+# a BIGINT that was stored in a DOUBLE column and no longer fits stays where it is
+query II
+SELECT * FROM dl.lost ORDER BY a
+----
+1	NULL
+2	NULL
+
+# a field of a struct that was dropped and added again
+query II
+SELECT * FROM dl.nested ORDER BY a
+----
+1	{'x': 10, 'b': NULL}
+2	{'x': 20, 'b': 200}
+
+# a column with the name of an internal column of the inlined tables stays where it is
+query II
+SELECT * FROM dl.reserved ORDER BY a
+----
+1	NULL
+2	NULL
+
+# both changes in one transaction
+query II
+SELECT * FROM dl.together ORDER BY a
+----
+1	NULL
+2	20
+
+# the flush writes every value under the field id of its column
+statement ok
+CALL ducklake_flush_inlined_data('dl')
+
+query II
+SELECT * FROM dl.t ORDER BY a
+----
+1	NULL
+2	20
+
+query III
+SELECT * FROM dl.mid ORDER BY a
+----
+1	100	NULL
+3	300	3000
+
+query III
+SELECT * FROM dl.typed ORDER BY a
+----
+1	100	NULL
+2	200	2000
+
+query II
+SELECT * FROM dl.twice ORDER BY a
+----
+1	NULL
+2	NULL
+3	30
+
+query II
+SELECT * FROM dl.twice AT (VERSION => 43) ORDER BY a
+----
+1	NULL
+2	20
+
+query II
+SELECT * FROM dl.rounded ORDER BY a
+----
+1	NULL
+2	2.0
+
+query II
+SELECT * FROM dl.nested ORDER BY a
+----
+1	{'x': 10, 'b': NULL}
+2	{'x': 20, 'b': 200}
+
+query II
+SELECT * FROM dl.together ORDER BY a
+----
+1	NULL
+2	20
+
+statement ok
+CHECKPOINT dl
+
+query II
+SELECT * FROM dl.t ORDER BY a
+----
+1	NULL
+2	20
+
+statement ok
+DETACH dl
+
+# the flush wrote the inlined rows to files with their columns, the migration to 2.0 converts none
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/inlined_after_column_changes.db' AS dl (
+    DATA_PATH '{TEST_DIR}/inlined_after_column_changes_files/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+    DATA_INLINING_ROW_LIMIT 10)
+
+query II
+SELECT * FROM dl.t ORDER BY a
+----
+1	NULL
+2	20
+
+query III
+SELECT * FROM dl.typed ORDER BY a
+----
+1	100	NULL
+2	200	2000
+
+query II
+SELECT * FROM dl.twice AT (VERSION => 43) ORDER BY a
+----
+1	NULL
+2	20

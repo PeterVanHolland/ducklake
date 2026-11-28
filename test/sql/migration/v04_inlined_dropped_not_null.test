@@ -9,10 +9,11 @@ require parquet
 # written by DuckDB 1.5.1, which dropped the NOT NULL of a with inlining off and inlined the second row afterwards
 unzip data/old_ducklake/v04_inlined_dropped_not_null.db.gz {TEST_DIR}/v04_inlined_dropped_not_null.db
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/v04_inlined_dropped_not_null.db' AS lake
 	(DATA_PATH '{TEST_DIR}/v04_inlined_dropped_not_null', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta',
-	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+	DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
 
 # both rows are in the inlined table of the schema version that has the NOT NULL
 query II
@@ -47,6 +48,21 @@ INSERT INTO lake.t VALUES (NULL, 30)
 
 statement ok
 CHECKPOINT lake
+
+query II
+SELECT * FROM lake.t ORDER BY b
+----
+1	10
+NULL	20
+NULL	30
+
+# the flush wrote the inlined rows to files, the migration to 2.0 converts none
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v04_inlined_dropped_not_null.db' AS lake
+	(DATA_PATH '{TEST_DIR}/v04_inlined_dropped_not_null', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
 
 query II
 SELECT * FROM lake.t ORDER BY b

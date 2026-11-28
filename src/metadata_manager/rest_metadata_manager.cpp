@@ -565,7 +565,8 @@ unique_ptr<QueryResult> RESTMetadataManager::ReadCachedInlinedRows(RESTInlinedRo
 
 unique_ptr<QueryResult> RESTMetadataManager::ReadInlinedData(DuckLakeSnapshot snapshot,
                                                              const Identifier &inlined_table_name,
-                                                             const vector<string> &columns_to_read) {
+                                                             const vector<string> &columns_to_read,
+                                                             const DuckLakeInlinedDataPage &page) {
 	return ReadCachedInlinedRows(RESTInlinedRowsKind::SCAN, snapshot, snapshot, inlined_table_name.GetIdentifierName(),
 	                             columns_to_read);
 }
@@ -573,7 +574,8 @@ unique_ptr<QueryResult> RESTMetadataManager::ReadInlinedData(DuckLakeSnapshot sn
 unique_ptr<QueryResult> RESTMetadataManager::ReadInlinedDataInsertions(DuckLakeSnapshot start_snapshot,
                                                                        DuckLakeSnapshot end_snapshot,
                                                                        const Identifier &inlined_table_name,
-                                                                       const vector<string> &columns_to_read) {
+                                                                       const vector<string> &columns_to_read,
+                                                                       const DuckLakeInlinedDataPage &page) {
 	return ReadCachedInlinedRows(RESTInlinedRowsKind::INSERTIONS, start_snapshot, end_snapshot,
 	                             inlined_table_name.GetIdentifierName(), columns_to_read);
 }
@@ -581,7 +583,8 @@ unique_ptr<QueryResult> RESTMetadataManager::ReadInlinedDataInsertions(DuckLakeS
 unique_ptr<QueryResult> RESTMetadataManager::ReadInlinedDataDeletions(DuckLakeSnapshot start_snapshot,
                                                                       DuckLakeSnapshot end_snapshot,
                                                                       const Identifier &inlined_table_name,
-                                                                      const vector<string> &columns_to_read) {
+                                                                      const vector<string> &columns_to_read,
+                                                                      const DuckLakeInlinedDataPage &page) {
 	return ReadCachedInlinedRows(RESTInlinedRowsKind::DELETIONS, start_snapshot, end_snapshot,
 	                             inlined_table_name.GetIdentifierName(), columns_to_read);
 }

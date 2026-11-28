@@ -199,3 +199,30 @@ SELECT * FROM dl.t ORDER BY a
 ----
 1	NULL
 2	20
+
+statement ok
+DETACH dl
+
+# the flush wrote the inlined rows to files with their columns, the migration to 2.0 converts none
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/inlined_after_column_changes.db' AS dl (
+    DATA_PATH '{TEST_DIR}/inlined_after_column_changes_files/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+    DATA_INLINING_ROW_LIMIT 10)
+
+query II
+SELECT * FROM dl.t ORDER BY a
+----
+1	NULL
+2	20
+
+query III
+SELECT * FROM dl.typed ORDER BY a
+----
+1	100	NULL
+2	200	2000
+
+query II
+SELECT * FROM dl.twice AT (VERSION => 43) ORDER BY a
+----
+1	NULL
+2	20

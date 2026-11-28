@@ -1273,12 +1273,26 @@ vector<DuckLakeDataFile> DuckLakeFileProcessor::AddFiles(const vector<string> &g
 	return written_files;
 }
 
-static void DuckLakeAddDataFilesExecute(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &bind_data = data_p.bind_data->Cast<DuckLakeAddDataFilesData>();
+struct DuckLakeAddDataFilesState : public GlobalTableFunctionState {
+	vector<DuckLakeDataFile> files_to_add;
+};
+
+//! Maps the files when the query is scheduled, where the calling thread works on the metadata queries as well
+static unique_ptr<GlobalTableFunctionState> DuckLakeAddDataFilesInit(ClientContext &context,
+                                                                     TableFunctionInitInput &input) {
+	auto &bind_data = input.bind_data->Cast<DuckLakeAddDataFilesData>();
 	auto &transaction = DuckLakeTransaction::Get(context, bind_data.catalog);
 	DuckLakeFileProcessor processor(transaction, context, bind_data);
-	auto files_to_add = processor.AddFiles(bind_data.globs);
-	transaction.AppendFiles(bind_data.table.GetTableId(), std::move(files_to_add));
+	auto result = make_uniq<DuckLakeAddDataFilesState>();
+	result->files_to_add = processor.AddFiles(bind_data.globs);
+	return std::move(result);
+}
+
+static void DuckLakeAddDataFilesExecute(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind_data = data_p.bind_data->Cast<DuckLakeAddDataFilesData>();
+	auto &state = data_p.global_state->Cast<DuckLakeAddDataFilesState>();
+	auto &transaction = DuckLakeTransaction::Get(context, bind_data.catalog);
+	transaction.AppendFiles(bind_data.table.GetTableId(), std::move(state.files_to_add));
 }
 
 TableFunctionSet DuckLakeAddDataFilesFunction::GetFunctions() {
@@ -1290,7 +1304,8 @@ TableFunctionSet DuckLakeAddDataFilesFunction::GetFunctions() {
 		                           .AddPositionalOnly("catalog", LogicalType::VARCHAR)
 		                           .AddPositionalOnly("table_name", LogicalType::VARCHAR)
 		                           .AddPositionalOnly(type.id() == LogicalTypeId::LIST ? "paths" : "path", type),
-		                       DuckLakeAddDataFilesExecute, DuckLakeAddDataFilesBind);
+		                       DuckLakeAddDataFilesExecute, DuckLakeAddDataFilesBind, DuckLakeAddDataFilesInit);
+		function.global_initialization = TableFunctionInitialization::INITIALIZE_ON_SCHEDULE;
 		function.GetSignature().WithTypedKwargs("options", [&](TypedKwargs &options) {
 			options.Add("allow_missing", LogicalType::BOOLEAN)
 			    .Add("ignore_extra_columns", LogicalType::BOOLEAN)

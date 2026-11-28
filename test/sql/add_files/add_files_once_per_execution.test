@@ -1,0 +1,114 @@
+# name: test/sql/add_files/add_files_once_per_execution.test
+# description: ducklake_add_data_files adds its files when a statement runs, once for each execution
+# group: [add_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/add_once/')
+
+statement ok
+CREATE TABLE dl.t (i INTEGER)
+
+statement ok
+COPY (SELECT 1 AS i) TO '{DATA_PATH}/add_once_first.parquet'
+
+statement ok
+COPY (SELECT 2 AS i) TO '{DATA_PATH}/add_once_second.parquet'
+
+# an explained or prepared call adds nothing
+statement ok
+EXPLAIN SELECT * FROM ducklake_add_data_files('dl', 't', '{DATA_PATH}/add_once_first.parquet')
+
+statement ok
+PREPARE add_first AS SELECT * FROM ducklake_add_data_files('dl', 't', '{DATA_PATH}/add_once_first.parquet')
+
+query I
+SELECT count(*) FROM dl.t
+----
+0
+
+# every execution adds the file once
+statement ok
+EXECUTE add_first
+
+query I
+SELECT count(*) FROM dl.t
+----
+1
+
+statement ok
+EXECUTE add_first
+
+query I
+SELECT count(*) FROM dl.t
+----
+2
+
+# a call inside a query adds once and returns no row
+query I
+SELECT count(*) FROM ducklake_add_data_files('dl', 't', '{DATA_PATH}/add_once_second.parquet')
+----
+0
+
+query I
+SELECT list(i ORDER BY i) FROM dl.t
+----
+[1, 1, 2]
+
+# a rollback takes the added file back
+statement ok
+BEGIN
+
+statement ok
+EXECUTE add_first
+
+query I
+SELECT count(*) FROM dl.t
+----
+4
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM dl.t
+----
+3
+
+# a recursive query adds the file once for each round
+query I
+WITH RECURSIVE rounds(n) AS (
+	SELECT 1
+	UNION ALL
+	SELECT n + 1 + (SELECT count(*) FROM ducklake_add_data_files('dl', 't', '{DATA_PATH}/add_once_second.parquet'))
+	FROM rounds WHERE n < 3
+)
+SELECT max(n) FROM rounds
+----
+3
+
+query I
+SELECT list(i ORDER BY i) FROM dl.t
+----
+[1, 1, 2, 2, 2, 2]
+
+# an empty list adds nothing, and a list names its pattern that matches no file
+statement ok
+CALL ducklake_add_data_files('dl', 't', []::VARCHAR[])
+
+statement error
+CALL ducklake_add_data_files('dl', 't', ['{DATA_PATH}/add_once_first.parquet', '{DATA_PATH}/add_once_none*.parquet'])
+----
+add_once_none*.parquet
+
+query I
+SELECT count(*) FROM dl.t
+----
+6

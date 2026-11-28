@@ -54,7 +54,7 @@ COMMIT
 statement ok
 CALL disable_logging()
 
-# two files of one table and one of another: a read per table, one of the scheduled files, the paths from the catalog
+# one read per table, one of the scheduled files and no table path, for two files of one table and one of another
 query III
 SELECT count(*) FILTER (WHERE regexp_matches(query, 'ducklake_data_file WHERE table_id = \d+ AND \(path LIKE')),
        count(*) FILTER (WHERE contains(query, 'ducklake_files_scheduled_for_deletion WHERE (path LIKE')),

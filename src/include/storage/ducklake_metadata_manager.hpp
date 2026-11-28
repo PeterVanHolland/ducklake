@@ -511,6 +511,8 @@ public:
 	GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                 const FilterPushdownInfo *filter_info = nullptr, bool include_local_changes = true,
 	                 optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr);
+	//! Whether the table holds the path in a file the transaction did not drop, or the path awaits its deletion
+	virtual bool HasDataFile(const DuckLakeTableEntry &table, DuckLakeSnapshot snapshot, const string &path);
 	virtual vector<DuckLakeFileListEntry>
 	GetTableInsertions(DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot, DuckLakeSnapshot snapshot,
 	                   optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr);
@@ -706,6 +708,15 @@ public:
 	//! Selects the given tables or views renamed after the snapshot
 	static string GetRenamedAfterSnapshotSql(const string &metadata_table_name, const string &id_name,
 	                                         const set<TableIndex> &ids, bool row_visibility);
+	//! Selects the table's files named like one of the paths, of every snapshot or committed after the snapshot
+	static string GetDataFilesNamedSql(TableIndex table_id, const vector<string> &paths, bool committed_after_snapshot);
+	//! Selects the files scheduled for deletion named like one of the paths, relative ones start at the data path
+	static string GetScheduledFilesNamedSql(const vector<string> &paths);
+	//! The condition that matches every stored path ending like one of the paths
+	static string FileNameCondition(const vector<string> &paths);
+	//! The canonical paths the stored paths of the result resolve to
+	static unordered_set<string> ReadCanonicalPaths(QueryResult &result, FileSystem &fs, const string &base_path,
+	                                                const string &separator);
 	//! Caller supplies one resolved path per overwritten file, in the same order.
 	static string DeleteOverwrittenDeleteFiles(const vector<DuckLakeOverwrittenDeleteFile> &overwritten_files,
 	                                           const vector<DuckLakePath> &resolved_paths, bool file_events);
@@ -1085,6 +1096,8 @@ protected:
 	//! Loads the paths of tables that are not in the current snapshot with a single query
 	void LoadTablePaths(const vector<TableIndex> &table_ids);
 	FileSystem &GetFileSystem();
+	//! Whether the transaction dropped the committed file with this path and id
+	bool IsDroppedFile(const string &path, idx_t data_file_id) const;
 
 private:
 	template <class T>

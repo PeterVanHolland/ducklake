@@ -1,0 +1,73 @@
+# name: test/sql/add_files/add_files_conflict_reads.test
+# description: A retried commit of added files reads the files other commits added once per table and no table path
+# group: [add_files]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (
+  DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files',
+  DATA_INLINING_ROW_LIMIT 0
+)
+
+statement ok
+CREATE SCHEMA dl.s
+
+statement ok
+CREATE TABLE dl.t1(i INTEGER)
+
+statement ok
+CREATE TABLE dl.s.t2(i INTEGER)
+
+statement ok
+CREATE TABLE dl.other(i INTEGER)
+
+loop k 0 3
+
+statement ok
+COPY (SELECT {k}::INT AS i) TO '{DATA_PATH}/{BASE_TEST_NAME}_{k}.parquet' (FORMAT parquet)
+
+endloop
+
+statement ok con1
+BEGIN
+
+statement ok con1
+CALL ducklake_add_data_files('dl', 't1',
+  ['{DATA_PATH}/{BASE_TEST_NAME}_0.parquet', '{DATA_PATH}/{BASE_TEST_NAME}_1.parquet'])
+
+statement ok con1
+CALL ducklake_add_data_files('dl', 't2', '{DATA_PATH}/{BASE_TEST_NAME}_2.parquet', schema => 's')
+
+# the commit of another connection makes this one check for conflicts
+statement ok con2
+INSERT INTO dl.other VALUES (1)
+
+statement ok
+CALL enable_logging('DuckLakeMetadata')
+
+statement ok con1
+COMMIT
+
+statement ok
+CALL disable_logging()
+
+# one read per table, one of the scheduled files and no table path, for two files of one table and one of another
+query III
+SELECT count(*) FILTER (WHERE regexp_matches(query, 'ducklake_data_file WHERE table_id = \d+ AND \(path LIKE')),
+       count(*) FILTER (WHERE contains(query, 'ducklake_files_scheduled_for_deletion WHERE (path LIKE')),
+       count(*) FILTER (WHERE contains(query, 's_path'))
+FROM duckdb_logs_parsed('DuckLakeMetadata')
+----
+2	1	0
+
+query II
+SELECT (SELECT sum(i) FROM dl.t1), (SELECT sum(i) FROM dl.s.t2)
+----
+1	2

@@ -8,6 +8,7 @@
 #include "storage/ducklake_table_entry.hpp"
 #include "storage/ducklake_insert.hpp"
 #include "storage/ducklake_catalog.hpp"
+#include "storage/ducklake_metadata_manager.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/hive_partitioning.hpp"
@@ -175,6 +176,11 @@ public:
 				}
 			}
 		}
+		// the files the transaction wrote or added for the table are not in the catalog yet
+		auto &fs = FileSystem::GetFileSystem(context);
+		for (auto &path : transaction.GetWrittenFiles(table.GetTableId())) {
+			transaction_files.insert(DuckLakeUtil::CanonicalPathKey(fs, path));
+		}
 	}
 
 	vector<DuckLakeDataFile> AddFiles(const vector<string> &globs);
@@ -217,6 +223,8 @@ private:
 	map<string, string> hive_partitions;
 	HivePartitioningType hive_partitioning;
 	unordered_set<string> processed_files;
+	//! The canonical paths of the files the transaction wrote or added for the table
+	unordered_set<string> transaction_files;
 	unordered_set<idx_t> skipped_fields;
 	//! The types bound from the DuckDB type strings of the files
 	unordered_map<string, LogicalType> bound_types;
@@ -299,13 +307,14 @@ FROM parquet_full_metadata(%s)
 		// Use canonicalize path to detect duplicate files
 		auto &fs = FileSystem::GetFileSystem(context);
 		auto canonical_filepath = fs.CanonicalizePath(filepath);
+		auto file_key = DuckLakeUtil::CanonicalPathKey(fs, filepath);
 
 		// Check if we've already processed this file (can happen with overlapping globs)
-		if (processed_files.count(canonical_filepath)) {
+		if (processed_files.count(file_key)) {
 			// File already processed in a previous glob, skip
 			continue;
 		}
-		processed_files.insert(canonical_filepath);
+		processed_files.insert(file_key);
 
 		// Keep paths inside the DuckLake data directory in the configured path namespace. Canonicalization can rewrite
 		// a symlinked prefix (for example /tmp to /private/tmp), while orphan cleanup scans the configured data path.
@@ -321,6 +330,10 @@ FROM parquet_full_metadata(%s)
 			if (StringUtil::StartsWith(canonical_filepath, canonical_data_path)) {
 				persisted_filepath = data_path + canonical_filepath.substr(canonical_data_path.size());
 			}
+		}
+		if (transaction_files.count(file_key) ||
+		    transaction.GetMetadataManager().HasDataFile(table, transaction.GetSnapshot(), persisted_filepath)) {
+			throw InvalidInputException("File \"%s\" is already a data file of table %s", filepath, table.name);
 		}
 
 		ParquetFileMetadata file;

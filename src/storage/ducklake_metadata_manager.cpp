@@ -3932,6 +3932,39 @@ DuckLakeMetadataManager::GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSna
 	return files;
 }
 
+bool DuckLakeMetadataManager::HasDataFile(const DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
+                                          const string &path) {
+	auto table_id = table.GetTableId();
+	auto &fs = GetFileSystem();
+	auto key = DuckLakeUtil::CanonicalPathKey(fs, path);
+	auto separator = GetPathSeparator(path);
+	// a table the transaction created has no files in the catalog
+	if (!IsTransactionLocal(table_id)) {
+		auto result = Query(snapshot, GetDataFilesNamedSql(table_id, {path}, false));
+		result->ThrowIfError("Failed to look up a data file in DuckLake: ");
+		for (auto &row : *result) {
+			auto file_path = ReadPath(row, 0);
+			// a committed file the transaction dropped can be registered again
+			if (IsDroppedFile(FromRelativePath(file_path, table.DataPath()), row.GetValue<idx_t>(2))) {
+				continue;
+			}
+			if (DuckLakeUtil::CanonicalPathKey(fs, FromRelativePath(file_path, table.DataPath(), separator)) == key) {
+				return true;
+			}
+		}
+	}
+	// a file a merge or an expiry scheduled for deletion is gone at the next cleanup
+	auto scheduled = Query(GetScheduledFilesNamedSql({path}));
+	scheduled->ThrowIfError("Failed to look up a file scheduled for deletion in DuckLake: ");
+	return ReadCanonicalPaths(*scheduled, fs, transaction.GetCatalog().DataPath(), separator).count(key) > 0;
+}
+
+bool DuckLakeMetadataManager::IsDroppedFile(const string &path, idx_t data_file_id) const {
+	auto &dropped_files = transaction.GetDroppedFiles();
+	auto dropped = dropped_files.find(path);
+	return dropped != dropped_files.end() && dropped->second.index == data_file_id;
+}
+
 vector<DuckLakeFileListEntry>
 DuckLakeMetadataManager::GetTableInsertions(DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot,
                                             DuckLakeSnapshot end_snapshot,
@@ -6668,6 +6701,47 @@ string DuckLakeMetadataManager::GetRenamedAfterSnapshotSql(const string &metadat
 	return StringUtil::Format(
 	    "SELECT %s FROM {METADATA_CATALOG}.%s WHERE begin_snapshot > {SNAPSHOT_ID} AND %s IN (%s)", id_name,
 	    metadata_table_name, id_name, GenerateIDList(ids));
+}
+
+string DuckLakeMetadataManager::GetDataFilesNamedSql(TableIndex table_id, const vector<string> &paths,
+                                                     bool committed_after_snapshot) {
+	// a compaction output keeps the begin snapshot of its sources, so the file id tells when a file was committed,
+	// and every file keeps its path until the cleanup after its expiry removed it, also one with an end snapshot
+	auto snapshot_filter =
+	    committed_after_snapshot ? "data_file_id >= {NEXT_FILE_ID}" : "data_file_id < {NEXT_FILE_ID}";
+	return StringUtil::Format("SELECT path, path_is_relative, data_file_id FROM "
+	                          "{METADATA_CATALOG}.ducklake_data_file WHERE table_id = %d AND %s AND %s",
+	                          table_id.index, FileNameCondition(paths), snapshot_filter);
+}
+
+string DuckLakeMetadataManager::GetScheduledFilesNamedSql(const vector<string> &paths) {
+	return StringUtil::Format("SELECT path, path_is_relative FROM "
+	                          "{METADATA_CATALOG}.ducklake_files_scheduled_for_deletion WHERE %s",
+	                          FileNameCondition(paths));
+}
+
+string DuckLakeMetadataManager::FileNameCondition(const vector<string> &paths) {
+	// every stored form of a path ends with its last component, kept byte for byte
+	set<string> conditions;
+	for (auto &path : paths) {
+		auto name_start = path.find_last_of("/\\");
+		auto pattern = name_start == string::npos ? path : path.substr(name_start + 1);
+		for (auto wildcard : {"\\", "%", "_"}) {
+			pattern = StringUtil::Replace(pattern, wildcard, string("\\") + wildcard);
+		}
+		conditions.insert("path LIKE " + SQLString::ToString("%" + pattern) + " ESCAPE '\\'");
+	}
+	return "(" + StringUtil::Join(conditions, " OR ") + ")";
+}
+
+unordered_set<string> DuckLakeMetadataManager::ReadCanonicalPaths(QueryResult &result, FileSystem &fs,
+                                                                  const string &base_path, const string &separator) {
+	unordered_set<string> canonical_paths;
+	for (auto &row : result) {
+		canonical_paths.insert(
+		    DuckLakeUtil::CanonicalPathKey(fs, FromRelativePath(ReadPath(row, 0), base_path, separator)));
+	}
+	return canonical_paths;
 }
 
 string DuckLakeMetadataManager::GetColumnsWithRecordedValuesSql(TableIndex table_id, const set<FieldIndex> &column_ids,

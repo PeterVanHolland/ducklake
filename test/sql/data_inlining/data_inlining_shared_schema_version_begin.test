@@ -1,0 +1,103 @@
+# name: test/sql/data_inlining/data_inlining_shared_schema_version_begin.test
+# description: rows inlined at a schema version between two others of the same begin, as DuckDB 1.5.1 migrated them
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.i (a INTEGER)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'i')
+
+statement ok
+ALTER TABLE dl.i ADD COLUMN b INTEGER
+
+statement ok
+INSERT INTO dl.i VALUES (1, 10)
+
+statement ok
+ALTER TABLE dl.i ADD COLUMN c INTEGER
+
+# columns that the catalogs store in other types than their own
+statement ok
+CREATE TABLE dl.v (a INTEGER)
+
+statement ok
+CALL dl.set_option('data_inlining_row_limit', 10, table_name => 'v')
+
+statement ok
+ALTER TABLE dl.v ADD COLUMN b VARCHAR
+
+statement ok
+ALTER TABLE dl.v ADD COLUMN d DATE
+
+statement ok
+ALTER TABLE dl.v ADD COLUMN s STRUCT(x INTEGER)
+
+statement ok
+INSERT INTO dl.v VALUES (1, 'text', DATE '2026-01-02', {'x': 5})
+
+statement ok
+ALTER TABLE dl.v ADD COLUMN c INTEGER
+
+query II
+SELECT begin_snapshot, schema_version FROM __ducklake_metadata_dl.ducklake_schema_versions ORDER BY ALL
+----
+1	1
+2	2
+4	3
+5	4
+6	5
+7	6
+8	7
+10	8
+
+# the rows of test/sql/migration/migrated_inlined_schema_version.test on every catalog
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 1 WHERE schema_version IN (2, 3)
+
+statement ok
+UPDATE __ducklake_metadata_dl.ducklake_schema_versions SET begin_snapshot = 5 WHERE schema_version IN (5, 6, 7, 8)
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 0)
+
+# the row of i was inlined at the schema version between its first and its last
+query III
+SELECT a, b, c FROM dl.i
+----
+1	10	NULL
+
+# the catalog reports its own types for the inlined columns of v, the snapshot of their schema version has them
+query IIIII
+SELECT a, b, d, s, c FROM dl.v
+----
+1	text	2026-01-02	{'x': 5}	NULL
+
+statement ok
+CALL ducklake_flush_inlined_data('dl')
+
+query III
+SELECT a, b, c FROM dl.i
+----
+1	10	NULL
+
+query IIIII
+SELECT a, b, d, s, c FROM dl.v
+----
+1	text	2026-01-02	{'x': 5}	NULL

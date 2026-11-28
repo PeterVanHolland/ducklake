@@ -1,0 +1,58 @@
+# name: test/sql/data_inlining/data_inlining_flush_dropped_not_null.test
+# description: flush an inlined table that holds a row written after the NOT NULL of its schema version was dropped
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.t (a INTEGER NOT NULL, b INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1, 10)
+
+statement ok
+ALTER TABLE dl.t ALTER COLUMN a DROP NOT NULL
+
+statement ok
+INSERT INTO dl.t VALUES (NULL, 20)
+
+# DuckDB 1.5.1 keeps such a row in the inlined table of the first one when inlining was off for the ALTER
+statement ok
+INSERT INTO __ducklake_metadata_dl.ducklake_inlined_data_1_1 FROM __ducklake_metadata_dl.ducklake_inlined_data_1_2
+
+statement ok
+DELETE FROM __ducklake_metadata_dl.ducklake_inlined_data_1_2
+
+query III
+SELECT * FROM ducklake_flush_inlined_data('dl')
+----
+main	t	2
+
+query II
+SELECT * FROM dl.t ORDER BY b
+----
+1	10
+NULL	20
+
+statement ok
+INSERT INTO dl.t VALUES (NULL, 30)
+
+statement ok
+CHECKPOINT dl
+
+query II
+SELECT * FROM dl.t ORDER BY b
+----
+1	10
+NULL	20
+NULL	30

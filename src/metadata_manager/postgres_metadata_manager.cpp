@@ -413,6 +413,7 @@ vector<bool> PostgresMetadataManager::InlinedColumnsStoredAsValues(const Identif
 	vector<bool> stored_as_values;
 	auto &ducklake_catalog = transaction.GetCatalog();
 	auto &context = *transaction.GetConnection().context;
+	auto col_names = InlinedColNames();
 	// the catalog of the scanner has the column types of the table without a query
 	context.RunFunctionInTransaction([&]() {
 		auto &catalog = Catalog::GetCatalog(context, ducklake_catalog.MetadataDatabaseName());
@@ -421,15 +422,20 @@ vector<bool> PostgresMetadataManager::InlinedColumnsStoredAsValues(const Identif
 		if (!table) {
 			return;
 		}
-		auto &columns = table->GetColumns();
-		if (columns.LogicalColumnCount() != types.size() + DuckLakeInlinedColNames::COLUMN_COUNT) {
+		// the columns of the table, without the ones of the layout
+		vector<LogicalType> stored_types;
+		for (auto &column : table->GetColumns().Logical()) {
+			if (!col_names.ConflictsWith(column.Name())) {
+				stored_types.push_back(column.Type());
+			}
+		}
+		if (stored_types.size() != types.size()) {
 			return;
 		}
 		bool found = false;
 		for (idx_t i = 0; i < types.size(); i++) {
-			auto &stored_type = columns.GetColumn(LogicalIndex(i + DuckLakeInlinedColNames::COLUMN_COUNT)).Type();
 			// DuckLake 0.3 stored text as text and most other types as PostgreSQL has them
-			stored_as_values.push_back(stored_type != UnboundType::TryParseAndDefaultBind(GetColumnType(types[i])));
+			stored_as_values.push_back(stored_types[i] != UnboundType::TryParseAndDefaultBind(GetColumnType(types[i])));
 			found = found || stored_as_values.back();
 		}
 		if (!found) {

@@ -46,7 +46,7 @@ public:
 		return true;
 	}
 	unordered_set<string> ListInlinedDeletionTables() override;
-	void MigrateInlinedDataTypes(bool schema_version_columns) override;
+	void MigrateInlinedDataTypes() override;
 	bool IsRetryableCommitError(const string &message) const override;
 	bool ProbeMetadataColumns() override;
 	string CommitErrorWithoutQuery(const string &message) const override;

@@ -1013,7 +1013,7 @@ public:
 	void MigrateRetypedBounds();
 	//! Rewrites inlined tables whose columns were created with the storage types of an older DuckLake version, the
 	//! columns of an inlined table are those of its schema version or, without them, those its names ever had
-	virtual void MigrateInlinedDataTypes(bool schema_version_columns) {
+	virtual void MigrateInlinedDataTypes() {
 	}
 	virtual void ExecuteMigration(string migrate_query, bool allow_failures, const string &from_version,
 	                              const string &to_version);

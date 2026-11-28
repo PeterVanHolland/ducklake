@@ -877,7 +877,7 @@ DELETE FROM {METADATA_CATALOG}.ducklake_schema_versions WHERE table_id IS NULL;
 	if (!allow_failures) {
 		delete_global_entries->ThrowIfError("Failed to clean up global schema_versions entries: ");
 	}
-	MigrateInlinedDataTypes(true);
+	MigrateInlinedDataTypes();
 }
 
 void DuckLakeMetadataManager::MigrateV04() {
@@ -1077,7 +1077,7 @@ void DuckLakeMetadataManager::MigrateV10(bool from_dev1) {
 	MigrateInlinedSchemaVersions();
 	MigrateRenamedFieldDefaults();
 	MigrateRetypedBounds();
-	MigrateInlinedDataTypes(true);
+	MigrateInlinedDataTypes();
 	// DDL locks the metadata tables exclusively on Postgres, skip it when a dev catalog has every addition
 	auto has_additions = from_dev1 && HasV1_1Additions();
 	ExecuteMigration(V1_1MigrationQuery(has_additions), from_dev1, from_dev1 ? "1.1-dev1" : "1.0", "1.1");
@@ -1112,10 +1112,6 @@ void DuckLakeMetadataManager::MigrateV11(bool from_dev1) {
 		layout = ProbeV2_0Layout();
 		// a writer of the previous layout may have inlined rows before the renames fenced it
 		VerifyV2_0InlinedStep(layout, from_version);
-	}
-	if (!from_dev1) {
-		// an earlier migration did not find the columns of every inlined table, the renames keep older writers out
-		MigrateInlinedDataTypes(false);
 	}
 	auto migrate_query = V2_0SnapshotAdditionsSql(layout.additions) + V2_0FileEventsSql(layout.ranges) +
 	                     V2_0RowCompanionsSql(layout.rows) + V2_0InlinedCompanionSql(layout.inlined);

@@ -345,6 +345,7 @@
         "test/sql/data_inlining/data_inlining_per_schema_alter.test",
         "test/sql/data_inlining/data_inlining_update_inline_verification.test",
         "test/sql/data_inlining/empty_inlined_tables_alter_cleanup.test",
+        "test/sql/data_inlining/flush_inlined_data_twice_one_statement.test",
         "test/sql/data_inlining/inlined_data_table_leak.test",
         "test/sql/data_inlining/inlined_dead_rows_expire.test",
         "test/sql/data_inlining/inlined_delete_table_drop_cleanup.test",

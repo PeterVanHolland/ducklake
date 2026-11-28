@@ -55,7 +55,8 @@ statement ok con2
 CALL ducklake_flush_inlined_data('lake', table_name => 't')
 
 query I
-SELECT count(*) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 't' AND end_snapshot IS NULL)
+SELECT count(*) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables
+WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 't')
 ----
 1
 
@@ -78,7 +79,8 @@ statement ok
 INSERT INTO lake.u SELECT 2, i, i FROM range(5) r(i)
 
 query I
-SELECT list(table_name ORDER BY schema_version) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'u' AND end_snapshot IS NULL)
+SELECT list(table_name ORDER BY schema_version) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables
+WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'u')
 ----
 [ducklake_inlined_data_4_4, ducklake_inlined_data_4_5]
 
@@ -109,7 +111,8 @@ statement ok con2
 CALL ducklake_flush_inlined_data('lake', table_name => 'u')
 
 query I
-SELECT count(*) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'u' AND end_snapshot IS NULL)
+SELECT count(*) FROM __ducklake_metadata_lake.ducklake_inlined_data_tables
+WHERE table_id = (SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = 'u')
 ----
 1
 

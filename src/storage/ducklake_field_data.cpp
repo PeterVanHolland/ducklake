@@ -340,6 +340,20 @@ optional_ptr<const DuckLakeFieldId> DuckLakeFieldData::GetByFieldIndex(FieldInde
 	return entry->second.get();
 }
 
+bool DuckLakeFieldId::SameFields(const DuckLakeFieldId &other) const {
+	auto &other_children = other.Children();
+	if (GetFieldIndex() != other.GetFieldIndex() || Type() != other.Type() ||
+	    children.size() != other_children.size()) {
+		return false;
+	}
+	for (idx_t i = 0; i < children.size(); i++) {
+		if (!children[i]->SameFields(*other_children[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
 optional_ptr<const DuckLakeFieldId> DuckLakeFieldId::GetChildByName(const Identifier &child_name) const {
 	auto entry = child_map.find(child_name);
 	if (entry == child_map.end()) {

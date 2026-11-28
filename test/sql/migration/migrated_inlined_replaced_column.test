@@ -1,0 +1,77 @@
+# name: test/sql/migration/migrated_inlined_replaced_column.test
+# description: rows inlined after a column was dropped and added again under its name, in a DuckDB 1.5.1 migration
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.4.4 with data inlining: t (a, b) and a row, b dropped and added again in one transaction, a
+# row, c added, a row. Migrated by DuckDB 1.5.1, which gave every schema version of t the begin of its creation
+unzip data/old_ducklake/migrated_inlined_replaced_column.db.gz {TEST_DIR}/migrated_inlined_replaced_column.db
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_replaced_column.db' AS replaced
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_replaced_column', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+# the second row was written for the b that the table has now, the first one for the b that was dropped
+query III
+SELECT a, b, c FROM replaced.t ORDER BY a
+----
+1	NULL	NULL
+2	20	NULL
+3	30	300
+
+query II
+SELECT a, b FROM replaced.t AT (VERSION => 2) ORDER BY a
+----
+1	10
+
+query II
+SELECT a, b FROM replaced.t AT (VERSION => 4) ORDER BY a
+----
+1	NULL
+2	20
+
+statement ok
+CALL ducklake_flush_inlined_data('replaced')
+
+query III
+SELECT a, b, c FROM replaced.t ORDER BY a
+----
+1	NULL	NULL
+2	20	NULL
+3	30	300
+
+query II
+SELECT a, b FROM replaced.t AT (VERSION => 4) ORDER BY a
+----
+1	NULL
+2	20
+
+statement ok
+CHECKPOINT replaced
+
+query III
+SELECT a, b, c FROM replaced.t ORDER BY a
+----
+1	NULL	NULL
+2	20	NULL
+3	30	300
+
+# the flush wrote the inlined rows to files with their columns, the migration to 2.0 converts none
+statement ok
+DETACH replaced
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_replaced_column.db' AS replaced
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_replaced_column', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query III
+SELECT a, b, c FROM replaced.t ORDER BY a
+----
+1	NULL	NULL
+2	20	NULL
+3	30	300

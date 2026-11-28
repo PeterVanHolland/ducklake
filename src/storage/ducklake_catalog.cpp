@@ -556,16 +556,11 @@ string DuckLakeCatalog::GetLoadedTableDataPath(DuckLakeSnapshot snapshot, TableI
 	return entry->Cast<DuckLakeTableEntry>().DataPath();
 }
 
-idx_t DuckLakeCatalog::GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version,
-                                                        DuckLakeTransaction &transaction) {
-	auto &metadata_manager = transaction.GetMetadataManager();
-	return metadata_manager.GetBeginSnapshotForSchemaVersion(table_id, schema_version);
-}
-
 optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLakeTransaction &transaction,
-                                                                          TableIndex table_id, idx_t schema_version) {
-	DuckLakeSnapshot snapshot(GetBeginSnapshotForSchemaVersion(table_id, schema_version, transaction), schema_version,
-	                          0, 0);
+                                                                          TableIndex table_id, idx_t schema_version,
+                                                                          bool require_columns) {
+	auto snapshot =
+	    transaction.GetMetadataManager().GetSnapshotForSchemaVersion(table_id, schema_version, require_columns);
 	auto entry = GetEntryById(transaction, snapshot, table_id);
 	if (!entry) {
 		// LCOV_EXCL_START
@@ -578,7 +573,7 @@ optional_ptr<DuckLakeTableEntry> DuckLakeCatalog::GetTableAtSchemaVersion(DuckLa
 shared_ptr<DuckLakeSchemaCacheEntry> DuckLakeCatalog::GetSchemaCacheEntry(DuckLakeTransaction &transaction,
                                                                           DuckLakeSnapshot snapshot) {
 	auto &cache = GetObjectCacheInstance();
-	auto key = SchemaCacheKey(snapshot.schema_version);
+	auto key = SchemaCacheKey(snapshot);
 	auto cached = cache.Get<DuckLakeSchemaCacheEntry>(key);
 	if (cached) {
 		return cached;
@@ -1623,18 +1618,18 @@ DuckLakeTableSchemaVersions DuckLakeCatalog::GetTableSchemaVersions(DuckLakeTran
 	return schema_versions;
 }
 
-optional_idx DuckLakeCatalog::TryGetSchemaVersionBeginSnapshot(TableIndex table_id, idx_t schema_version) {
+DuckLakeSnapshot DuckLakeCatalog::TryGetSchemaVersionSnapshot(TableIndex table_id, idx_t schema_version) {
 	lock_guard<mutex> guard(schema_version_snapshot_lock);
-	auto entry = schema_version_begin_snapshots.find(make_pair(table_id.index, schema_version));
-	if (entry == schema_version_begin_snapshots.end()) {
-		return optional_idx();
+	auto entry = schema_version_snapshots.find(make_pair(table_id.index, schema_version));
+	if (entry == schema_version_snapshots.end()) {
+		return DuckLakeSnapshot();
 	}
 	return entry->second;
 }
 
-void DuckLakeCatalog::CacheSchemaVersionBeginSnapshot(TableIndex table_id, idx_t schema_version, idx_t begin_snapshot) {
+void DuckLakeCatalog::CacheSchemaVersionSnapshot(TableIndex table_id, idx_t schema_version, DuckLakeSnapshot snapshot) {
 	lock_guard<mutex> guard(schema_version_snapshot_lock);
-	schema_version_begin_snapshots[make_pair(table_id.index, schema_version)] = begin_snapshot;
+	schema_version_snapshots[make_pair(table_id.index, schema_version)] = snapshot;
 }
 
 bool DuckLakeCatalog::ColumnHoldsValues(TableIndex table_id, FieldIndex column_id, idx_t snapshot_id) {
@@ -1714,6 +1709,14 @@ string DuckLakeCatalog::NetRowCountCacheKey(TableIndex table_id) const {
 string DuckLakeCatalog::SchemaCacheKey(idx_t schema_version) const {
 	// a loaded schema holds the name of the DuckLake, its macros for one, so a new name loads it again
 	return StringUtil::Format("ducklake:%s:%s:schema:%llu", instance_id, GetName(), schema_version);
+}
+
+string DuckLakeCatalog::SchemaCacheKey(const DuckLakeSnapshot &snapshot) const {
+	if (snapshot.schema_version != DConstants::INVALID_INDEX) {
+		return SchemaCacheKey(snapshot.schema_version);
+	}
+	// a snapshot without a known schema version has its schema cached by the snapshot
+	return StringUtil::Format("ducklake:%s:%s:snapshot_schema:%llu", instance_id, GetName(), snapshot.snapshot_id);
 }
 
 void DuckLakeCatalog::InvalidateTableStatsCache(idx_t next_file_id, TableIndex table_id) {

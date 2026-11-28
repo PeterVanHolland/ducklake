@@ -29,6 +29,7 @@ SELECT * FROM ducklake_flush_inlined_data('lake') UNION ALL SELECT * FROM duckla
 main	t	100
 
 query IIII
-SELECT (SELECT count(*) FROM meta.ducklake_data_file WHERE end_snapshot IS NULL), (SELECT count(*) FROM lake.t), count(*), count(DISTINCT i) FROM lake.t
+SELECT (SELECT count(*) FROM ducklake_list_files('lake', 't')), (SELECT count(*) FROM lake.t), count(*),
+       count(DISTINCT i) FROM lake.t
 ----
 1	100	100	100

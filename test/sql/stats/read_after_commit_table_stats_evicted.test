@@ -37,6 +37,10 @@ SELECT max(i) FROM lk.a
 ----
 1
 
+# the rows of a temp table stay in memory without a temp directory
+statement ok
+CREATE TEMP TABLE held AS SELECT range i FROM range(1000000)
+
 # the limit cannot be met, but the object cache is emptied trying
 statement error
 SET memory_limit = '1B'

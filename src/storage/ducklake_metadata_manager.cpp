@@ -6000,22 +6000,23 @@ bool DuckLakeMetadataManager::InlinedTableEmptyAtSnapshot(const Identifier &inli
                                                           DuckLakeSnapshot snapshot) {
 	// the first snapshot of the table's schema version, the first one of the version that superseded it, and how
 	// many snapshots remain from the one before the first to the superseding one
+	auto main_filter = MainSnapshotFilter();
 	auto bounds = Query(StringUtil::Format(R"(
 WITH bounds AS (
 	SELECT (SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot
-		WHERE schema_version >= this.schema_version) AS first_snapshot,
+		WHERE schema_version >= this.schema_version%s) AS first_snapshot,
 		(SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot WHERE schema_version >= (
 			SELECT MIN(idt.schema_version) FROM {METADATA_CATALOG}.ducklake_inlined_data_tables idt
-			WHERE idt.table_id = %d AND idt.schema_version > this.schema_version)) AS superseded_snapshot
+			WHERE idt.table_id = %d AND idt.schema_version > this.schema_version)%s) AS superseded_snapshot
 	FROM {METADATA_CATALOG}.ducklake_inlined_data_tables this
 	WHERE this.table_id = %d AND this.table_name = %s
 )
 SELECT first_snapshot, superseded_snapshot,
 	(SELECT COUNT(*) FROM {METADATA_CATALOG}.ducklake_snapshot
-	 WHERE snapshot_id + 1 >= first_snapshot AND snapshot_id <= superseded_snapshot)
+	 WHERE snapshot_id + 1 >= first_snapshot AND snapshot_id <= superseded_snapshot%s)
 FROM bounds)",
-	                                       table_id.index, table_id.index,
-	                                       SQLString::ToString(inlined_table_name.GetIdentifierName())));
+	                                       main_filter, table_id.index, main_filter, table_id.index,
+	                                       SQLString::ToString(inlined_table_name.GetIdentifierName()), main_filter));
 	if (bounds->HasError()) {
 		return false;
 	}
@@ -6042,8 +6043,8 @@ FROM bounds)",
 	auto changes = Query(StringUtil::Format(R"(
 SELECT changes_made
 FROM {METADATA_CATALOG}.ducklake_snapshot_changes
-WHERE snapshot_id >= %d AND snapshot_id < %d AND changes_made LIKE '%%inlined_insert:%%')",
-	                                        first_snapshot.GetIndex(), superseded_snapshot.GetIndex()));
+WHERE snapshot_id >= %d AND snapshot_id < %d AND changes_made LIKE '%%inlined_insert:%%'%s)",
+	                                        first_snapshot.GetIndex(), superseded_snapshot.GetIndex(), main_filter));
 	if (changes->HasError()) {
 		return false;
 	}

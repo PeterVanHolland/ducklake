@@ -49,11 +49,26 @@ DELETE FROM __ducklake_metadata_lake.ducklake_inlined_data_tables WHERE table_na
 statement ok
 DROP TABLE __ducklake_metadata_lake.ducklake_inlined_data_2_2
 
+statement ok
+CALL enable_logging('DuckLakeMetadata', storage => 'memory')
+
 # the snapshot shows that the table never held a row, so the read goes on without it
 query II con1
 SELECT count(*), sum(id) FROM lake.w WHERE tenant = 1
 ----
 10	9955
+
+# from 2.0 on the proof reads the snapshots and the changes of main alone
+query II
+SELECT count(*) > 0, bool_and(contains(query, ' AND branch_id = 0') =
+    (SELECT value NOT LIKE '1.%' FROM lake.options() WHERE option_name = 'version'))
+FROM duckdb_logs_parsed('DuckLakeMetadata')
+WHERE contains(query, 'AS superseded_snapshot') OR contains(query, 'LIKE ''%inlined_insert:%''')
+----
+true	true
+
+statement ok
+CALL disable_logging()
 
 # the expiry of this transaction skips the dropped table as well
 statement ok con1

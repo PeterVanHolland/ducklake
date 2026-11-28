@@ -1,0 +1,51 @@
+# name: benchmark/micro/maintenance/migrate_v11_column_versions.benchmark
+# description: Attach a v1.1 lake of 200 tables whose columns were renamed twice, migrating it to v2.0
+# group: [maintenance]
+
+name Migrate v1.1 Column Versions
+group micro
+subgroup maintenance
+
+require ducklake
+
+require parquet
+
+argument lake migrate_v11_columns_v1
+
+argument work migrate_v11_columns_work
+
+cache_file ${lake}_ready.marker
+
+# Every table has seven column rows, four of them ended by a rename
+load
+@create ${lake}_pristine
+@attach ${lake}_pristine AS lake (DATA_PATH '${BENCHMARK_DIR}/${lake}_files', DUCKLAKE_VERSION '1.1')
+@for k in range(200)
+CREATE TABLE lake.t@{k} (id INTEGER, v VARCHAR, w INTEGER);
+ALTER TABLE lake.t@{k} RENAME COLUMN v TO v1;
+ALTER TABLE lake.t@{k} RENAME COLUMN v1 TO v2;
+ALTER TABLE lake.t@{k} RENAME COLUMN w TO w1;
+ALTER TABLE lake.t@{k} RENAME COLUMN w1 TO w2;
+@end
+SELECT CASE WHEN (SELECT count(*) <> 1400 FROM __ducklake_metadata_lake.ducklake_column)
+THEN error('unexpected migration fixture') END;
+DETACH lake;
+@seal ${lake}_pristine
+COPY (SELECT 1) TO '${BENCHMARK_DIR}/${lake}_ready.marker' (FORMAT CSV);
+@copy ${lake}_pristine TO ${work}
+
+reload
+DETACH DATABASE IF EXISTS lake;
+@copy ${lake}_pristine TO ${work}
+
+cleanup
+DETACH DATABASE IF EXISTS lake;
+@copy ${lake}_pristine TO ${work}
+
+run
+@attach ${work} AS lake (DATA_PATH '${BENCHMARK_DIR}/${lake}_files', AUTOMATIC_MIGRATION TRUE)
+
+result_query II
+SELECT (SELECT count(*) FROM __ducklake_metadata_lake.ducklake_column_visibility), count(*) FROM lake.t199
+----
+800	0

@@ -1312,6 +1312,17 @@ string DuckLakeMetadataManager::V2_0RowEndBackfillSql(const RowVisibilityKind &k
 	auto table = RowTableName(kind);
 	auto &end = kind.end_column;
 	if (kind.kind == "column") {
+		// overlapping version rows of a column end at its next change
+		auto next_change = StringUtil::Format("%s AND later.%s > ended.%s", KeyMatches(kind, "later", "ended"),
+		                                      kind.begin_column, kind.begin_column);
+		query += StringUtil::Format(R"(
+UPDATE {METADATA_CATALOG}.%s AS ended SET %s = (
+    SELECT MIN(later.%s) FROM {METADATA_CATALOG}.%s later WHERE %s)
+WHERE EXISTS (
+    SELECT 1 FROM {METADATA_CATALOG}.%s later WHERE %s AND later.%s < ended.%s);
+)",
+		                            table, end, kind.begin_column, table, next_change, table, next_change,
+		                            kind.begin_column, end);
 		// the version row that goes may hold the type the column's files were written with, so their bounds are unknown
 		for (auto stats_table : {"ducklake_file_column_stats", "ducklake_table_column_stats"}) {
 			query += StringUtil::Format(R"(

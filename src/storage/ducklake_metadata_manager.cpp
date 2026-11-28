@@ -3858,12 +3858,13 @@ string DuckLakeMetadataManager::InsertedFilesMatchingSql(DuckLakeTableEntry &tab
 	auto query = GenerateCTESectionFromRequirements(filter_result.required_ctes, table_id, metadata_table_prefix);
 	query += StringUtil::Format(R"(
 SELECT data.data_file_id
-FROM %s.ducklake_data_file data%s
+FROM %s data%s
 WHERE data.table_id = %d AND %s
   AND (data.begin_snapshot > {SNAPSHOT_ID} OR (data.partial_max IS NOT NULL AND data.partial_max > {SNAPSHOT_ID}))
 LIMIT 1)",
-	                            metadata_table_prefix, GenerateStatsJoinList(filter_result.required_ctes),
-	                            table_id.index, filter_result.where_conditions);
+	                            DataFileSource(WritesFileVisibilityEvents(), metadata_table_prefix, table_id.index),
+	                            GenerateStatsJoinList(filter_result.required_ctes), table_id.index,
+	                            filter_result.where_conditions);
 	return query;
 }
 

@@ -1201,7 +1201,7 @@ ORDER BY idt.table_id, idt.schema_version)");
 			auto target = registered_tables.find(target_key);
 			if (target == registered_tables.end()) {
 				auto target_name = InlinedTableNameFor(table.table_id, schema_version);
-				query += InlinedTableDdlSql(target_name, GetColumnDefinitions(written->columns), col_names);
+				query += InlinedTableDdlSql(target_name, GetColumnDefinitions(written->columns), col_names, false);
 				query += InsertValuesSql("ducklake_inlined_data_tables",
 				                         {InlinedTableRegistrationTuple(table.table_id, target_name, schema_version)});
 				target = registered_tables.emplace(target_key, std::move(target_name)).first;

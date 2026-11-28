@@ -511,7 +511,7 @@ public:
 	GetFilesForTable(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
 	                 const FilterPushdownInfo *filter_info = nullptr, bool include_local_changes = true,
 	                 optional_ptr<const vector<DuckLakeProjectedColumn>> projection = nullptr);
-	//! Whether the snapshot holds a data file of the table at the path
+	//! Whether the table holds the path in a file the transaction did not drop, or the path awaits its deletion
 	virtual bool HasDataFile(const DuckLakeTableEntry &table, DuckLakeSnapshot snapshot, const string &path);
 	virtual vector<DuckLakeFileListEntry>
 	GetTableInsertions(DuckLakeTableEntry &table, DuckLakeSnapshot start_snapshot, DuckLakeSnapshot snapshot,
@@ -1096,6 +1096,8 @@ protected:
 	//! Loads the paths of tables that are not in the current snapshot with a single query
 	void LoadTablePaths(const vector<TableIndex> &table_ids);
 	FileSystem &GetFileSystem();
+	//! Whether the transaction dropped the committed file with this path and id
+	bool IsDroppedFile(const string &path, idx_t data_file_id) const;
 
 private:
 	template <class T>

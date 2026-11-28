@@ -416,6 +416,10 @@ bool RESTMetadataManager::HasDataFile(const DuckLakeTableEntry &table, DuckLakeS
 	auto key = DuckLakeUtil::CanonicalPathKey(fs, path);
 	auto has_path = [&](const vector<DuckLakeFileListEntry> &files) {
 		for (auto &file : files) {
+			// a committed file the transaction dropped can be registered again
+			if (IsDroppedFile(file.file.path, file.file_id.index)) {
+				continue;
+			}
 			if (DuckLakeUtil::CanonicalPathKey(fs, file.file.path) == key) {
 				return true;
 			}

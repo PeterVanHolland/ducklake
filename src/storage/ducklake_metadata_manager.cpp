@@ -3942,14 +3942,27 @@ bool DuckLakeMetadataManager::HasDataFile(const DuckLakeTableEntry &table, DuckL
 	if (!IsTransactionLocal(table_id)) {
 		auto result = Query(snapshot, GetDataFilesNamedSql(table_id, {path}, false));
 		result->ThrowIfError("Failed to look up a data file in DuckLake: ");
-		if (ReadCanonicalPaths(*result, fs, table.DataPath(), separator).count(key)) {
-			return true;
+		for (auto &row : *result) {
+			auto file_path = ReadPath(row, 0);
+			// a committed file the transaction dropped can be registered again
+			if (IsDroppedFile(FromRelativePath(file_path, table.DataPath()), row.GetValue<idx_t>(2))) {
+				continue;
+			}
+			if (DuckLakeUtil::CanonicalPathKey(fs, FromRelativePath(file_path, table.DataPath(), separator)) == key) {
+				return true;
+			}
 		}
 	}
 	// a file a merge or an expiry scheduled for deletion is gone at the next cleanup
 	auto scheduled = Query(GetScheduledFilesNamedSql({path}));
 	scheduled->ThrowIfError("Failed to look up a file scheduled for deletion in DuckLake: ");
 	return ReadCanonicalPaths(*scheduled, fs, transaction.GetCatalog().DataPath(), separator).count(key) > 0;
+}
+
+bool DuckLakeMetadataManager::IsDroppedFile(const string &path, idx_t data_file_id) const {
+	auto &dropped_files = transaction.GetDroppedFiles();
+	auto dropped = dropped_files.find(path);
+	return dropped != dropped_files.end() && dropped->second.index == data_file_id;
 }
 
 vector<DuckLakeFileListEntry>
@@ -6696,8 +6709,8 @@ string DuckLakeMetadataManager::GetDataFilesNamedSql(TableIndex table_id, const 
 	// and every file keeps its path until the cleanup after its expiry removed it, also one with an end snapshot
 	auto snapshot_filter =
 	    committed_after_snapshot ? "data_file_id >= {NEXT_FILE_ID}" : "data_file_id < {NEXT_FILE_ID}";
-	return StringUtil::Format("SELECT path, path_is_relative FROM {METADATA_CATALOG}.ducklake_data_file WHERE "
-	                          "table_id = %d AND %s AND %s",
+	return StringUtil::Format("SELECT path, path_is_relative, data_file_id FROM "
+	                          "{METADATA_CATALOG}.ducklake_data_file WHERE table_id = %d AND %s AND %s",
 	                          table_id.index, FileNameCondition(paths), snapshot_filter);
 }
 

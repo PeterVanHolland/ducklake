@@ -191,6 +191,59 @@ SELECT i FROM ducklake.r
 ----
 1
 
+# a file the transaction removed can be added again in that transaction, once
+statement ok
+COPY (SELECT 5::INT AS i) TO '{LOCAL_DATA_PATH}/existing_removed.parquet' (FORMAT parquet)
+
+statement ok
+CREATE TABLE ducklake.rr(i INTEGER)
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'rr', '{LOCAL_DATA_PATH}/existing_removed.parquet')
+
+statement ok
+SET VARIABLE removed = (SELECT data_file FROM ducklake_list_files('ducklake', 'rr'))
+
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_remove_data_files('ducklake', 'rr', getvariable('removed'))
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'rr', '{LOCAL_DATA_PATH}/existing_removed.parquet')
+
+statement error
+CALL ducklake_add_data_files('ducklake', 'rr', '{LOCAL_DATA_PATH}/existing_removed.parquet')
+----
+existing_removed.parquet" is already a data file of table "rr"
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+CALL ducklake_remove_data_files('ducklake', 'rr', getvariable('removed'))
+
+statement ok
+CALL ducklake_add_data_files('ducklake', 'rr', '{LOCAL_DATA_PATH}/existing_removed.parquet')
+
+statement ok
+COMMIT
+
+query II
+SELECT i, (SELECT file_count FROM ducklake_table_info('ducklake') WHERE table_name = 'rr') FROM ducklake.rr
+----
+5	1
+
+# the removed file keeps the path after the commit
+statement error
+CALL ducklake_add_data_files('ducklake', 'rr', '{LOCAL_DATA_PATH}/existing_removed.parquet')
+----
+existing_removed.parquet" is already a data file of table "rr"
+
 # two transactions that register the same path before either commits
 statement ok
 COPY (SELECT 44::INT AS i) TO '{LOCAL_DATA_PATH}/existing_concurrent.parquet' (FORMAT parquet)

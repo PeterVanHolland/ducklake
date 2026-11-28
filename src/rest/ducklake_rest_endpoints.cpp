@@ -546,7 +546,8 @@ static bool AnswerAggregates(DuckLakeRESTRequest &request, DuckLakeTableEntry &t
 				auto &column_stats = *stats;
 				if (aggregate.function == "count") {
 					// the table statistics only know whether a column has NULLs, not how many
-					if (column_stats.has_null_count && column_stats.null_count == 0) {
+					if (StoredStatsShowNulls(field->Type()) && column_stats.has_null_count &&
+					    column_stats.null_count == 0) {
 						result.answered = true;
 						result.value = Value::BIGINT(NumericCast<int64_t>(net_count.GetIndex()));
 					}

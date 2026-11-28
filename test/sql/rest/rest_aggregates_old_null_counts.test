@@ -1,0 +1,29 @@
+# name: test/sql/rest/rest_aggregates_old_null_counts.test
+# description: A REST server does not count INTERVAL and TIMETZ values from the statistics that DuckDB 1.4 wrote
+# group: [rest]
+
+require json
+
+include test/template/rest_setup.test_template
+
+# written by DuckDB 1.4.4, row 2 of 3 holds a NULL in the INTERVAL column 2 and in the TIMETZ column 3
+unzip data/old_ducklake/v03_null_counts.db.gz {TEST_DIR}/rest_aggregates_old_null_counts.db
+
+statement ok rest_db:rest_server_con
+ATTACH 'ducklake:{TEST_DIR}/rest_aggregates_old_null_counts.db' AS legacy
+(DATA_PATH 'data/old_ducklake/v03_null_counts/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+statement ok rest_db:rest_server_con
+SET VARIABLE legacy_listen_uri = (SELECT listen_uri FROM ducklake_rest_serve('legacy', port := regexp_extract(getvariable('rest_listen_uri'), ':([0-9]+)/', 1)::UBIGINT))
+
+set variable legacy_server <variable:rest_server_con:legacy_listen_uri>
+
+query III
+SELECT response->>'$.aggregate_results[0].value', response->>'$.aggregate_results[1].answered',
+       response->>'$.aggregate_results[2].answered'
+FROM ducklake_rest_request('{legacy_server}', 'POST', '/v1/legacy/tables/1/scan',
+'{"aggregates": [{"function": "count_star"}, {"function": "count", "column_id": 2}, {"function": "count", "column_id": 3}]}')
+----
+3	false	false
+
+include test/template/rest_teardown.test_template

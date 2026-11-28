@@ -1,0 +1,111 @@
+# name: test/sql/stats/old_null_counts_interval_timetz.test
+# description: NULL tests on INTERVAL and TIMETZ columns, whose statistics DuckDB 1.4 wrote without counting a NULL
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/old_null_counts_interval_timetz', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t (id INTEGER, tz TIMETZ)
+
+statement ok
+INSERT INTO dl.t VALUES (1, TIMETZ '01:02:03+05')
+
+statement ok
+INSERT INTO dl.t VALUES (2, NULL), (3, TIMETZ '02:02:03+05')
+
+statement ok
+INSERT INTO dl.t VALUES (4, NULL)
+
+query I
+SELECT list(id ORDER BY id) FROM dl.t WHERE tz IS NULL
+----
+[2, 4]
+
+# a file written now has bounds next to its counts, so the one without a NULL is still pruned
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM dl.t WHERE tz IS NULL
+----
+analyzed_plan	<REGEX>:.*Total Files Read: 2.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM dl.t WHERE tz IS NOT NULL
+----
+analyzed_plan	<REGEX>:.*Total Files Read: 2.*
+
+# written by DuckDB 1.4.4, row 2 holds a NULL in every column but id and row 3 a NULL struct
+unzip data/old_ducklake/v03_null_counts.db.gz {TEST_DIR}/old_null_counts_legacy.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/old_null_counts_legacy.db' AS legacy
+(DATA_PATH 'data/old_ducklake/v03_null_counts/', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+ DATA_INLINING_ROW_LIMIT 10)
+
+query IIII
+SELECT c.column_name, s.value_count, s.null_count, t.contains_null
+FROM __ducklake_metadata_legacy.ducklake_file_column_stats s
+JOIN __ducklake_metadata_legacy.ducklake_column c USING (table_id, column_id)
+JOIN __ducklake_metadata_legacy.ducklake_table_column_stats t USING (table_id, column_id)
+WHERE c.column_type IN ('interval', 'timetz') ORDER BY c.column_id
+----
+iv	3	0	false
+tz	3	0	false
+a	3	0	false
+b	3	0	false
+
+query IIII
+SELECT (SELECT list(id ORDER BY id) FROM legacy.t WHERE iv IS NULL),
+       (SELECT list(id ORDER BY id) FROM legacy.t WHERE tz IS NULL),
+       (SELECT list(id ORDER BY id) FROM legacy.t WHERE s.a IS NULL),
+       (SELECT list(id ORDER BY id) FROM legacy.t WHERE s.b IS NULL)
+----
+[2]	[2]	[2, 3]	[2, 3]
+
+query IIII
+SELECT (SELECT list(id ORDER BY id) FROM legacy.t WHERE iv IS NOT NULL),
+       (SELECT list(id ORDER BY id) FROM legacy.t WHERE tz IS NOT NULL),
+       (SELECT list(id ORDER BY id) FROM legacy.t WHERE s.a IS NOT NULL),
+       (SELECT list(id ORDER BY id) FROM legacy.t WHERE s.b IS NOT NULL)
+----
+[1, 3]	[1, 3]	[1]	[1]
+
+# rolled back, the fixture keeps its files
+statement ok
+BEGIN
+
+query I
+UPDATE legacy.t SET id = id + 10 WHERE tz IS NULL
+----
+1
+
+query I
+DELETE FROM legacy.t WHERE iv IS NULL
+----
+1
+
+query I
+SELECT list(id ORDER BY id) FROM legacy.t
+----
+[1, 3]
+
+statement ok
+ROLLBACK
+
+# the table statistics say that the columns hold no NULL
+statement error
+ALTER TABLE legacy.t ALTER COLUMN tz SET NOT NULL
+----
+the column has NULL values
+
+statement error
+ALTER TABLE legacy.t ALTER COLUMN iv SET NOT NULL
+----
+the column has NULL values

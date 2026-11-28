@@ -82,6 +82,16 @@ SELECT count(*), sum(id), min(length(c)) FROM dl.large
 ----
 23	271	4194304
 
+# the deleted row is read alone, with the snapshot that ended it
+statement ok
+SET VARIABLE delete_snapshot = (SELECT max(snapshot_id) FROM ducklake_snapshots('dl'))
+
+query III
+SELECT snapshot_id = getvariable('delete_snapshot'), id, length(c)
+FROM ducklake_table_deletions('dl', 'main', 'large', getvariable('delete_snapshot'), getvariable('delete_snapshot'))
+----
+true	5	4194304
+
 statement ok
 CALL ducklake_flush_inlined_data('dl', table_name => 'large');
 

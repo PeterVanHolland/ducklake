@@ -4926,7 +4926,8 @@ string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const L
 }
 
 string DuckLakeMetadataManager::InlinedFlushSource(const Identifier &inlined_table_name,
-                                                   const DuckLakeTableEntry &table) {
+                                                   const DuckLakeTableEntry &table,
+                                                   optional_ptr<const pair<idx_t, idx_t>> listed_row) {
 	auto col_names = InlinedColNames();
 	vector<string> projection {SQLIdentifier::ToString(col_names.row_id),
 	                           SQLIdentifier::ToString(col_names.begin_snapshot),
@@ -4954,7 +4955,7 @@ string DuckLakeMetadataManager::InlinedFlushSource(const Identifier &inlined_tab
 		                            col_names.row_id, SQLString(StringUtil::Join(row_ids, ",")), col_names.end_snapshot,
 		                            col_names.end_snapshot);
 	}
-	auto source = InlinedRowSource(inlined_table_name);
+	auto source = InlinedRowSource(inlined_table_name, listed_row);
 	if (!has_casts && filter.empty()) {
 		return source;
 	}
@@ -5007,25 +5008,39 @@ optional_idx DuckLakeMetadataManager::ParseInlinedTableName(const string &name, 
 }
 
 string DuckLakeMetadataManager::InlinedRowSource(const Identifier &inlined_table_name,
-                                                 const DuckLakeInlinedColNames &col_names, bool row_visibility) {
+                                                 const DuckLakeInlinedColNames &col_names, bool row_visibility,
+                                                 optional_ptr<const pair<idx_t, idx_t>> listed_row) {
 	auto source = "{METADATA_CATALOG}." + inlined_table_name;
 	if (!row_visibility) {
 		return source;
 	}
 	// the versions born on main with their end of main, at most one per version, under the end column name of 1.x
 	auto kind = InlinedRowKind(inlined_table_name, col_names);
+	auto row_branch = StringUtil::Format("inlined_data.%s", col_names.branch_id);
+	auto row_snapshot = StringUtil::Format("inlined_data.%s", col_names.begin_snapshot);
+	string listed_filter;
+	if (listed_row) {
+		// the end is matched by the constants of the key, a scan that projects its filter columns reads whole vectors
+		kind.key_literals.back() = to_string(listed_row->first);
+		row_branch = "0";
+		row_snapshot = to_string(listed_row->second);
+		listed_filter = StringUtil::Format(" AND inlined_data.%s = %d AND inlined_data.%s = %d", col_names.row_id,
+		                                   listed_row->first, col_names.begin_snapshot, listed_row->second);
+	}
 	return StringUtil::Format(R"((SELECT inlined_data.*, inlined_data_end.end_snapshot AS %s
 FROM %s inlined_data
 LEFT JOIN {METADATA_CATALOG}.ducklake_inlined_data_visibility inlined_data_end
-    ON inlined_data_end.branch_id = 0 AND %s AND inlined_data_end.row_branch_id = inlined_data.%s
-       AND inlined_data_end.row_snapshot = inlined_data.%s
-WHERE inlined_data.%s = 0))",
+    ON inlined_data_end.branch_id = 0 AND %s AND inlined_data_end.row_branch_id = %s
+       AND inlined_data_end.row_snapshot = %s
+WHERE inlined_data.%s = 0%s))",
 	                          col_names.end_snapshot, source, KeyMatches(kind, "inlined_data_end", "inlined_data"),
-	                          col_names.branch_id, col_names.begin_snapshot, col_names.branch_id);
+	                          row_branch, row_snapshot, col_names.branch_id, listed_filter);
 }
 
-string DuckLakeMetadataManager::InlinedRowSource(const Identifier &inlined_table_name) const {
-	return InlinedRowSource(inlined_table_name, InlinedColNames(), transaction.GetCatalog().SupportsRowVisibility());
+string DuckLakeMetadataManager::InlinedRowSource(const Identifier &inlined_table_name,
+                                                 optional_ptr<const pair<idx_t, idx_t>> listed_row) const {
+	return InlinedRowSource(inlined_table_name, InlinedColNames(), transaction.GetCatalog().SupportsRowVisibility(),
+	                        listed_row);
 }
 
 DuckLakeInlinedColNames DuckLakeMetadataManager::InlinedColNames() const {
@@ -6052,8 +6067,8 @@ unique_ptr<QueryResult> DuckLakeMetadataManager::ReadInlinedData(DuckLakeSnapsho
 	auto condition = StringUtil::Format("{SNAPSHOT_ID} >= %s AND ({SNAPSHOT_ID} < %s OR %s IS NULL)",
 	                                    col_names.begin_snapshot, col_names.end_snapshot, col_names.end_snapshot);
 	auto order = col_names.row_id + " ASC, " + col_names.begin_snapshot + " ASC";
-	return Query(snapshot,
-	             InlinedPageQuery(columns_to_read, InlinedRowSource(inlined_table_name), condition, order, true, page));
+	return Query(snapshot, InlinedPageQuery(columns_to_read, InlinedRowSource(inlined_table_name, page.ListedRow()),
+	                                        condition, order, true, page));
 }
 
 unique_ptr<QueryResult> DuckLakeMetadataManager::ReadInlinedDataChanges(
@@ -6063,8 +6078,8 @@ unique_ptr<QueryResult> DuckLakeMetadataManager::ReadInlinedDataChanges(
 	auto condition = StringUtil::Format("inlined_data.%s >= %d AND inlined_data.%s <= {SNAPSHOT_ID}", snapshot_column,
 	                                    start_snapshot.snapshot_id, snapshot_column);
 	auto order = col_names.row_id + " ASC, " + col_names.begin_snapshot + " ASC";
-	return Query(end_snapshot,
-	             InlinedPageQuery(columns_to_read, InlinedRowSource(inlined_table_name), condition, order, true, page));
+	return Query(end_snapshot, InlinedPageQuery(columns_to_read, InlinedRowSource(inlined_table_name, page.ListedRow()),
+	                                            condition, order, true, page));
 }
 
 unique_ptr<QueryResult> DuckLakeMetadataManager::ReadInlinedDataInsertions(DuckLakeSnapshot start_snapshot,
@@ -6095,8 +6110,9 @@ unique_ptr<QueryResult> DuckLakeMetadataManager::ReadAllInlinedDataForFlush(
 		order = "ROW_NUMBER() OVER (ORDER BY " + order + ") ASC";
 	}
 	auto condition = StringUtil::Format("{SNAPSHOT_ID} >= %s", col_names.begin_snapshot);
-	return Query(snapshot, InlinedPageQuery(columns_to_read, InlinedFlushSource(inlined_table_name, table), condition,
-	                                        order, sort_order_sql.empty(), page));
+	return Query(snapshot,
+	             InlinedPageQuery(columns_to_read, InlinedFlushSource(inlined_table_name, table, page.ListedRow()),
+	                              condition, order, sort_order_sql.empty(), page));
 }
 
 DuckLakeDeletedRowVersions DuckLakeMetadataManager::GetDeletedInlinedRowVersions(DuckLakeTableEntry &table,

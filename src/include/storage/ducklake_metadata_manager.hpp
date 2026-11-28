@@ -88,6 +88,14 @@ struct DuckLakeInlinedDataPage {
 	vector<pair<idx_t, idx_t>> keys;
 	//! Whether the query orders the listed rows, a sort of large values takes more memory than the rows
 	bool order_listed_rows = true;
+
+	//! The key of the one row a page lists without an order, none for the other pages
+	optional_ptr<const pair<idx_t, idx_t>> ListedRow() const {
+		if (type != DuckLakeInlinedPageType::LISTED_ROWS || order_listed_rows) {
+			return nullptr;
+		}
+		return keys.front();
+	}
 };
 
 //! Metadata column names inside ducklake_inlined_data_<table_id>_<schema_version> tables.
@@ -375,7 +383,8 @@ public:
 	virtual string GetColumnTypeInternal(const LogicalType &column_type);
 	string CastColumnToTarget(const string &column, const LogicalType &type);
 	//! The inlined rows to flush with typed columns, without those this transaction deleted
-	string InlinedFlushSource(const Identifier &inlined_table_name, const DuckLakeTableEntry &table);
+	string InlinedFlushSource(const Identifier &inlined_table_name, const DuckLakeTableEntry &table,
+	                          optional_ptr<const pair<idx_t, idx_t>> listed_row = nullptr);
 	//! The order of the rows in a flushed file
 	string InlinedFlushOrder(const string &sort_order_sql) const;
 
@@ -447,9 +456,11 @@ public:
 	static string EndRows(const RowVisibilityKind &kind, const string &filter);
 	static string EndRows(const string &kind, const string &filter);
 	//! The inlined rows to read, from 2.0 on those born on main with their end of main under the end column name
+	//! A listed row is the only row of the source, matched with its end by its key
 	static string InlinedRowSource(const Identifier &inlined_table_name, const DuckLakeInlinedColNames &col_names,
-	                               bool row_visibility);
-	string InlinedRowSource(const Identifier &inlined_table_name) const;
+	                               bool row_visibility, optional_ptr<const pair<idx_t, idx_t>> listed_row = nullptr);
+	string InlinedRowSource(const Identifier &inlined_table_name,
+	                        optional_ptr<const pair<idx_t, idx_t>> listed_row = nullptr) const;
 	//! The columns of the file tables, with the inline ranges before the events and the row group count from 1.1 on
 	static string DataFileTableColumns(bool with_ranges, bool with_row_group_count);
 	static string DeleteFileTableColumns(bool with_ranges, bool with_row_group_count);

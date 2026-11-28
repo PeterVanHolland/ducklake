@@ -5417,7 +5417,8 @@ string DuckLakeMetadataManager::WriteNewViews(const vector<DuckLakeViewInfo> &ne
 }
 
 static unique_ptr<SQLStatement> InlinedDataInsert(DuckLakeTransaction &transaction, const DuckLakeSnapshot &snapshot,
-                                                  const DuckLakeInlinedDataInfo &entry, const Identifier &table_name) {
+                                                  const DuckLakeInlinedDataInfo &entry, const Identifier &table_name,
+                                                  vector<Identifier> column_names) {
 	auto &metadata_manager = transaction.GetMetadataManager();
 	auto &catalog = transaction.GetCatalog();
 	auto context = transaction.context.lock();
@@ -5466,6 +5467,7 @@ static unique_ptr<SQLStatement> InlinedDataInsert(DuckLakeTransaction &transacti
 	select->from_table->alias = "inlined_data";
 	auto statement = make_uniq<InsertStatement>();
 	statement->node->SetQualifiedName(catalog.MetadataDatabaseName(), catalog.MetadataSchemaName(), table_name);
+	statement->node->columns = std::move(column_names);
 	statement->node->select_statement = make_uniq<SelectStatement>();
 	statement->node->select_statement->node = std::move(select);
 	// describe the statement for query logs without its rows
@@ -5477,7 +5479,43 @@ static unique_ptr<SQLStatement> InlinedDataInsert(DuckLakeTransaction &transacti
 	return std::move(statement);
 }
 
+vector<Identifier> DuckLakeMetadataManager::InlinedRowColumnNames(TableIndex table_id, DuckLakeSnapshot snapshot,
+                                                                  optional_ptr<const DuckLakeTableInfo> new_table,
+                                                                  const vector<DuckLakeTableInfo> &new_tables) {
+	auto col_names = InlinedColNames();
+	vector<Identifier> names {col_names.row_id, col_names.begin_snapshot};
+	if (!col_names.has_branch_id) {
+		names.push_back(col_names.end_snapshot);
+	}
+	for (auto &table : new_tables) {
+		if (!new_table && table.id == table_id) {
+			new_table = &table;
+		}
+	}
+	if (new_table) {
+		for (auto &column : new_table->columns) {
+			names.push_back(column.name);
+		}
+	} else {
+		auto table_entry = transaction.GetCatalog().GetEntryById(transaction, snapshot, table_id);
+		if (!table_entry) {
+			// LCOV_EXCL_START
+			return vector<Identifier>();
+			// LCOV_EXCL_STOP
+		}
+		for (auto &column : table_entry->Cast<DuckLakeTableEntry>().GetColumns().Logical()) {
+			names.push_back(column.Name());
+		}
+	}
+	// the birth branch follows the columns of the table from 2.0 on
+	if (col_names.has_branch_id) {
+		names.push_back(col_names.branch_id);
+	}
+	return names;
+}
+
 string DuckLakeMetadataManager::WriteNewInlinedData(DuckLakeSnapshot &commit_snapshot,
+                                                    const DuckLakeSnapshot &transaction_snapshot,
                                                     const vector<DuckLakeInlinedDataInfo> &new_data,
                                                     const vector<DuckLakeTableInfo> &new_tables,
                                                     const vector<DuckLakeTableInfo> &new_inlined_data_tables_result,
@@ -5580,15 +5618,18 @@ string DuckLakeMetadataManager::WriteNewInlinedData(DuckLakeSnapshot &commit_sna
 		for (auto &type : entry.data->data->Types()) {
 			needs_encoding |= DuckLakeUtil::GetInlinedStorageType(*this, type) != type;
 		}
+		auto column_names = InlinedRowColumnNames(entry.table_id, transaction_snapshot, new_inlined_table, new_tables);
 		if (needs_encoding || InsertsInlinedRowsAfterBatch(entry.data->data->Count())) {
-			inlined_inserts.push_back(InlinedDataInsert(transaction, commit_snapshot, entry, inlined_table_name));
+			inlined_inserts.push_back(
+			    InlinedDataInsert(transaction, commit_snapshot, entry, inlined_table_name, std::move(column_names)));
 			continue;
 		}
 		const bool has_preserved_row_ids = entry.data->HasPreservedRowIds();
 		auto cells_per_row = DuckLakeUtil::InlinedDataToSQL(transaction, *entry.data->data);
 		batch_query += FormatInlinedDataInsert(inlined_table_name, entry.row_id_start, has_preserved_row_ids,
 		                                       has_preserved_row_ids ? &entry.data->row_ids : nullptr, cells_per_row,
-		                                       transaction.GetCatalog().SupportsRowVisibility());
+		                                       transaction.GetCatalog().SupportsRowVisibility(),
+		                                       DuckLakeUtil::ToQuotedList(column_names));
 	}
 	return batch_query;
 }
@@ -5596,7 +5637,8 @@ string DuckLakeMetadataManager::WriteNewInlinedData(DuckLakeSnapshot &commit_sna
 //! Parsing a statement takes memory proportional to its length, so large VALUES lists are split over statements
 string DuckLakeMetadataManager::FormatInlinedDataInsert(const Identifier &inlined_table_name, idx_t row_id_start,
                                                         bool has_preserved_row_ids, const vector<int64_t> *row_ids,
-                                                        const vector<string> &cells_per_row, bool row_visibility) {
+                                                        const vector<string> &cells_per_row, bool row_visibility,
+                                                        const string &column_list) {
 	if (cells_per_row.empty()) {
 		return string();
 	}
@@ -5617,7 +5659,11 @@ string DuckLakeMetadataManager::FormatInlinedDataInsert(const Identifier &inline
 		    StringUtil::Format(row_visibility ? "(%lld, {SNAPSHOT_ID}, %s, 0)" : "(%lld, {SNAPSHOT_ID}, NULL, %s)",
 		                       emit_rid, cells_per_row[i]));
 	}
-	return InsertValuesSql(SQLIdentifier::ToString(inlined_table_name), tuples);
+	auto target = SQLIdentifier::ToString(inlined_table_name);
+	if (!column_list.empty()) {
+		target += " (" + column_list + ")";
+	}
+	return InsertValuesSql(target, tuples);
 }
 
 //! Ends the latest version of each deleted row id born on main before the commit, without a probe of the companion:
@@ -5950,18 +5996,24 @@ shared_ptr<DuckLakeInlinedData> DuckLakeMetadataManager::TransformInlinedData(Qu
 		// LCOV_EXCL_STOP
 	}
 	for (idx_t i = 0; i < expected_types.size(); i++) {
-		if (result_types[i] != expected_types[i]) {
+		if (result_types[i] == expected_types[i]) {
+			continue;
+		}
+		// a wider integer column holds the values of the expected type, any other value fails the cast
+		if (!expected_types[i].IsIntegral() || !result_types[i].IsIntegral() ||
+		    !TypePromotionIsAllowed(expected_types[i], result_types[i])) {
 			throw InvalidInputException("Failed to read inlined data from DuckLake table %s: expected %s for "
 			                            "column %llu but read %s",
 			                            inlined_table_name, expected_types[i], i + 1, result_types[i]);
 		}
 	}
-	auto data = make_uniq<ColumnDataCollection>(*context, expected_types);
+	auto data = make_uniq<ColumnDataCollection>(*context, result_types);
 	while (auto chunk = result.Fetch()) {
 		data->Append(*chunk);
 	}
 	auto inlined_data = make_shared_ptr<DuckLakeInlinedData>();
 	inlined_data->data = std::move(data);
+	inlined_data->CastTo(*context, expected_types);
 	return inlined_data;
 }
 

@@ -95,7 +95,8 @@ private:
 	//! Emits all new data files and their attached deletes.
 	string EmitDataFiles(const LocalTableChanges &local_changes, idx_t &local_file_id) const;
 	//! Emits inlined data rows, tuple literals, and per-column stats.
-	string EmitInlinedData(const LocalTableChanges &local_changes, DuckLakeTransaction &transaction) const;
+	string EmitInlinedData(const LocalTableChanges &local_changes, DuckLakeTransaction &transaction,
+	                       const DuckLakeSnapshot &transaction_snapshot) const;
 	//! Emits inlined row-level deletes (by inlined table name).
 	string EmitInlinedDeletes(const LocalTableChanges &local_changes) const;
 	//! Emits inlined file-level deletes (by file id + row id).

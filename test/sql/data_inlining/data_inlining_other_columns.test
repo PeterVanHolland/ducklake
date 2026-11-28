@@ -1,0 +1,118 @@
+# name: test/sql/data_inlining/data_inlining_other_columns.test
+# description: an inlined insert names its columns, so an inlined data table with other columns takes no row by position
+# group: [data_inlining]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CREATE TABLE dl.renamed (i INTEGER, j INTEGER)
+
+statement ok
+CREATE TABLE dl.widened (i INTEGER, j INTEGER)
+
+statement ok
+CREATE TABLE dl.added (i INTEGER, j INTEGER)
+
+statement ok
+INSERT INTO dl.renamed VALUES (1, 10)
+
+statement ok
+INSERT INTO dl.widened VALUES (1, 10)
+
+statement ok
+INSERT INTO dl.added VALUES (1, 10)
+
+query I
+SELECT table_name FROM __ducklake_metadata_dl.ducklake_inlined_data_tables ORDER BY ALL
+----
+ducklake_inlined_data_1_1
+ducklake_inlined_data_2_2
+ducklake_inlined_data_3_3
+
+# as DuckDB 1.5.6 left an inlined table after a lost RENAME COLUMN, ALTER TYPE and ADD COLUMN
+statement ok
+CREATE TEMP TABLE renamed_rows AS
+SELECT * RENAME (i AS i2) FROM __ducklake_metadata_dl.ducklake_inlined_data_1_1
+
+statement ok
+DROP TABLE __ducklake_metadata_dl.ducklake_inlined_data_1_1
+
+statement ok
+CREATE TABLE __ducklake_metadata_dl.ducklake_inlined_data_1_1 AS SELECT * FROM renamed_rows
+
+statement ok
+CREATE TEMP TABLE widened_rows AS
+SELECT * REPLACE (i::BIGINT AS i) FROM __ducklake_metadata_dl.ducklake_inlined_data_2_2
+
+statement ok
+DROP TABLE __ducklake_metadata_dl.ducklake_inlined_data_2_2
+
+statement ok
+CREATE TABLE __ducklake_metadata_dl.ducklake_inlined_data_2_2 AS SELECT * FROM widened_rows
+
+statement ok
+CREATE TEMP TABLE added_rows AS
+SELECT *, NULL::INTEGER AS c FROM __ducklake_metadata_dl.ducklake_inlined_data_3_3
+
+statement ok
+DROP TABLE __ducklake_metadata_dl.ducklake_inlined_data_3_3
+
+statement ok
+CREATE TABLE __ducklake_metadata_dl.ducklake_inlined_data_3_3 AS SELECT * FROM added_rows
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', DATA_INLINING_ROW_LIMIT 10)
+
+statement error
+INSERT INTO dl.renamed VALUES (2, 20)
+----
+column
+
+query I
+SELECT count(*) FROM __ducklake_metadata_dl.ducklake_inlined_data_1_1
+----
+1
+
+statement ok
+INSERT INTO dl.widened VALUES (2, 20)
+
+query II
+SELECT * FROM dl.widened ORDER BY ALL
+----
+1	10
+2	20
+
+statement ok
+INSERT INTO dl.added VALUES (2, 20)
+
+query II
+SELECT * FROM dl.added ORDER BY ALL
+----
+1	10
+2	20
+
+# a change of the columns starts a new inlined table
+statement ok
+ALTER TABLE dl.renamed ADD COLUMN k INTEGER
+
+statement ok
+INSERT INTO dl.renamed VALUES (3, 30, 300)
+
+query II
+SELECT count(*), sum(k) FROM dl.renamed
+----
+2	300

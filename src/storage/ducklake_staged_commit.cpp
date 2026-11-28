@@ -90,7 +90,7 @@ string DuckLakeStagedTable::Columns(DuckLakeStagedTableType type) {
 		       "overwrite_delete_file_id BIGINT, overwrite_delete_file_path VARCHAR, "
 		       "attached_local_file_id BIGINT, row_group_count BIGINT";
 	case DuckLakeStagedTableType::INLINED_DATA:
-		return "table_id BIGINT, has_preserved_row_ids BOOLEAN";
+		return "table_id BIGINT, has_preserved_row_ids BOOLEAN, column_names VARCHAR";
 	case DuckLakeStagedTableType::INLINED_ROW:
 		return "table_id BIGINT, row_order BIGINT, preserved_row_id BIGINT, value_literals VARCHAR";
 	case DuckLakeStagedTableType::INLINED_COLUMN_STATS:
@@ -296,8 +296,8 @@ string DuckLakeStagedCommit::EmitDataFiles(const LocalTableChanges &local_change
 	return sql;
 }
 
-string DuckLakeStagedCommit::EmitInlinedData(const LocalTableChanges &local_changes,
-                                             DuckLakeTransaction &transaction) const {
+string DuckLakeStagedCommit::EmitInlinedData(const LocalTableChanges &local_changes, DuckLakeTransaction &transaction,
+                                             const DuckLakeSnapshot &transaction_snapshot) const {
 	string sql;
 
 	for (auto &entry : local_changes.Changes()) {
@@ -308,9 +308,11 @@ string DuckLakeStagedCommit::EmitInlinedData(const LocalTableChanges &local_chan
 		}
 		auto &inlined = *table_changes.new_inlined_data;
 		const bool has_preserved = inlined.HasPreservedRowIds();
-		sql += StringUtil::Format("INSERT INTO %s VALUES (%llu, %s);",
+		auto column_names = transaction.GetMetadataManager().InlinedRowColumnNames(table_id, transaction_snapshot);
+		sql += StringUtil::Format("INSERT INTO %s VALUES (%llu, %s, %s);",
 		                          DuckLakeStagedTable::BaseName(DuckLakeStagedTableType::INLINED_DATA), table_id.index,
-		                          DuckLakeUtil::BoolLiteral(has_preserved));
+		                          DuckLakeUtil::BoolLiteral(has_preserved),
+		                          SQLString(DuckLakeUtil::ToQuotedList(column_names)));
 		auto rows = DuckLakeUtil::InlinedDataToSQL(transaction, *inlined.data);
 		vector<string> staged_rows;
 		staged_rows.reserve(rows.size());
@@ -499,7 +501,7 @@ string DuckLakeStagedCommit::Build(DuckLakeTransaction &transaction, const DuckL
 	idx_t local_file_id = 0;
 	batch += EmitDataFiles(local_changes, local_file_id);
 	batch += EmitCompactions(local_changes, local_file_id);
-	batch += EmitInlinedData(local_changes, transaction);
+	batch += EmitInlinedData(local_changes, transaction, transaction_snapshot);
 	batch += EmitInlinedDeletes(local_changes);
 	batch += EmitInlinedFileDeletes(local_changes);
 	batch += EmitDeleteFiles(local_changes);

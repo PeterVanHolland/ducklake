@@ -1,0 +1,129 @@
+# name: test/sql/migration/v10_inlined_lost_change.test
+# description: an inlined table that DuckDB 1.5.6 left with the columns of a lost change takes no row by position
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.6, a column change and RENAME TO in one transaction for each of four tables
+# the change is not in the catalog, but the inlined table of the transaction has its columns
+# the older row of each table in ducklake_table was ended by hand, so that the catalog loads
+unzip data/old_ducklake/v10_inlined_lost_change.db.gz {TEST_DIR}/v10_inlined_lost_change.db
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_lost_change.db' AS lake
+	(DATA_PATH '{TEST_DIR}/v10_inlined_lost_change_data', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+query I
+SELECT * FROM lake.u
+----
+7
+
+# after ADD COLUMN c the inlined table has a column more
+statement ok
+INSERT INTO lake.added VALUES (2, 20)
+
+query II
+SELECT * FROM lake.added ORDER BY ALL
+----
+1	10
+2	20
+
+# after ALTER i TYPE BIGINT it stores a wider type
+statement ok
+INSERT INTO lake.widened VALUES (2, 20)
+
+query II
+SELECT * FROM lake.widened ORDER BY ALL
+----
+1	10
+2	20
+
+# after RENAME COLUMN i TO i2 and after DROP COLUMN j it lacks a column of the table
+statement error
+INSERT INTO lake.renamed VALUES (2, 20)
+----
+does not have a column with name "i"
+
+statement error
+INSERT INTO lake.dropped VALUES (2, 20)
+----
+does not have a column with name "j"
+
+# the lost changes are run again
+statement ok
+ALTER TABLE lake.renamed RENAME COLUMN i TO i2
+
+statement ok
+INSERT INTO lake.renamed VALUES (3, 30)
+
+query II
+SELECT i2, j FROM lake.renamed ORDER BY ALL
+----
+1	10
+3	30
+
+statement ok
+ALTER TABLE lake.dropped DROP COLUMN j
+
+statement ok
+INSERT INTO lake.dropped VALUES (3)
+
+query I
+SELECT * FROM lake.dropped ORDER BY ALL
+----
+1
+3
+
+statement ok
+ALTER TABLE lake.widened ALTER i TYPE BIGINT
+
+statement ok
+INSERT INTO lake.widened VALUES (5000000000, 30)
+
+query II
+SELECT * FROM lake.widened ORDER BY ALL
+----
+1	10
+2	20
+5000000000	30
+
+statement ok
+ALTER TABLE lake.added ADD COLUMN c INTEGER
+
+statement ok
+INSERT INTO lake.added VALUES (3, 30, 300)
+
+query III
+SELECT * FROM lake.added ORDER BY ALL
+----
+1	10	NULL
+2	20	NULL
+3	30	300
+
+statement ok
+CHECKPOINT lake
+
+query IIII
+SELECT (SELECT count(*) FROM lake.renamed), (SELECT count(*) FROM lake.dropped),
+	(SELECT sum(i) FROM lake.widened), (SELECT count(c) FROM lake.added)
+----
+2	2	5000000003	1
+
+statement ok
+DETACH lake
+
+# the checkpoint wrote the inlined rows to files, the migration to 2.0 converts none
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v10_inlined_lost_change.db' AS lake
+	(DATA_PATH '{TEST_DIR}/v10_inlined_lost_change_data', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+query IIII
+SELECT (SELECT count(*) FROM lake.renamed), (SELECT count(*) FROM lake.dropped),
+	(SELECT sum(i) FROM lake.widened), (SELECT count(c) FROM lake.added)
+----
+2	2	5000000003	1

@@ -43,6 +43,8 @@ struct ColumnChangeInfo {
 
 //! Returns the first GEOMETRY or VARIANT field at or below this one, whose bounds cannot be skipped
 optional_ptr<const DuckLakeFieldId> FindStatsUnsupportedField(const DuckLakeFieldId &field_id);
+//! Whether a column of the source type can be changed to the target type
+bool TypePromotionIsAllowed(const LogicalType &source, const LogicalType &target);
 
 class DuckLakeTableEntry : public TableCatalogEntry {
 public:

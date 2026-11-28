@@ -122,6 +122,8 @@ private:
 
 	//! Per-table SQL literal tuples for inlined-data inserts.
 	map<TableIndex, vector<string>> staged_inlined_tuples;
+	//! The column list of the inlined insert of a table, empty for an insert by position
+	map<TableIndex, string> staged_inlined_column_names;
 	//! Parallel row_ids for update-inlining; empty if !HasPreservedRowIds.
 	map<TableIndex, vector<int64_t>> staged_inlined_row_ids;
 	//! Cache of inlined_table_name lookups across the commit retry loop.

@@ -1261,6 +1261,10 @@ string DuckLakeMetadataManager::RowCompanionRenameSql(const string &kind) const 
 	                          RowVisibilityTableName(kind));
 }
 
+string DuckLakeMetadataManager::RowWriteOrderColumn() const {
+	return "rowid";
+}
+
 //! Adds the birth branch unless the table has it and fills the rows, since a SQLite catalog drops the default
 static string BranchColumnSql(const string &table, const string &column, bool has_column) {
 	string query;
@@ -1300,18 +1304,66 @@ string DuckLakeMetadataManager::V2_0RowCompanionsSql(const V2_0RowCompanions &ro
 		if (row.has_end_column || row.has_fenced_end_column) {
 			auto fenced = kind;
 			fenced.end_column = FencedEndColumn();
-			query += V2_0RowEndBackfillSql(fenced, pending);
+			query += V2_0RowEndBackfillSql(fenced, pending, RowWriteOrderColumn());
 		}
 		query += RowCompanionRenameSql(kind.kind);
 	}
 	return query;
 }
 
-string DuckLakeMetadataManager::V2_0RowEndBackfillSql(const RowVisibilityKind &kind, const string &pending) {
+string DuckLakeMetadataManager::V2_0RowEndBackfillSql(const RowVisibilityKind &kind, const string &pending,
+                                                      const string &write_order) {
 	string query;
 	auto table = RowTableName(kind);
 	auto &end = kind.end_column;
 	if (kind.kind == "column") {
+		// a field row whose parent column is not live at its begin ends there, and so do the fields below it
+		query += StringUtil::Format(R"(
+UPDATE {METADATA_CATALOG}.%s AS ended SET %s = ended.begin_snapshot
+WHERE (ended.table_id, ended.column_id, ended.begin_snapshot) IN (
+    WITH RECURSIVE orphan AS (
+        SELECT field.table_id, field.column_id, field.begin_snapshot, field.%s AS end_snapshot
+        FROM {METADATA_CATALOG}.%s field
+        WHERE field.parent_column IS NOT NULL AND (field.%s IS NULL OR field.%s > field.begin_snapshot)
+            AND NOT EXISTS (
+                SELECT 1 FROM {METADATA_CATALOG}.%s parent
+                WHERE parent.table_id = field.table_id AND parent.column_id = field.parent_column
+                    AND parent.begin_snapshot <= field.begin_snapshot
+                    AND (parent.%s IS NULL OR parent.%s > field.begin_snapshot))
+        UNION
+        SELECT field.table_id, field.column_id, field.begin_snapshot, field.%s
+        FROM {METADATA_CATALOG}.%s field
+        JOIN orphan ON orphan.table_id = field.table_id AND orphan.column_id = field.parent_column
+            AND orphan.begin_snapshot <= field.begin_snapshot
+            AND (orphan.end_snapshot IS NULL OR orphan.end_snapshot > field.begin_snapshot)
+        WHERE field.%s IS NULL OR field.%s > field.begin_snapshot)
+    SELECT table_id, column_id, begin_snapshot FROM orphan);
+)",
+		                            table, end, end, table, end, end, table, end, end, end, table, end, end);
+		// overlapping version rows of a column end at its next change
+		auto next_change = StringUtil::Format("%s AND later.%s > ended.%s", KeyMatches(kind, "later", "ended"),
+		                                      kind.begin_column, kind.begin_column);
+		query += StringUtil::Format(R"(
+UPDATE {METADATA_CATALOG}.%s AS ended SET %s = (
+    SELECT MIN(later.%s) FROM {METADATA_CATALOG}.%s later WHERE %s)
+WHERE EXISTS (
+    SELECT 1 FROM {METADATA_CATALOG}.%s later WHERE %s AND later.%s < ended.%s);
+)",
+		                            table, end, kind.begin_column, table, next_change, table, next_change,
+		                            kind.begin_column, end);
+		if (!write_order.empty()) {
+			// keeps the last written live row of each column and begin
+			query += StringUtil::Format(R"(
+UPDATE {METADATA_CATALOG}.%s AS ended SET %s = ended.%s
+WHERE (ended.%s IS NULL OR ended.%s > ended.%s) AND EXISTS (
+    SELECT 1 FROM {METADATA_CATALOG}.%s later
+    WHERE %s AND later.%s = ended.%s AND later.%s > ended.%s
+    AND (later.%s IS NULL OR later.%s > later.%s));
+)",
+			                            table, end, kind.begin_column, end, end, kind.begin_column, table,
+			                            KeyMatches(kind, "later", "ended"), kind.begin_column, kind.begin_column,
+			                            write_order, write_order, end, end, kind.begin_column);
+		}
 		// the version row that goes may hold the type the column's files were written with, so their bounds are unknown
 		for (auto stats_table : {"ducklake_file_column_stats", "ducklake_table_column_stats"}) {
 			query += StringUtil::Format(R"(

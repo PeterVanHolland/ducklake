@@ -1,0 +1,135 @@
+# name: test/sql/migration/v20_row_companions_same_begin_columns.test
+# description: the migration keeps the last written of the version rows that DuckDB 1.3 left a column for one begin
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{BASE_TEST_NAME}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta',
+    DUCKLAKE_VERSION '1.1', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+CREATE TABLE dl.t (a INTEGER, k INTEGER)
+
+statement ok
+INSERT INTO dl.t VALUES (1, 5)
+
+statement ok
+CREATE TABLE dl.u (x INTEGER)
+
+statement ok
+INSERT INTO dl.u VALUES (7)
+
+statement ok
+ALTER TABLE dl.t RENAME COLUMN k TO k3
+
+statement ok
+INSERT INTO dl.t VALUES (2, 6)
+
+statement ok
+ALTER TABLE dl.t RENAME COLUMN a TO a1
+
+statement ok
+CREATE TABLE dl.w (e INTEGER)
+
+statement ok
+INSERT INTO dl.w VALUES (9)
+
+statement ok
+ALTER TABLE dl.w RENAME COLUMN e TO e1
+
+# DuckDB 1.3 left every row that one transaction wrote for a column live, a later change ended them together
+statement ok
+UPDATE meta.ducklake_column SET column_type = 'int8' WHERE column_name = 'a'
+
+statement ok
+INSERT INTO meta.ducklake_column
+SELECT * REPLACE ('int32' AS column_type) FROM meta.ducklake_column WHERE column_name = 'a'
+
+statement ok
+INSERT INTO meta.ducklake_column
+SELECT * REPLACE ('k2' AS column_name) FROM meta.ducklake_column WHERE column_name = 'k'
+
+statement ok
+INSERT INTO meta.ducklake_column
+SELECT * REPLACE ('e2' AS column_name) FROM meta.ducklake_column WHERE column_name = 'e1'
+
+query IIII
+SELECT column_name, column_type, begin_snapshot, end_snapshot FROM meta.ducklake_column
+WHERE column_name <> 'x' ORDER BY table_id, column_id, begin_snapshot, column_name, column_type
+----
+a	int32	1	7
+a	int8	1	7
+a1	int32	7	NULL
+k	int32	1	5
+k2	int32	1	5
+k3	int32	5	NULL
+e	int32	8	10
+e1	int32	10	NULL
+e2	int32	10	NULL
+
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl (DATA_PATH '{DATA_PATH}/{BASE_TEST_NAME}_files', METADATA_CATALOG 'meta',
+    AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 0)
+
+# the row written last stays for each begin
+query IIII
+SELECT c.column_name, c.column_type, c.begin_snapshot, v.end_snapshot FROM meta.ducklake_column c
+LEFT JOIN meta.ducklake_column_visibility v
+    ON c.table_id = v.table_id AND c.column_id = v.column_id AND c.begin_snapshot = v.row_snapshot
+WHERE c.column_name <> 'x' ORDER BY c.table_id, c.column_id, c.begin_snapshot
+----
+a	int32	1	7
+a1	int32	7	NULL
+k2	int32	1	5
+k3	int32	5	NULL
+e	int32	8	10
+e2	int32	10	NULL
+
+query III
+SELECT a, typeof(a), k2 FROM dl.t AT (VERSION => 2)
+----
+1	INTEGER	5
+
+# a snapshot before the later change loads for every table of the lake
+query I
+SELECT * FROM dl.u AT (VERSION => 4)
+----
+7
+
+# the column that no later change ended
+query I
+SELECT string_agg(column_name, ',') FROM (DESCRIBE dl.w)
+----
+e2
+
+statement ok
+INSERT INTO dl.w VALUES (10)
+
+# the files of every schema version bind to a table that loads
+statement ok
+CALL ducklake_merge_adjacent_files('dl')
+
+statement ok
+CHECKPOINT dl
+
+query II
+SELECT * FROM dl.t ORDER BY a1
+----
+1	5
+2	6
+
+query I
+SELECT * FROM dl.w ORDER BY e2
+----
+9
+10

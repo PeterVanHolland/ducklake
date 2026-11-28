@@ -3324,7 +3324,7 @@ string DuckLakeMetadataManager::GenerateColumnFilterCondition(const ColumnFilter
 		if (!FileStatsShowNulls(column_filter.column_type)) {
 			return string();
 		}
-		// a TIMETZ file of DuckDB 1.4 and older counts no NULL and has no bounds, unlike one that counted them
+		// TIMETZ counts without bounds may be unreliable
 		if (!StoredStatsShowNulls(column_filter.column_type)) {
 			referenced_stats.insert("min_value");
 		}

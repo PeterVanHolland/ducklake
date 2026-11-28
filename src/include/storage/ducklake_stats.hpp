@@ -34,7 +34,7 @@ inline bool FileStatsShowNulls(const LogicalType &type) {
 	return !type.IsNested() && type.id() != LogicalTypeId::INTERVAL;
 }
 
-//! Stored statistics do not show the NULL values of TIMETZ either, DuckDB 1.5 and older stored none without counting
+//! Whether stored NULL statistics are reliable for this type, DuckDB 1.5 and older counted no NULL in TIMETZ either
 inline bool StoredStatsShowNulls(const LogicalType &type) {
 	return FileStatsShowNulls(type) && type.id() != LogicalTypeId::TIME_TZ;
 }

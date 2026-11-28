@@ -777,7 +777,7 @@ unique_ptr<CatalogEntry> DuckLakeTableEntry::AlterTable(ClientContext &context, 
 	// the stats only rule out NULL values when they count no NULL in the committed rows
 	bool stats_show_no_nulls = false;
 	auto stats = GetTableStats(transaction);
-	if (stats && FileStatsShowNulls(col.Type())) {
+	if (stats && StoredStatsShowNulls(col.Type())) {
 		auto column_stats = stats->column_stats.find(field_id.GetFieldIndex());
 		if (column_stats != stats->column_stats.end()) {
 			auto &col_stats = column_stats->second;

@@ -33,7 +33,7 @@ SELECT * FROM ducklake_flush_inlined_data('lake')
 main	t	100
 
 query I
-SELECT count(*) FROM meta.ducklake_data_file WHERE end_snapshot IS NULL
+SELECT coalesce(sum(file_count), 0)::BIGINT FROM ducklake_table_info('lake')
 ----
 1
 
@@ -57,12 +57,12 @@ SELECT * FROM ducklake_flush_inlined_data('lake', table_name => 'u')
 main	u	100
 
 query I
-SELECT count(*) FROM meta.ducklake_data_file WHERE end_snapshot IS NULL
+SELECT coalesce(sum(file_count), 0)::BIGINT FROM ducklake_table_info('lake')
 ----
 2
 
 query I
-SELECT count(*) FROM meta.ducklake_delete_file WHERE end_snapshot IS NULL
+SELECT coalesce(sum(delete_file_count), 0)::BIGINT FROM ducklake_table_info('lake')
 ----
 1
 

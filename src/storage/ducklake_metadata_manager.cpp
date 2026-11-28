@@ -2309,8 +2309,8 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 			return created;
 		}
 		auto has_name = [&](const Identifier &name) {
-			for (idx_t i = DuckLakeInlinedColNames::COLUMN_COUNT; i < names.size(); i++) {
-				if (names[i].GetIdentifierName() == name.GetIdentifierName()) {
+			for (auto column_idx : stored_columns) {
+				if (names[column_idx].GetIdentifierName() == name.GetIdentifierName()) {
 					return true;
 				}
 			}

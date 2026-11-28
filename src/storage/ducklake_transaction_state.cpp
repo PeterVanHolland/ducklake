@@ -2965,7 +2965,8 @@ void DuckLakeTransactionState::CheckFileConflicts(const TransactionChangeInforma
 
 void DuckLakeTransactionState::CheckAddedFileConflicts(const DuckLakeCommitContext &context) const {
 	// files DuckLake wrote have unique names
-	map<TableIndex, vector<reference<const string>>> registered_files;
+	map<TableIndex, vector<string>> registered_files;
+	vector<string> all_files;
 	for (auto &entry : local_changes.Changes()) {
 		// a table the transaction created is unknown to the other transactions
 		if (IsTransactionLocal(entry.first)) {
@@ -2974,8 +2975,12 @@ void DuckLakeTransactionState::CheckAddedFileConflicts(const DuckLakeCommitConte
 		for (auto &file : entry.second.new_data_files) {
 			if (!file.created_by_ducklake) {
 				registered_files[entry.first].push_back(file.file_name);
+				all_files.push_back(file.file_name);
 			}
 		}
+	}
+	if (all_files.empty()) {
+		return;
 	}
 	auto &fs = FileSystem::GetFileSystem(db);
 	set<TableIndex> tables;
@@ -2985,31 +2990,32 @@ void DuckLakeTransactionState::CheckAddedFileConflicts(const DuckLakeCommitConte
 	unordered_map<idx_t, string> table_paths;
 	DuckLakeMetadataManager::GetPathsForTables(tables, {}, context.get_table_path, context.conflict_query_executor,
 	                                           data_path, separator, table_paths);
+	// one read per table, however many files the transaction registered for it
 	for (auto &entry : registered_files) {
 		auto &table_id = entry.first;
-		auto &table_path = table_paths[table_id.index];
-		for (auto &file_ref : entry.second) {
-			auto &file_name = file_ref.get();
-			auto result = context.conflict_query_executor(
-			    DuckLakeMetadataManager::GetDataFilesNamedSql(table_id, file_name, true));
-			result->ThrowIfError("Failed to commit DuckLake transaction - failed to get the data files added for "
-			                     "conflict resolution:");
-			auto key = DuckLakeUtil::CanonicalPathKey(fs, file_name);
-			if (DuckLakeMetadataManager::HasCanonicalPath(*result, fs, key, table_path, separator)) {
+		auto result = context.conflict_query_executor(
+		    DuckLakeMetadataManager::GetDataFilesNamedSql(table_id, entry.second, true));
+		result->ThrowIfError("Failed to commit DuckLake transaction - failed to get the data files added for "
+		                     "conflict resolution:");
+		auto added = DuckLakeMetadataManager::ReadCanonicalPaths(*result, fs, table_paths[table_id.index], separator);
+		for (auto &file_name : entry.second) {
+			if (added.count(DuckLakeUtil::CanonicalPathKey(fs, file_name))) {
 				throw TransactionException("Transaction conflict - attempting to add data file \"%s\" to a table - but "
 				                           "another transaction has added it already",
 				                           file_name);
 			}
-			// a merge or an expiry of another transaction can have scheduled the file for deletion meanwhile
-			auto scheduled =
-			    context.conflict_query_executor(DuckLakeMetadataManager::GetScheduledFilesNamedSql(file_name));
-			scheduled->ThrowIfError("Failed to commit DuckLake transaction - failed to get the files scheduled for "
-			                        "deletion for conflict resolution:");
-			if (DuckLakeMetadataManager::HasCanonicalPath(*scheduled, fs, key, data_path, separator)) {
-				throw TransactionException("Transaction conflict - attempting to add data file \"%s\" to a table - but "
-				                           "another transaction has scheduled it for deletion",
-				                           file_name);
-			}
+		}
+	}
+	// a merge or an expiry of another transaction can have scheduled a file for deletion meanwhile
+	auto result = context.conflict_query_executor(DuckLakeMetadataManager::GetScheduledFilesNamedSql(all_files));
+	result->ThrowIfError("Failed to commit DuckLake transaction - failed to get the files scheduled for "
+	                     "deletion for conflict resolution:");
+	auto scheduled = DuckLakeMetadataManager::ReadCanonicalPaths(*result, fs, data_path, separator);
+	for (auto &file_name : all_files) {
+		if (scheduled.count(DuckLakeUtil::CanonicalPathKey(fs, file_name))) {
+			throw TransactionException("Transaction conflict - attempting to add data file \"%s\" to a table - but "
+			                           "another transaction has scheduled it for deletion",
+			                           file_name);
 		}
 	}
 }

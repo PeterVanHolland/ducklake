@@ -12,11 +12,11 @@ unzip data/old_ducklake/migrated_inlined_schema_version.db.gz {TEST_DIR}/migrate
 
 unzip data/old_ducklake/migrated_inlined_schema_version.db.gz {TEST_DIR}/migrated_inlined_schema_version_expired.db
 
-# the rows were inlined at schema versions between the first and the last of their table
+# the rows were inlined at schema versions between the first and the last of their table, a 1.1 catalog keeps them
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_schema_version.db' AS between
 	(DATA_PATH '{TEST_DIR}/migrated_inlined_schema_version', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'between_meta',
-	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+	DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
 
 query III
 SELECT table_id, table_name, schema_version FROM between_meta.ducklake_inlined_data_tables ORDER BY ALL
@@ -172,11 +172,56 @@ SELECT x FROM between.k ORDER BY ALL
 20
 NULL
 
+# the migration to 2.0 converts no inlined rows, it takes the catalog without the rows of k and their snapshots
+statement ok
+DELETE FROM between.k
+
+statement ok
+CALL ducklake_expire_snapshots('between', older_than => now())
+
+# the flush wrote the other inlined rows to files with their columns
+statement ok
+DETACH between
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_schema_version.db' AS between
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_schema_version', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT a, b FROM between.t ORDER BY ALL
+----
+1	10
+2	20
+
+query III
+SELECT s.x, s.y, b FROM between.r ORDER BY b
+----
+10	1	100
+NULL	NULL	200
+
+query II
+SELECT a, b FROM between.w ORDER BY ALL
+----
+1	10
+2	20
+
+query II
+SELECT s.y, b FROM between.d ORDER BY ALL
+----
+20	200
+NULL	100
+
+query II
+SELECT a, b FROM between.e ORDER BY ALL
+----
+1	NULL
+2	20
+
 # once the snapshots of those schema versions are expired, the first row of an inlined table tells its table
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_schema_version_expired.db' AS between_expired
-	(DATA_PATH '{TEST_DIR}/migrated_inlined_schema_version_expired', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE,
-	DATA_INLINING_ROW_LIMIT 10)
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_schema_version_expired', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
 
 statement ok
 CALL ducklake_expire_snapshots('between_expired', older_than => now())

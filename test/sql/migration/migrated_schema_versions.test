@@ -15,6 +15,8 @@ unzip data/old_ducklake/migrated_schema_versions.db.gz {TEST_DIR}/migrated_schem
 
 unzip data/old_ducklake/migrated_schema_versions.db.gz {TEST_DIR}/migrated_schema_versions_inlined.db
 
+unzip data/old_ducklake/migrated_schema_versions.db.gz {TEST_DIR}/migrated_schema_versions_flushed.db
+
 unzip data/old_ducklake/migrated_schema_versions.db.gz {TEST_DIR}/migrated_schema_versions_dropped.db
 
 unzip data/old_ducklake/migrated_schema_versions.db.gz {TEST_DIR}/migrated_schema_versions_pinned.db
@@ -149,6 +151,45 @@ CALL ducklake_flush_inlined_data('inlined', table_name => 't')
 
 query II
 SELECT a, b FROM inlined.t
+----
+7	70
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog flushes the ones of such an inlined table first
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_flushed.db' AS flushed
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_flushed', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+INSERT INTO flushed.t VALUES (7, 70)
+
+statement ok
+CREATE TABLE flushed.other (i INTEGER)
+
+statement ok
+DETACH flushed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_flushed.db' AS flushed
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_flushed', OVERRIDE_DATA_PATH TRUE)
+
+query II
+SELECT a, b FROM flushed.t
+----
+7	70
+
+statement ok
+CALL ducklake_flush_inlined_data('flushed')
+
+statement ok
+DETACH flushed
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_schema_versions_flushed.db' AS flushed
+	(DATA_PATH '{TEST_DIR}/migrated_schema_versions_flushed', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT a, b FROM flushed.t
 ----
 7	70
 

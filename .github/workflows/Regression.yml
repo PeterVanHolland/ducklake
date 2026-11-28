@@ -119,6 +119,7 @@ jobs:
         working-directory: pr
         run: make release
 
+      # Use one thread to reduce scheduling noise
       - name: Run regression benchmarks
         working-directory: pr
         env:
@@ -130,4 +131,4 @@ jobs:
             --new build/release/benchmark/benchmark_runner \
             --benchmarks .github/regression/micro.csv \
             --early-stop \
-            --threads 2
+            --threads 1

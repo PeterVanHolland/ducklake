@@ -230,6 +230,14 @@ PostgresMetadataManager::PostgresMetadataManager(DuckLakeTransaction &transactio
     : DuckLakeMetadataManager(transaction) {
 }
 
+bool PostgresMetadataManager::ShowsConcurrentCommits() const {
+	// READ COMMITTED metadata reads see the commits of other transactions
+	auto &parameters = transaction.GetCatalog().MetadataParameters();
+	auto isolation_level = parameters.find("isolation_level");
+	return isolation_level != parameters.end() &&
+	       StringUtil::CIEquals(isolation_level->second.ToString(), "READ COMMITTED");
+}
+
 bool PostgresMetadataManager::InsertsInlinedRowsAfterBatch(idx_t row_count) const {
 	// the copy of a separate insert costs more round trips than parsing the VALUES text of a few rows
 	static constexpr idx_t MAX_INLINED_ROWS_IN_BATCH = 100;
@@ -349,9 +357,30 @@ string PostgresMetadataManager::GetColumnTypeInternal(const LogicalType &column_
 	}
 }
 
+optional_idx PostgresMetadataManager::BatchServerErrorStart(const string &message) const {
+	// the batch and the server error can contain any text, so the batch is found by its size
+	const string failed_batch = "Failed to execute query \"";
+	auto batch_start = message.find(failed_batch);
+	if (batch_start == string::npos) {
+		return optional_idx();
+	}
+	auto batch_end = batch_start + failed_batch.size() + executed_query_size;
+	if (batch_end + 3 > message.size() || message.compare(batch_end, 3, "\": ") != 0) {
+		return optional_idx();
+	}
+	return batch_end;
+}
+
+string PostgresMetadataManager::CommitErrorWithoutQuery(const string &message) const {
+	auto server_error_start = BatchServerErrorStart(message);
+	return server_error_start.IsValid() ? message.substr(server_error_start.GetIndex()) : message;
+}
+
 bool PostgresMetadataManager::IsRetryableCommitError(const string &message) const {
-	// the server error follows the failed query, which can contain any text
-	auto server_error_start = message.rfind("\": ");
+	auto batch_server_error_start = BatchServerErrorStart(message);
+	// for another failed query, the server error is guessed to follow the last quote and colon
+	auto server_error_start =
+	    batch_server_error_start.IsValid() ? batch_server_error_start.GetIndex() : message.rfind("\": ");
 	auto server_error = server_error_start == string::npos ? message : message.substr(server_error_start);
 	// constraint names are not translated, so a conflict on a metadata primary key is found in any language
 	for (auto end = server_error.find("_pkey"); end != string::npos; end = server_error.find("_pkey", end + 1)) {
@@ -367,22 +396,22 @@ bool PostgresMetadataManager::IsRetryableCommitError(const string &message) cons
 	return false;
 }
 
-bool PostgresMetadataManager::InlinedDeletionTableExists(const Identifier &table_name) {
+unordered_set<string> PostgresMetadataManager::ListInlinedDeletionTables() {
+	// the server lists the tables, so a table another connection committed is seen without a catalog refresh
 	auto &catalog = transaction.GetCatalog();
-	auto remote_query =
-	    StringUtil::Format("SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = %s AND tablename = %s LIMIT 1",
-	                       SQLString::ToString(catalog.MetadataSchemaName().GetIdentifierName()),
-	                       SQLString::ToString(table_name.GetIdentifierName()));
-	auto query =
-	    StringUtil::Format("SELECT 1 FROM postgres_query({METADATA_CATALOG_NAME_LITERAL}, %s, use_transaction = true)",
-	                       SQLString::ToString(remote_query));
-	auto result = DuckLakeMetadataManager::Query(query);
-	result->ThrowIfError("Failed to probe for DuckLake inlined-deletion table: ");
-	return result->Fetch() != nullptr;
+	auto remote_query = StringUtil::Format("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = %s "
+	                                       "AND tablename LIKE 'ducklake\\_inlined\\_delete\\_%%'",
+	                                       SQLString::ToString(catalog.MetadataSchemaName().GetIdentifierName()));
+	auto query = StringUtil::Format(
+	    "SELECT tablename FROM postgres_query({METADATA_CATALOG_NAME_LITERAL}, %s, use_transaction = true)",
+	    SQLString::ToString(remote_query));
+	return ReadTableNames(*DuckLakeMetadataManager::Query(query));
 }
 
 void PostgresMetadataManager::MigrateInlinedDataTypes() {
-	auto columns = DuckLakeMetadataManager::Query(GetInlinedTableColumnsSql());
+	// a 2.0 catalog whose version string was rewound reaches this step with the column rows already converted
+	auto columns = DuckLakeMetadataManager::Query(
+	    GetInlinedTableColumnsSql(optional_idx(), HasMetadataColumn("ducklake_column", "branch_id")));
 	columns->ThrowIfError("Failed to read the columns of inlined-data tables while migrating: ");
 	map<Identifier, identifier_map_t<string>> inlined_tables;
 	for (auto &row : *columns) {
@@ -438,7 +467,7 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 			continue;
 		}
 		auto migrated_name = Identifier(table_name + "_migrated");
-		auto migrate_query = InlinedTableDdlSql(migrated_name, column_defs, col_names);
+		auto migrate_query = InlinedTableDdlSql(migrated_name, column_defs, col_names, false);
 		migrate_query += StringUtil::Format("INSERT INTO {METADATA_CATALOG}.%s SELECT %s FROM {METADATA_CATALOG}.%s;",
 		                                    migrated_name, StringUtil::Join(select_list, ", "), table_name);
 		migrate_query += StringUtil::Format("DROP TABLE {METADATA_CATALOG}.%s;", table_name);
@@ -448,6 +477,16 @@ void PostgresMetadataManager::MigrateInlinedDataTypes() {
 		result->ThrowIfError(
 		    StringUtil::Format("Failed to migrate the column types of inlined-data table %s: ", table_name));
 	}
+}
+
+string PostgresMetadataManager::RowCompanionRenameSql(const string &kind) const {
+	// a renamed table keeps the name of its primary key index, a fresh catalog names it after the final table
+	auto table = RowVisibilityTableName(kind);
+	auto schema = SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName());
+	auto rename_index =
+	    StringUtil::Format("ALTER INDEX IF EXISTS %s.%s_pending_pkey RENAME TO %s_pkey", schema, table, table);
+	return DuckLakeMetadataManager::RowCompanionRenameSql(kind) +
+	       StringUtil::Format("CALL postgres_execute({METADATA_CATALOG_NAME_LITERAL}, %s);\n", SQLString(rename_index));
 }
 
 string PostgresMetadataManager::ConfigOptionLockSql() const {
@@ -466,6 +505,9 @@ unique_ptr<QueryResult> PostgresMetadataManager::Execute(DuckLakeSnapshot snapsh
 	auto catalog_literal = SQLString::ToString(ducklake_catalog.MetadataDatabaseName().GetIdentifierName());
 	// casts of float bounds to text keep their exact value
 	query = "SET LOCAL extra_float_digits = 3;" + query;
+	// the scanner drops trailing semicolons before it repeats the query in an error
+	StringUtil::RTrim(query, "; \t\n\v\f\r");
+	executed_query_size = query.size();
 	return transaction.ExecuteRaw(
 	    StringUtil::Format("CALL postgres_execute(%s, %s, prepare=FALSE)", catalog_literal, SQLString(query)));
 }
@@ -566,8 +608,24 @@ static string PostgresQuery(const string &remote_query) {
 	                          SQLString(remote_query));
 }
 
+bool PostgresMetadataManager::ProbeMetadataColumns() {
+	// the scanner lists the tables it cached, so the server is asked for the ones a commit created since
+	auto schema = SQLString::ToString(transaction.GetCatalog().MetadataSchemaName().GetIdentifierName());
+	auto remote_query = StringUtil::Format(R"(
+SELECT c.relname, a.attname
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+WHERE n.nspname = %s AND c.relkind IN ('r', 'v', 'm', 'f', 'p') AND a.attnum > 0 AND NOT a.attisdropped
+ORDER BY c.relname, a.attnum)",
+	                                       schema);
+	return ProbeMetadataColumnsFromListing(PostgresQuery(remote_query));
+}
+
 string PostgresMetadataManager::GetLatestSnapshotQuery() const {
-	auto remote_query = LatestSnapshotQuery();
+	// the server plans both conjuncts from the composite key
+	bool branch_keyed = transaction.GetCatalog().SupportsBranching();
+	auto remote_query = LatestSnapshotQuery(branch_keyed, branch_keyed);
 	SubstituteCatalogPlaceholders(remote_query,
 	                              SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName()));
 	return PostgresQuery(remote_query);
@@ -576,7 +634,8 @@ string PostgresMetadataManager::GetLatestSnapshotQuery() const {
 string PostgresMetadataManager::GetSnapshotAndStatsAndChangesQuery(DuckLakeSnapshot snapshot,
                                                                    bool include_exactness) const {
 	// one statement reads the latest snapshot and the table stats from the same state at any isolation level
-	auto remote_query = SnapshotAndStatsAndChangesQuery(include_exactness);
+	bool branch_keyed = transaction.GetCatalog().SupportsBranching();
+	auto remote_query = SnapshotAndStatsAndChangesQuery(include_exactness, branch_keyed, branch_keyed);
 	SubstituteCatalogPlaceholders(remote_query,
 	                              SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName()));
 	SubstituteSnapshotPlaceholders(snapshot, remote_query);
@@ -590,12 +649,12 @@ bool PostgresMetadataManager::MaterializeStatsCTEs() const {
 
 string PostgresMetadataManager::GenerateFileListQuery(DuckLakeTableEntry &table, DuckLakeSnapshot snapshot,
                                                       const FilterPushdownInfo *filter_info,
-                                                      const vector<DuckLakeFileListDynamicFilter> &dynamic_filters,
-                                                      const vector<idx_t> &runtime_filter_stats_columns,
+                                                      const vector<DuckLakeFileListOrder> &file_order,
+                                                      vector<idx_t> &runtime_filter_stats_columns,
                                                       FileListType file_list_type, const string &) {
 	auto schema = SQLQuotedIdentifier::ToString(transaction.GetCatalog().MetadataSchemaName());
 	auto remote_query = DuckLakeMetadataManager::GenerateFileListQuery(
-	    table, snapshot, filter_info, dynamic_filters, runtime_filter_stats_columns, file_list_type, schema);
+	    table, snapshot, filter_info, file_order, runtime_filter_stats_columns, file_list_type, schema);
 	// placeholders inside the literal are not replaced later
 	SubstituteSnapshotPlaceholders(snapshot, remote_query);
 	return PostgresQuery(remote_query);

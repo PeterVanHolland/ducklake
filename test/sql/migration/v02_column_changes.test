@@ -1,0 +1,82 @@
+# name: test/sql/migration/v02_column_changes.test
+# description: a catalog of DuckDB 1.3 reads every version between the changes of a column after its migration
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.3.2, t.b was renamed to c, b and d, n.k was retyped twice and n.s.x renamed to x1 and x2
+unzip data/old_ducklake/column_changes_v02.db.gz {TEST_DIR}/v02_column_changes.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/v02_column_changes.db' AS lake (DATA_PATH 'data/old_ducklake/column_changes_v02/',
+    OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta', AUTOMATIC_MIGRATION TRUE)
+
+# every version row ends where the next row of its column begins
+query IIII
+SELECT c.column_name, c.column_type, v.row_snapshot, v.end_snapshot FROM meta.ducklake_column_visibility v
+JOIN meta.ducklake_column c
+    ON c.table_id = v.table_id AND c.column_id = v.column_id AND c.begin_snapshot = v.row_snapshot
+ORDER BY v.table_id, v.column_id, v.row_snapshot
+----
+b	int32	2	6
+c	int32	6	7
+b	int32	7	8
+k	int8	9	11
+k	int16	11	12
+x	int32	9	13
+x1	int32	13	14
+
+query II
+SELECT * FROM lake.t
+----
+1	10
+
+query I
+SELECT string_agg(column_name, ',') FROM (DESCRIBE SELECT * FROM lake.t)
+----
+a,d
+
+loop version 5 9
+
+query II
+SELECT * FROM lake.t AT (VERSION => {version})
+----
+1	10
+
+endloop
+
+query IIII
+SELECT (SELECT string_agg(column_name, ',') FROM (DESCRIBE SELECT * FROM lake.t AT (VERSION => 5))),
+       (SELECT string_agg(column_name, ',') FROM (DESCRIBE SELECT * FROM lake.t AT (VERSION => 6))),
+       (SELECT string_agg(column_name, ',') FROM (DESCRIBE SELECT * FROM lake.t AT (VERSION => 7))),
+       (SELECT string_agg(column_name, ',') FROM (DESCRIBE SELECT * FROM lake.t AT (VERSION => 8)))
+----
+a,b	a,c	a,b	a,d
+
+# a snapshot between the changes loads for every table of the lake
+query I
+SELECT * FROM lake.u AT (VERSION => 7)
+----
+7
+
+query I
+SELECT count(*) FROM ducklake_table_changes('lake', 'main', 'u', 7, 7)
+----
+0
+
+query III
+SELECT k, typeof(k), s FROM lake.n AT (VERSION => 11)
+----
+1	SMALLINT	{'x': 2, 'y': 3}
+
+query III
+SELECT k, typeof(k), s FROM lake.n AT (VERSION => 13)
+----
+1	INTEGER	{'x1': 2, 'y': 3}
+
+query III
+SELECT k, typeof(k), s FROM lake.n
+----
+1	INTEGER	{'x2': 2, 'y': 3}

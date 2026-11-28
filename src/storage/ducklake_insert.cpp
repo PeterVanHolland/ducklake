@@ -320,6 +320,17 @@ void DuckLakeInsert::RemoveEmptyFiles(ClientContext &context, DuckLakeInsertGlob
 	gstate.empty_files.clear();
 }
 
+void DuckLakeInsert::RemoveWrittenFiles(ClientContext &context, DuckLakeInsertGlobalState &gstate) {
+	auto &fs = FileSystem::GetFileSystem(context);
+	for (auto &file : gstate.written_files) {
+		for (auto &delete_file : file.delete_files) {
+			fs.TryRemoveFile(delete_file.file_name);
+		}
+		fs.TryRemoveFile(file.file_name);
+	}
+	gstate.written_files.clear();
+}
+
 SinkFinalizeType DuckLakeInsert::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                           OperatorSinkFinalizeInput &input) const {
 	auto &global_state = input.global_state.Cast<DuckLakeInsertGlobalState>();

@@ -2396,10 +2396,14 @@ void DuckLakeTransaction::MarkMetadataWritten() {
 	}
 }
 
-void DuckLakeTransaction::MarkInlinedDataForDeletion(DuckLakeInlinedTableInfo inlined_table, idx_t flush_snapshot_id,
+bool DuckLakeTransaction::MarkInlinedDataForDeletion(DuckLakeInlinedTableInfo inlined_table, idx_t flush_snapshot_id,
                                                      bool wrote_files) {
 	lock_guard<mutex> guard(flushed_inlined_lock);
+	if (state->InlinedTableFlushed(inlined_table.table_name)) {
+		return false;
+	}
 	state->flushed_inlined_tables.push_back({std::move(inlined_table), flush_snapshot_id, wrote_files});
+	return true;
 }
 
 bool DuckLakeTransaction::InlinedTableFlushed(const Identifier &table_name) {

@@ -181,10 +181,7 @@ SinkFinalizeType DuckLakeCompaction::Finalize(Pipeline &pipeline, Event &event, 
 
 	auto &transaction = DuckLakeTransaction::Get(context, global_state.table.catalog);
 	if (!transaction.AddCompaction(global_state.table.GetTableId(), std::move(compaction_entry))) {
-		auto &fs = FileSystem::GetFileSystem(context);
-		for (auto &file : global_state.written_files) {
-			fs.TryRemoveFile(file.file_name);
-		}
+		DuckLakeInsert::RemoveWrittenFiles(context, global_state);
 		return SinkFinalizeType::NO_OUTPUT_POSSIBLE;
 	}
 	return SinkFinalizeType::READY;

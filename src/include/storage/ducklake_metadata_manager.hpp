@@ -919,10 +919,13 @@ public:
 	bool TableHasRows(const string &table);
 	//! Renames the filled companion of a kind into place, the last statement of the step for the kind
 	virtual string RowCompanionRenameSql(const string &kind) const;
+	//! The column that orders the rows of a metadata table by when they were written, empty without one
+	virtual string RowWriteOrderColumn() const;
 	//! Adds the birth branch and the companion of every converted kind and turns its end column into end rows
 	string V2_0RowCompanionsSql(const V2_0RowCompanions &rows) const;
 	//! Deletes the rows a kind superseded within their birth, then folds its end column into the pending companion
-	static string V2_0RowEndBackfillSql(const RowVisibilityKind &kind, const string &pending);
+	static string V2_0RowEndBackfillSql(const RowVisibilityKind &kind, const string &pending,
+	                                    const string &write_order);
 	//! Turns the end column of a kind into end rows of the companion
 	static string V2_0EndRowsSql(const RowVisibilityKind &kind, const string &companion);
 	//! Turns the end column of a kind into end rows of the companion and drops the column

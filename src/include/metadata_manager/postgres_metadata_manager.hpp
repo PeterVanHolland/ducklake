@@ -52,6 +52,10 @@ public:
 	string CommitErrorWithoutQuery(const string &message) const override;
 	string ConfigOptionLockSql() const override;
 	string RowCompanionRenameSql(const string &kind) const override;
+	string RowWriteOrderColumn() const override {
+		// an update moves a row, so its place does not tell when it was written
+		return string();
+	}
 
 	unique_ptr<QueryResult> Execute(DuckLakeSnapshot snapshot, string &query) override;
 	unique_ptr<QueryResult> ExecuteDropInTransaction(string &query) override;

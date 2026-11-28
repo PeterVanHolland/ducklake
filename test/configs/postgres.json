@@ -65,6 +65,12 @@
       ]
     },
     {
+      "reason": "A PostgreSQL catalog does not record the order in which rows were written, so the migration leaves the version rows that a column has for one begin",
+      "paths": [
+        "test/sql/migration/v20_row_companions_same_begin_columns.test"
+      ]
+    },
+    {
       "reason": "Migration",
       "paths": [
         "test/sql/migration/v01_partitioned.test",

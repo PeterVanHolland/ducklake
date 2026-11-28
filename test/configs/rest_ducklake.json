@@ -204,6 +204,7 @@
         "test/sql/data_inlining/flush_drop_superseded_with_reader.test",
         "test/sql/data_inlining/inlined_negative_interval.test",
         "test/sql/data_inlining/inlined_reserved_column_names.test",
+        "test/sql/data_inlining/superseded_inlined_table_drop_open_transaction.test",
         "test/sql/partitioning/long_partition_value_path.test",
         "test/sql/remove_orphans/orphan_after_expire.test",
         "test/sql/settings/parquet_row_group_size_above_bigint.test",

@@ -1,0 +1,77 @@
+# name: test/sql/stats/timetz_zero_counts_table_bounds.test
+# description: zero value and null counts that DuckDB 1.5 stored for a TIMETZ file keep the bounds of the table unknown
+# group: [stats]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.5.6, whose file statistics store zero value and null counts for the TIMETZ column tz
+unzip data/old_ducklake/timetz_counts.db.gz {TEST_DIR}/timetz_counts_null.db
+
+unzip data/old_ducklake/timetz_counts.db.gz {TEST_DIR}/timetz_counts_drop.db
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/timetz_counts_null.db' AS dl (DATA_PATH '{TEST_DIR}', OVERRIDE_DATA_PATH TRUE,
+    METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 0)
+
+query II
+SELECT value_count, null_count FROM meta.ducklake_file_column_stats WHERE column_id = 2
+----
+0	0
+
+# a NULL and then a value are added, the first insert creates the directory for the data file of the release
+statement ok
+INSERT INTO dl.t VALUES (4, NULL)
+
+unzip data/old_ducklake/timetz_counts.parquet.gz {TEST_DIR}/main/t/ducklake-01a222cc-edf8-7f5a-8a1c-6b7bee81d778.parquet
+
+statement ok
+INSERT INTO dl.t VALUES (5, TIMETZ '10:00:00+00')
+
+query I
+SELECT tz FROM dl.t ORDER BY id
+----
+01:00:00+00
+NULL
+23:00:00+00
+NULL
+10:00:00+00
+
+# the values of the old file stay within the bounds
+query III
+SELECT contains_null, min_value, max_value FROM meta.ducklake_table_column_stats WHERE column_id = 2
+----
+true	NULL	NULL
+
+statement ok
+DETACH dl
+
+# a whole file is dropped, the statistics of the table are computed again from the files that stay
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/timetz_counts_drop.db' AS dl (DATA_PATH '{TEST_DIR}', OVERRIDE_DATA_PATH TRUE,
+    METADATA_CATALOG 'meta', DATA_INLINING_ROW_LIMIT 0)
+
+statement ok
+INSERT INTO dl.t VALUES (5, TIMETZ '10:00:00+00')
+
+statement ok
+INSERT INTO dl.t VALUES (6, TIMETZ '11:00:00+00')
+
+query I
+DELETE FROM dl.t WHERE id = 6
+----
+1
+
+query III
+SELECT contains_null, min_value, max_value FROM meta.ducklake_table_column_stats WHERE column_id = 2
+----
+NULL	NULL	NULL
+
+query I
+SELECT tz FROM dl.t ORDER BY id
+----
+01:00:00+00
+NULL
+23:00:00+00
+10:00:00+00

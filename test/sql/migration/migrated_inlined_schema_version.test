@@ -172,7 +172,14 @@ SELECT x FROM between.k ORDER BY ALL
 20
 NULL
 
-# the flush wrote the inlined rows to files with their columns, the migration to 2.0 converts none
+# the migration to 2.0 converts no inlined rows, it takes the catalog without the rows of k and their snapshots
+statement ok
+DELETE FROM between.k
+
+statement ok
+CALL ducklake_expire_snapshots('between', older_than => now())
+
+# the flush wrote the other inlined rows to files with their columns
 statement ok
 DETACH between
 

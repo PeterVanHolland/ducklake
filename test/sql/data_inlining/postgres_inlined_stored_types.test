@@ -212,3 +212,16 @@ SELECT id, v, d, ts, f, s.x, j, tz FROM dl.t ORDER BY id
 3	NULL	NULL	NULL	NULL	NULL	NULL	NULL
 4	new	2026-04-05	2026-04-05 06:07:08	4.5	4	{"k": 4}	2026-04-05 06:07:08+00
 50	both	NULL	NULL	NULL	NULL	NULL	NULL
+
+# an insert finds the columns of a 2.0 inlined table in the current storage
+statement ok
+INSERT INTO dl.t (id, v) VALUES (5, 'five')
+
+statement ok
+INSERT INTO dl.t (id, v) VALUES (6, 'né\w')
+
+query II
+SELECT id, v FROM dl.t WHERE id IN (5, 6) ORDER BY id
+----
+5	five
+6	né\w

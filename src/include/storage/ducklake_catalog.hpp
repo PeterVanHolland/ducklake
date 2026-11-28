@@ -453,9 +453,9 @@ public:
 
 	shared_ptr<const DuckLakeNameMap> TryGetMappingById(DuckLakeTransaction &transaction, MappingIndex mapping_id);
 	MappingIndex TryGetCompatibleNameMap(DuckLakeTransaction &transaction, const DuckLakeNameMap &name_map);
-	idx_t GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version, DuckLakeTransaction &transaction);
+	//! With require_columns, throws when the columns of the rows inlined at that schema version cannot be told
 	optional_ptr<DuckLakeTableEntry> GetTableAtSchemaVersion(DuckLakeTransaction &transaction, TableIndex table_id,
-	                                                         idx_t schema_version);
+	                                                         idx_t schema_version, bool require_columns = false);
 
 	static unique_ptr<DuckLakeStats> ConstructStatsMap(vector<DuckLakeGlobalStatsInfo> &global_stats,
 	                                                   DuckLakeCatalogSet &schema);
@@ -490,11 +490,11 @@ public:
 
 	//! The schema versions of the table at the snapshot of the transaction
 	DuckLakeTableSchemaVersions GetTableSchemaVersions(DuckLakeTransaction &transaction, TableIndex table_id);
-	//! Look up the cached begin snapshot of a (table, schema version) pair, if it has been resolved before
-	optional_idx TryGetSchemaVersionBeginSnapshot(TableIndex table_id, idx_t schema_version);
-	//! Cache the begin snapshot of a committed (table, schema version) pair. The row that backs it is written
-	//! once when the schema version is created and never updated, so the mapping is permanent.
-	void CacheSchemaVersionBeginSnapshot(TableIndex table_id, idx_t schema_version, idx_t begin_snapshot);
+	//! Look up the cached snapshot of a (table, schema version) pair, invalid if it has not been resolved before
+	DuckLakeSnapshot TryGetSchemaVersionSnapshot(TableIndex table_id, idx_t schema_version);
+	//! Cache the snapshot a committed (table, schema version) pair is read at. The table keeps the schema of the
+	//! version at that snapshot, so the mapping is permanent.
+	void CacheSchemaVersionSnapshot(TableIndex table_id, idx_t schema_version, DuckLakeSnapshot snapshot);
 	//! Whether a commit found values of the column at the snapshot, which then keeps its unknown table bounds
 	bool ColumnHoldsValues(TableIndex table_id, FieldIndex column_id, idx_t snapshot_id);
 	void SetColumnHoldsValues(TableIndex table_id, FieldIndex column_id, idx_t snapshot_id);
@@ -527,6 +527,7 @@ private:
 	string RecordCountCacheKey(idx_t snapshot_id) const;
 	string NetRowCountCacheKey(TableIndex table_id) const;
 	string SchemaCacheKey(idx_t schema_version) const;
+	string SchemaCacheKey(const DuckLakeSnapshot &snapshot) const;
 	ObjectCache &GetObjectCacheInstance();
 	//! A table stats entry this DuckLake put in the object cache, kept without its key as there is one per table
 	struct TrackedStatsEntry {
@@ -603,10 +604,10 @@ private:
 	map<idx_t, shared_ptr<const unordered_set<string>>> inlined_deletion_tables;
 	//! Held while the inlined deletion tables are listed
 	mutex inlined_deletion_listing_lock;
-	//! Cache of (table_id, schema_version) -> begin_snapshot. The backing row is written once when the schema
-	//! version is created and is never updated, so entries are permanent (only committed rows are cached)
+	//! Cache of (table_id, schema_version) -> the snapshot the table is read at. The table keeps the schema of the
+	//! version at that snapshot, so entries are permanent (only committed rows are cached)
 	mutex schema_version_snapshot_lock;
-	map<pair<idx_t, idx_t>, idx_t> schema_version_begin_snapshots;
+	map<pair<idx_t, idx_t>, DuckLakeSnapshot> schema_version_snapshots;
 	mutex columns_with_values_lock;
 	optional_idx columns_with_values_snapshot;
 	set<pair<idx_t, idx_t>> columns_with_values;

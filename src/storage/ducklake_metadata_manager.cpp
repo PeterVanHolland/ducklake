@@ -2169,30 +2169,225 @@ DuckLakeTableSchemaVersions DuckLakeMetadataManager::GetTableSchemaVersions(Tabl
 	return schema_versions;
 }
 
-idx_t DuckLakeMetadataManager::GetBeginSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version) {
+DuckLakeSnapshot DuckLakeMetadataManager::GetSnapshotForSchemaVersion(TableIndex table_id, idx_t schema_version,
+                                                                      bool require_columns) {
 	auto &catalog = transaction.GetCatalog();
-	auto cached_snapshot = catalog.TryGetSchemaVersionBeginSnapshot(table_id, schema_version);
-	if (cached_snapshot.IsValid()) {
-		return cached_snapshot.GetIndex();
+	auto cached_snapshot = catalog.TryGetSchemaVersionSnapshot(table_id, schema_version);
+	if (cached_snapshot.snapshot_id != DConstants::INVALID_INDEX) {
+		return cached_snapshot;
 	}
-	string query = R"(
-SELECT begin_snapshot
-FROM {METADATA_CATALOG}.ducklake_schema_versions
-WHERE table_id = {TABLE_ID} AND schema_version = {SCHEMA_VERSION})";
-	query = StringUtil::Replace(query, "{TABLE_ID}", to_string(table_id.index));
-	query = StringUtil::Replace(query, "{SCHEMA_VERSION}", to_string(schema_version));
-	auto result = Query(query);
+	auto result = Query(StringUtil::Format("SELECT begin_snapshot, schema_version FROM "
+	                                       "{METADATA_CATALOG}.ducklake_schema_versions WHERE table_id = %d",
+	                                       table_id.index));
+	result->ThrowIfError("Failed to get the schema versions of a table from DuckLake: ");
+	optional_idx begin_snapshot;
+	vector<pair<idx_t, idx_t>> versions;
 	for (auto &row : *result) {
-		auto begin_snapshot = row.GetValue<idx_t>(0);
-		// only cache rows that are already committed - a schema version written by this transaction can still
-		// be rolled back, and the fallback below is not stable either
-		if (!transaction.ChangesMade()) {
-			catalog.CacheSchemaVersionBeginSnapshot(table_id, schema_version, begin_snapshot);
+		versions.emplace_back(row.GetValue<idx_t>(0), row.GetValue<idx_t>(1));
+		if (!begin_snapshot.IsValid() && versions.back().second == schema_version) {
+			begin_snapshot = versions.back().first;
 		}
-		return begin_snapshot;
 	}
-	// We need to fallback to GetBeginSnapshotForTable if this table doesnt have an alter yet
-	return GetBeginSnapshotForTable(table_id);
+	if (!begin_snapshot.IsValid()) {
+		// We need to fallback to GetBeginSnapshotForTable if this table doesnt have an alter yet
+		return DuckLakeSnapshot(GetBeginSnapshotForTable(table_id), schema_version, 0, 0);
+	}
+	bool earlier_version = false;
+	bool later_version = false;
+	optional_idx next_begin;
+	for (auto &version : versions) {
+		if (version.first == begin_snapshot.GetIndex()) {
+			earlier_version = earlier_version || version.second < schema_version;
+			later_version = later_version || version.second > schema_version;
+		} else if (version.first > begin_snapshot.GetIndex()) {
+			next_begin = next_begin.IsValid() ? MinValue(next_begin.GetIndex(), version.first) : version.first;
+		}
+	}
+	DuckLakeSnapshot snapshot(begin_snapshot.GetIndex(), schema_version, 0, 0);
+	if (earlier_version && !later_version) {
+		// versions of a table that share a begin have none of their own, the last is read at the end of its range
+		auto range_end = next_begin.IsValid()
+		                     ? DuckLakeSnapshot(next_begin.GetIndex() - 1, DConstants::INVALID_INDEX, 0, 0)
+		                     : GetNewestTableSnapshot(table_id);
+		if (range_end.snapshot_id != DConstants::INVALID_INDEX) {
+			snapshot = range_end;
+		}
+	} else if (earlier_version) {
+		// one between the first and the last only has inlined rows, the begin is not a snapshot of it either
+		snapshot = DuckLakeSnapshot(begin_snapshot.GetIndex(), DConstants::INVALID_INDEX, 0, 0);
+		auto inlined_snapshot = GetInlinedTableSnapshot(table_id, schema_version, snapshot, require_columns);
+		if (inlined_snapshot.snapshot_id == DConstants::INVALID_INDEX) {
+			// the first row that an older release still inlines there can tell the columns later
+			return snapshot;
+		}
+		snapshot = inlined_snapshot;
+	}
+	// only rows that are already committed are cached, a schema version written by this transaction can still be
+	// rolled back, and the fallback above is not stable either
+	if (!transaction.ChangesMade()) {
+		catalog.CacheSchemaVersionSnapshot(table_id, schema_version, snapshot);
+	}
+	return snapshot;
+}
+
+DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex table_id, idx_t schema_version,
+                                                                  DuckLakeSnapshot created, bool require_columns) {
+	auto tables =
+	    Query(GetInlinedTableNamesSql(table_id) + StringUtil::Format(" AND schema_version = %d", schema_version));
+	tables->ThrowIfError("Failed to get inlined data tables from DuckLake: ");
+	auto &catalog = transaction.GetCatalog();
+	auto col_names = InlinedColNames();
+	auto created_entry = catalog.GetEntryById(transaction, created, table_id);
+	for (auto &table : *tables) {
+		if (!created_entry) {
+			// LCOV_EXCL_START
+			break;
+			// LCOV_EXCL_STOP
+		}
+		auto inlined_table_name = table.GetValue<Identifier>(0);
+		if (catalog.SupportsRowVisibility()) {
+			VerifyInlinedTableName(inlined_table_name, table_id);
+		}
+		// the inlined table keeps the columns of the table at the commit of its schema version
+		auto first_row =
+		    Query(StringUtil::Format("SELECT * FROM %s ORDER BY %s ASC LIMIT 1", InlinedRowSource(inlined_table_name),
+		                             SQLIdentifier(col_names.begin_snapshot)));
+		first_row->ThrowIfError("Failed to get the first row of inlined data from DuckLake: ");
+		auto &names = first_row->GetNames();
+		auto &stored_types = first_row->GetTypes();
+		// the columns of the table, without the ones of the layout
+		vector<idx_t> stored_columns;
+		for (idx_t column_idx = 0; column_idx < names.size(); column_idx++) {
+			if (!col_names.ConflictsWith(names[column_idx])) {
+				stored_columns.push_back(column_idx);
+			}
+		}
+		auto has_columns = [&](const DuckLakeTableEntry &entry) {
+			auto &columns = entry.GetColumns();
+			if (columns.PhysicalColumnCount() != stored_columns.size()) {
+				return false;
+			}
+			for (auto &column : columns.Physical()) {
+				auto column_idx = stored_columns[column.Physical().index];
+				if (column.Name().GetIdentifierName() != names[column_idx].GetIdentifierName()) {
+					return false;
+				}
+				// a column that is read without a cast has the type of its values
+				auto name = SQLIdentifier::ToString(column.Name());
+				if (CastColumnToTarget(name, column.Type()) == name && stored_types[column_idx] != column.Type()) {
+					return false;
+				}
+			}
+			return true;
+		};
+		auto &created_table = created_entry->Cast<DuckLakeTableEntry>();
+		if (has_columns(created_table)) {
+			return created;
+		}
+		// whether the table of a snapshot has those columns and reads the ones of the creation as the creation does
+		auto reads_as_created = [&](DuckLakeSnapshot snapshot, bool of_schema_version) {
+			auto entry = catalog.GetEntryById(transaction, snapshot, table_id);
+			if (!entry || !has_columns(entry->Cast<DuckLakeTableEntry>())) {
+				return false;
+			}
+			auto &candidate = entry->Cast<DuckLakeTableEntry>();
+			for (auto &column : candidate.GetColumns().Physical()) {
+				auto &field = candidate.GetFieldId(column.Physical());
+				auto created_field = created_table.GetFieldData().GetByFieldIndex(field.GetFieldIndex());
+				auto &stored_type = stored_types[stored_columns[column.Physical().index]];
+				if (created_field) {
+					// a column of the creation is read as before, from the inlined column of its name
+					if (!field.SameFields(*created_field) ||
+					    field.Name().GetIdentifierName() != created_field->Name().GetIdentifierName()) {
+						return false;
+					}
+				} else if (of_schema_version) {
+					// an older version stored text as text, which is not decoded
+					if (DecodesInlinedColumn(column.Type()) && stored_type != LogicalType::BLOB) {
+						return false;
+					}
+				} else if (!TypeIsNativelySupported(column.Type()) || stored_type != column.Type()) {
+					// a later column of the table of a row is only known where it is stored as its type
+					return false;
+				}
+			}
+			return true;
+		};
+		// its first row was written to the table of that commit, unless a column changed without a new inlined table
+		for (auto &row : *first_row) {
+			// the begin snapshot of a row follows its row id
+			DuckLakeSnapshot written(row.GetValue<idx_t>(1), DConstants::INVALID_INDEX, 0, 0);
+			if (reads_as_created(written, false)) {
+				return written;
+			}
+		}
+		// the inlined table was created for the table of its schema version, which the snapshots of that version have
+		auto version_snapshot = Query(StringUtil::Format(
+		    "SELECT MIN(snapshot_id) FROM {METADATA_CATALOG}.ducklake_snapshot WHERE schema_version = %d%s",
+		    schema_version, MainSnapshotFilter()));
+		version_snapshot->ThrowIfError("Failed to get the first snapshot of a schema version from DuckLake: ");
+		for (auto &row : *version_snapshot) {
+			if (row.IsNull(0)) {
+				continue;
+			}
+			DuckLakeSnapshot snapshot(row.GetValue<idx_t>(0), DConstants::INVALID_INDEX, 0, 0);
+			if (reads_as_created(snapshot, true)) {
+				return snapshot;
+			}
+		}
+		if (!require_columns) {
+			continue;
+		}
+		// the table as created is used then, a flush through it does not keep what the rows hold
+		auto filter = InlinedFlushFilter(table_id, inlined_table_name);
+		auto flushed = Query(
+		    transaction.GetSnapshot(),
+		    StringUtil::Format("SELECT 1 FROM %s%s {SNAPSHOT_ID} >= %s LIMIT 1", InlinedRowSource(inlined_table_name),
+		                       filter.empty() ? " WHERE" : filter + " AND", SQLIdentifier(col_names.begin_snapshot)));
+		flushed->ThrowIfError("Failed to get the rows of inlined data from DuckLake: ");
+		for (auto &row : *flushed) {
+			(void)row;
+			throw InvalidInputException(
+			    "Cannot flush inlined data table \"%s\": schema version %d of its table has no begin snapshot of its "
+			    "own and the columns of its rows cannot be told",
+			    inlined_table_name.GetIdentifierName(), schema_version);
+		}
+	}
+	return DuckLakeSnapshot();
+}
+
+DuckLakeSnapshot DuckLakeMetadataManager::GetNewestTableSnapshot(TableIndex table_id) {
+	auto newest = transaction.GetSnapshot();
+	if (newest.snapshot_id != transaction.GetNewestVisibleSnapshotId()) {
+		// a catalog opened at a fixed snapshot reads later ones too, their schema version is not known here
+		newest = DuckLakeSnapshot(transaction.GetNewestVisibleSnapshotId(), DConstants::INVALID_INDEX, 0, 0);
+	}
+	if (transaction.GetCatalog().GetEntryById(transaction, newest, table_id)) {
+		return newest;
+	}
+	// a dropped table was last there before its columns ended
+	auto column_ends = GetColumnEndSnapshots(table_id);
+	if (column_ends.empty()) {
+		return DuckLakeSnapshot();
+	}
+	return DuckLakeSnapshot(column_ends.back() - 1, DConstants::INVALID_INDEX, 0, 0);
+}
+
+vector<idx_t> DuckLakeMetadataManager::GetColumnEndSnapshots(TableIndex table_id) {
+	// from 2.0 on a column ends in its companion
+	string ended_columns = "ducklake_column WHERE end_snapshot IS NOT NULL";
+	if (transaction.GetCatalog().SupportsRowVisibility()) {
+		ended_columns = "ducklake_column_visibility WHERE branch_id = 0";
+	}
+	auto result = Query(StringUtil::Format("SELECT DISTINCT end_snapshot FROM {METADATA_CATALOG}.%s AND table_id = %d "
+	                                       "ORDER BY end_snapshot ASC",
+	                                       ended_columns, table_id.index));
+	result->ThrowIfError("Failed to get the snapshots that ended columns of a table from DuckLake: ");
+	vector<idx_t> snapshots;
+	for (auto &row : *result) {
+		snapshots.push_back(row.GetValue<idx_t>(0));
+	}
+	return snapshots;
 }
 
 string DuckLakeMetadataManager::GetNetDataFileRowCountSql(TableIndex table_id, const Identifier &inlined_deletion_table,
@@ -4359,11 +4554,14 @@ WITH snapshot_ranges AS (
 			LEAD(begin_snapshot) OVER (ORDER BY begin_snapshot ASC),
 			9223372036854775807
 		) AS end_snapshot,
-		schema_version
+		schema_version,
+		LAG(begin_snapshot) OVER (ORDER BY begin_snapshot ASC) AS previous_begin
 	FROM {METADATA_CATALOG}.ducklake_schema_versions
 	WHERE table_id=%d
 )
-SELECT data.data_file_id, partition_sr.schema_version
+SELECT data.data_file_id, partition_sr.schema_version,
+	CASE WHEN partition_sr.previous_begin = partition_sr.begin_snapshot
+		THEN COALESCE(partition_spec.end_snapshot - 1, data.begin_snapshot) END
 FROM %s data
 JOIN %s partition_spec
 	ON data.partition_id = partition_spec.partition_id AND data.table_id = partition_spec.table_id
@@ -4378,9 +4576,13 @@ WHERE data.data_file_id IN (%s)
 	result->ThrowIfError("Failed to get the partition schema versions of compaction files from DuckLake: ");
 	for (auto &row : *result) {
 		auto entry = file_indexes.find(row.GetValue<idx_t>(0));
-		if (entry != file_indexes.end()) {
-			files[entry->second].partition_schema_version = row.GetValue<idx_t>(1);
+		if (entry == file_indexes.end()) {
+			continue;
 		}
+		auto &file = files[entry->second];
+		file.partition_schema_version = row.GetValue<idx_t>(1);
+		// versions that share a begin cannot tell the spec, the table had it at the last snapshot of the spec
+		file.partition_schema_snapshot = OptIdx(row, 2);
 	}
 }
 
@@ -4394,8 +4596,8 @@ vector<DuckLakeCompactionFileEntry> DuckLakeMetadataManager::GetFilesForCompacti
 	idx_t effective_max_file_size =
 	    options.max_file_size.IsValid() ? options.max_file_size.GetIndex() : options.target_file_size;
 	string data_select_list = "data.data_file_id, data.record_count, data.row_id_start, data.begin_snapshot, "
-	                          "data.end_snapshot, data.mapping_id, sr.schema_version , data.partial_max, "
-	                          "data.partition_id, partition_info.keys, " +
+	                          "data.end_snapshot, data.mapping_id, sr.schema_version, sr.shared_begin_end, "
+	                          "data.partial_max, data.partition_id, partition_info.keys, " +
 	                          GetDataFileSelectList("data");
 	string delete_select_list = "del.data_file_id AS del_data_file_id,"
 	                            "del.delete_file_id AS del_delete_file_id, "
@@ -4468,10 +4670,14 @@ WITH %ssnapshot_ranges AS (
 	SELECT
 		begin_snapshot,
 		COALESCE(
-			LEAD(begin_snapshot) OVER (ORDER BY begin_snapshot ASC),
+			LEAD(begin_snapshot) OVER (ORDER BY begin_snapshot ASC, schema_version ASC),
 			9223372036854775807
 		) AS end_snapshot,
-		schema_version
+		schema_version,
+		CASE WHEN LAG(begin_snapshot) OVER (ORDER BY begin_snapshot ASC, schema_version ASC) = begin_snapshot
+			THEN COALESCE(LEAD(begin_snapshot) OVER (ORDER BY begin_snapshot ASC, schema_version ASC),
+				9223372036854775807)
+		END AS shared_begin_end
 	FROM {METADATA_CATALOG}.ducklake_schema_versions
 	WHERE table_id=%d
 	ORDER BY begin_snapshot ASC
@@ -4500,6 +4706,8 @@ ORDER BY data.begin_snapshot ASC, data.row_id_start ASC, data.data_file_id ASC, 
 	auto result = Query(query);
 	result->ThrowIfError("Failed to get compaction file list from DuckLake: ");
 	vector<DuckLakeCompactionFileEntry> files;
+	// the end of the range of the files whose schema version shares its begin with an earlier one
+	map<idx_t, idx_t> shared_begin_ends;
 	for (auto &row : *result) {
 		idx_t col_idx = 0;
 		DuckLakeCompactionFileEntry new_entry;
@@ -4514,6 +4722,7 @@ ORDER BY data.begin_snapshot ASC, data.row_id_start ASC, data.data_file_id ASC, 
 		}
 		col_idx++;
 		new_entry.schema_version = row.GetValue<idx_t>(col_idx++);
+		auto shared_begin_end = OptIdx(row, col_idx++);
 		new_entry.max_partial_file_snapshot = OptIdx(row, col_idx++);
 		new_entry.file.partition_id = OptIdx(row, col_idx++);
 		if (!row.IsNull(col_idx)) {
@@ -4526,6 +4735,9 @@ ORDER BY data.begin_snapshot ASC, data.row_id_start ASC, data.data_file_id ASC, 
 		new_entry.file.data = ReadDataFile(table, row, col_idx, IsEncrypted());
 		if (files.empty() || files.back().file.id != new_entry.file.id) {
 			// new file - push it into the file list
+			if (shared_begin_end.IsValid()) {
+				shared_begin_ends[files.size()] = shared_begin_end.GetIndex();
+			}
 			files.push_back(std::move(new_entry));
 		}
 		auto &file_entry = files.back();
@@ -4543,6 +4755,20 @@ ORDER BY data.begin_snapshot ASC, data.row_id_start ASC, data.data_file_id ASC, 
 		delete_file.max_snapshot = OptIdx(row, col_idx++);
 		delete_file.data = ReadDeleteFile(table, row, col_idx, IsEncrypted());
 		file_entry.delete_files.push_back(std::move(delete_file));
+	}
+
+	if (!shared_begin_ends.empty()) {
+		// such a range can span column changes, a file is read before the next column of its table ended
+		auto column_ends = GetColumnEndSnapshots(table_id);
+		for (auto &entry : shared_begin_ends) {
+			auto &file = files[entry.first];
+			auto file_snapshot = file.max_partial_file_snapshot.IsValid() ? file.max_partial_file_snapshot.GetIndex()
+			                                                              : file.file.begin_snapshot;
+			auto column_end = std::upper_bound(column_ends.begin(), column_ends.end(), file_snapshot);
+			if (column_end != column_ends.end() && *column_end < entry.second) {
+				file.schema_snapshot = *column_end - 1;
+			}
+		}
 	}
 
 	if (type == CompactionType::REWRITE_DELETES) {
@@ -4900,6 +5126,11 @@ bool DuckLakeMetadataManager::IsDuckDBMetadataType(const string &metadata_type) 
 	return type.empty() || type == "duckdb" || type == "quack" || type == "quack_scanner";
 }
 
+bool DuckLakeMetadataManager::DecodesInlinedColumn(const LogicalType &type) {
+	// Postgres stores VARCHAR and JSON as BYTEA.
+	return type.id() == LogicalTypeId::VARCHAR && !TypeIsNativelySupported(type);
+}
+
 string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const LogicalType &type) {
 	auto &metadata_type = transaction.GetCatalog().MetadataType();
 	// a column created with an overridden type is cast back like on any other database
@@ -4910,8 +5141,7 @@ string DuckLakeMetadataManager::CastColumnToTarget(const string &column, const L
 		return DuckLakeTypes::IsNested(type) ? "CAST(" + column + " AS " + type.ToString() + ")" : column;
 	}
 	auto expression = column;
-	if (type.id() == LogicalTypeId::VARCHAR && !TypeIsNativelySupported(type)) {
-		// Postgres stores VARCHAR and JSON as BYTEA.
+	if (DecodesInlinedColumn(type)) {
 		expression = "decode(" + expression + ")";
 	}
 	expression = "CAST(" + expression + " AS " + storage_type.ToString() + ")";
@@ -4937,24 +5167,29 @@ string DuckLakeMetadataManager::InlinedFlushSource(const Identifier &inlined_tab
 		}
 		projection.push_back(typed_column);
 	}
-	string filter;
-	auto local_deletes = transaction.GetInlinedDeletes(table.GetTableId(), inlined_table_name);
-	if (local_deletes && !local_deletes->rows.empty()) {
-		vector<string> row_ids;
-		for (auto &row_id : local_deletes->rows) {
-			row_ids.push_back(to_string(row_id));
-		}
-		// rows deleted by this transaction are not flushed, passing the ids as one string keeps planning cheap
-		filter = StringUtil::Format(" WHERE NOT (%s IN (SELECT CAST(unnest(string_split(ids, ',')) AS BIGINT) FROM "
-		                            "(SELECT %s AS ids)) AND (%s IS NULL OR %s > {SNAPSHOT_ID}))",
-		                            col_names.row_id, SQLString(StringUtil::Join(row_ids, ",")), col_names.end_snapshot,
-		                            col_names.end_snapshot);
-	}
+	auto filter = InlinedFlushFilter(table.GetTableId(), inlined_table_name);
 	auto source = InlinedRowSource(inlined_table_name);
 	if (!has_casts && filter.empty()) {
 		return source;
 	}
 	return StringUtil::Format("(SELECT %s FROM %s inlined_data%s)", StringUtil::Join(projection, ", "), source, filter);
+}
+
+string DuckLakeMetadataManager::InlinedFlushFilter(TableIndex table_id, const Identifier &inlined_table_name) {
+	auto local_deletes = transaction.GetInlinedDeletes(table_id, inlined_table_name);
+	if (!local_deletes || local_deletes->rows.empty()) {
+		return string();
+	}
+	vector<string> row_ids;
+	for (auto &row_id : local_deletes->rows) {
+		row_ids.push_back(to_string(row_id));
+	}
+	auto col_names = InlinedColNames();
+	// rows deleted by this transaction are not flushed, passing the ids as one string keeps planning cheap
+	return StringUtil::Format(" WHERE NOT (%s IN (SELECT CAST(unnest(string_split(ids, ',')) AS BIGINT) FROM "
+	                          "(SELECT %s AS ids)) AND (%s IS NULL OR %s > {SNAPSHOT_ID}))",
+	                          col_names.row_id, SQLString(StringUtil::Join(row_ids, ",")), col_names.end_snapshot,
+	                          col_names.end_snapshot);
 }
 
 string DuckLakeMetadataManager::InlinedFlushOrder(const string &sort_order_sql) const {

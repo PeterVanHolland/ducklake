@@ -1,0 +1,175 @@
+# name: test/sql/migration/migrated_inlined_schema_version_sqlite.test
+# description: rows inlined at a schema version that DuckDB 1.5.1 migrated between two others, on a SQLite catalog
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+require sqlite_scanner
+
+# written by DuckDB 1.4.4 with rows inlined after a table got or lost a column, migrated by DuckDB 1.5.1, which then
+# inlined one more row of t and of k, for k after it changed its columns with inlining off
+unzip data/old_ducklake/migrated_inlined_schema_version_sqlite.db.gz {TEST_DIR}/migrated_inlined_sqlite.db
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite.db' AS between
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'between_meta',
+	DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+# every schema version of t begins at its creation, the snapshots still tell where each began
+query I
+SELECT string_agg(begin_snapshot || ':' || schema_version, ' ' ORDER BY schema_version)
+FROM between_meta.ducklake_schema_versions WHERE table_id = 1 AND schema_version <= 3
+----
+1:1 1:2 1:3
+
+query I
+SELECT string_agg(snapshot_id || ':' || schema_version, ' ' ORDER BY snapshot_id)
+FROM between_meta.ducklake_snapshot WHERE schema_version BETWEEN 1 AND 3
+----
+1:1 2:2 3:2 4:3
+
+# SQLite does not report the types of the inlined columns, the snapshot of their schema version has them
+query II
+SELECT a, b FROM between.t ORDER BY ALL
+----
+1	10
+2	20
+
+query IIIII
+SELECT a, v, d, s, dc FROM between.m
+----
+1	text	2026-01-02	{'x': 5}	1.25
+
+# j lost a column before it got c, the inlined table of the version between has no rows
+query II
+SELECT a, c FROM between.j
+----
+1	30
+
+# the rows of k went by position into an inlined table with other names, it is read as before
+query I
+SELECT x FROM between.k ORDER BY ALL
+----
+20
+NULL
+
+# the inlined table of k has other columns than any table that its rows could confirm, so its rows are not flushed
+statement error
+CALL ducklake_flush_inlined_data('between', table_name => 'k')
+----
+the columns of its rows cannot be told
+
+foreach flushed t m j
+
+statement ok
+CALL ducklake_flush_inlined_data('between', table_name => '{flushed}')
+
+endloop
+
+query II
+SELECT a, b FROM between.t ORDER BY ALL
+----
+1	10
+2	20
+
+query IIIII
+SELECT a, v, d, s, dc FROM between.m
+----
+1	text	2026-01-02	{'x': 5}	1.25
+
+query II
+SELECT a, c FROM between.j
+----
+1	30
+
+query I
+SELECT x FROM between.k ORDER BY ALL
+----
+20
+NULL
+
+# the migration to 2.0 converts no inlined rows, it takes the catalog without the rows of k and their snapshots
+statement ok
+DELETE FROM between.k
+
+statement ok
+CALL ducklake_expire_snapshots('between', older_than => now())
+
+# the flush wrote the other inlined rows to files with their columns
+statement ok
+DETACH between
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite.db' AS between
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT a, b FROM between.t ORDER BY ALL
+----
+1	10
+2	20
+
+query IIIII
+SELECT a, v, d, s, dc FROM between.m
+----
+1	text	2026-01-02	{'x': 5}	1.25
+
+query II
+SELECT a, c FROM between.j
+----
+1	30
+
+statement ok
+DETACH between
+
+# once the snapshots of those schema versions are expired SQLite has nothing to tell the columns of t by
+unzip data/old_ducklake/migrated_inlined_schema_version_sqlite.db.gz {TEST_DIR}/migrated_inlined_sqlite_expired.db
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite_expired.db' AS between_expired
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite_expired', OVERRIDE_DATA_PATH TRUE,
+	METADATA_CATALOG 'between_expired_meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
+
+statement ok
+CALL ducklake_expire_snapshots('between_expired', older_than => now())
+
+statement ok
+DETACH between_expired
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite_expired.db' AS between_expired
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite_expired', OVERRIDE_DATA_PATH TRUE,
+	METADATA_CATALOG 'between_expired_meta', DUCKLAKE_VERSION '1.1', DATA_INLINING_ROW_LIMIT 10)
+
+# a flush with the table as created would lose the values of b, so it is refused and the rows stay
+statement error
+CALL ducklake_flush_inlined_data('between_expired', table_name => 't')
+----
+the columns of its rows cannot be told
+
+query II
+SELECT a, b FROM between_expired_meta.ducklake_inlined_data_1_2 ORDER BY ALL
+----
+1	10
+2	20
+
+# rows that the transaction deleted are not flushed, so they do not refuse it
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM between_expired.t
+
+statement ok
+CALL ducklake_flush_inlined_data('between_expired', table_name => 't')
+
+statement ok
+ROLLBACK
+
+# u has no such rows and is flushed
+statement ok
+CALL ducklake_flush_inlined_data('between_expired', table_name => 'u')

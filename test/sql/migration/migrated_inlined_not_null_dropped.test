@@ -1,0 +1,33 @@
+# name: test/sql/migration/migrated_inlined_not_null_dropped.test
+# description: a NULL inlined after a dropped NOT NULL, at an intermediate schema version of a DuckDB 1.5.1 migration
+# group: [migration]
+
+require ducklake
+
+require parquet
+
+# written by DuckDB 1.4.4, which set a of t NOT NULL and then added b, migrated by DuckDB 1.5.1, which dropped the
+# NOT NULL with inlining off and then inlined (NULL, 10)
+unzip data/old_ducklake/migrated_inlined_not_null_dropped.db.gz {TEST_DIR}/migrated_inlined_not_null_dropped.db
+
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_not_null_dropped.db' AS between
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_not_null_dropped', OVERRIDE_DATA_PATH TRUE, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+
+# the row went into the inlined table of the schema version that added b, the table of the row has no NOT NULL
+query II
+SELECT a, b FROM between.t ORDER BY ALL
+----
+1	NULL
+NULL	10
+
+statement ok
+CALL ducklake_flush_inlined_data('between')
+
+query II
+SELECT a, b FROM between.t ORDER BY ALL
+----
+1	NULL
+NULL	10

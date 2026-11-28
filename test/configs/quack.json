@@ -75,6 +75,7 @@
         "test/sql/concurrent/postgres_concurrent_attach_new_migrate.test",
         "test/sql/migration/postgres_dev_migration_failure.test",
         "test/sql/migration/postgres_dev1_migration_skips_present_ddl.test",
+        "test/sql/migration/postgres_row_companions_index_names.test",
         "test/sql/benchmark/postgres_catalog.test",
         "test/sql/issues/issue_843_postgres_legacy_inlined_types.test",
         "test/sql/data_inlining/inlined_superseded_drop_failure_postgres.test",
@@ -90,7 +91,8 @@
         "test/sql/data_inlining/postgres_new_inlined_table_keeps_cache.test",
         "test/sql/transaction/postgres_failed_rollback_releases_transaction.test",
         "test/sql/metadata/postgres_attach_cache_clear.test",
-        "test/sql/time_travel/postgres_at_timestamp_expired_read_committed.test"
+        "test/sql/time_travel/postgres_at_timestamp_expired_read_committed.test",
+        "test/sql/catalog/snapshot_branch_key_statements_postgres.test"
       ]
     },
     {
@@ -253,6 +255,26 @@
       "paths": [
         "test/sql/cleanup/expire_cleanup_in_transaction.test",
         "test/sql/cleanup/expire_cleanup_concurrent_commit.test"
+      ]
+    },
+    {
+      "reason": "The commit batch of a quack catalog is sent through quack_query_by_name, so the client log holds no delete file event insert to count",
+      "paths": [
+        "test/sql/delete/delete_replacement_commit_statements.test",
+        "test/sql/deletion_inlining/inlined_delete_ends_without_probe.test"
+      ]
+    },
+    {
+      "reason": "The conflict read of a server side quack commit runs in the sidecar, so the client log never shows it",
+      "paths": [
+        "test/sql/retry/retry_conflict_read_shapes.test"
+      ]
+    },
+    {
+      "reason": "A data-only commit of a quack catalog runs on the server, so the client log never shows the metadata reads it makes",
+      "paths": [
+        "test/sql/stats/stats_reads_filter_table.test",
+        "test/sql/stats/null_first_bounds_unrelated_commits.test"
       ]
     }
   ]

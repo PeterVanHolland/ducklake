@@ -1,0 +1,51 @@
+# name: test/sql/sorted_table/insert_sorted_inlining_overflow_parallel.test
+# description: A parallel sorted insert that outgrows the inlining limit writes its rows in sorted order
+# group: [sorted_table]
+
+require ducklake
+
+require parquet
+
+test-env DUCKLAKE_CONNECTION {TEST_DIR}/{UUID}.db
+
+test-env DATA_PATH {TEST_DIR}
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/sorted_inlining_overflow', DATA_INLINING_ROW_LIMIT 20000)
+
+# the rows held back for inlining must reach the file in sorted order when several threads insert
+statement ok
+PRAGMA verify_parallelism
+
+statement ok
+SET threads = 8
+
+statement ok
+CREATE TABLE ducklake.t (k BIGINT)
+
+statement ok
+ALTER TABLE ducklake.t SET SORTED BY (k)
+
+statement ok
+INSERT INTO ducklake.t SELECT (i * 7919) % 100003 FROM range(200000) t(i)
+
+query I
+SELECT count(*) FROM ducklake_list_files('ducklake', 't')
+----
+1
+
+statement ok
+SET VARIABLE data_file = (SELECT data_file FROM ducklake_list_files('ducklake', 't'))
+
+query I
+SELECT count(*) FROM (
+    SELECT k, lead(k) OVER (ORDER BY file_row_number) AS next_k
+    FROM read_parquet(getvariable('data_file'), file_row_number => true)
+) WHERE next_k < k
+----
+0
+
+query II
+SELECT count(*), sum(k) FROM ducklake.t
+----
+200000	10000066287

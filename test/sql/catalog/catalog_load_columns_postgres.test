@@ -54,13 +54,14 @@ statement ok
 USE ducklake
 
 # Every scan of ducklake_column sent to Postgres has the branch and snapshot filter of a loaded catalog
+# the layout probe of the attach only names the table in LIMIT 0 subqueries and loads no rows
 query I
 SELECT CASE WHEN (SELECT catalog_type FROM settings()) = 'postgres' THEN
 	(SELECT bool_or(contains(query, printf('"branch_id" = 0 AND "begin_snapshot" <= %d', getvariable('latest'))))
 	    AND bool_or(contains(query, printf('"branch_id" = 0 AND "begin_snapshot" <= %d', getvariable('with_x'))))
 	    AND bool_and(contains(query, '"branch_id" = 0 AND "begin_snapshot" <= '))
 	 FROM (SELECT message AS query FROM duckdb_logs WHERE type = 'PostgresQueryLog') logs
-	 WHERE contains(query, '"ducklake_column" '))
+	 WHERE contains(query, '"ducklake_column" ') AND NOT contains(query, 'LIMIT 0'))
 	ELSE true END
 ----
 true
@@ -72,7 +73,7 @@ SELECT CASE WHEN (SELECT catalog_type FROM settings()) = 'postgres' THEN
 	    AND bool_or(contains(query, printf('"branch_id" = 0 AND "end_snapshot" <= %d', getvariable('with_x'))))
 	    AND bool_and(contains(query, '"branch_id" = 0 AND "end_snapshot" <= '))
 	 FROM (SELECT message AS query FROM duckdb_logs WHERE type = 'PostgresQueryLog') logs
-	 WHERE contains(query, '"ducklake_column_visibility" '))
+	 WHERE contains(query, '"ducklake_column_visibility" ') AND NOT contains(query, 'LIMIT 0'))
 	ELSE true END
 ----
 true

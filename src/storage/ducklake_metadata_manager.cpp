@@ -2269,6 +2269,19 @@ static bool HasStoredFields(const LogicalType &type, const LogicalType &stored_t
 	}
 }
 
+//! Whether a field or one of its nested fields has a field id that another field of field_ids has
+static bool RepeatsFieldId(const DuckLakeFieldId &field, set<idx_t> &field_ids) {
+	if (!field_ids.insert(field.GetFieldIndex().index).second) {
+		return true;
+	}
+	for (auto &child : field.Children()) {
+		if (RepeatsFieldId(*child, field_ids)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex table_id, idx_t schema_version,
                                                                   DuckLakeSnapshot created, bool require_columns,
                                                                   bool &unresolved) {
@@ -2337,6 +2350,7 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 		optional_ptr<DuckLakeTableEntry> written_table;
 		DuckLakeSnapshot written;
 		optional_idx last_written;
+		vector<idx_t> changes;
 		if (first_written.IsValid()) {
 			auto last_row =
 			    Query(StringUtil::Format("SELECT MAX(%s) FROM %s", begin_column, InlinedRowSource(inlined_table_name)));
@@ -2349,7 +2363,7 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 			}
 		}
 		if (last_written.IsValid()) {
-			auto changes = GetColumnChangeSnapshots(table_id);
+			changes = GetColumnChangeSnapshots(table_id);
 			auto changed_after = [&](idx_t snapshot_id) {
 				for (auto change : changes) {
 					if (change > snapshot_id && change <= last_written.GetIndex()) {
@@ -2487,6 +2501,45 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 				return snapshot;
 			}
 		}
+		// those snapshots can be expired, the columns keep the range in which they had the names of the inlined table
+		if (written_table && !written_columns &&
+		    written_table->GetColumns().PhysicalColumnCount() + DuckLakeInlinedColNames::COLUMN_COUNT == names.size()) {
+			map<idx_t, string> stored_names;
+			for (auto &column : written_table->GetColumns().Physical()) {
+				auto &stored_name = names[column.Physical().index + DuckLakeInlinedColNames::COLUMN_COUNT];
+				if (column.Name().GetIdentifierName() != stored_name.GetIdentifierName()) {
+					auto column_id = written_table->GetFieldId(column.Physical()).GetFieldIndex().index;
+					stored_names[column_id] = stored_name.GetIdentifierName();
+				}
+			}
+			for (auto renamed : GetRenamedColumnSnapshots(table_id, stored_names, written.snapshot_id, changes)) {
+				DuckLakeSnapshot snapshot(renamed, DConstants::INVALID_INDEX, 0, 0);
+				optional_ptr<CatalogEntry> entry;
+				// DuckDB 1.3 ended every earlier row of a renamed column at its last rename, so a table between two
+				// renames has the column more than once and does not load
+				try {
+					entry = catalog.GetEntryById(transaction, snapshot, table_id);
+				} catch (CatalogException &) {
+					continue;
+				} catch (InvalidInputException &) {
+					continue;
+				}
+				if (!entry) {
+					continue;
+				}
+				// a nested field that was renamed loads under two names there, and is read as the first of them
+				auto &renamed_table = entry->Cast<DuckLakeTableEntry>();
+				set<idx_t> field_ids;
+				bool repeated_field = false;
+				for (auto &column : renamed_table.GetColumns().Physical()) {
+					repeated_field =
+					    RepeatsFieldId(renamed_table.GetFieldId(column.Physical()), field_ids) || repeated_field;
+				}
+				if (!repeated_field && reads_as_written(renamed_table)) {
+					return snapshot;
+				}
+			}
+		}
 		if (written_columns) {
 			return written;
 		}
@@ -2531,6 +2584,58 @@ ORDER BY 1 ASC)",
 	vector<idx_t> snapshots;
 	for (auto &row : *result) {
 		snapshots.push_back(row.GetValue<idx_t>(0));
+	}
+	return snapshots;
+}
+
+vector<idx_t> DuckLakeMetadataManager::GetRenamedColumnSnapshots(TableIndex table_id,
+                                                                 const map<idx_t, string> &stored_names,
+                                                                 idx_t written_snapshot, const vector<idx_t> &changes) {
+	vector<idx_t> snapshots;
+	if (stored_names.empty()) {
+		return snapshots;
+	}
+	vector<string> column_ids;
+	for (auto &entry : stored_names) {
+		column_ids.push_back(to_string(entry.first));
+	}
+	bool row_visibility = transaction.GetCatalog().SupportsRowVisibility();
+	auto result = Query(StringUtil::Format(R"(
+SELECT column_id, column_name, begin_snapshot FROM {METADATA_CATALOG}.ducklake_column
+WHERE table_id = %d AND parent_column IS NULL AND column_id IN (%s) AND begin_snapshot <= %d%s
+ORDER BY column_id ASC, begin_snapshot ASC)",
+	                                       table_id.index, StringUtil::Join(column_ids, ", "), written_snapshot,
+	                                       row_visibility ? " AND branch_id = 0" : ""));
+	result->ThrowIfError("Failed to get the names that the columns of a table had from DuckLake: ");
+	// a column has a name from the first row of that name to the row that renames it, and can get it again later
+	map<idx_t, vector<pair<idx_t, idx_t>>> named_ranges;
+	map<idx_t, idx_t> named_since;
+	for (auto &row : *result) {
+		auto column_id = row.GetValue<idx_t>(0);
+		auto begin_snapshot = row.GetValue<idx_t>(2);
+		auto since = named_since.find(column_id);
+		if (row.GetValue<string>(1) == stored_names.at(column_id)) {
+			if (since == named_since.end()) {
+				named_since[column_id] = begin_snapshot;
+			}
+		} else if (since != named_since.end()) {
+			named_ranges[column_id].emplace_back(since->second, begin_snapshot);
+			named_since.erase(since);
+		}
+	}
+	// the table is another one at every change of its columns, the last one before a rename comes first
+	for (auto change = changes.rbegin(); change != changes.rend(); ++change) {
+		bool has_stored_names = true;
+		for (auto &entry : stored_names) {
+			bool named = false;
+			for (auto &range : named_ranges[entry.first]) {
+				named = named || (*change >= range.first && *change < range.second);
+			}
+			has_stored_names = has_stored_names && named;
+		}
+		if (has_stored_names) {
+			snapshots.push_back(*change);
+		}
 	}
 	return snapshots;
 }

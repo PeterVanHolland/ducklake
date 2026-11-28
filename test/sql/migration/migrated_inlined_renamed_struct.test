@@ -36,24 +36,14 @@ SELECT a, s.y, s.x FROM renamed.n
 ----
 1	10	20
 
-# s of c was renamed to r, and its field y replaced by another one of that name. The inlined table stores the row
-# under the names s and y, which no table has for its fields, so it is read as before and its flush is refused
-query I
-SELECT a FROM renamed.c
+# the field y of the s of c was replaced by another one of that name, then s was renamed to r. The inlined table
+# stores the row under the names s and y, which the table had for those fields between the two changes
+query III
+SELECT a, r, b FROM renamed.c
 ----
-1
+1	{'x': 10, 'y': 20}	30
 
-statement error
-CALL ducklake_flush_inlined_data('renamed', table_name => 'c')
-----
-the columns of its rows cannot be told
-
-query II
-SELECT s.y, b FROM __ducklake_metadata_renamed.ducklake_inlined_data_4_9
-----
-20	30
-
-foreach flushed w d n
+foreach flushed w d n c
 
 statement ok
 CALL ducklake_flush_inlined_data('renamed', table_name => '{flushed}')
@@ -74,6 +64,11 @@ query III
 SELECT a, s.y, s.x FROM renamed.n
 ----
 1	10	20
+
+query III
+SELECT a, r, b FROM renamed.c
+----
+1	{'x': 10, 'y': 20}	30
 
 query III
 SELECT (SELECT typeof(r) FROM renamed.w), (SELECT typeof(r) FROM renamed.d), (SELECT typeof(s) FROM renamed.n)

@@ -556,6 +556,10 @@ public:
 	DuckLakeSnapshot GetNewestTableSnapshot(TableIndex table_id);
 	//! The snapshots at which a column of the table began or ended, in ascending order
 	vector<idx_t> GetColumnChangeSnapshots(TableIndex table_id);
+	//! The snapshots that changed a column of the table and at which every column that was renamed before the snapshot
+	//! of a row had its stored name, newest first
+	vector<idx_t> GetRenamedColumnSnapshots(TableIndex table_id, const map<idx_t, string> &stored_names,
+	                                        idx_t written_snapshot, const vector<idx_t> &changes);
 	virtual DuckLakeTableSchemaVersions GetTableSchemaVersions(TableIndex table_id, DuckLakeSnapshot snapshot);
 	//! The net row count of the data files that were committed before the snapshot's next file id
 	virtual idx_t GetNetDataFileRowCount(TableIndex table_id, DuckLakeSnapshot snapshot);

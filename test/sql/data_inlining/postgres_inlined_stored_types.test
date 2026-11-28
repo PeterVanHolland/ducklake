@@ -159,10 +159,11 @@ decode
 statement ok
 DETACH dl
 
-# the migration converts the columns with every value, the double is no storage type of a FLOAT and stays
+# the migration to 1.1 converts the columns with every value, the double is no storage type of a FLOAT and stays
 statement ok
 ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
-	(DATA_PATH '{DATA_PATH}/postgres_inlined_stored_types', DATA_INLINING_ROW_LIMIT 200, AUTOMATIC_MIGRATION TRUE)
+	(DATA_PATH '{DATA_PATH}/postgres_inlined_stored_types', DATA_INLINING_ROW_LIMIT 200, DUCKLAKE_VERSION '1.1',
+	AUTOMATIC_MIGRATION TRUE)
 
 query I
 SELECT string_agg(data_type, ', ' ORDER BY ordinal_position) FROM postgres_query('__ducklake_metadata_dl',
@@ -194,3 +195,33 @@ SELECT id, v, d, ts, f, s.x, j, tz FROM dl.t ORDER BY id
 3	NULL	NULL	NULL	NULL	NULL	NULL	NULL
 4	new	2026-04-05	2026-04-05 06:07:08	4.5	4	{"k": 4}	2026-04-05 06:07:08+00
 50	both	NULL	NULL	NULL	NULL	NULL	NULL
+
+# the flush wrote the inlined rows to files, the migration to 2.0 converts none
+statement ok
+DETACH dl
+
+statement ok
+ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS dl
+	(DATA_PATH '{DATA_PATH}/postgres_inlined_stored_types', DATA_INLINING_ROW_LIMIT 200, AUTOMATIC_MIGRATION TRUE)
+
+query IIIIIIII
+SELECT id, v, d, ts, f, s.x, j, tz FROM dl.t ORDER BY id
+----
+1	upd	2026-01-02	2026-01-02 03:04:05	1.5	1	{"k": 1}	2026-01-02 03:04:05+00
+2	né\w	2026-02-03	2026-02-03 04:05:06	2.5	2	{"k": 2}	2026-02-03 04:05:06+00
+3	NULL	NULL	NULL	NULL	NULL	NULL	NULL
+4	new	2026-04-05	2026-04-05 06:07:08	4.5	4	{"k": 4}	2026-04-05 06:07:08+00
+50	both	NULL	NULL	NULL	NULL	NULL	NULL
+
+# an insert finds the columns of a 2.0 inlined table in the current storage
+statement ok
+INSERT INTO dl.t (id, v) VALUES (5, 'five')
+
+statement ok
+INSERT INTO dl.t (id, v) VALUES (6, 'né\w')
+
+query II
+SELECT id, v FROM dl.t WHERE id IN (5, 6) ORDER BY id
+----
+5	five
+6	né\w

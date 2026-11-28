@@ -413,6 +413,7 @@ vector<bool> PostgresMetadataManager::InlinedColumnsStoredAsValues(const Identif
 	vector<bool> stored_as_values;
 	auto &ducklake_catalog = transaction.GetCatalog();
 	auto &context = *transaction.GetConnection().context;
+	auto col_names = InlinedColNames();
 	// the catalog of the scanner has the column types of the table without a query
 	context.RunFunctionInTransaction([&]() {
 		auto &catalog = Catalog::GetCatalog(context, ducklake_catalog.MetadataDatabaseName());
@@ -421,15 +422,20 @@ vector<bool> PostgresMetadataManager::InlinedColumnsStoredAsValues(const Identif
 		if (!table) {
 			return;
 		}
-		auto &columns = table->GetColumns();
-		if (columns.LogicalColumnCount() != types.size() + DuckLakeInlinedColNames::COLUMN_COUNT) {
+		// the columns of the table, without the ones of the layout
+		vector<LogicalType> stored_types;
+		for (auto &column : table->GetColumns().Logical()) {
+			if (!col_names.ConflictsWith(column.Name())) {
+				stored_types.push_back(column.Type());
+			}
+		}
+		if (stored_types.size() != types.size()) {
 			return;
 		}
 		bool found = false;
 		for (idx_t i = 0; i < types.size(); i++) {
-			auto &stored_type = columns.GetColumn(LogicalIndex(i + DuckLakeInlinedColNames::COLUMN_COUNT)).Type();
 			// DuckLake 0.3 stored text as text and most other types as PostgreSQL has them
-			stored_as_values.push_back(stored_type != UnboundType::TryParseAndDefaultBind(GetColumnType(types[i])));
+			stored_as_values.push_back(stored_types[i] != UnboundType::TryParseAndDefaultBind(GetColumnType(types[i])));
 			found = found || stored_as_values.back();
 		}
 		if (!found) {
@@ -439,16 +445,14 @@ vector<bool> PostgresMetadataManager::InlinedColumnsStoredAsValues(const Identif
 	return stored_as_values;
 }
 
-void PostgresMetadataManager::MigrateInlinedDataTypes(bool schema_version_columns) {
+void PostgresMetadataManager::MigrateInlinedDataTypes() {
+	// a 2.0 catalog whose version string was rewound reaches this step with the column rows already converted
+	auto columns = DuckLakeMetadataManager::Query(
+	    GetInlinedTableColumnsSql(optional_idx(), HasMetadataColumn("ducklake_column", "branch_id")));
+	columns->ThrowIfError("Failed to read the columns of inlined-data tables while migrating: ");
 	map<Identifier, identifier_map_t<string>> inlined_tables;
-	if (schema_version_columns) {
-		// a 2.0 catalog whose version string was rewound reaches this step with the column rows already converted
-		auto columns = DuckLakeMetadataManager::Query(
-		    GetInlinedTableColumnsSql(optional_idx(), HasMetadataColumn("ducklake_column", "branch_id")));
-		columns->ThrowIfError("Failed to read the columns of inlined-data tables while migrating: ");
-		for (auto &row : *columns) {
-			inlined_tables[row.GetValue<Identifier>(0)][row.GetValue<Identifier>(1)] = row.GetValue<string>(2);
-		}
+	for (auto &row : *columns) {
+		inlined_tables[row.GetValue<Identifier>(0)][row.GetValue<Identifier>(1)] = row.GetValue<string>(2);
 	}
 	// without a begin of its own a schema version has the columns of an earlier version of its table there
 	auto shared = DuckLakeMetadataManager::Query(R"(
@@ -525,9 +529,6 @@ ORDER BY ALL)");
 		// an inlined table with a column that this table lacks stays as it is
 		bool by_history = shared_begin.count(table_name) > 0;
 		bool created_only = without_schema_version.count(table_name) > 0;
-		if (!by_history && !schema_version_columns) {
-			continue;
-		}
 		auto &version_columns = inlined_tables[table_name];
 		string column_defs;
 		bool rewrite = false;
@@ -577,7 +578,7 @@ ORDER BY ALL)");
 			continue;
 		}
 		auto migrated_name = Identifier(table_name + "_migrated");
-		auto migrate_query = InlinedTableDdlSql(migrated_name, column_defs, col_names);
+		auto migrate_query = InlinedTableDdlSql(migrated_name, column_defs, col_names, false);
 		migrate_query += StringUtil::Format("INSERT INTO {METADATA_CATALOG}.%s SELECT %s FROM {METADATA_CATALOG}.%s;",
 		                                    migrated_name, StringUtil::Join(select_list, ", "), table_name);
 		migrate_query += StringUtil::Format("DROP TABLE {METADATA_CATALOG}.%s;", table_name);

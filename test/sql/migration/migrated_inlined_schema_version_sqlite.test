@@ -12,10 +12,11 @@ require sqlite_scanner
 # inlined one more row of t and of k, for k after it changed its columns with inlining off
 unzip data/old_ducklake/migrated_inlined_schema_version_sqlite.db.gz {TEST_DIR}/migrated_inlined_sqlite.db
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok
 ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite.db' AS between
 	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'between_meta',
-	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+	DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
 
 # every schema version of t begins at its creation, the snapshots still tell where each began
 query I
@@ -90,6 +91,37 @@ SELECT x FROM between.k ORDER BY ALL
 20
 NULL
 
+# the migration to 2.0 converts no inlined rows, it takes the catalog without the rows of k and their snapshots
+statement ok
+DELETE FROM between.k
+
+statement ok
+CALL ducklake_expire_snapshots('between', older_than => now())
+
+# the flush wrote the other inlined rows to files with their columns
+statement ok
+DETACH between
+
+statement ok
+ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite.db' AS between
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query II
+SELECT a, b FROM between.t ORDER BY ALL
+----
+1	10
+2	20
+
+query IIIII
+SELECT a, v, d, s, dc FROM between.m
+----
+1	text	2026-01-02	{'x': 5}	1.25
+
+query II
+SELECT a, c FROM between.j
+----
+1	30
+
 statement ok
 DETACH between
 
@@ -99,7 +131,8 @@ unzip data/old_ducklake/migrated_inlined_schema_version_sqlite.db.gz {TEST_DIR}/
 statement ok
 ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite_expired.db' AS between_expired
 	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite_expired', OVERRIDE_DATA_PATH TRUE,
-	METADATA_CATALOG 'between_expired_meta', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+	METADATA_CATALOG 'between_expired_meta', DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE,
+	DATA_INLINING_ROW_LIMIT 10)
 
 statement ok
 CALL ducklake_expire_snapshots('between_expired', older_than => now())
@@ -110,7 +143,7 @@ DETACH between_expired
 statement ok
 ATTACH 'ducklake:sqlite:{TEST_DIR}/migrated_inlined_sqlite_expired.db' AS between_expired
 	(DATA_PATH '{TEST_DIR}/migrated_inlined_sqlite_expired', OVERRIDE_DATA_PATH TRUE,
-	METADATA_CATALOG 'between_expired_meta', DATA_INLINING_ROW_LIMIT 10)
+	METADATA_CATALOG 'between_expired_meta', DUCKLAKE_VERSION '1.1', DATA_INLINING_ROW_LIMIT 10)
 
 # no column of t changed between the rows of its inlined table, so they were written for the table of the first one
 query II

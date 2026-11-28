@@ -214,7 +214,7 @@ TRUNCATE ducklake_staged_inlined_row;
 INSERT INTO ducklake_staged_commit SELECT NULL, NULL, NULL, snapshot_id, NULL, NULL, next_catalog_id, next_file_id
 FROM main.ducklake_snapshot ORDER BY snapshot_id DESC LIMIT 1;
 INSERT INTO ducklake_staged_inlined_data VALUES
-(1, false, ''"_ducklake_row_id","_ducklake_begin_snapshot","_ducklake_end_snapshot","other"'');
+(1, false, ''"_ducklake_row_id","_ducklake_begin_snapshot","other","_ducklake_branch_id"'');
 INSERT INTO ducklake_staged_inlined_row VALUES (1, 0, NULL, ''(6)'');
 SELECT * FROM ducklake_commit(''main'', 3)')
 ----

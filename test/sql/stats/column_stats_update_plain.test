@@ -74,13 +74,14 @@ DELETE FROM logged.t WHERE i = 4
 statement ok
 CALL disable_logging()
 
-# the stats and the deleted inlined row end with plain UPDATEs, a 2.0 catalog ends the catalog rows in their companions
+# the stats are plain UPDATEs, a 2.0 catalog ends the catalog rows and the deleted inlined row in their companions
 query II
 SELECT count(*) FILTER (WHERE joined),
-       list_sort(list(DISTINCT regexp_extract(stmt, 'UPDATE\s+\S*?(ducklake_[a-z_]+?)(_\d+_\d+)?"?\s', 1)) FILTER (WHERE regexp_matches(stmt, 'ducklake_(inlined_data|table_column_stats|table_stats)')))
+       list_sort(list(DISTINCT regexp_extract(stmt, 'UPDATE\s+\S*?(ducklake_[a-z_]+?)(_\d+_\d+)?"?\s', 1))
+                 FILTER (WHERE regexp_matches(stmt, 'ducklake_(table_column_stats|table_stats)')))
 FROM updates
 ----
-0	[ducklake_inlined_data, ducklake_table_column_stats, ducklake_table_stats]
+0	[ducklake_table_column_stats, ducklake_table_stats]
 
 # a table of 520 columns updates its stats in statements of at most 512 columns
 statement ok

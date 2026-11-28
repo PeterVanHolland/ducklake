@@ -2344,11 +2344,10 @@ DuckLakeSnapshot DuckLakeMetadataManager::GetInlinedTableSnapshot(TableIndex tab
 		}
 		// the table as created is used then, a flush through it does not keep what the rows hold
 		auto filter = InlinedFlushFilter(table_id, inlined_table_name);
-		auto flushed =
-		    Query(transaction.GetSnapshot(),
-		          StringUtil::Format("SELECT 1 FROM %s%s {SNAPSHOT_ID} >= %s LIMIT 1",
-		                             InlinedRowSource(inlined_table_name), filter.empty() ? " WHERE" : filter + " AND",
-		                             SQLIdentifier(col_names.begin_snapshot)));
+		auto flushed = Query(
+		    transaction.GetSnapshot(),
+		    StringUtil::Format("SELECT 1 FROM %s%s {SNAPSHOT_ID} >= %s LIMIT 1", InlinedRowSource(inlined_table_name),
+		                       filter.empty() ? " WHERE" : filter + " AND", SQLIdentifier(col_names.begin_snapshot)));
 		flushed->ThrowIfError("Failed to get the rows of inlined data from DuckLake: ");
 		for (auto &row : *flushed) {
 			(void)row;

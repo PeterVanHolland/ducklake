@@ -9,10 +9,11 @@ require parquet
 # written by DuckDB 1.4.4 and migrated by DuckDB 1.5.1, the rows were inlined after the column b of their table changed
 unzip data/old_ducklake/migrated_inlined_changed_columns.db.gz {TEST_DIR}/migrated_inlined_changed_columns.db
 
+# the migration to 2.0 converts no inlined rows, a 1.1 catalog keeps them
 statement ok
 ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_changed_columns.db' AS lake
 	(DATA_PATH '{TEST_DIR}/migrated_inlined_changed_columns', OVERRIDE_DATA_PATH TRUE, METADATA_CATALOG 'meta',
-	AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
+	DUCKLAKE_VERSION '1.1', AUTOMATIC_MIGRATION TRUE, DATA_INLINING_ROW_LIMIT 10)
 
 # the rows are in the inlined tables of the schema versions of the changes, between the first and the last of a table
 query II
@@ -55,3 +56,22 @@ FROM lake.retyped ORDER BY ALL
 
 statement ok
 CHECKPOINT lake
+
+# the flush wrote the inlined rows to files with their columns, the migration to 2.0 converts none
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'ducklake:{TEST_DIR}/migrated_inlined_changed_columns.db' AS lake
+	(DATA_PATH '{TEST_DIR}/migrated_inlined_changed_columns', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION TRUE)
+
+query II
+FROM lake.renamed
+----
+1	2
+
+query II
+FROM lake.retyped ORDER BY ALL
+----
+1	2
+3	5000000000

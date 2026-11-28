@@ -2978,10 +2978,16 @@ void DuckLakeTransactionState::CheckAddedFileConflicts(const DuckLakeCommitConte
 		}
 	}
 	auto &fs = FileSystem::GetFileSystem(db);
+	set<TableIndex> tables;
+	for (auto &entry : registered_files) {
+		tables.insert(entry.first);
+	}
+	unordered_map<idx_t, string> table_paths;
+	DuckLakeMetadataManager::GetPathsForTables(tables, {}, context.get_table_path, context.conflict_query_executor,
+	                                           data_path, separator, table_paths);
 	for (auto &entry : registered_files) {
 		auto &table_id = entry.first;
-		auto table_path = DuckLakeMetadataManager::GetPathForTable(table_id, {}, context.conflict_query_executor,
-		                                                           data_path, separator);
+		auto &table_path = table_paths[table_id.index];
 		for (auto &file_ref : entry.second) {
 			auto &file_name = file_ref.get();
 			auto result = context.conflict_query_executor(

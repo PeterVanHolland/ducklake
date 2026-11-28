@@ -259,6 +259,7 @@
       "paths": [
         "test/sql/remove_files/remove_data_files_stats.test",
         "test/sql/remove_files/dropped_data_files_end_delete_files.test",
+        "test/sql/remove_files/dropped_data_files_end_delete_files_v11.test",
         "test/sql/data_inlining/inlined_companion_layout.test",
         "test/sql/data_inlining/inlined_shared_visibility_layout.test",
         "test/sql/data_inlining/inlined_flush_keeps_own_deletes.test",

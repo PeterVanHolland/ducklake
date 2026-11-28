@@ -708,8 +708,10 @@ DuckLakeCompactor::GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry>
 		// LCOV_EXCL_STOP
 	}
 
+	auto &latest_table = GetLatestTableEntry(catalog, transaction, table);
+
 	string data_path;
-	if (partition_id.IsValid()) {
+	if (partition_id.IsValid() && catalog.UseHiveFilePattern(!catalog.IsEncrypted(), latest_table)) {
 		auto partition_table = ResolvePartitionSpecTable(table, source_files[0], partition_id.GetIndex());
 		if (partition_table) {
 			data_path =
@@ -752,7 +754,6 @@ DuckLakeCompactor::GenerateCompactionCommand(vector<DuckLakeCompactionFileEntry>
 	    },
 	    copy);
 
-	auto &latest_table = GetLatestTableEntry(catalog, transaction, table);
 	auto sort_data = latest_table.GetSortData();
 	bool sort_applied = false;
 	if (sort_data) {
@@ -1034,11 +1035,17 @@ static unique_ptr<LogicalOperator> BindCompaction(ClientContext &context, TableF
 	} else {
 		tables = DuckLakeBaseMetadataFunction::GetTablesInScope(context, ducklake_catalog, schema, string());
 	}
-	// tables without live data files have nothing to compact
+	// the candidate tables, found before any table lists its files
 	bool skip_tables_without_files = tables.size() > 1;
 	unordered_set<idx_t> tables_with_files;
-	if (skip_tables_without_files) {
-		tables_with_files = transaction.GetMetadataManager().GetTablesWithLiveDataFiles();
+	if (skip_tables_without_files && type == CompactionType::REWRITE_DELETES) {
+		vector<TableIndex> table_ids;
+		for (auto &table_ref : tables) {
+			table_ids.push_back(table_ref.get().GetTableId());
+		}
+		tables_with_files = transaction.GetMetadataManager().GetTablesWithRewriteCandidates(table_ids);
+	} else if (skip_tables_without_files) {
+		tables_with_files = transaction.GetMetadataManager().GetTablesWithMergeCandidates(merge_options);
 	}
 	vector<unique_ptr<LogicalOperator>> compactions;
 	for (auto &table_ref : tables) {
